@@ -5,6 +5,8 @@ const DOCKER_COMMANDS: [&str; 13] = [
     "update", "network",
 ];
 
+const CONTAINERLAB_COMMANDS: [&str; 3] = ["deploy", "destroy", "inspect"];
+
 #[test]
 fn the_help_pages_name_the_docker_group_and_exactly_its_thirteen_commands() {
     let commands = commands_block(&help(&[]));
@@ -20,6 +22,42 @@ fn the_rm_help_shows_its_flags_and_never_says_netobs() {
     assert!(help.contains("--volumes"), "{help}");
     assert!(help.contains("--force"), "{help}");
     assert!(!help.contains("netobs"), "{help}");
+}
+
+#[test]
+fn the_help_pages_name_the_containerlab_group_and_exactly_its_three_commands() {
+    let commands = commands_block(&help(&[]));
+    assert!(
+        commands.iter().any(|word| word == "containerlab"),
+        "{commands:?}"
+    );
+
+    let commands = commands_block(&help(&["containerlab"]));
+    assert_eq!(commands, CONTAINERLAB_COMMANDS);
+}
+
+#[test]
+fn the_destroy_help_never_says_deploy() {
+    let help = help(&["containerlab", "destroy"]);
+    assert!(!help.contains("Deploy"), "{help}");
+}
+
+#[test]
+fn no_containerlab_help_page_says_show_netobs_or_labcli() {
+    let pages: [&[&str]; 5] = [
+        &[],
+        &["containerlab"],
+        &["containerlab", "deploy"],
+        &["containerlab", "destroy"],
+        &["containerlab", "inspect"],
+    ];
+
+    for page in pages {
+        let help = help(page);
+        for word in ["show", "netobs", "labcli"] {
+            assert!(!help.contains(word), "{page:?}: {word}\n{help}");
+        }
+    }
 }
 
 fn help(args: &[&str]) -> String {
