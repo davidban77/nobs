@@ -110,6 +110,86 @@ fn every_command_returns_the_child_exit_code_after_one_call() {
 }
 
 #[test]
+fn the_flags_and_services_typed_on_the_command_line_reach_the_list() {
+    let file = fixture();
+    let file = file.to_str().unwrap();
+    let rows = [
+        (
+            vec![
+                "build",
+                "--compose",
+                file,
+                "-p",
+                "a",
+                "-p",
+                "b",
+                "--verbose",
+            ],
+            Some((
+                1,
+                vec![
+                    "-f",
+                    file,
+                    "--profile",
+                    "a",
+                    "--profile",
+                    "b",
+                    "--verbose",
+                    "build",
+                ],
+            )),
+        ),
+        (
+            vec!["logs", "--compose", file, "-f", "-t", "5", "sleeper"],
+            Some((1, vec!["logs", "-f", "--tail=5", "sleeper"])),
+        ),
+        (
+            vec!["destroy", "--compose", file, "--volumes"],
+            Some((1, vec!["down", "--volumes", "--remove-orphans"])),
+        ),
+        (
+            vec!["rm", "--compose", file, "--volumes", "--force"],
+            Some((1, vec!["rm", "--stop", "--force", "--volumes"])),
+        ),
+        (
+            vec!["update", "--compose", file, "--volumes", "sleeper"],
+            Some((
+                2,
+                vec!["--force-recreate", "--renew-anon-volumes", "sleeper"],
+            )),
+        ),
+        (
+            vec!["stop", "--compose", file, "a", "b"],
+            Some((1, vec!["stop", "a", "b"])),
+        ),
+        (
+            vec!["exec", "--compose", file, "sleeper", "--", "--flag"],
+            Some((1, vec!["sleeper", "--flag"])),
+        ),
+        (vec!["network", "bogus"], None),
+    ];
+
+    for (typed, expected) in rows {
+        let mut args = vec!["nobs", "docker"];
+        args.extend(typed);
+        let parsed = Cli::try_parse_from(&args);
+        let Some((calls, tail)) = expected else {
+            assert!(parsed.is_err(), "{args:?}");
+            continue;
+        };
+        let cli = parsed.unwrap_or_else(|error| panic!("{args:?}: {error}"));
+        let runner = FakeRunner::returning(0);
+
+        run(cli, &runner);
+
+        let recorded = runner.calls();
+        assert_eq!(recorded.len(), calls, "{args:?}");
+        let last = &recorded[calls - 1].args;
+        assert!(last.ends_with(&words(&tail)), "{args:?} gave {last:?}");
+    }
+}
+
+#[test]
 fn a_scenario_whose_file_is_missing_returns_1_and_runs_nothing() {
     let runner = FakeRunner::returning(0);
     let cli = parse(&["nobs", "docker", "ps", "--scenario", "ch5"]);
