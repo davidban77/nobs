@@ -32,7 +32,7 @@ fn parse_line(line: &str) -> Option<(&str, &str)> {
     }
     let line = line.strip_prefix("export ").unwrap_or(line);
     let (key, value) = line.split_once('=')?;
-    Some((key.trim(), unquote(value)))
+    Some((key.trim(), unquote(value.trim())))
 }
 
 fn unquote(value: &str) -> &str {
@@ -75,7 +75,12 @@ mod tests {
     }
 
     #[test]
-    fn the_key_is_trimmed_and_the_value_is_not() {
-        assert_eq!(parse_line("A = 1"), Some(("A", " 1")));
+    fn spaces_around_the_equals_sign_are_trimmed() {
+        assert_eq!(parse_line("A = 1"), Some(("A", "1")));
+    }
+
+    #[test]
+    fn a_quoted_value_after_spaces_loses_its_quotes() {
+        assert_eq!(parse_line("A = \"x\""), Some(("A", "x")));
     }
 }
