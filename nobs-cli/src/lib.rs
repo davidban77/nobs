@@ -40,7 +40,7 @@ fn docker_ps(compose: Compose, runner: &dyn Runner) -> i32 {
         eprintln!("nobs: compose file not found: {}", compose.file().display());
         return 1;
     }
-    match runner.run(Compose::PROGRAM, &compose.ps_args()) {
+    match runner.run(Compose::PROGRAM, &compose.ps_args(&[])) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("nobs: cannot run {}: {error}", Compose::PROGRAM);
