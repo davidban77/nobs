@@ -118,6 +118,25 @@ fn a_value_from_dot_env_reaches_the_docker_child() {
     assert_eq!(output.status.code(), Some(5), "{stderr}");
 }
 
+#[test]
+fn an_empty_key_in_dot_env_exits_1_before_docker_starts() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-empty-key");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".env"), "=x\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["docker", "ps", "--compose"])
+        .arg(fixture())
+        .current_dir(&dir)
+        .env("PATH", empty_folder())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("empty key"), "{stderr}");
+    assert!(!stderr.contains("cannot run docker"), "{stderr}");
+}
+
 fn empty_folder() -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("empty-path");
     std::fs::create_dir_all(&dir).unwrap();
