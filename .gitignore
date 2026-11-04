@@ -1,0 +1,5 @@
+.claude/
+reference/
+target/
+.venv/
+.DS_Store
