@@ -1,0 +1,5 @@
+[package]
+name = "nobs-core"
+version.workspace = true
+edition.workspace = true
+publish = false

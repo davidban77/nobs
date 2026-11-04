@@ -1,0 +1,17 @@
+[package]
+name = "nobs-cli"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "nobs_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nobs"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+nobs-core = { path = "../nobs-core" }
