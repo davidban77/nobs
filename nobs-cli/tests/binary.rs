@@ -178,38 +178,67 @@ fn the_topology_defaults_to_lab_clab_yaml_under_containerlab() {
 }
 
 #[test]
-fn sudo_gets_the_variable_names_of_the_topology_and_exits_with_its_own_code() {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fake-sudo");
-    std::fs::create_dir_all(&dir).unwrap();
+fn every_containerlab_command_gives_sudo_the_variable_names_and_exits_with_its_code() {
+    let dir = fake_sudo("fake-sudo");
     let seen = dir.join("seen");
-    let script = dir.join("sudo");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\necho \"$*\" > '{seen}'\necho \"$NOBS_T_LABEL\" >> '{seen}'\nexit 5\n",
-            seen = seen.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let topology = topology();
+    let cases = [("deploy", ""), ("destroy", " --cleanup"), ("inspect", "")];
+
+    for (command, tail) in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+            .args(["containerlab", command])
+            .arg(&topology)
+            .env("PATH", path_with(&dir))
+            .env("NOBS_T_LABEL", "nobs-t-test")
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(5), "{command}: {stderr}");
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap(),
+            format!(
+                "--preserve-env=NOBS_T_LABEL containerlab {command} -t {}{tail}\nnobs-t-test\n",
+                topology.display()
+            ),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_value_from_dot_env_reaches_the_containerlab_child() {
+    let dir = fake_sudo("fake-sudo-dot-env");
+    std::fs::write(dir.join(".env"), "NOBS_T_LABEL=nobs-t-from-dot-env\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
         .args(["containerlab", "deploy"])
-        .arg(&topology)
+        .arg(topology())
+        .current_dir(&dir)
         .env("PATH", path_with(&dir))
-        .env("NOBS_T_LABEL", "nobs-t-test")
+        .env_remove("NOBS_T_LABEL")
         .output()
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(5), "{stderr}");
-    assert_eq!(
-        std::fs::read_to_string(&seen).unwrap(),
+    let seen = std::fs::read_to_string(dir.join("seen")).unwrap();
+    assert_eq!(seen.lines().nth(1), Some("nobs-t-from-dot-env"), "{seen}");
+}
+
+fn fake_sudo(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("sudo");
+    std::fs::write(
+        &script,
         format!(
-            "--preserve-env=NOBS_T_LABEL containerlab deploy -t {}\nnobs-t-test\n",
-            topology.display()
-        )
-    );
+            "#!/bin/sh\necho \"$*\" > '{seen}'\necho \"$NOBS_T_LABEL\" >> '{seen}'\nexit 5\n",
+            seen = dir.join("seen").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir
 }
 
 fn topology() -> PathBuf {

@@ -70,10 +70,10 @@ impl Containerlab {
     }
 }
 
-pub fn topology_variables(text: &str) -> Vec<String> {
+pub fn env_names(topology_text: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
-    for (index, _) in text.match_indices("${") {
-        let rest = &text[index + 2..];
+    for (index, _) in topology_text.match_indices("${") {
+        let rest = &topology_text[index + 2..];
         let end = rest
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
             .unwrap_or(rest.len());
@@ -174,18 +174,15 @@ mod tests {
     }
 
     #[test]
-    fn the_topology_variables_are_sorted_and_have_no_repeats() {
+    fn the_env_names_are_sorted_and_have_no_repeats() {
         assert_eq!(
-            topology_variables("a: ${B:-x}\nb: ${A}\nc: ${B}\nd: $C\ne: ${}"),
+            env_names("a: ${B:-x}\nb: ${A}\nc: ${B}\nd: $C\ne: ${}"),
             ["A", "B"]
         );
     }
 
     #[test]
     fn a_name_may_hold_digits_and_underscores_and_may_not_start_with_a_digit() {
-        assert_eq!(
-            topology_variables("${_A1-x} ${1A} ${A_B:?e}"),
-            ["A_B", "_A1"]
-        );
+        assert_eq!(env_names("${_A1-x} ${1A} ${A_B:?e}"), ["A_B", "_A1"]);
     }
 }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
-use nobs_core::containerlab::{topology_variables, Containerlab};
+use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
 use nobs_core::runner::Runner;
 
@@ -390,7 +390,7 @@ fn run_containerlab(
     };
     let containerlab = Containerlab::new(topology)
         .sudo(sudo)
-        .preserve_env(topology_variables(&text));
+        .preserve_env(env_names(&text));
     let program = containerlab.program();
     match runner.run(program, &args(&containerlab)) {
         Ok(code) => code,
