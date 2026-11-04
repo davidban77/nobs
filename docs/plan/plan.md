@@ -1,7 +1,7 @@
 
 # Plan: nobs, first version
 
-Date: 2026-11-04. Owner of the plan: architect. Status: draft.
+Date: 2026-11-04. Owner of the plan: architect. Status: agreed (by the architect on 2026-11-04, after two independent reviews; the reviews are kept outside git).
 
 ## 1. Outcome
 
