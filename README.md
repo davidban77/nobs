@@ -6,7 +6,7 @@ Status: early. The `nobs docker` group (13 commands) and the `nobs containerlab`
 
 ## Commands
 
-Each `docker` command of labcli and netobs has the same name in nobs.
+Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. netobs has no `containerlab` commands, so its cell is empty in those rows.
 
 | labcli X | netobs X | nobs X |
 |---|---|---|
@@ -31,4 +31,4 @@ In `nobs docker exec`, the words after the service are passed to the container a
 
 Build the Linux binary with `cargo build --release --target aarch64-unknown-linux-musl -p nobs-cli`; it runs inside the OrbStack Linux machine `clab` and uses the Docker engine of `clab`, and the two Docker engines on the Mac (the one of OrbStack and the one inside `clab`) do not share networks.
 
-The `containerlab` commands run inside the Linux machine `clab`, through the Linux build. `--sudo` is on unless `--no-sudo` is given. With sudo on, nobs keeps for containerlab the variables that the topology reads as `${NAME}`, so such a variable must be set in the shell that runs nobs (or in `.env`).
+Run the `containerlab` commands inside the Linux machine `clab`, with the Linux binary: `orb -m clab <path> containerlab deploy`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab with `sudo` unless you give `--no-sudo`. By default, sudo does not pass on the variables of your shell. So nobs reads the topology file, finds each variable it uses as `${NAME}`, and tells sudo to keep it. Set such a variable in the shell that runs nobs, or in the `.env` file of the current folder.
