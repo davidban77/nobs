@@ -137,6 +137,86 @@ fn an_empty_key_in_dot_env_exits_1_before_docker_starts() {
     assert!(!stderr.contains("cannot run docker"), "{stderr}");
 }
 
+#[test]
+fn a_missing_topology_exits_1_and_names_the_file() {
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["containerlab", "deploy", "missing.clab.yml"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("topology file not found"), "{stderr}");
+    assert!(stderr.contains("missing.clab.yml"), "{stderr}");
+}
+
+#[test]
+fn nobs_exits_1_and_says_so_when_sudo_cannot_start() {
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["containerlab", "deploy"])
+        .arg(topology())
+        .env("PATH", empty_folder())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot run sudo"), "{stderr}");
+}
+
+#[test]
+fn the_topology_defaults_to_lab_clab_yaml_under_containerlab() {
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["containerlab", "deploy"])
+        .current_dir(empty_folder())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("./containerlab/lab.clab.yaml"), "{stderr}");
+}
+
+#[test]
+fn sudo_gets_the_variable_names_of_the_topology_and_exits_with_its_own_code() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fake-sudo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let seen = dir.join("seen");
+    let script = dir.join("sudo");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$*\" > '{seen}'\necho \"$NOBS_T_LABEL\" >> '{seen}'\nexit 5\n",
+            seen = seen.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let topology = topology();
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["containerlab", "deploy"])
+        .arg(&topology)
+        .env("PATH", path_with(&dir))
+        .env("NOBS_T_LABEL", "nobs-t-test")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(5), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&seen).unwrap(),
+        format!(
+            "--preserve-env=NOBS_T_LABEL containerlab deploy -t {}\nnobs-t-test\n",
+            topology.display()
+        )
+    );
+}
+
+fn topology() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/fixtures/srlinux-two-node/lab.clab.yml")
+}
+
 fn empty_folder() -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("empty-path");
     std::fs::create_dir_all(&dir).unwrap();
