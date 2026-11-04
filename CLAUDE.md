@@ -15,6 +15,8 @@ A paragraph in Markdown is one line, never hard-wrapped.
 
 `reference/` is read-only.
 
+Once per machine, run `rustup target add aarch64-unknown-linux-musl`.
+
 Build the static Linux arm64 binary with `cargo build --release --target aarch64-unknown-linux-musl -p nobs-cli`. The file lands at `target/aarch64-unknown-linux-musl/release/nobs`.
 
 `.cargo/config.toml` sets the linker `rust-lld` for that target, because the Mac's own linker cannot make Linux files.
