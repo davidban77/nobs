@@ -2,19 +2,27 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-pub fn load_env(dir: &Path) {
+pub fn load_env(dir: &Path) -> Result<(), String> {
     for name in [".env", ".setup.env"] {
-        let Ok(text) = fs::read_to_string(dir.join(name)) else {
+        let path = dir.join(name);
+        let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        for line in text.lines() {
+        for (index, line) in text.lines().enumerate() {
             if let Some((key, value)) = parse_line(line) {
+                if key.is_empty() {
+                    return Err(format!("{}: line {}: empty key", path.display(), index + 1));
+                }
+                if key.contains('\0') || value.contains('\0') {
+                    return Err(format!("{}: line {}: NUL byte", path.display(), index + 1));
+                }
                 if env::var_os(key).is_none() {
                     env::set_var(key, value);
                 }
             }
         }
     }
+    Ok(())
 }
 
 fn parse_line(line: &str) -> Option<(&str, &str)> {
@@ -24,7 +32,7 @@ fn parse_line(line: &str) -> Option<(&str, &str)> {
     }
     let line = line.strip_prefix("export ").unwrap_or(line);
     let (key, value) = line.split_once('=')?;
-    Some((key, unquote(value)))
+    Some((key.trim(), unquote(value)))
 }
 
 fn unquote(value: &str) -> &str {
@@ -64,5 +72,10 @@ mod tests {
     #[test]
     fn a_dollar_reference_stays_literal() {
         assert_eq!(parse_line("A=$B"), Some(("A", "$B")));
+    }
+
+    #[test]
+    fn the_key_is_trimmed_and_the_value_is_not() {
+        assert_eq!(parse_line("A = 1"), Some(("A", " 1")));
     }
 }

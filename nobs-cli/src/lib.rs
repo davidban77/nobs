@@ -178,7 +178,10 @@ pub enum DockerCommand {
 }
 
 pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
-    load_env(Path::new("."));
+    if let Err(message) = load_env(Path::new(".")) {
+        eprintln!("nobs: {message}");
+        return 1;
+    }
     let Command::Docker { command } = cli.command;
     match command {
         DockerCommand::Build { flags, services } => {
