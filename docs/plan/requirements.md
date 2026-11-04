@@ -13,6 +13,10 @@ A terminal program with a text user interface, written in Rust with the Ratatui 
 - It takes in the lab tooling of the workshops repository (`reference/workshops`), which already holds a small Python command line tool also called nobs.
 - It takes in the lab of the book "Modern Network Observability" (`reference/network-observability-lab`), which David wants to bring back to life for the book's second edition, replacing its netobs tool.
 
+## Sonda
+
+Added on 2026-11-04 from David's words: "on this new TUI application, we definitely need to have an interface for Sonda". Sonda is David's synthetic telemetry generator (`reference/sonda`, public, Rust). It has an HTTP API and a way to load files (scenarios), and the workshops' Python nobs already connects to it. The terminal program must be a way to interact with Sonda: load scenario files and work with running scenarios through its API. Sonda's own documentation is the source for what the API offers.
+
 ## Where it is used
 
 In all of David's repositories, labs and workshops, on his own computer and in cloud sessions.
