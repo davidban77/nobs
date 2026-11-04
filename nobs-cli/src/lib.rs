@@ -1,9 +1,11 @@
 use std::ffi::OsString;
+use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
+use nobs_core::containerlab::{topology_variables, Containerlab};
 use nobs_core::env::load_env;
 use nobs_core::runner::Runner;
 
@@ -22,6 +24,48 @@ pub enum Command {
     Docker {
         #[command(subcommand)]
         command: DockerCommand,
+    },
+    #[command(about = "Run the containerlab topology of a lab")]
+    Containerlab {
+        #[command(subcommand)]
+        command: ContainerlabCommand,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct ContainerlabFlags {
+    #[arg(help = "Topology file; ./containerlab/lab.clab.yaml when none is given")]
+    topology: Option<PathBuf>,
+    #[arg(
+        long,
+        overrides_with = "no_sudo",
+        help = "Run containerlab with sudo; this is on by default"
+    )]
+    sudo: bool,
+    #[arg(
+        long,
+        overrides_with = "sudo",
+        help = "Run containerlab without sudo; sudo is on by default"
+    )]
+    no_sudo: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ContainerlabCommand {
+    #[command(about = "Create the lab from the topology file and start its nodes")]
+    Deploy {
+        #[command(flatten)]
+        flags: ContainerlabFlags,
+    },
+    #[command(about = "Stop and remove the lab of the topology file")]
+    Destroy {
+        #[command(flatten)]
+        flags: ContainerlabFlags,
+    },
+    #[command(about = "List the nodes of the lab of the topology file")]
+    Inspect {
+        #[command(flatten)]
+        flags: ContainerlabFlags,
     },
 }
 
@@ -182,7 +226,10 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         eprintln!("nobs: {message}");
         return 1;
     }
-    let Command::Docker { command } = cli.command;
+    let command = match cli.command {
+        Command::Docker { command } => command,
+        Command::Containerlab { command } => return run_containerlab_command(command, runner),
+    };
     match command {
         DockerCommand::Build { flags, services } => {
             run_compose(flags, runner, |compose| vec![compose.build_args(&services)])
@@ -302,6 +349,56 @@ fn run_compose(
         }
     }
     0
+}
+
+fn run_containerlab_command(command: ContainerlabCommand, runner: &dyn Runner) -> i32 {
+    match command {
+        ContainerlabCommand::Deploy { flags } => {
+            run_containerlab(flags, runner, Containerlab::deploy_args)
+        }
+        ContainerlabCommand::Destroy { flags } => {
+            run_containerlab(flags, runner, Containerlab::destroy_args)
+        }
+        ContainerlabCommand::Inspect { flags } => {
+            run_containerlab(flags, runner, Containerlab::inspect_args)
+        }
+    }
+}
+
+fn run_containerlab(
+    flags: ContainerlabFlags,
+    runner: &dyn Runner,
+    args: impl FnOnce(&Containerlab) -> Vec<OsString>,
+) -> i32 {
+    let sudo = flags.sudo || !flags.no_sudo;
+    let topology = flags
+        .topology
+        .unwrap_or_else(|| PathBuf::from("./containerlab/lab.clab.yaml"));
+    if !topology.is_file() {
+        eprintln!("nobs: topology file not found: {}", topology.display());
+        return 1;
+    }
+    let text = match fs::read_to_string(&topology) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!(
+                "nobs: cannot read topology file: {}: {error}",
+                topology.display()
+            );
+            return 1;
+        }
+    };
+    let containerlab = Containerlab::new(topology)
+        .sudo(sudo)
+        .preserve_env(topology_variables(&text));
+    let program = containerlab.program();
+    match runner.run(program, &args(&containerlab)) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("nobs: cannot run {program}: {error}");
+            1
+        }
+    }
 }
 
 fn run_docker(runner: &dyn Runner, args: &[OsString]) -> i32 {
