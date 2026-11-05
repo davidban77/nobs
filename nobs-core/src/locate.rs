@@ -1,9 +1,27 @@
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::settings::{read_settings_file, Lab, Settings, Workshop};
+use crate::settings::{read_settings, read_settings_file, Lab, Settings, Workshop};
 
 pub const FILE: &str = "nobs.toml";
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LocateError {
+    NotFound,
+    NotAt(PathBuf),
+    Settings { path: PathBuf, reason: String },
+}
+
+impl fmt::Display for LocateError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "no lab or workshop found from here"),
+            Self::NotAt(path) => write!(f, "no lab or workshop at {}", path.display()),
+            Self::Settings { path, reason } => write!(f, "{}: {reason}", path.display()),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
@@ -65,34 +83,41 @@ impl Located {
     }
 }
 
-type Marker = fn(&Path) -> Result<Option<Kind>, String>;
+type Marker = fn(&Path) -> Result<Option<Kind>, LocateError>;
 
 const MARKERS: [Marker; 3] = [settings_file, book_lab_layout, labcli_lab_layout];
 
-fn settings_file(dir: &Path) -> Result<Option<Kind>, String> {
+fn settings_file(dir: &Path) -> Result<Option<Kind>, LocateError> {
     let file = dir.join(FILE);
     if !file.is_file() {
         return Ok(None);
     }
-    Ok(Some(match read_settings_file(&file)? {
+    let settings = fs::read_to_string(&file)
+        .map_err(|error| error.to_string())
+        .and_then(|text| read_settings(&text))
+        .map_err(|reason| LocateError::Settings {
+            path: file.clone(),
+            reason,
+        })?;
+    Ok(Some(match settings {
         Settings::Workshop(workshop) => Kind::Workshop(workshop),
         Settings::Lab(lab) => Kind::LabcliLab(Some(lab)),
     }))
 }
 
-fn book_lab_layout(dir: &Path) -> Result<Option<Kind>, String> {
+fn book_lab_layout(dir: &Path) -> Result<Option<Kind>, LocateError> {
     let found = dir.join("chapters").is_dir() && dir.join("containerlab/lab.yml").is_file();
     Ok(found.then_some(Kind::BookLab))
 }
 
-fn labcli_lab_layout(dir: &Path) -> Result<Option<Kind>, String> {
+fn labcli_lab_layout(dir: &Path) -> Result<Option<Kind>, LocateError> {
     Ok(dir
         .join("docker-compose.yml")
         .is_file()
         .then_some(Kind::LabcliLab(None)))
 }
 
-pub fn locate(start: &Path, given: Option<&Path>) -> Result<Located, String> {
+pub fn locate(start: &Path, given: Option<&Path>) -> Result<Located, LocateError> {
     if let Some(dir) = given {
         for marker in MARKERS {
             if let Some(kind) = marker(dir)? {
@@ -102,7 +127,7 @@ pub fn locate(start: &Path, given: Option<&Path>) -> Result<Located, String> {
                 });
             }
         }
-        return Err(format!("no lab or workshop at {}", dir.display()));
+        return Err(LocateError::NotAt(dir.to_path_buf()));
     }
     for marker in MARKERS {
         for dir in start.ancestors() {
@@ -114,7 +139,7 @@ pub fn locate(start: &Path, given: Option<&Path>) -> Result<Located, String> {
             }
         }
     }
-    Err("no lab or workshop found from here".to_string())
+    Err(LocateError::NotFound)
 }
 
 pub fn find_workshops(start: &Path) -> Vec<(String, String, PathBuf)> {
@@ -282,19 +307,20 @@ mod tests {
         let scratch = Scratch::new("given-bare");
         scratch.file("ws/nobs.toml", &workshop_text());
         let bare = scratch.dir("ws/bare");
+        let error = locate(&bare, Some(&bare)).unwrap_err();
+        assert_eq!(error, LocateError::NotAt(bare.clone()));
         assert_eq!(
-            locate(&bare, Some(&bare)),
-            Err(format!("no lab or workshop at {}", bare.display()))
+            error.to_string(),
+            format!("no lab or workshop at {}", bare.display())
         );
     }
 
     #[test]
     fn a_bare_folder_tree_finds_nothing() {
         let scratch = Scratch::new("bare");
-        assert_eq!(
-            locate(&scratch.dir("a/b"), None),
-            Err("no lab or workshop found from here".to_string())
-        );
+        let error = locate(&scratch.dir("a/b"), None).unwrap_err();
+        assert_eq!(error, LocateError::NotFound);
+        assert_eq!(error.to_string(), "no lab or workshop found from here");
     }
 
     #[test]
@@ -337,9 +363,20 @@ mod tests {
         let scratch = Scratch::new("bad");
         scratch.file("ws/docker-compose.yml", "");
         let file = scratch.file("ws/nobs.toml", "kind = \"lab\"\ncolour = \"red\"\n");
-        let expected = Err(format!("{}: colour: unknown key", file.display()));
-        assert_eq!(locate(&scratch.dir("ws/a"), None), expected);
-        assert_eq!(locate(&scratch.0, Some(&scratch.0.join("ws"))), expected);
+        let expected = LocateError::Settings {
+            path: file.clone(),
+            reason: "colour: unknown key".to_string(),
+        };
+        let error = locate(&scratch.dir("ws/a"), None).unwrap_err();
+        assert_eq!(error, expected);
+        assert_eq!(
+            error.to_string(),
+            format!("{}: colour: unknown key", file.display())
+        );
+        assert_eq!(
+            locate(&scratch.0, Some(&scratch.0.join("ws"))),
+            Err(expected)
+        );
     }
 
     #[test]

@@ -55,7 +55,7 @@ These commands need a lab folder:
 - a `nobs containerlab` command without a `TOPOLOGY` file;
 - `nobs <workshop> ...` (see [Workshops](#workshops)).
 
-These commands do not need one, run from any folder, and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, `nobs workshops`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file.
+These commands do not need one, run from any folder, and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)).
 
 In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml` in a labcli lab, and `containerlab/lab.yml` in the book lab. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`.
 
@@ -69,7 +69,7 @@ A command that needs a lab folder reads the `.env` file (and the `.setup.env` fi
 
 A workshop is a lab folder whose `nobs.toml` file has `kind = "workshop"`.
 
-`nobs workshops` lists the workshops nobs can find, one per line: the name, the title and the folder, with two spaces between them, sorted by name. nobs looks in three places: the workshop that holds the current folder (or the one `--dir` or `NOBS_DIR` names), each folder directly under the current folder, and each folder under the `workshops/` folder of the current folder. A `nobs.toml` in those folders that nobs cannot read is skipped. When nobs finds no workshop, it prints nothing and exits with 0. For example, from a folder that holds `workshops/nobs-t-two/nobs.toml`:
+`nobs workshops` lists the workshops nobs can find, one per line: the name, the title and the folder, with two spaces between them, sorted by name. nobs looks in three places: the workshop that holds the current folder (or the one `--dir` or `NOBS_DIR` names), each folder directly under the current folder, and each folder under the `workshops/` folder of the current folder. A `nobs.toml` that nobs cannot read is skipped when it is in a folder below the current folder. A `nobs.toml` that nobs cannot read and finds upward, or in the folder `--dir` or `NOBS_DIR` names, stops nobs: it prints the file and what is wrong, and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is not a lab or workshop, nobs prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs finds no workshop, it prints nothing and exits with 0. For example, from a folder that holds `workshops/nobs-t-two/nobs.toml`:
 
 ```
 $ nobs workshops
