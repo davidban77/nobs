@@ -8,12 +8,22 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
+use nobs_core::preflight::{preflight, Check, Status};
 use nobs_core::runner::Runner;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
+use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
+
+const HOSTS: [&str; 5] = [
+    "ghcr.io",
+    "registry-1.docker.io",
+    "github.com",
+    "registry.opsmill.io",
+    "grafana.com",
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "nobs", version)]
@@ -50,6 +60,12 @@ pub enum Command {
     },
     #[command(about = "List the workshops nobs can find")]
     Workshops,
+    #[command(
+        about = "Check this machine, then create the .env file of every workshop nobs can find"
+    )]
+    Setup,
+    #[command(about = "Check that this machine can run a workshop")]
+    Preflight,
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -63,8 +79,71 @@ pub struct WorkshopCli {
 
 #[derive(Debug, Subcommand)]
 pub enum WorkshopCommand {
+    #[command(about = "Create the .env file of the workshop from .env.example when it is missing")]
+    Setup,
+    #[command(about = "Start the workshop in the background and print its addresses")]
+    Up {
+        #[arg(
+            long,
+            help = "Rebuild the images built from the workshop's files before starting"
+        )]
+        build: bool,
+        #[arg(help = SERVICES_HELP)]
+        services: Vec<String>,
+    },
+    #[command(about = "Stop the workshop and remove its containers; the volumes stay")]
+    Down,
+    #[command(about = "Stop the workshop and remove its containers and its volumes")]
+    Destroy,
+    #[command(
+        about = "Restart the services; with none given, take the stack down and up again with a rebuild"
+    )]
+    Restart {
+        #[arg(help = SERVICES_HELP)]
+        services: Vec<String>,
+    },
     #[command(about = "List the containers of the workshop, stopped ones included")]
     Ps {
+        #[arg(help = SERVICES_HELP)]
+        services: Vec<String>,
+    },
+    #[command(about = "Show the logs of one service, or of all of them")]
+    Logs {
+        #[arg(help = "Service to show; all of them when none is given")]
+        service: Option<String>,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = 200,
+            help = "Show only the last N lines of each service"
+        )]
+        tail: u32,
+        #[arg(
+            short,
+            long,
+            overrides_with = "no_follow",
+            help = "Keep showing new lines as they arrive; this is on by default"
+        )]
+        follow: bool,
+        #[arg(
+            long,
+            overrides_with = "follow",
+            help = "Show the lines there are and stop; follow is on by default"
+        )]
+        no_follow: bool,
+    },
+    #[command(about = "Run a command inside a running service")]
+    Exec {
+        #[arg(help = "Service to run the command in")]
+        service: String,
+        #[arg(
+            default_value = "sh",
+            help = "Command to run; put words that start with a dash after --"
+        )]
+        command: Vec<OsString>,
+    },
+    #[command(about = "Build the images of the services, then start them")]
+    Build {
         #[arg(help = SERVICES_HELP)]
         services: Vec<String>,
     },
@@ -337,6 +416,16 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             return with_env(Path::new("."), || run_sonda(flags, command))
         }
         Command::Workshops => return with_env(Path::new("."), || list_workshops(given)),
+        Command::Setup => {
+            return with_env(Path::new("."), || {
+                in_current_folder(|here| run_setup(runner, here, given, &HOSTS))
+            })
+        }
+        Command::Preflight => {
+            return with_env(Path::new("."), || {
+                in_current_folder(|here| run_preflight(runner, here, &HOSTS))
+            })
+        }
         Command::External(words) => return run_workshop(&words, given, runner),
     };
     match command {
@@ -457,36 +546,166 @@ fn bad_settings_upward(here: &Path) -> Option<LocateError> {
     }
 }
 
-fn list_workshops(given: Option<&Path>) -> i32 {
-    let here = match current_folder() {
-        Ok(here) => here,
+fn in_current_folder(arm: impl FnOnce(&Path) -> i32) -> i32 {
+    match current_folder() {
+        Ok(here) => arm(&here),
         Err(message) => {
             eprintln!("nobs: {message}");
-            return 1;
+            1
         }
-    };
-    if let Some(error) = bad_settings_upward(&here) {
-        eprintln!("nobs: {error}");
-        return 1;
     }
-    let mut found = find_workshops(&here);
-    match locate(&here, given) {
+}
+
+fn workshop_list(
+    here: &Path,
+    given: Option<&Path>,
+) -> Result<Vec<(String, String, PathBuf)>, String> {
+    if let Some(error) = bad_settings_upward(here) {
+        return Err(error.to_string());
+    }
+    let mut found = find_workshops(here);
+    match locate(here, given) {
         Ok(Located {
             dir,
             kind: Kind::Workshop(workshop),
         }) => found.push((workshop.name, workshop.title, here.join(dir))),
         Ok(_) | Err(LocateError::NotFound) => {}
-        Err(error) => {
-            eprintln!("nobs: {error}");
-            return 1;
-        }
+        Err(error) => return Err(error.to_string()),
     }
     found.sort();
     found.dedup_by(|a, b| a.2 == b.2);
-    for (name, title, folder) in found {
-        println!("{name}  {title}  {}", folder.display());
+    Ok(found)
+}
+
+fn list_workshops(given: Option<&Path>) -> i32 {
+    in_current_folder(|here| match workshop_list(here, given) {
+        Ok(found) => {
+            for (name, title, folder) in found {
+                println!("{name}  {title}  {}", folder.display());
+            }
+            0
+        }
+        Err(message) => {
+            eprintln!("nobs: {message}");
+            1
+        }
+    })
+}
+
+fn check_lines(checks: &[Check]) -> Vec<String> {
+    checks
+        .iter()
+        .map(|check| {
+            let status = match check.status {
+                Status::Ok => "ok",
+                Status::Warn => "warn",
+                Status::Fail => "fail",
+            };
+            format!("{:<7}  {status:<4}  {}", check.name, check.detail)
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+fn print_preflight(runner: &dyn Runner, dir: &Path, hosts: &[&str]) -> bool {
+    let checks = preflight(runner, dir, hosts);
+    for line in check_lines(&checks) {
+        println!("{line}");
+    }
+    checks.iter().all(|check| check.status != Status::Fail)
+}
+
+fn run_preflight(runner: &dyn Runner, dir: &Path, hosts: &[&str]) -> i32 {
+    i32::from(!print_preflight(runner, dir, hosts))
+}
+
+fn bootstrap_message(dir: &Path, outcome: Bootstrap) -> String {
+    match outcome {
+        Bootstrap::Copied => format!("created {}/.env from .env.example", dir.display()),
+        Bootstrap::Kept => format!("kept {}/.env", dir.display()),
+        Bootstrap::NoExample => format!("no .env.example in {}", dir.display()),
+    }
+}
+
+fn run_setup(runner: &dyn Runner, here: &Path, given: Option<&Path>, hosts: &[&str]) -> i32 {
+    if !print_preflight(runner, here, hosts) {
+        return 1;
+    }
+    let workshops = match workshop_list(here, given) {
+        Ok(workshops) => workshops,
+        Err(message) => {
+            eprintln!("nobs: {message}");
+            return 1;
+        }
+    };
+    for (name, _, dir) in workshops {
+        match bootstrap(&dir) {
+            Ok(outcome) => println!("{name}: {}", bootstrap_message(&dir, outcome)),
+            Err(error) => {
+                eprintln!("nobs: {error}");
+                return 1;
+            }
+        }
     }
     0
+}
+
+fn bootstrap_and_say(dir: &Path, say_kept: bool) -> Option<i32> {
+    match bootstrap(dir) {
+        Ok(Bootstrap::Kept) if !say_kept => None,
+        Ok(outcome) => {
+            println!("{}", bootstrap_message(dir, outcome));
+            None
+        }
+        Err(error) => {
+            eprintln!("nobs: {error}");
+            Some(1)
+        }
+    }
+}
+
+fn guard(located: &Located, here: &Path, given: Option<&Path>, runner: &dyn Runner) -> Option<i32> {
+    let workshops = match workshop_list(here, given) {
+        Ok(workshops) => workshops,
+        Err(message) => {
+            eprintln!("nobs: {message}");
+            return Some(1);
+        }
+    };
+    for (name, title, dir) in workshops {
+        let Some(project) = locate(here, Some(&dir))
+            .ok()
+            .and_then(|other| other.project().map(str::to_string))
+        else {
+            continue;
+        };
+        if Some(project.as_str()) == located.project() {
+            continue;
+        }
+        match foreign_containers(runner, &project) {
+            Ok(names) if names.is_empty() => {}
+            Ok(mut names) => {
+                names.sort();
+                eprintln!(
+                    "nobs: containers of the {title} stack are present and share names and ports with this one: {}; run nobs {name} down first",
+                    names.join(", ")
+                );
+                return Some(1);
+            }
+            Err(message) => {
+                eprintln!("nobs: {message}");
+                return Some(1);
+            }
+        }
+    }
+    None
+}
+
+fn print_urls() {
+    for (name, url) in URLS {
+        println!("{name:<14}{url}");
+    }
 }
 
 fn run_workshop(words: &[OsString], given: Option<&Path>, runner: &dyn Runner) -> i32 {
@@ -504,15 +723,16 @@ fn run_workshop(words: &[OsString], given: Option<&Path>, runner: &dyn Runner) -
         return 1;
     }
     let mut known = Vec::new();
+    let mut current = None;
     match locate(&here, given) {
         Ok(located) => {
             if let Kind::Workshop(workshop) = &located.kind {
                 if workshop.name == name {
                     return with_env(&located.dir, || {
-                        run_workshop_command(&located, rest, runner)
+                        run_workshop_command(&located, rest, &here, given, runner)
                     });
                 }
-                known.push(workshop.name.clone());
+                current = Some(located);
             }
         }
         Err(LocateError::NotFound) => {}
@@ -524,10 +744,15 @@ fn run_workshop(words: &[OsString], given: Option<&Path>, runner: &dyn Runner) -
     for (found, _, dir) in find_workshops(&here) {
         if found == name {
             return in_lab(Some(&dir), |located| {
-                run_workshop_command(located, rest, runner)
+                run_workshop_command(located, rest, &here, given, runner)
             });
         }
         known.push(found);
+    }
+    if let Some(located) = current {
+        return with_env(&located.dir, || {
+            run_workshop_command(&located, words, &here, given, runner)
+        });
     }
     known.sort();
     known.dedup();
@@ -538,7 +763,13 @@ fn run_workshop(words: &[OsString], given: Option<&Path>, runner: &dyn Runner) -
     2
 }
 
-fn run_workshop_command(located: &Located, args: &[OsString], runner: &dyn Runner) -> i32 {
+fn run_workshop_command(
+    located: &Located,
+    args: &[OsString],
+    here: &Path,
+    given: Option<&Path>,
+    runner: &dyn Runner,
+) -> i32 {
     let cli = match WorkshopCli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
@@ -546,10 +777,73 @@ fn run_workshop_command(located: &Located, args: &[OsString], runner: &dyn Runne
             return error.exit_code();
         }
     };
+    let stack = || compose_in(located, None);
     match cli.command {
+        WorkshopCommand::Setup => bootstrap_and_say(&located.dir, true).unwrap_or(0),
+        WorkshopCommand::Up { build, services } => {
+            if let Some(code) = guard(located, here, given, runner) {
+                return code;
+            }
+            if let Some(code) = bootstrap_and_say(&located.dir, false) {
+                return code;
+            }
+            let code = run_compose_file(stack(), runner, |compose| {
+                vec![compose.up_args(&services, build)]
+            });
+            if code == 0 {
+                print_urls();
+            }
+            code
+        }
+        WorkshopCommand::Down => {
+            run_compose_file(stack(), runner, |compose| vec![compose.down_args()])
+        }
+        WorkshopCommand::Destroy => run_compose_file(stack(), runner, |compose| {
+            vec![compose.destroy_args(&[], true)]
+        }),
+        WorkshopCommand::Restart { services } => {
+            if let Some(code) = guard(located, here, given, runner) {
+                return code;
+            }
+            if !services.is_empty() {
+                return run_compose_file(stack(), runner, |compose| {
+                    vec![compose.restart_args(&services)]
+                });
+            }
+            let code = run_compose_file(stack(), runner, |compose| {
+                vec![compose.down_args(), compose.up_args(&[], true)]
+            });
+            if code == 0 {
+                print_urls();
+            }
+            code
+        }
         WorkshopCommand::Ps { services } => {
-            run_compose_file(compose_in(located, None), runner, |compose| {
-                vec![compose.ps_args(&services)]
+            run_compose_file(stack(), runner, |compose| vec![compose.ps_args(&services)])
+        }
+        WorkshopCommand::Logs {
+            service,
+            tail,
+            follow,
+            no_follow,
+        } => run_compose_file(stack(), runner, |compose| {
+            vec![compose.logs_args(service.as_slice(), follow || !no_follow, Some(tail))]
+        }),
+        WorkshopCommand::Exec { service, command } => {
+            let tty = std::io::stdin().is_terminal();
+            run_compose_file(stack(), runner, |compose| {
+                vec![compose.exec_args(&service, &command, tty)]
+            })
+        }
+        WorkshopCommand::Build { services } => {
+            if let Some(code) = guard(located, here, given, runner) {
+                return code;
+            }
+            run_compose_file(stack(), runner, |compose| {
+                vec![
+                    compose.build_args(&services),
+                    compose.up_args(&services, false),
+                ]
             })
         }
     }
@@ -839,4 +1133,137 @@ fn network_word(action: NetworkAction) -> &'static str {
         .iter()
         .find(|(_, known)| *known == action)
         .map_or("", |(word, _)| word)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nobs_core::runner::FakeRunner;
+    use std::net::TcpListener;
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("nobs-cli-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn closed_host() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("127.0.0.1:{}", listener.local_addr().unwrap().port())
+    }
+
+    fn passing() -> FakeRunner {
+        FakeRunner::answering_for(&[
+            ("docker", "Docker version 1\n"),
+            ("sysctl", "38654705664\n"),
+            (
+                "df",
+                "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s5 971350180 1000 209715200 2% /\n",
+            ),
+        ])
+    }
+
+    fn two_workshops(name: &str) -> Scratch {
+        let scratch = Scratch::new(name);
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures");
+        for (folder, source) in [
+            ("one", "workshop-one"),
+            ("two", "workshops-repo/workshops/nobs-t-two"),
+        ] {
+            let dir = scratch.0.join("workshops").join(folder);
+            fs::create_dir_all(&dir).unwrap();
+            fs::copy(
+                fixtures.join(source).join("nobs.toml"),
+                dir.join("nobs.toml"),
+            )
+            .unwrap();
+            fs::write(dir.join(".env.example"), format!("FROM={folder}\n")).unwrap();
+        }
+        scratch
+    }
+
+    fn check(name: &str, status: Status, detail: &str) -> Check {
+        Check {
+            name: name.to_string(),
+            status,
+            detail: detail.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_checks_are_lines_with_padded_name_and_status_and_no_trailing_spaces() {
+        let checks = [
+            check("docker", Status::Ok, "Docker version 27.0.1"),
+            check("compose", Status::Ok, ""),
+            check("memory", Status::Warn, "7 GiB"),
+            check("disk", Status::Fail, "4 GiB free"),
+            check("network", Status::Warn, "no answer from github.com"),
+        ];
+
+        assert_eq!(
+            check_lines(&checks),
+            [
+                "docker   ok    Docker version 27.0.1",
+                "compose  ok",
+                "memory   warn  7 GiB",
+                "disk     fail  4 GiB free",
+                "network  warn  no answer from github.com",
+            ]
+        );
+    }
+
+    #[test]
+    fn preflight_exits_1_when_a_check_fails_and_0_when_none_does() {
+        let scratch = Scratch::new("preflight");
+        let host = closed_host();
+
+        assert_eq!(
+            run_preflight(&FakeRunner::failing(), &scratch.0, &[&host]),
+            1
+        );
+        assert_eq!(run_preflight(&passing(), &scratch.0, &[&host]), 0);
+    }
+
+    #[test]
+    fn setup_creates_the_env_file_of_every_workshop_after_a_passing_preflight() {
+        let scratch = two_workshops("setup-passes");
+        let host = closed_host();
+
+        let code = run_setup(&passing(), &scratch.0, None, &[&host]);
+
+        assert_eq!(code, 0);
+        for folder in ["one", "two"] {
+            let env = scratch.0.join("workshops").join(folder).join(".env");
+            assert_eq!(
+                fs::read_to_string(&env).unwrap(),
+                format!("FROM={folder}\n"),
+                "{folder}"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_creates_nothing_after_a_failed_preflight() {
+        let scratch = two_workshops("setup-fails");
+        let host = closed_host();
+
+        let code = run_setup(&FakeRunner::failing(), &scratch.0, None, &[&host]);
+
+        assert_eq!(code, 1);
+        for folder in ["one", "two"] {
+            let env = scratch.0.join("workshops").join(folder).join(".env");
+            assert!(!env.exists(), "{folder}");
+        }
+    }
 }

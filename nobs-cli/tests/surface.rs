@@ -93,7 +93,26 @@ fn the_root_help_names_the_groups_workshops_and_the_dir_flag() {
 }
 
 #[test]
-fn the_workshop_help_page_inside_a_workshop_names_exactly_ps() {
+fn the_root_help_names_setup_and_preflight_with_their_descriptions() {
+    let help = help(&[]);
+    let commands = commands_block(&help);
+    for command in ["setup", "preflight", "workshops"] {
+        assert!(commands.iter().any(|word| word == command), "{commands:?}");
+    }
+    assert!(
+        help.contains("Check that this machine can run a workshop"),
+        "{help}"
+    );
+    assert!(
+        help.contains(
+            "Check this machine, then create the .env file of every workshop nobs can find"
+        ),
+        "{help}"
+    );
+}
+
+#[test]
+fn the_workshop_help_page_inside_a_workshop_names_exactly_the_nine_commands_in_order() {
     let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
         .args(["nobs-t-one", "--help"])
         .current_dir(
@@ -105,7 +124,10 @@ fn the_workshop_help_page_inside_a_workshop_names_exactly_ps() {
 
     assert_eq!(output.status.code(), Some(0));
     let help = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(commands_block(&help), ["ps"]);
+    assert_eq!(
+        commands_block(&help),
+        ["setup", "up", "down", "destroy", "restart", "ps", "logs", "exec", "build"]
+    );
 }
 
 fn help(args: &[&str]) -> String {
