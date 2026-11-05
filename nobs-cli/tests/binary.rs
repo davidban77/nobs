@@ -403,6 +403,58 @@ fn nobs_dir_names_the_workshop_folder_from_a_bare_folder() {
 }
 
 #[test]
+fn the_dot_env_of_the_lab_folder_reaches_docker_compose_from_below_it() {
+    let copy = workshop_copy("workshop-docker-below");
+    let bin = probe_docker("probe-docker-compose-below");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["docker", "ps"])
+        .current_dir(copy.join("sub"))
+        .env("PATH", path_with(&bin))
+        .env_remove("NOBS_T_PROBE")
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    let folder = std::fs::canonicalize(&copy).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(bin.join("seen")).unwrap(),
+        format!(
+            "compose --project-name nobs-t-one -f {}/docker-compose.yml ps --all\nfrom-env\n",
+            folder.display()
+        )
+    );
+}
+
+#[test]
+fn the_dot_env_of_a_workshop_found_below_the_current_folder_reaches_docker() {
+    let copy = workshop_copy("workshop-scan/nobs-t-one");
+    let bin = probe_docker("probe-docker-scan");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["nobs-t-one", "ps"])
+        .current_dir(copy.parent().unwrap())
+        .env("PATH", path_with(&bin))
+        .env_remove("NOBS_T_PROBE")
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    let folder = std::fs::canonicalize(&copy).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(bin.join("seen")).unwrap(),
+        format!(
+            "compose --project-name nobs-t-one -f {}/docker-compose.yml ps --all\nfrom-env\n",
+            folder.display()
+        )
+    );
+}
+
+#[test]
 fn workshops_lists_the_workshop_below_the_current_folder() {
     let repo = fixture_folder("workshops-repo");
 

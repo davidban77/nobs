@@ -49,6 +49,7 @@ fn binary(args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_nobs"))
         .args(args)
         .env_remove("NOBS_DIR")
+        .env("PATH", "")
         .output()
         .unwrap()
 }
@@ -343,4 +344,92 @@ fn dir_naming_a_bare_folder_exits_1_and_names_it() {
         stderr.contains(&format!("nobs: no lab or workshop at {named}")),
         "{stderr}"
     );
+}
+
+#[test]
+fn a_missing_scenario_compose_file_in_a_book_lab_exits_1_and_names_it() {
+    let here = enter(&fixture("book-lab"));
+    let file = here.join("chapters/ch9/docker-compose.yml");
+
+    let (code, runner) = nobs(&["docker", "ps", "-s", "ch9"]);
+
+    assert_eq!(code, 1);
+    assert!(runner.calls().is_empty());
+    let output = binary(&["docker", "ps", "-s", "ch9"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains(&format!("nobs: compose file not found: {}", file.display())),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn workshops_with_dir_lists_the_named_workshop_from_a_bare_folder() {
+    let bare = Bare::new("workshops-dir");
+    enter(&bare.0);
+    let workshop = fs::canonicalize(fixture("workshop-one")).unwrap();
+
+    let output = binary(&["--dir", workshop.to_str().unwrap(), "workshops"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("nobs-t-one  Workshop one  {}\n", workshop.display())
+    );
+}
+
+#[test]
+fn workshops_from_inside_a_workshop_lists_it_once() {
+    let here = enter(&fixture("workshop-one/sub"));
+
+    let output = binary(&["workshops"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!(
+            "nobs-t-one  Workshop one  {}\n",
+            here.parent().unwrap().display()
+        )
+    );
+}
+
+#[test]
+fn workshops_with_dir_naming_a_bare_folder_exits_1_and_names_it() {
+    let bare = Bare::new("workshops-dir-bare");
+    let here = enter(&bare.0);
+    let named = here.to_str().unwrap();
+
+    let output = binary(&["--dir", named, "workshops"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains(&format!("nobs: no lab or workshop at {named}")),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn workshops_stops_with_exit_1_on_a_bad_nobs_toml_found_upward() {
+    let bare = Bare::new("workshops-bad-toml");
+    fs::write(
+        bare.0.join("nobs.toml"),
+        "kind = \"lab\"\ncolour = \"red\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(bare.0.join("sub")).unwrap();
+    let here = enter(&bare.0.join("sub"));
+    let file = here.parent().unwrap().join("nobs.toml");
+
+    let output = binary(&["workshops"]);
+
+    let stderr = stderr(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!("nobs: {}: colour: unknown key", file.display())),
+        "{stderr}"
+    );
+    assert!(output.stdout.is_empty());
 }

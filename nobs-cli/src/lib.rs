@@ -7,15 +7,13 @@ use clap::{Args, Parser, Subcommand};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
-use nobs_core::locate::{find_workshops, locate, Kind, Located};
+use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
 use nobs_core::runner::Runner;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
-
-const NOTHING_FOUND: &str = "no lab or workshop found from here";
 
 #[derive(Debug, Parser)]
 #[command(name = "nobs", version)]
@@ -438,7 +436,8 @@ fn with_env(dir: &Path, arm: impl FnOnce() -> i32) -> i32 {
 }
 
 fn in_lab(given: Option<&Path>, arm: impl FnOnce(&Located) -> i32) -> i32 {
-    match current_folder().and_then(|here| locate(&here, given)) {
+    match current_folder().and_then(|here| locate(&here, given).map_err(|error| error.to_string()))
+    {
         Ok(located) => with_env(&located.dir, || arm(&located)),
         Err(message) => {
             eprintln!("nobs: {message}");
@@ -465,11 +464,11 @@ fn list_workshops(given: Option<&Path>) -> i32 {
             dir,
             kind: Kind::Workshop(workshop),
         }) => found.push((workshop.name, workshop.title, here.join(dir))),
-        Err(message) if given.is_some() => {
-            eprintln!("nobs: {message}");
+        Ok(_) | Err(LocateError::NotFound) => {}
+        Err(error) => {
+            eprintln!("nobs: {error}");
             return 1;
         }
-        _ => {}
     }
     found.sort();
     found.dedup_by(|a, b| a.2 == b.2);
@@ -501,9 +500,9 @@ fn run_workshop(words: &[OsString], given: Option<&Path>, runner: &dyn Runner) -
                 known.push(workshop.name.clone());
             }
         }
-        Err(message) if given.is_none() && message == NOTHING_FOUND => {}
-        Err(message) => {
-            eprintln!("nobs: {message}");
+        Err(LocateError::NotFound) => {}
+        Err(error) => {
+            eprintln!("nobs: {error}");
             return 1;
         }
     }
