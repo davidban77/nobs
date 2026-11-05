@@ -48,6 +48,15 @@ impl Sonda {
         }
     }
 
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        let config = Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(timeout))
+            .build();
+        self.agent = Agent::new_with_config(config);
+        self
+    }
+
     pub fn api_key(mut self, key: Option<String>) -> Self {
         self.key = key;
         self
@@ -394,5 +403,23 @@ mod tests {
     #[test]
     fn the_event_timeout_is_longer_than_the_server_own_30_seconds() {
         assert!(EVENT_TIMEOUT > Duration::from_secs(30), "{EVENT_TIMEOUT:?}");
+    }
+
+    #[test]
+    fn timeout_makes_a_call_give_up_on_a_silent_server_sooner_than_ten_seconds() {
+        let stub = crate::http::stub::Stub::start_silent(Duration::from_secs(20));
+        let started = std::time::Instant::now();
+
+        let error = Sonda::new(stub.url())
+            .timeout(Duration::from_millis(300))
+            .health()
+            .unwrap_err();
+
+        assert!(error.starts_with("cannot reach "), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

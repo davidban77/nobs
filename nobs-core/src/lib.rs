@@ -1,10 +1,12 @@
 pub mod compose;
 pub mod containerlab;
 pub mod env;
+pub mod http;
 pub mod locate;
 pub mod preflight;
 pub mod provider;
 pub mod runner;
 pub mod settings;
 pub mod sonda;
+pub mod status;
 pub mod workshop;
