@@ -37,25 +37,29 @@ Run the `containerlab` commands inside the Linux machine `clab`, with the Linux 
 
 Sonda makes test metrics and logs, and `sonda-server` is its HTTP server. The `nobs sonda` commands talk to a running `sonda-server`. Each command is one HTTP call, and nobs prints what the server answers.
 
+A scenario is a YAML file that tells Sonda what to make, how fast, for how long and where to send it (the place it sends to is called the sink). The server gives each scenario it starts an ID. `load` and `list` print it, and `show`, `stats` and `delete` take it as `ID`. An event is one metric or log line that the server sends once to a sink and then confirms.
+
 | Command | HTTP call | What it prints |
 |---|---|---|
 | `nobs sonda health` | `GET /health` | the reply |
 | `nobs sonda ready` | `GET /ready` | the reply |
-| `nobs sonda list` | `GET /scenarios` | a table with the columns `ID`, `NAME`, `STATE`, `ELAPSED` and `DEGRADED`, and a header only when there are no scenarios |
+| `nobs sonda list` | `GET /scenarios` | a table with the columns `ID`, `NAME`, `STATE`, `ELAPSED` (seconds) and `DEGRADED`; only the header line when there are no scenarios; `-` for a field the server left out |
 | `nobs sonda show ID` | `GET /scenarios/ID` | the reply |
 | `nobs sonda stats ID` | `GET /scenarios/ID/stats` | the reply |
 | `nobs sonda delete ID` | `DELETE /scenarios/ID` | the reply |
 | `nobs sonda load FILE` | `POST /scenarios` | the reply |
 | `nobs sonda event FILE` | `POST /events` | the reply |
 | `nobs sonda metrics` | `GET /metrics` | the metrics text as the server sent it |
-| `nobs sonda version` | `GET /metrics` | `sonda-server <version> <git_sha>`, read from the `sonda_server_build_info` line |
+| `nobs sonda version` | `GET /metrics` | `sonda-server <version> <git_sha>`, read from the `sonda_server_build_info` line; `<git_sha>` is `unknown` when the server does not know it, as an older server such as 1.22.2 does |
 
-The server address comes from `--server URL`, then the variable `SONDA_SERVER_URL` in the shell, then the same variable in the `.env` file of the current folder, then `http://localhost:8080`. The key comes from `--api-key KEY`, then `SONDA_API_KEY` in the same way. With a key, every call except `health` and `ready` sends it as `Authorization: Bearer <key>`. An empty value counts as not set, so nobs moves to the next place. nobs never writes the key anywhere. Both flags can go before or after the command, for example `nobs sonda --server http://127.0.0.1:8085 list`.
+The server address comes from `--server URL`, then the variable `SONDA_SERVER_URL` in the shell, then the same variable in the `.env` file of the current folder, then `http://localhost:8080`. An empty value counts as not set, so nobs moves to the next place. The flags `--server` and `--api-key` can go before or after the command, for example `nobs sonda --server http://127.0.0.1:8085 list`.
+
+The key comes from `--api-key KEY`, then the variable `SONDA_API_KEY` in the shell, then the same variable in the `.env` file, in the same way as the address. An empty value counts as not set here too. With a key, every call except `health` and `ready` sends it as `Authorization: Bearer <key>`. With no key, nobs sends none. nobs never writes the key anywhere.
 
 nobs talks plain HTTP only, so an address that starts with `https://` does not work yet.
 
-When the reply is JSON (a text format for data), nobs prints it with one field per line and the fields sorted by name.
+When the reply is JSON (a text format for data), nobs prints it with one field per line and the fields sorted by name. `list` prints a table instead, and an error reply prints as received.
 
-`nobs sonda load FILE` sends a file only when it sees `kind: runnable` at the start of a line, at the top level. It refuses any other file with the reason, exits with 1, and sends nothing.
+A scenario file names its type on a line that begins with `kind:`, with nothing before it on the line. The value `runnable` means a scenario the server can run. The value `composable` means a pack, a reusable set of metric definitions that other scenario files refer to and that is not run on its own. `nobs sonda load FILE` sends a file only when it has a `kind:` line with the value `runnable`. For any other file, including a JSON file, nobs prints the reason, exits with 1, and sends nothing.
 
-When the server answers with a status of 400 or more, nobs prints `nobs: sonda answered <status>: <body>` and exits with 1.
+When the server answers with a status of 400 or more, nobs prints `nobs: sonda answered <status>: <body>` and exits with 1. When the server cannot be reached, or no reply comes within 10 seconds (35 seconds for `event`), nobs prints `nobs: cannot reach <url>: <error>` and exits with 1.
