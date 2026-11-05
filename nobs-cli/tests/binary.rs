@@ -623,6 +623,60 @@ fn a_foreign_stack_stops_up_with_a_message_naming_it_and_its_containers() {
 }
 
 #[test]
+fn a_guard_question_that_fails_still_lets_up_go_on_and_shows_the_docker_error() {
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("workshop-guard-fails");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let two = scratch.join("workshops/nobs-t-two");
+    let one = scratch.join("workshops/nobs-t-one");
+    std::fs::create_dir_all(&two).unwrap();
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::copy(
+        fixture_folder("workshops-repo/workshops/nobs-t-two/nobs.toml"),
+        two.join("nobs.toml"),
+    )
+    .unwrap();
+    for file in ["nobs.toml", "docker-compose.yml"] {
+        std::fs::copy(fixture_folder("workshop-one").join(file), one.join(file)).unwrap();
+    }
+    let bin = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guard-docker-fails");
+    std::fs::create_dir_all(&bin).unwrap();
+    let _ = std::fs::remove_file(bin.join("seen"));
+    let script = bin.join("docker");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = ps ]; then echo sonda-server; echo nobs-t-guard-stderr >&2; exit 3; fi\necho \"$*\" >> '{seen}'\n",
+            seen = bin.join("seen").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["nobs-t-one", "up"])
+        .current_dir(&scratch)
+        .env("PATH", path_with(&bin))
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    assert_eq!(
+        std::fs::read_to_string(bin.join("seen")).unwrap(),
+        format!(
+            "compose --project-name nobs-t-one -f {}/docker-compose.yml up -d\n",
+            std::fs::canonicalize(&one).unwrap().display()
+        )
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("nobs-t-guard-stderr"),
+        "stderr of nobs was {stderr:?}"
+    );
+    std::fs::remove_dir_all(&scratch).unwrap();
+}
+
+#[test]
 fn a_bare_up_from_a_bare_folder_says_no_workshop_named_up() {
     let output = nobs_from_a_bare_folder(&["up"]);
 
