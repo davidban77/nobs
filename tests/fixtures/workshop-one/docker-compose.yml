@@ -1,0 +1,4 @@
+services:
+  sleeper:
+    image: busybox
+    command: sleep 3600

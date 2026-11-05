@@ -1,0 +1,17 @@
+name: nobs-t-labcli
+mgmt:
+  network: nobs-t-net
+topology:
+  nodes:
+    nobs-t-srl1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      labels:
+        nobs-t-label: "${NOBS_T_LABEL:-unset}"
+    nobs-t-srl2:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      labels:
+        nobs-t-label: "${NOBS_T_LABEL:-unset}"
+  links:
+    - endpoints: ["nobs-t-srl1:e1-1", "nobs-t-srl2:e1-1"]
