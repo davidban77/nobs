@@ -82,6 +82,32 @@ fn no_containerlab_help_page_says_show_netobs_or_labcli() {
     }
 }
 
+#[test]
+fn the_root_help_names_the_groups_workshops_and_the_dir_flag() {
+    let help = help(&[]);
+    let commands = commands_block(&help);
+    for command in ["docker", "containerlab", "sonda", "workshops"] {
+        assert!(commands.iter().any(|word| word == command), "{commands:?}");
+    }
+    assert!(help.contains("--dir <PATH>"), "{help}");
+}
+
+#[test]
+fn the_workshop_help_page_inside_a_workshop_names_exactly_ps() {
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["nobs-t-one", "--help"])
+        .current_dir(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/workshop-one"),
+        )
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(commands_block(&help), ["ps"]);
+}
+
 fn help(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
         .args(args)
