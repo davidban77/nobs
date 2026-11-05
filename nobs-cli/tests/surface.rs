@@ -112,9 +112,38 @@ fn the_root_help_names_setup_and_preflight_with_their_descriptions() {
 }
 
 #[test]
-fn the_workshop_help_page_inside_a_workshop_names_exactly_the_nine_commands_in_order() {
+fn the_workshop_help_page_inside_a_workshop_names_exactly_the_ten_commands_in_order() {
+    let help = workshop_help(&["nobs-t-one", "--help"]);
+    assert_eq!(
+        commands_block(&help),
+        ["setup", "up", "down", "destroy", "restart", "ps", "logs", "exec", "build", "status"]
+    );
+}
+
+#[test]
+fn the_workshop_status_help_shows_the_seven_address_flags() {
+    let help = workshop_help(&["nobs-t-one", "status", "--help"]);
+    for flag in [
+        "--prom-url",
+        "--loki-url",
+        "--am-url",
+        "--infrahub-url",
+        "--grafana-url",
+        "--prefect-url",
+        "--sonda-url",
+    ] {
+        let option = format!("{flag} <URL>");
+        assert!(
+            help.lines()
+                .any(|line| line.trim_start().starts_with(&option)),
+            "{flag}\n{help}"
+        );
+    }
+}
+
+fn workshop_help(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
-        .args(["nobs-t-one", "--help"])
+        .args(args)
         .current_dir(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/workshop-one"),
         )
@@ -122,12 +151,8 @@ fn the_workshop_help_page_inside_a_workshop_names_exactly_the_nine_commands_in_o
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(0));
-    let help = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(
-        commands_block(&help),
-        ["setup", "up", "down", "destroy", "restart", "ps", "logs", "exec", "build"]
-    );
+    assert_eq!(output.status.code(), Some(0), "{args:?}");
+    String::from_utf8(output.stdout).unwrap()
 }
 
 fn help(args: &[&str]) -> String {
