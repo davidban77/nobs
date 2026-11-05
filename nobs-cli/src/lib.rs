@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
+use nobs_core::locate::{find_workshops, locate, Kind, Located};
 use nobs_core::runner::Runner;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
@@ -14,9 +15,18 @@ use nobs_core::sonda::{
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
 
+const NOTHING_FOUND: &str = "no lab or workshop found from here";
+
 #[derive(Debug, Parser)]
 #[command(name = "nobs", version)]
 pub struct Cli {
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        help = "Lab or workshop folder to use instead of the one nobs finds"
+    )]
+    pub dir: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -39,6 +49,26 @@ pub enum Command {
         flags: SondaFlags,
         #[command(subcommand)]
         command: SondaCommand,
+    },
+    #[command(about = "List the workshops nobs can find")]
+    Workshops,
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
+}
+
+#[derive(Debug, Parser)]
+#[command(bin_name = "nobs <workshop>", no_binary_name = true)]
+pub struct WorkshopCli {
+    #[command(subcommand)]
+    pub command: WorkshopCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkshopCommand {
+    #[command(about = "List the containers of the workshop, stopped ones included")]
+    Ps {
+        #[arg(help = SERVICES_HELP)]
+        services: Vec<String>,
     },
 }
 
@@ -101,7 +131,9 @@ pub enum SondaCommand {
 
 #[derive(Debug, Args)]
 pub struct ContainerlabFlags {
-    #[arg(help = "Topology file; ./containerlab/lab.clab.yaml when none is given")]
+    #[arg(
+        help = "Topology file; the one under containerlab/ in the lab folder when none is given"
+    )]
     topology: Option<PathBuf>,
     #[arg(
         long,
@@ -142,7 +174,7 @@ pub struct ComposeFlags {
         short,
         long,
         value_name = "FILE",
-        help = "Compose file to use; ./docker-compose.yml when none is given"
+        help = "Compose file to use; docker-compose.yml of the lab folder when none is given"
     )]
     compose: Option<PathBuf>,
     #[arg(
@@ -150,7 +182,7 @@ pub struct ComposeFlags {
         long,
         value_name = "NAME",
         conflicts_with = "compose",
-        help = "Scenario to use; its file is ./chapters/NAME/docker-compose.yml"
+        help = "Scenario to use; its file is chapters/NAME/docker-compose.yml in the lab folder"
     )]
     scenario: Option<String>,
     #[arg(
@@ -292,60 +324,70 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
     if matches!(cli.command, Command::Sonda { .. }) {
         remove_blank_sonda_variables();
     }
-    if let Err(message) = load_env(Path::new(".")) {
-        eprintln!("nobs: {message}");
-        return 1;
-    }
+    let given = cli.dir.or_else(|| {
+        std::env::var_os("NOBS_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+    });
+    let given = given.as_deref();
     let command = match cli.command {
         Command::Docker { command } => command,
-        Command::Containerlab { command } => return run_containerlab_command(command, runner),
-        Command::Sonda { flags, command } => return run_sonda(flags, command),
+        Command::Containerlab { command } => {
+            return run_containerlab_command(command, given, runner)
+        }
+        Command::Sonda { flags, command } => {
+            return with_env(Path::new("."), || run_sonda(flags, command))
+        }
+        Command::Workshops => return with_env(Path::new("."), || list_workshops(given)),
+        Command::External(words) => return run_workshop(&words, given, runner),
     };
     match command {
-        DockerCommand::Build { flags, services } => {
-            run_compose(flags, runner, |compose| vec![compose.build_args(&services)])
-        }
-        DockerCommand::Pull { flags, services } => {
-            run_compose(flags, runner, |compose| vec![compose.pull_args(&services)])
-        }
+        DockerCommand::Build { flags, services } => run_compose(flags, given, runner, |compose| {
+            vec![compose.build_args(&services)]
+        }),
+        DockerCommand::Pull { flags, services } => run_compose(flags, given, runner, |compose| {
+            vec![compose.pull_args(&services)]
+        }),
         DockerCommand::Exec {
             flags,
             service,
             command,
         } => {
             let tty = std::io::stdin().is_terminal();
-            run_compose(flags, runner, |compose| {
+            run_compose(flags, given, runner, |compose| {
                 vec![compose.exec_args(&service, &command, tty)]
             })
         }
-        DockerCommand::Debug { flags, services } => {
-            run_compose(flags, runner, |compose| vec![compose.debug_args(&services)])
-        }
-        DockerCommand::Start { flags, services } => {
-            run_compose(flags, runner, |compose| vec![compose.start_args(&services)])
-        }
-        DockerCommand::Stop { flags, services } => {
-            run_compose(flags, runner, |compose| vec![compose.stop_args(&services)])
-        }
-        DockerCommand::Restart { flags, services } => run_compose(flags, runner, |compose| {
-            vec![compose.restart_args(&services)]
+        DockerCommand::Debug { flags, services } => run_compose(flags, given, runner, |compose| {
+            vec![compose.debug_args(&services)]
         }),
+        DockerCommand::Start { flags, services } => run_compose(flags, given, runner, |compose| {
+            vec![compose.start_args(&services)]
+        }),
+        DockerCommand::Stop { flags, services } => run_compose(flags, given, runner, |compose| {
+            vec![compose.stop_args(&services)]
+        }),
+        DockerCommand::Restart { flags, services } => {
+            run_compose(flags, given, runner, |compose| {
+                vec![compose.restart_args(&services)]
+            })
+        }
         DockerCommand::Logs {
             flags,
             follow,
             tail,
             services,
-        } => run_compose(flags, runner, |compose| {
+        } => run_compose(flags, given, runner, |compose| {
             vec![compose.logs_args(&services, follow, tail)]
         }),
-        DockerCommand::Ps { flags, services } => {
-            run_compose(flags, runner, |compose| vec![compose.ps_args(&services)])
-        }
+        DockerCommand::Ps { flags, services } => run_compose(flags, given, runner, |compose| {
+            vec![compose.ps_args(&services)]
+        }),
         DockerCommand::Destroy {
             flags,
             volumes,
             services,
-        } => run_compose(flags, runner, |compose| {
+        } => run_compose(flags, given, runner, |compose| {
             vec![compose.destroy_args(&services, volumes)]
         }),
         DockerCommand::Rm {
@@ -353,14 +395,14 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             volumes,
             force,
             services,
-        } => run_compose(flags, runner, |compose| {
+        } => run_compose(flags, given, runner, |compose| {
             vec![compose.rm_args(&services, volumes, force)]
         }),
         DockerCommand::Update {
             flags,
             volumes,
             services,
-        } => run_compose(flags, runner, |compose| {
+        } => run_compose(flags, given, runner, |compose| {
             Vec::from(compose.update_args(&services, volumes))
         }),
         DockerCommand::Network {
@@ -368,7 +410,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             name,
             driver,
             subnet,
-        } => {
+        } => with_env(Path::new("."), || {
             let needs_name = !matches!(action, NetworkAction::Ls | NetworkAction::Prune);
             if needs_name && name.is_none() {
                 eprintln!("nobs: network {} needs --name", network_word(action));
@@ -383,32 +425,162 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
                     subnet.as_deref(),
                 ),
             )
+        }),
+    }
+}
+
+fn with_env(dir: &Path, arm: impl FnOnce() -> i32) -> i32 {
+    if let Err(message) = load_env(dir) {
+        eprintln!("nobs: {message}");
+        return 1;
+    }
+    arm()
+}
+
+fn in_lab(given: Option<&Path>, arm: impl FnOnce(&Located) -> i32) -> i32 {
+    match current_folder().and_then(|here| locate(&here, given)) {
+        Ok(located) => with_env(&located.dir, || arm(&located)),
+        Err(message) => {
+            eprintln!("nobs: {message}");
+            1
         }
     }
 }
 
+fn current_folder() -> Result<PathBuf, String> {
+    std::env::current_dir().map_err(|error| format!("cannot read the current folder: {error}"))
+}
+
+fn list_workshops(given: Option<&Path>) -> i32 {
+    let here = match current_folder() {
+        Ok(here) => here,
+        Err(message) => {
+            eprintln!("nobs: {message}");
+            return 1;
+        }
+    };
+    let mut found = find_workshops(&here);
+    match locate(&here, given) {
+        Ok(Located {
+            dir,
+            kind: Kind::Workshop(workshop),
+        }) => found.push((workshop.name, workshop.title, here.join(dir))),
+        Err(message) if given.is_some() => {
+            eprintln!("nobs: {message}");
+            return 1;
+        }
+        _ => {}
+    }
+    found.sort();
+    found.dedup_by(|a, b| a.2 == b.2);
+    for (name, title, folder) in found {
+        println!("{name}  {title}  {}", folder.display());
+    }
+    0
+}
+
+fn run_workshop(words: &[OsString], given: Option<&Path>, runner: &dyn Runner) -> i32 {
+    let name = words[0].to_string_lossy();
+    let rest = &words[1..];
+    let here = match current_folder() {
+        Ok(here) => here,
+        Err(message) => {
+            eprintln!("nobs: {message}");
+            return 1;
+        }
+    };
+    let mut known = Vec::new();
+    match locate(&here, given) {
+        Ok(located) => {
+            if let Kind::Workshop(workshop) = &located.kind {
+                if workshop.name == name {
+                    return with_env(&located.dir, || {
+                        run_workshop_command(&located, rest, runner)
+                    });
+                }
+                known.push(workshop.name.clone());
+            }
+        }
+        Err(message) if given.is_none() && message == NOTHING_FOUND => {}
+        Err(message) => {
+            eprintln!("nobs: {message}");
+            return 1;
+        }
+    }
+    for (found, _, dir) in find_workshops(&here) {
+        if found == name {
+            return in_lab(Some(&dir), |located| {
+                run_workshop_command(located, rest, runner)
+            });
+        }
+        known.push(found);
+    }
+    known.sort();
+    known.dedup();
+    eprintln!("nobs: no workshop named {name}");
+    if !known.is_empty() {
+        eprintln!("known: {}", known.join(", "));
+    }
+    2
+}
+
+fn run_workshop_command(located: &Located, args: &[OsString], runner: &dyn Runner) -> i32 {
+    let cli = match WorkshopCli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => {
+            let _ = error.print();
+            return error.exit_code();
+        }
+    };
+    match cli.command {
+        WorkshopCommand::Ps { services } => {
+            run_compose_file(compose_in(located, None), runner, |compose| {
+                vec![compose.ps_args(&services)]
+            })
+        }
+    }
+}
+
+fn compose_in(located: &Located, scenario: Option<&str>) -> Compose {
+    let compose = Compose::new(located.compose(scenario));
+    match located.project() {
+        Some(name) => compose.project(name),
+        None => compose,
+    }
+}
+
 impl ComposeFlags {
-    fn compose(self) -> Compose {
-        let file = match (self.compose, self.scenario) {
-            (Some(file), _) => file,
-            (None, Some(name)) => Path::new("./chapters")
-                .join(name)
-                .join("docker-compose.yml"),
-            (None, None) => PathBuf::from("./docker-compose.yml"),
-        };
-        self.profile.iter().fold(
-            Compose::new(file).verbose(self.verbose),
-            |compose, profile| compose.with_profile(profile),
-        )
+    fn options(&self, compose: Compose) -> Compose {
+        self.profile
+            .iter()
+            .fold(compose.verbose(self.verbose), |compose, profile| {
+                compose.with_profile(profile)
+            })
     }
 }
 
 fn run_compose(
     flags: ComposeFlags,
+    given: Option<&Path>,
     runner: &dyn Runner,
     lists: impl FnOnce(&Compose) -> Vec<Vec<OsString>>,
 ) -> i32 {
-    let compose = flags.compose();
+    match &flags.compose {
+        Some(file) => with_env(Path::new("."), || {
+            run_compose_file(flags.options(Compose::new(file)), runner, lists)
+        }),
+        None => in_lab(given, |located| {
+            let compose = compose_in(located, flags.scenario.as_deref());
+            run_compose_file(flags.options(compose), runner, lists)
+        }),
+    }
+}
+
+fn run_compose_file(
+    compose: Compose,
+    runner: &dyn Runner,
+    lists: impl FnOnce(&Compose) -> Vec<Vec<OsString>>,
+) -> i32 {
     if !compose.file().is_file() {
         eprintln!("nobs: compose file not found: {}", compose.file().display());
         return 1;
@@ -422,29 +594,47 @@ fn run_compose(
     0
 }
 
-fn run_containerlab_command(command: ContainerlabCommand, runner: &dyn Runner) -> i32 {
+fn run_containerlab_command(
+    command: ContainerlabCommand,
+    given: Option<&Path>,
+    runner: &dyn Runner,
+) -> i32 {
     match command {
         ContainerlabCommand::Deploy { flags } => {
-            run_containerlab(flags, runner, Containerlab::deploy_args)
+            run_containerlab(flags, given, runner, Containerlab::deploy_args)
         }
         ContainerlabCommand::Destroy { flags } => {
-            run_containerlab(flags, runner, Containerlab::destroy_args)
+            run_containerlab(flags, given, runner, Containerlab::destroy_args)
         }
         ContainerlabCommand::Inspect { flags } => {
-            run_containerlab(flags, runner, Containerlab::inspect_args)
+            run_containerlab(flags, given, runner, Containerlab::inspect_args)
         }
     }
 }
 
 fn run_containerlab(
     flags: ContainerlabFlags,
+    given: Option<&Path>,
     runner: &dyn Runner,
     args: impl FnOnce(&Containerlab) -> Vec<OsString>,
 ) -> i32 {
     let sudo = flags.sudo || !flags.no_sudo;
-    let topology = flags
-        .topology
-        .unwrap_or_else(|| PathBuf::from("./containerlab/lab.clab.yaml"));
+    match flags.topology {
+        Some(topology) => with_env(Path::new("."), || {
+            run_topology(topology, sudo, runner, args)
+        }),
+        None => in_lab(given, |located| {
+            run_topology(located.topology(), sudo, runner, args)
+        }),
+    }
+}
+
+fn run_topology(
+    topology: PathBuf,
+    sudo: bool,
+    runner: &dyn Runner,
+    args: impl FnOnce(&Containerlab) -> Vec<OsString>,
+) -> i32 {
     if !topology.is_file() {
         eprintln!("nobs: topology file not found: {}", topology.display());
         return 1;
