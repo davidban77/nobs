@@ -196,7 +196,7 @@ pub struct StatusFlags {
     #[arg(
         long,
         value_name = "URL",
-        help = "Address of the Sonda server; nobs looks at --sonda-url, then http://localhost:8085"
+        help = "Address of Sonda; nobs looks at --sonda-url, then http://localhost:8085"
     )]
     sonda_url: Option<String>,
 }
