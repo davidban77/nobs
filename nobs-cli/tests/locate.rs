@@ -452,3 +452,35 @@ fn a_workshop_name_with_dir_naming_a_bare_folder_exits_1_and_names_it() {
         "{stderr}"
     );
 }
+
+#[test]
+fn a_bad_nobs_toml_found_upward_stops_workshop_commands_even_with_dir() {
+    let bare = Bare::new("bad-toml-with-dir");
+    fs::write(
+        bare.0.join("nobs.toml"),
+        "kind = \"lab\"\ncolour = \"red\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(bare.0.join("sub")).unwrap();
+    let here = enter(&bare.0.join("sub"));
+    let file = here.parent().unwrap().join("nobs.toml");
+    let good = fs::canonicalize(fixture("workshop-one")).unwrap();
+    let good = good.to_str().unwrap();
+
+    for args in [
+        &["--dir", good, "workshops"][..],
+        &["--dir", good, "nobs-t-one", "ps"][..],
+    ] {
+        let (code, runner) = nobs(args);
+
+        assert_eq!(code, 1, "{args:?}");
+        assert!(runner.calls().is_empty(), "{args:?}");
+        let output = binary(args);
+        let stderr = stderr(&output);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(&format!("nobs: {}: colour: unknown key", file.display())),
+            "{args:?}: {stderr}"
+        );
+    }
+}
