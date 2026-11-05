@@ -44,9 +44,6 @@ pub fn memory_gib(runner: &dyn Runner) -> Option<f64> {
         let output = runner
             .output("sysctl", &["-n".into(), "hw.memsize".into()])
             .ok()?;
-        if output.code != 0 {
-            return None;
-        }
         let bytes: u64 = output.stdout.trim().parse().ok()?;
         Some(bytes as f64 / BYTES_PER_GIB)
     }
@@ -65,9 +62,6 @@ pub fn memory_gib(runner: &dyn Runner) -> Option<f64> {
 pub fn disk_free_gib(runner: &dyn Runner, dir: &Path) -> Option<f64> {
     let args: [OsString; 2] = ["-k".into(), dir.as_os_str().to_owned()];
     let output = runner.output("df", &args).ok()?;
-    if output.code != 0 {
-        return None;
-    }
     let free_kib: u64 = output
         .stdout
         .lines()
