@@ -22,7 +22,7 @@ pub struct Cli {
         long,
         global = true,
         value_name = "PATH",
-        help = "Lab or workshop folder to use instead of the one nobs finds"
+        help = "Lab or workshop folder to use instead of the one nobs finds; NOBS_DIR sets it too"
     )]
     pub dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -450,6 +450,13 @@ fn current_folder() -> Result<PathBuf, String> {
     std::env::current_dir().map_err(|error| format!("cannot read the current folder: {error}"))
 }
 
+fn bad_settings_upward(here: &Path) -> Option<LocateError> {
+    match locate(here, None) {
+        Err(error @ LocateError::Settings { .. }) => Some(error),
+        _ => None,
+    }
+}
+
 fn list_workshops(given: Option<&Path>) -> i32 {
     let here = match current_folder() {
         Ok(here) => here,
@@ -458,6 +465,10 @@ fn list_workshops(given: Option<&Path>) -> i32 {
             return 1;
         }
     };
+    if let Some(error) = bad_settings_upward(&here) {
+        eprintln!("nobs: {error}");
+        return 1;
+    }
     let mut found = find_workshops(&here);
     match locate(&here, given) {
         Ok(Located {
@@ -488,6 +499,10 @@ fn run_workshop(words: &[OsString], given: Option<&Path>, runner: &dyn Runner) -
             return 1;
         }
     };
+    if let Some(error) = bad_settings_upward(&here) {
+        eprintln!("nobs: {error}");
+        return 1;
+    }
     let mut known = Vec::new();
     match locate(&here, given) {
         Ok(located) => {

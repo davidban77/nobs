@@ -31,7 +31,7 @@ In `nobs docker exec`, the words after the service are passed to the container a
 
 Build the Linux binary with `cargo build --release --target aarch64-unknown-linux-musl -p nobs-cli`; it runs inside the OrbStack Linux machine `clab` and uses the Docker engine of `clab`, and the two Docker engines on the Mac (the one of OrbStack and the one inside `clab`) do not share networks.
 
-Run the `containerlab` commands inside the Linux machine `clab`, with the Linux binary: `orb -m clab <path> containerlab deploy`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab with `sudo` unless you give `--no-sudo`. By default, sudo does not pass on the variables of your shell. So nobs reads the topology file, finds each variable it uses as `${NAME}`, and tells sudo to keep it. Set such a variable inside `clab`, for example `orb -m clab env NAME=value <path> containerlab deploy`, or in the `.env` file of the lab folder.
+Run the `containerlab` commands inside the Linux machine `clab`, with the Linux binary: `orb -m clab <path> containerlab deploy`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab with `sudo` unless you give `--no-sudo`. By default, sudo does not pass on the variables of your shell. So nobs reads the topology file, finds each variable it uses as `${NAME}`, and tells sudo to keep it. Set such a variable inside `clab`, for example `orb -m clab env NAME=value <path> containerlab deploy`, or in the `.env` file of the lab folder (of the current folder when you give a `TOPOLOGY` file).
 
 ## Where nobs runs from
 
@@ -45,7 +45,7 @@ nobs knows three kinds of lab folder:
 | The book lab | the folder holds a `chapters/` folder and the file `containerlab/lab.yml` |
 | A labcli lab | the folder holds a `docker-compose.yml` file |
 
-nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make it a labcli lab: nobs finds the book lab above it.
+nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
 
 To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. nobs then uses that folder only. nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
 
@@ -55,11 +55,11 @@ These commands need a lab folder:
 - a `nobs containerlab` command without a `TOPOLOGY` file;
 - `nobs <workshop> ...` (see [Workshops](#workshops)).
 
-These commands do not need one, run from any folder, and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)).
+These commands do not need a lab folder. They work from any folder and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)).
 
-In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml` in a labcli lab, and `containerlab/lab.yml` in the book lab. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`.
+In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.yml` in the book lab. In a workshop or a labcli lab, it uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml`. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`.
 
-A labcli lab may also hold a `nobs.toml` with `kind = "lab"`. In it, `compose` and `topology` name other files to use, relative to the lab folder, and `project` sets the project name. Each of these is optional.
+A labcli lab may also hold a `nobs.toml` with `kind = "lab"`. In it, `compose` and `topology` name other files to use, relative to the lab folder, and `project` sets the project name. nobs also accepts `network`, but does not use it. Each of these is optional.
 
 When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the three kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
 
@@ -69,7 +69,21 @@ A command that needs a lab folder reads the `.env` file (and the `.setup.env` fi
 
 A workshop is a lab folder whose `nobs.toml` file has `kind = "workshop"`.
 
-`nobs workshops` lists the workshops nobs can find, one per line: the name, the title and the folder, with two spaces between them, sorted by name. nobs looks in these places: the workshop that holds the current folder and the one `--dir` or `NOBS_DIR` names, each folder directly under the current folder, and each folder under the `workshops/` folder of the current folder. A `nobs.toml` that nobs cannot read is skipped when it is in a folder below the current folder. A `nobs.toml` that nobs cannot read and finds upward, or in the folder `--dir` or `NOBS_DIR` names, stops nobs: it prints the file and what is wrong, and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is not a lab or workshop, nobs prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs finds no workshop, it prints nothing and exits with 0. For example, from a folder that holds `workshops/nobs-t-two/nobs.toml`:
+`nobs workshops` lists the workshops nobs can find, one per line: the name, the title and the folder, with two spaces between them, sorted by name. nobs looks in these places:
+
+- the workshop that holds the current folder;
+- the workshop that `--dir` or `NOBS_DIR` names;
+- each folder directly under the current folder;
+- each folder under the `workshops/` folder of the current folder.
+
+| What nobs meets | What it does | Exit code |
+|---|---|---|
+| no workshop | prints nothing | 0 |
+| a `nobs.toml` it cannot read, in a folder below the current folder | skips that folder | 0 |
+| a `nobs.toml` it cannot read, upward or in the folder `--dir` or `NOBS_DIR` names | prints the file and what is wrong | 1 |
+| `--dir` or `NOBS_DIR` names a folder that is not a lab or workshop | prints `nobs: no lab or workshop at PATH` | 1 |
+
+For example, from a folder that holds `workshops/nobs-t-two/nobs.toml`:
 
 ```
 $ nobs workshops
@@ -80,7 +94,7 @@ When the first word after `nobs` is not one of its commands, nobs takes it as a 
 
 `nobs <workshop> ps [SERVICES]` lists the containers of the workshop, stopped ones included. It runs `docker compose --project-name <project> -f <folder>/docker-compose.yml ps --all [SERVICES]`, where `<project>` is the `project` setting and `<folder>` is the workshop folder. When that compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
-`nobs <workshop> --help` lists the commands of a workshop. Today that is `ps` only.
+`nobs <workshop> --help` lists the commands of a workshop. The only one is `ps`.
 
 When nobs finds no workshop with that name, it prints the error below and exits with 2. The second line lists the names nobs did find, and is left out when there are none.
 
@@ -89,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-A workshop's `nobs.toml` holds 11 settings, for example:
+A workshop's `nobs.toml` holds `kind = "workshop"` and 11 settings, for example:
 
 ```toml
 kind = "workshop"
@@ -108,7 +122,7 @@ schema_file = "infrahub/schema.yml"
 sonda = "ghcr.io/davidban77/sonda:1.22.2"
 ```
 
-Every setting is required except `[image_pins]`, and an unknown key is an error.
+Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title` and `project`; it checks that the others are there but does not use them.
 
 ## Sonda
 
