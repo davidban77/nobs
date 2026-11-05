@@ -1,0 +1,14 @@
+kind = "workshop"
+name = "nobs-t-one"
+title = "Workshop one"
+project = "nobs-t-one"
+network = "workshop-nobs-t-one"
+workflow_label = "nobs_t_one_quarantine_bgp"
+cascade_prefix = "nobs-t-one-cascade-"
+scenario_prefix = "nobs-t-one-"
+evidence_query = "{device=\"srl1\"}"
+silence_hints = ["Workshop", "workshop"]
+schema_file = "infrahub/schema.yml"
+
+[image_pins]
+sonda = "ghcr.io/davidban77/sonda:1.22.2"
