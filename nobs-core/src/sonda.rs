@@ -390,4 +390,9 @@ mod tests {
         let text = "# TYPE up gauge\nup 1\n";
         assert_eq!(pretty(text), text);
     }
+
+    #[test]
+    fn the_event_timeout_is_longer_than_the_server_own_30_seconds() {
+        assert!(EVENT_TIMEOUT > Duration::from_secs(30), "{EVENT_TIMEOUT:?}");
+    }
 }
