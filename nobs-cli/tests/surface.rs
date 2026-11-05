@@ -36,6 +36,28 @@ fn the_help_pages_name_the_containerlab_group_and_exactly_its_three_commands() {
     assert_eq!(commands, CONTAINERLAB_COMMANDS);
 }
 
+const SONDA_COMMANDS: [&str; 10] = [
+    "health", "ready", "list", "show", "stats", "delete", "load", "event", "metrics", "version",
+];
+
+#[test]
+fn the_help_pages_name_the_sonda_group_and_exactly_its_ten_commands() {
+    let commands = commands_block(&help(&[]));
+    for group in ["docker", "containerlab", "sonda"] {
+        assert!(commands.iter().any(|word| word == group), "{commands:?}");
+    }
+
+    let commands = commands_block(&help(&["sonda"]));
+    assert_eq!(commands, SONDA_COMMANDS);
+}
+
+#[test]
+fn a_sonda_command_help_shows_the_server_and_key_flags() {
+    let help = help(&["sonda", "list"]);
+    assert!(help.contains("--server"), "{help}");
+    assert!(help.contains("--api-key"), "{help}");
+}
+
 #[test]
 fn the_destroy_help_never_says_deploy() {
     let help = help(&["containerlab", "destroy"]);

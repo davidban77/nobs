@@ -1,7 +1,12 @@
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+
+#[path = "../../tests/support/stub.rs"]
+mod stub;
+
+use stub::Stub;
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -223,6 +228,133 @@ fn a_value_from_dot_env_reaches_the_containerlab_child() {
     assert_eq!(output.status.code(), Some(5), "{stderr}");
     let seen = std::fs::read_to_string(dir.join("seen")).unwrap();
     assert_eq!(seen.lines().nth(1), Some("nobs-t-from-dot-env"), "{seen}");
+}
+
+#[test]
+fn the_address_in_dot_env_is_used_when_nothing_else_is_given() {
+    let (a, b) = (health_stub(), health_stub());
+    let dir = sonda_folder(
+        "sonda-dot-env-address",
+        Some(&format!("SONDA_SERVER_URL={}\n", a.url())),
+    );
+
+    let output = nobs_sonda(&dir, &["health"], &[]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!((a.requests().len(), b.requests().len()), (1, 0));
+}
+
+#[test]
+fn the_address_in_the_shell_beats_dot_env() {
+    let (a, b) = (health_stub(), health_stub());
+    let dir = sonda_folder(
+        "sonda-shell-address",
+        Some(&format!("SONDA_SERVER_URL={}\n", a.url())),
+    );
+
+    let output = nobs_sonda(&dir, &["health"], &[("SONDA_SERVER_URL", b.url())]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!((a.requests().len(), b.requests().len()), (0, 1));
+}
+
+#[test]
+fn the_server_flag_beats_the_shell_address() {
+    let (a, b) = (health_stub(), health_stub());
+    let dir = sonda_folder("sonda-flag-address", None);
+
+    let output = nobs_sonda(
+        &dir,
+        &["--server", a.url(), "health"],
+        &[("SONDA_SERVER_URL", b.url())],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!((a.requests().len(), b.requests().len()), (1, 0));
+}
+
+#[test]
+fn an_empty_server_flag_counts_as_not_given() {
+    let (a, b) = (health_stub(), health_stub());
+    let dir = sonda_folder("sonda-empty-address", None);
+
+    let output = nobs_sonda(
+        &dir,
+        &["--server", "", "health"],
+        &[("SONDA_SERVER_URL", b.url())],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!((a.requests().len(), b.requests().len()), (0, 1));
+}
+
+#[test]
+fn the_key_in_dot_env_is_sent_as_a_bearer_token() {
+    let a = list_stub();
+    let dir = sonda_folder("sonda-dot-env-key", Some("SONDA_API_KEY=k\n"));
+
+    let output = nobs_sonda(&dir, &["--server", a.url(), "list"], &[]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(a.requests()[0].header("Authorization"), Some("Bearer k"));
+}
+
+#[test]
+fn the_api_key_flag_beats_the_shell_key() {
+    let a = list_stub();
+    let dir = sonda_folder("sonda-flag-key", None);
+
+    let output = nobs_sonda(
+        &dir,
+        &["--server", a.url(), "--api-key", "f", "list"],
+        &[("SONDA_API_KEY", "s")],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(a.requests()[0].header("Authorization"), Some("Bearer f"));
+}
+
+#[test]
+fn an_empty_key_in_dot_env_sends_no_authorization_header() {
+    let a = list_stub();
+    let dir = sonda_folder("sonda-empty-key", Some("SONDA_API_KEY=\n"));
+
+    let output = nobs_sonda(&dir, &["--server", a.url(), "list"], &[]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(a.requests()[0].header("Authorization"), None);
+}
+
+fn health_stub() -> Stub {
+    Stub::start(&[("GET", "/health", 200, r#"{"status":"ok"}"#)])
+}
+
+fn list_stub() -> Stub {
+    Stub::start(&[("GET", "/scenarios", 200, r#"{"scenarios":[]}"#)])
+}
+
+fn sonda_folder(name: &str, dot_env: Option<&str>) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    match dot_env {
+        Some(text) => std::fs::write(dir.join(".env"), text).unwrap(),
+        None => {
+            let _ = std::fs::remove_file(dir.join(".env"));
+        }
+    }
+    dir
+}
+
+fn nobs_sonda(dir: &Path, args: &[&str], shell: &[(&str, &str)]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .arg("sonda")
+        .args(args)
+        .current_dir(dir)
+        .env_remove("SONDA_SERVER_URL")
+        .env_remove("SONDA_API_KEY")
+        .envs(shell.iter().copied())
+        .output()
+        .unwrap()
 }
 
 fn fake_sudo(name: &str) -> PathBuf {
