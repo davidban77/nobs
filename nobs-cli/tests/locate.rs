@@ -433,3 +433,22 @@ fn workshops_stops_with_exit_1_on_a_bad_nobs_toml_found_upward() {
     );
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn a_workshop_name_with_dir_naming_a_bare_folder_exits_1_and_names_it() {
+    let bare = Bare::new("dispatch-dir-bare");
+    let here = enter(&bare.0);
+    let named = here.to_str().unwrap();
+
+    let (code, runner) = nobs(&["--dir", named, "nobs-t-one", "ps"]);
+
+    assert_eq!(code, 1);
+    assert!(runner.calls().is_empty());
+    let output = binary(&["--dir", named, "nobs-t-one", "ps"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains(&format!("nobs: no lab or workshop at {named}")),
+        "{stderr}"
+    );
+}
