@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 pub struct Compose {
     file: PathBuf,
+    project: Option<String>,
     profiles: Vec<String>,
     verbose: bool,
 }
@@ -13,6 +14,7 @@ impl Compose {
     pub fn new(file: impl Into<PathBuf>) -> Self {
         Self {
             file: file.into(),
+            project: None,
             profiles: Vec::new(),
             verbose: false,
         }
@@ -20,6 +22,11 @@ impl Compose {
 
     pub fn file(&self) -> &Path {
         &self.file
+    }
+
+    pub fn project(mut self, name: impl Into<String>) -> Self {
+        self.project = Some(name.into());
+        self
     }
 
     pub fn with_profile(mut self, profile: &str) -> Self {
@@ -113,11 +120,13 @@ impl Compose {
     }
 
     fn compose_args(&self, action: Vec<OsString>, services: &[String]) -> Vec<OsString> {
-        let mut args = vec![
-            "compose".into(),
-            "-f".into(),
-            self.file.clone().into_os_string(),
-        ];
+        let mut args: Vec<OsString> = vec!["compose".into()];
+        if let Some(name) = &self.project {
+            args.push("--project-name".into());
+            args.push(name.into());
+        }
+        args.push("-f".into());
+        args.push(self.file.clone().into_os_string());
         for profile in &self.profiles {
             args.push("--profile".into());
             args.push(profile.into());
@@ -445,6 +454,33 @@ mod tests {
         assert_eq!(
             network_args(NetworkAction::Prune, Some("x"), None, None),
             ["network", "prune"]
+        );
+    }
+
+    #[test]
+    fn a_project_name_comes_right_after_compose_in_every_list() {
+        let named = compose().project("nobs-t-one");
+        assert_eq!(
+            named.ps_args(&[]),
+            [
+                "compose",
+                "--project-name",
+                "nobs-t-one",
+                "-f",
+                FILE,
+                "ps",
+                "--all"
+            ]
+        );
+        for list in named.update_args(&[], false) {
+            assert_eq!(
+                list[..5],
+                ["compose", "--project-name", "nobs-t-one", "-f", FILE]
+            );
+        }
+        assert_eq!(
+            compose().ps_args(&[]),
+            ["compose", "-f", FILE, "ps", "--all"]
         );
     }
 
