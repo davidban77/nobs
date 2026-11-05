@@ -117,6 +117,52 @@ fn show_prints_the_body_one_field_per_line() {
 }
 
 #[test]
+fn ready_asks_get_ready_and_prints_the_reply() {
+    let stub = Stub::start(&[("GET", "/ready", 200, r#"{"status":"not_configured"}"#)]);
+
+    let output = nobs(stub.url(), &["ready"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "{\n  \"status\": \"not_configured\"\n}\n");
+    let seen = stub.requests();
+    assert_eq!(
+        (seen[0].method.as_str(), seen[0].path.as_str()),
+        ("GET", "/ready")
+    );
+}
+
+#[test]
+fn stats_asks_the_stats_path_of_the_scenario_and_prints_the_reply() {
+    let stub = Stub::start(&[("GET", "/scenarios/a1/stats", 200, r#"{"b":2,"a":1}"#)]);
+
+    let output = nobs(stub.url(), &["stats", "a1"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "{\n  \"a\": 1,\n  \"b\": 2\n}\n");
+    let seen = stub.requests();
+    assert_eq!(
+        (seen[0].method.as_str(), seen[0].path.as_str()),
+        ("GET", "/scenarios/a1/stats")
+    );
+}
+
+#[test]
+fn metrics_prints_the_text_unchanged() {
+    let text = "# TYPE up gauge\nup 1\n";
+    let stub = Stub::start(&[("GET", "/metrics", 200, text)]);
+
+    let output = nobs(stub.url(), &["metrics"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), text);
+    let seen = stub.requests();
+    assert_eq!(
+        (seen[0].method.as_str(), seen[0].path.as_str()),
+        ("GET", "/metrics")
+    );
+}
+
+#[test]
 fn load_posts_the_file_unchanged_and_prints_the_reply() {
     let stub = Stub::start(&[("POST", "/scenarios", 201, r#"{"id":"x1"}"#)]);
     let file = fixture("hello.yaml");

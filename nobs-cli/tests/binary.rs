@@ -325,6 +325,35 @@ fn an_empty_key_in_dot_env_sends_no_authorization_header() {
     assert_eq!(a.requests()[0].header("Authorization"), None);
 }
 
+#[test]
+fn an_empty_shell_address_lets_dot_env_give_the_address() {
+    let a = health_stub();
+    let dir = sonda_folder(
+        "sonda-empty-shell-address",
+        Some(&format!("SONDA_SERVER_URL={}\n", a.url())),
+    );
+
+    let output = nobs_sonda(&dir, &["health"], &[("SONDA_SERVER_URL", "")]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(a.requests().len(), 1);
+}
+
+#[test]
+fn an_empty_shell_key_lets_dot_env_give_the_key() {
+    let a = list_stub();
+    let dir = sonda_folder("sonda-empty-shell-key", Some("SONDA_API_KEY=k\n"));
+
+    let output = nobs_sonda(
+        &dir,
+        &["--server", a.url(), "list"],
+        &[("SONDA_API_KEY", "")],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(a.requests()[0].header("Authorization"), Some("Bearer k"));
+}
+
 fn health_stub() -> Stub {
     Stub::start(&[("GET", "/health", 200, r#"{"status":"ok"}"#)])
 }
