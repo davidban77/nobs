@@ -493,6 +493,221 @@ fn a_workshop_help_page_lists_ps() {
     );
 }
 
+#[test]
+fn workshop_setup_copies_the_example_once_and_then_keeps_the_env_file() {
+    let copy = example_copy("setup-copy");
+    let folder = std::fs::canonicalize(&copy).unwrap();
+
+    let first = nobs_in(&copy, &["nobs-t-one", "setup"]);
+
+    assert_eq!(first.status.code(), Some(0), "{}", stderr_of(&first));
+    assert_eq!(
+        String::from_utf8_lossy(&first.stdout),
+        format!("created {}/.env from .env.example\n", folder.display())
+    );
+    assert_eq!(
+        std::fs::read(copy.join(".env")).unwrap(),
+        std::fs::read(fixture_folder("workshop-one").join(".env.example")).unwrap()
+    );
+
+    let second = nobs_in(&copy, &["nobs-t-one", "setup"]);
+
+    assert_eq!(second.status.code(), Some(0), "{}", stderr_of(&second));
+    assert_eq!(
+        String::from_utf8_lossy(&second.stdout),
+        format!("kept {}/.env\n", folder.display())
+    );
+    std::fs::remove_dir_all(&copy).unwrap();
+}
+
+#[test]
+fn a_bare_up_from_below_a_workshop_runs_compose_up_and_prints_the_seven_addresses() {
+    let copy = workshop_copy("workshop-up");
+    let bin = probe_docker("probe-docker-up");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .arg("up")
+        .current_dir(copy.join("sub"))
+        .env("PATH", path_with(&bin))
+        .env_remove("NOBS_T_PROBE")
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    let folder = std::fs::canonicalize(&copy).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(bin.join("seen")).unwrap(),
+        format!(
+            "compose --project-name nobs-t-one -f {}/docker-compose.yml up -d\nfrom-env\n",
+            folder.display()
+        )
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Grafana       http://localhost:3000\n\
+         Prometheus    http://localhost:9090\n\
+         Alertmanager  http://localhost:9093\n\
+         Loki          http://localhost:3001\n\
+         Infrahub      http://localhost:8000\n\
+         Prefect       http://localhost:4200\n\
+         Sonda         http://localhost:8085\n"
+    );
+}
+
+#[test]
+fn a_failing_docker_makes_up_exit_with_its_code_and_print_no_address() {
+    let copy = workshop_copy("workshop-up-fails");
+    let bin = fake_docker("fake-docker-up-fails");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["nobs-t-one", "up"])
+        .current_dir(&copy)
+        .env("PATH", path_with(&bin))
+        .env("NOBS_T_CODE", "3")
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr_of(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("http://"), "{stdout}");
+}
+
+#[test]
+fn a_foreign_stack_stops_up_with_a_message_naming_it_and_its_containers() {
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("workshop-guard");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let two = scratch.join("workshops/nobs-t-two");
+    let one = scratch.join("workshops/nobs-t-one");
+    std::fs::create_dir_all(&two).unwrap();
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::copy(
+        fixture_folder("workshops-repo/workshops/nobs-t-two/nobs.toml"),
+        two.join("nobs.toml"),
+    )
+    .unwrap();
+    for file in ["nobs.toml", "docker-compose.yml"] {
+        std::fs::copy(fixture_folder("workshop-one").join(file), one.join(file)).unwrap();
+    }
+    let bin = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guard-docker");
+    std::fs::create_dir_all(&bin).unwrap();
+    let _ = std::fs::remove_file(bin.join("seen"));
+    let script = bin.join("docker");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = ps ]; then echo sonda-server; exit 0; fi\necho \"$*\" >> '{seen}'\n",
+            seen = bin.join("seen").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["nobs-t-one", "up"])
+        .current_dir(&scratch)
+        .env("PATH", path_with(&bin))
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr_of(&output),
+        "nobs: containers of the Workshop two stack are present and share names and ports with this one: sonda-server; run nobs nobs-t-two down first\n"
+    );
+    assert!(output.stdout.is_empty());
+    assert!(!bin.join("seen").exists());
+    std::fs::remove_dir_all(&scratch).unwrap();
+}
+
+#[test]
+fn a_guard_question_that_fails_still_lets_up_go_on_and_shows_the_docker_error() {
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("workshop-guard-fails");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let two = scratch.join("workshops/nobs-t-two");
+    let one = scratch.join("workshops/nobs-t-one");
+    std::fs::create_dir_all(&two).unwrap();
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::copy(
+        fixture_folder("workshops-repo/workshops/nobs-t-two/nobs.toml"),
+        two.join("nobs.toml"),
+    )
+    .unwrap();
+    for file in ["nobs.toml", "docker-compose.yml"] {
+        std::fs::copy(fixture_folder("workshop-one").join(file), one.join(file)).unwrap();
+    }
+    let bin = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guard-docker-fails");
+    std::fs::create_dir_all(&bin).unwrap();
+    let _ = std::fs::remove_file(bin.join("seen"));
+    let script = bin.join("docker");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = ps ]; then echo sonda-server; echo nobs-t-guard-stderr >&2; exit 3; fi\necho \"$*\" >> '{seen}'\n",
+            seen = bin.join("seen").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["nobs-t-one", "up"])
+        .current_dir(&scratch)
+        .env("PATH", path_with(&bin))
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    assert_eq!(
+        std::fs::read_to_string(bin.join("seen")).unwrap(),
+        format!(
+            "compose --project-name nobs-t-one -f {}/docker-compose.yml up -d\n",
+            std::fs::canonicalize(&one).unwrap().display()
+        )
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("nobs-t-guard-stderr"),
+        "stderr of nobs was {stderr:?}"
+    );
+    std::fs::remove_dir_all(&scratch).unwrap();
+}
+
+#[test]
+fn a_bare_up_from_a_bare_folder_says_no_workshop_named_up() {
+    let output = nobs_from_a_bare_folder(&["up"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = stderr_of(&output);
+    assert!(stderr.contains("no workshop named up"), "{stderr}");
+}
+
+fn stderr_of(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn nobs_in(dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(args)
+        .current_dir(dir)
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap()
+}
+
+fn example_copy(name: &str) -> PathBuf {
+    let copy = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&copy);
+    std::fs::create_dir_all(copy.join("sub")).unwrap();
+    for file in ["nobs.toml", "docker-compose.yml", ".env.example"] {
+        std::fs::copy(fixture_folder("workshop-one").join(file), copy.join(file)).unwrap();
+    }
+    copy
+}
+
 fn nobs_from_a_bare_folder(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_nobs"))
         .args(args)

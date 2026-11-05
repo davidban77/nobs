@@ -59,6 +59,18 @@ impl Compose {
         self.compose_args(words(&["up", "-d", "--remove-orphans"]), services)
     }
 
+    pub fn down_args(&self) -> Vec<OsString> {
+        self.compose_args(words(&["down"]), &[])
+    }
+
+    pub fn up_args(&self, services: &[String], build: bool) -> Vec<OsString> {
+        let mut action = words(&["up", "-d"]);
+        if build {
+            action.push("--build".into());
+        }
+        self.compose_args(action, services)
+    }
+
     pub fn stop_args(&self, services: &[String]) -> Vec<OsString> {
         self.compose_args(words(&["stop"]), services)
     }
@@ -481,6 +493,27 @@ mod tests {
         assert_eq!(
             compose().ps_args(&[]),
             ["compose", "-f", FILE, "ps", "--all"]
+        );
+    }
+
+    #[test]
+    fn down_has_no_flag_and_keeps_the_project_name() {
+        assert_eq!(compose().down_args(), ["compose", "-f", FILE, "down"]);
+        assert_eq!(
+            compose().project("p").down_args(),
+            ["compose", "--project-name", "p", "-f", FILE, "down"]
+        );
+    }
+
+    #[test]
+    fn up_is_detached_then_builds_when_asked_and_never_removes_orphans() {
+        assert_eq!(
+            compose().up_args(&[], true),
+            ["compose", "-f", FILE, "up", "-d", "--build"]
+        );
+        assert_eq!(
+            compose().up_args(&services(&["s"]), false),
+            ["compose", "-f", FILE, "up", "-d", "s"]
         );
     }
 
