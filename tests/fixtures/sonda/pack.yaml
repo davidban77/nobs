@@ -1,0 +1,11 @@
+version: 2
+kind: composable
+name: nobs_t_pack
+description: "nobs test pack"
+category: application
+
+metrics:
+  - name: nobs_t_pack_metric
+    generator:
+      type: constant
+      value: 1.0

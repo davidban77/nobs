@@ -1,0 +1,7 @@
+{
+  "signal_type": "metrics",
+  "labels": {"source": "nobs-t"},
+  "metric": {"name": "nobs_t_event_total", "value": 1.0},
+  "encoder": {"type": "prometheus_text"},
+  "sink": {"type": "stdout"}
+}
