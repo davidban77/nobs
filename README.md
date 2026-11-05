@@ -92,9 +92,18 @@ nobs-t-two  Workshop two  /home/me/repo/workshops/nobs-t-two
 
 When the first word after `nobs` is not one of its commands, nobs takes it as a workshop name. It finds the workshop in the same places as `nobs workshops`, reads the `.env` file of the workshop folder, and runs the workshop command. When it finds no workshop with that name and you are inside a workshop, it takes the word as a command of that workshop instead.
 
-So inside a workshop folder, or below it, you can leave the workshop name out. For example, from `/home/me/repo/workshops/nobs-t-one/sub`, `nobs up` does the same as `nobs nobs-t-one up`. This also works when `--dir` or `NOBS_DIR` names the workshop folder. `nobs workshops`, `nobs setup` and `nobs preflight` stay the root commands in every folder.
+So inside a workshop folder, or below it, you can leave the workshop name out. For example, from `/home/me/repo/workshops/nobs-t-one/sub`, `nobs up` does the same as `nobs nobs-t-one up`. This also works when `--dir` or `NOBS_DIR` names the workshop folder.
 
-`nobs <workshop> --help` lists the commands of a workshop. There are nine. Every one except `setup` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml` and then the words in the second column, where `<project>` is the `project` setting and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+The commands of nobs itself (`docker`, `containerlab`, `sonda`, `workshops`, `setup` and `preflight`) keep their meaning in every folder. So inside a workshop, `nobs setup` is still the setup of every workshop, not `nobs <workshop> setup`.
+
+When the word is not a workshop name, and you are not inside a workshop, nobs prints the error below and exits with 2. The second line lists the names nobs did find, and is left out when there are none.
+
+```
+nobs: no workshop named nobs-t-none
+known: nobs-t-two
+```
+
+`nobs <workshop> --help` lists the commands of a workshop. There are nine. Every one except `setup` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -102,7 +111,7 @@ So inside a workshop folder, or below it, you can leave the workshop name out. F
 | `nobs <workshop> up [--build] [SERVICES]` | `up -d [--build] [SERVICES]` | starts in the background; creates `.env` when it is missing; prints the seven addresses after it succeeds; `--build` rebuilds the images built from the workshop's files |
 | `nobs <workshop> down` | `down` | removes the containers; the volumes stay |
 | `nobs <workshop> destroy` | `down --volumes --remove-orphans` | removes the containers and the volumes |
-| `nobs <workshop> restart [SERVICES]` | `restart [SERVICES]` | with no services, runs `down`, then `up -d --build`, and prints the seven addresses after it succeeds |
+| `nobs <workshop> restart [SERVICES]` | `restart SERVICES`; with no services, `down`, then `up -d --build` | with no services, prints the seven addresses after it succeeds |
 | `nobs <workshop> ps [SERVICES]` | `ps --all [SERVICES]` | lists the containers, stopped ones included |
 | `nobs <workshop> logs [--tail N] [--no-follow] [SERVICE]` | `logs -f --tail=N [SERVICE]` | shows the last 200 lines of each service by default and keeps following; `--no-follow` shows the lines and stops, and leaves out `-f` |
 | `nobs <workshop> exec SERVICE [COMMAND]` | `exec [-T] SERVICE COMMAND` | runs `sh` when you give no command; adds `-T` when the input is not a terminal; put words that start with a dash after `--` |
@@ -110,7 +119,7 @@ So inside a workshop folder, or below it, you can leave the workshop name out. F
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
-`setup` and `up` create the `.env` file of the workshop from `.env.example` when `.env` is missing, and print `created <folder>/.env from .env.example`. They never change a `.env` that exists: then `setup` prints `kept <folder>/.env` and `up` says nothing. When there is neither a `.env` nor a `.env.example`, both print `no .env.example in <folder>`, and `up` goes on.
+`setup` and `up` create the `.env` file of the workshop from `.env.example` when `.env` is missing, and print `created <folder>/.env from .env.example`. They never change a `.env` that exists: then `setup` prints `kept <folder>/.env` and `up` says nothing. When there is neither a `.env` nor a `.env.example`, both print `no .env.example in <folder>`, and `up` goes on. When the copy fails, both print `nobs: <folder>/.env: <error>` and exit with 1.
 
 The workshops use the same container names and ports, so only one can run at a time. Before `up`, `build` and `restart`, nobs asks Docker for the containers of every other workshop it can find, stopped ones included. When there are some, it prints `nobs: containers of the <title> stack are present and share names and ports with this one: <names>; run nobs <name> down first`, exits with 1 and starts nothing. `<title>` and `<name>` are the title and the name of that other workshop.
 
@@ -136,13 +145,6 @@ Loki          http://localhost:3001
 Infrahub      http://localhost:8000
 Prefect       http://localhost:4200
 Sonda         http://localhost:8085
-```
-
-When nobs finds no workshop with that name, and you are not inside a workshop, it prints the error below and exits with 2. The second line lists the names nobs did find, and is left out when there are none.
-
-```
-nobs: no workshop named nobs-t-none
-known: nobs-t-two
 ```
 
 A workshop's `nobs.toml` holds `kind = "workshop"` and 11 settings, for example:
@@ -176,9 +178,9 @@ A GiB (gibibyte) is 1,073,741,824 bytes, a little more than a GB. nobs compares 
 |---|---|---|
 | `docker` | `docker --version` | ok; fail when it cannot run or exits with a non-zero code |
 | `compose` | `docker compose version` | same as `docker` |
-| `memory` | `sysctl -n hw.memsize` on macOS, `/proc/meminfo` on Linux | ok at 8 GiB or more; warn from 6 GiB up to 8; fail under 6 GiB; warn `memory not checked` when nobs cannot read it |
+| `memory` | `sysctl -n hw.memsize` on macOS, `/proc/meminfo` on Linux | ok at 8 GiB or more; warn from 6 GiB to just under 8 GiB; fail under 6 GiB; warn `memory not checked` when nobs cannot read it |
 | `disk` | `df -k` of the current folder | ok at 5 GiB free or more; fail under 5 GiB; warn `disk not checked` when nobs cannot read it |
-| `network` | a TCP connection to port 443 of five hosts, 3 seconds for each | ok when all answer; warn when some do not; never fail |
+| `network` | a connection (TCP, the way HTTPS starts) to port 443 of five hosts, one after another; nobs waits up to 3 seconds for each | ok when all answer; warn when some do not; never fail |
 
 The five hosts are `ghcr.io`, `registry-1.docker.io`, `github.com`, `registry.opsmill.io` and `grafana.com`. For `network`, the detail is `5 hosts answered`, or `no answer from` and the hosts that did not answer. For `docker` and `compose`, the detail is the first line the program printed, or `exited with code <N>`, or the error text when the program cannot start.
 
@@ -195,7 +197,7 @@ network  warn  no answer from registry.opsmill.io
 
 Each line is the check name padded to 7 characters, the status padded to 4, and the detail, with two spaces between them.
 
-`nobs setup` runs `nobs preflight` first. When a check fails, it stops with exit 1 and changes nothing. Otherwise it creates the `.env` file of every workshop that `nobs workshops` would list, and prints one line per workshop: `<name>: created <folder>/.env from .env.example`, `<name>: kept <folder>/.env` or `<name>: no .env.example in <folder>`. When a `nobs.toml` cannot be read or a file cannot be copied, nobs prints the problem and exits with 1. `nobs setup` and `nobs preflight` read the `.env` file of the current folder.
+`nobs setup` runs `nobs preflight` first. When a check fails, it stops with exit 1 and changes nothing. Otherwise it does what `nobs <workshop> setup` does, for every workshop that `nobs workshops` would list. It prints one line per workshop: `<name>: created <folder>/.env from .env.example`, `<name>: kept <folder>/.env` or `<name>: no .env.example in <folder>`. When a `nobs.toml` cannot be read or a copy fails, nobs prints the problem, stops there and exits with 1. `nobs setup` and `nobs preflight` read the `.env` file of the current folder.
 
 ## Sonda
 
