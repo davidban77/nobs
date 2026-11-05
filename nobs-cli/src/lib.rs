@@ -289,6 +289,9 @@ pub enum DockerCommand {
 }
 
 pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
+    if matches!(cli.command, Command::Sonda { .. }) {
+        remove_blank_sonda_variables();
+    }
     if let Err(message) = load_env(Path::new(".")) {
         eprintln!("nobs: {message}");
         return 1;
@@ -465,6 +468,14 @@ fn run_containerlab(
         Err(error) => {
             eprintln!("nobs: cannot run {program}: {error}");
             1
+        }
+    }
+}
+
+fn remove_blank_sonda_variables() {
+    for name in ["SONDA_SERVER_URL", "SONDA_API_KEY"] {
+        if std::env::var_os(name).is_some_and(|value| value.to_string_lossy().trim().is_empty()) {
+            std::env::remove_var(name);
         }
     }
 }

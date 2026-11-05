@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct Seen {
@@ -37,6 +38,10 @@ pub struct Stub {
 
 impl Stub {
     pub fn start(routes: &[(&str, &str, u16, &str)]) -> Self {
+        Self::start_after(Duration::ZERO, routes)
+    }
+
+    pub fn start_after(delay: Duration, routes: &[(&str, &str, u16, &str)]) -> Self {
         let routes: Vec<Route> = routes
             .iter()
             .map(|(method, path, status, body)| Route {
@@ -52,10 +57,25 @@ impl Stub {
         let seen_by_thread = Arc::clone(&seen);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let _ = serve(stream, &routes, &seen_by_thread);
+                let _ = serve(stream, &routes, &seen_by_thread, delay);
             }
         });
         Self { url, seen }
+    }
+
+    pub fn start_silent(hold: Duration) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind the stub");
+        let url = format!("http://{}", listener.local_addr().expect("stub address"));
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                thread::sleep(hold);
+                drop(stream);
+            }
+        });
+        Self {
+            url,
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     pub fn url(&self) -> &str {
@@ -67,7 +87,12 @@ impl Stub {
     }
 }
 
-fn serve(mut stream: TcpStream, routes: &[Route], seen: &Mutex<Vec<Seen>>) -> std::io::Result<()> {
+fn serve(
+    mut stream: TcpStream,
+    routes: &[Route],
+    seen: &Mutex<Vec<Seen>>,
+    delay: Duration,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -109,6 +134,7 @@ fn serve(mut stream: TcpStream, routes: &[Route], seen: &Mutex<Vec<Seen>>) -> st
         body,
     });
 
+    thread::sleep(delay);
     write!(
         stream,
         "HTTP/1.1 {status} Stub\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",

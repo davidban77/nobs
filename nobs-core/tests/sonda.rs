@@ -1,4 +1,5 @@
 use std::net::TcpListener;
+use std::time::{Duration, Instant};
 
 use nobs_core::sonda::{Reply, Sonda};
 
@@ -154,6 +155,30 @@ fn a_closed_port_is_an_error_that_starts_with_cannot_reach() {
         error.starts_with(&format!("cannot reach {url}: ")),
         "{error}"
     );
+}
+
+#[test]
+fn a_server_that_never_answers_gives_cannot_reach_within_the_timeout() {
+    let stub = Stub::start_silent(Duration::from_secs(20));
+    let started = Instant::now();
+
+    let error = Sonda::new(stub.url()).health().unwrap_err();
+
+    assert!(error.starts_with("cannot reach "), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn event_waits_longer_than_the_other_calls_for_the_reply() {
+    let stub = Stub::start_after(Duration::from_secs(11), &[("POST", "/events", 200, "{}")]);
+
+    let reply = Sonda::new(stub.url()).event(b"{}").unwrap();
+
+    assert_eq!(reply.status, 200);
 }
 
 #[test]
