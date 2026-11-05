@@ -1048,15 +1048,14 @@ fn given(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
 
-fn address(flag: Option<String>, variable: Option<&str>, default: String) -> String {
-    given(flag)
-        .or_else(|| variable.and_then(|name| given(std::env::var(name).ok())))
-        .unwrap_or(default)
-}
-
-fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
+fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
     let defaults = Urls::defaults();
-    let urls = Urls {
+    let address = |flag: Option<String>, variable: Option<&str>, default: String| {
+        given(flag)
+            .or_else(|| variable.and_then(|name| given(lookup(name))))
+            .unwrap_or(default)
+    };
+    Urls {
         grafana: address(flags.grafana_url, None, defaults.grafana),
         prometheus: address(flags.prom_url, Some("PROMETHEUS_URL"), defaults.prometheus),
         loki: address(flags.loki_url, Some("LOKI_URL"), defaults.loki),
@@ -1072,7 +1071,11 @@ fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
         ),
         prefect: address(flags.prefect_url, None, defaults.prefect),
         sonda: address(flags.sonda_url, None, defaults.sonda),
-    };
+    }
+}
+
+fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
+    let urls = urls(flags, |name| std::env::var(name).ok());
     let probes = probe_all(&urls);
     println!("{}", status_table(&probes));
     if probes.iter().all(|probe| probe.state == State::Ok) {
@@ -1324,6 +1327,89 @@ mod tests {
             status,
             detail: detail.to_string(),
         }
+    }
+
+    fn flags_all(text: Option<&str>) -> StatusFlags {
+        let flag = || text.map(String::from);
+        StatusFlags {
+            prom_url: flag(),
+            loki_url: flag(),
+            am_url: flag(),
+            infrahub_url: flag(),
+            grafana_url: flag(),
+            prefect_url: flag(),
+            sonda_url: flag(),
+        }
+    }
+
+    fn variables(name: &str) -> Option<String> {
+        match name {
+            "PROMETHEUS_URL" => Some("http://var-prometheus".to_string()),
+            "LOKI_URL" => Some("http://var-loki".to_string()),
+            "ALERTMANAGER_URL" => Some("http://var-alertmanager".to_string()),
+            "INFRAHUB_ADDRESS" => Some("http://var-infrahub".to_string()),
+            _ => None,
+        }
+    }
+
+    fn with_variables_only() -> Urls {
+        Urls {
+            prometheus: "http://var-prometheus".to_string(),
+            loki: "http://var-loki".to_string(),
+            alertmanager: "http://var-alertmanager".to_string(),
+            infrahub: "http://var-infrahub".to_string(),
+            ..Urls::defaults()
+        }
+    }
+
+    #[test]
+    fn with_no_flag_and_no_variable_each_address_is_its_own_default() {
+        assert_eq!(urls(flags_all(None), |_| None), Urls::defaults());
+    }
+
+    #[test]
+    fn each_variable_gives_its_own_address_when_there_is_no_flag() {
+        assert_eq!(urls(flags_all(None), variables), with_variables_only());
+    }
+
+    #[test]
+    fn each_flag_gives_its_own_address_and_beats_the_variable() {
+        let flags = StatusFlags {
+            prom_url: Some("http://flag-prometheus".to_string()),
+            loki_url: Some("http://flag-loki".to_string()),
+            am_url: Some("http://flag-alertmanager".to_string()),
+            infrahub_url: Some("http://flag-infrahub".to_string()),
+            grafana_url: Some("http://flag-grafana".to_string()),
+            prefect_url: Some("http://flag-prefect".to_string()),
+            sonda_url: Some("http://flag-sonda".to_string()),
+        };
+
+        assert_eq!(
+            urls(flags, variables),
+            Urls {
+                grafana: "http://flag-grafana".to_string(),
+                prometheus: "http://flag-prometheus".to_string(),
+                loki: "http://flag-loki".to_string(),
+                alertmanager: "http://flag-alertmanager".to_string(),
+                infrahub: "http://flag-infrahub".to_string(),
+                prefect: "http://flag-prefect".to_string(),
+                sonda: "http://flag-sonda".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_blank_flag_counts_as_not_given() {
+        assert_eq!(urls(flags_all(Some(" ")), variables), with_variables_only());
+        assert_eq!(urls(flags_all(Some("")), |_| None), Urls::defaults());
+    }
+
+    #[test]
+    fn a_blank_variable_counts_as_not_given() {
+        assert_eq!(
+            urls(flags_all(None), |_| Some("  ".to_string())),
+            Urls::defaults()
+        );
     }
 
     #[test]

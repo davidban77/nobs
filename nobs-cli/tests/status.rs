@@ -250,14 +250,33 @@ fn a_blank_flag_counts_as_not_given_and_the_dot_env_file_is_used() {
 fn a_blank_shell_value_does_not_hide_the_dot_env_file() {
     let copy = Copy::new("blank-shell");
     let stub = healthy_stub();
-    copy.write_env(&format!("PROMETHEUS_URL={}\n", stub.url()));
+    copy.write_env(&format!(
+        "PROMETHEUS_URL={url}\nLOKI_URL={url}\nALERTMANAGER_URL={url}\nINFRAHUB_ADDRESS={url}\n",
+        url = stub.url()
+    ));
 
-    let args = flags_at(stub.url(), &["Prometheus"]);
-    let output = nobs(&copy, &args, &[("PROMETHEUS_URL", " ")]);
+    let args = flags_at(
+        stub.url(),
+        &["Prometheus", "Loki", "Alertmanager", "Infrahub"],
+    );
+    let output = nobs(
+        &copy,
+        &args,
+        &[
+            ("PROMETHEUS_URL", " "),
+            ("LOKI_URL", " "),
+            ("ALERTMANAGER_URL", " "),
+            ("INFRAHUB_ADDRESS", " "),
+        ],
+    );
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(
-        row(&stdout(&output), "Prometheus"),
-        (stub.url().to_string(), "ok".to_string())
-    );
+    let out = stdout(&output);
+    for service in ["Prometheus", "Loki", "Alertmanager", "Infrahub"] {
+        assert_eq!(
+            row(&out, service),
+            (stub.url().to_string(), "ok".to_string()),
+            "{service}"
+        );
+    }
 }
