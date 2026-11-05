@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sonda_target_is_probed_at_health_through_the_client() {
+    fn the_sonda_target_is_probed_at_health() {
         let stub = Stub::start(&[("GET", "/health", 200, "")]);
         let probe = probe(&target("Sonda", stub.url(), "/health"));
 

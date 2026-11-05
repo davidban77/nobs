@@ -37,23 +37,15 @@ impl Sonda {
     pub const DEFAULT_URL: &'static str = "http://localhost:8080";
 
     pub fn new(url: impl Into<String>) -> Self {
-        let config = Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(TIMEOUT))
-            .build();
         Self {
             url: url.into().trim_end_matches('/').to_string(),
             key: None,
-            agent: Agent::new_with_config(config),
+            agent: agent(TIMEOUT),
         }
     }
 
     pub fn timeout(mut self, timeout: Duration) -> Self {
-        let config = Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(timeout))
-            .build();
-        self.agent = Agent::new_with_config(config);
+        self.agent = agent(timeout);
         self
     }
 
@@ -150,6 +142,14 @@ impl Sonda {
             })
             .map_err(|error| format!("cannot reach {}: {error}", self.url))
     }
+}
+
+fn agent(timeout: Duration) -> Agent {
+    let config = Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .build();
+    Agent::new_with_config(config)
 }
 
 pub fn scenario_rows(list_body: &str) -> Result<Vec<ScenarioRow>, String> {
