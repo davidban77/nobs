@@ -1,0 +1,18 @@
+version: 2
+scenario_name: nobs-t-hello
+
+defaults:
+  rate: 1
+  duration: 10m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: nobs_t_demo_cpu
+    generator:
+      type: constant
+      value: 42.0

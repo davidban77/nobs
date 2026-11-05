@@ -8,6 +8,9 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
 use nobs_core::runner::Runner;
+use nobs_core::sonda::{
+    build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
+};
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
 
@@ -30,6 +33,70 @@ pub enum Command {
         #[command(subcommand)]
         command: ContainerlabCommand,
     },
+    #[command(about = "Talk to a running sonda-server over HTTP")]
+    Sonda {
+        #[command(flatten)]
+        flags: SondaFlags,
+        #[command(subcommand)]
+        command: SondaCommand,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct SondaFlags {
+    #[arg(
+        long,
+        global = true,
+        value_name = "URL",
+        help = "Address of the server; nobs looks at --server, then SONDA_SERVER_URL, then the .env file of the current folder, then http://localhost:8080"
+    )]
+    server: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        value_name = "KEY",
+        help = "Key to send with each call except health and ready; nobs looks at --api-key, then SONDA_API_KEY, then the .env file of the current folder"
+    )]
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SondaCommand {
+    #[command(about = "Check that the server is alive")]
+    Health,
+    #[command(about = "Check that the server is ready")]
+    Ready,
+    #[command(about = "List the scenarios as a table")]
+    List,
+    #[command(about = "Print one scenario")]
+    Show {
+        #[arg(help = "Id of the scenario")]
+        id: String,
+    },
+    #[command(about = "Print the numbers of one scenario")]
+    Stats {
+        #[arg(help = "Id of the scenario")]
+        id: String,
+    },
+    #[command(about = "Stop and remove one scenario")]
+    Delete {
+        #[arg(help = "Id of the scenario")]
+        id: String,
+    },
+    #[command(about = "Send a scenario file to the server to run it")]
+    Load {
+        #[arg(help = "Scenario file; it must have kind: runnable at the start of a line")]
+        file: PathBuf,
+    },
+    #[command(about = "Send one event file to the server")]
+    Event {
+        #[arg(help = "File with the event as JSON")]
+        file: PathBuf,
+    },
+    #[command(about = "Print the metrics of the server")]
+    Metrics,
+    #[command(about = "Print the version of the server")]
+    Version,
 }
 
 #[derive(Debug, Args)]
@@ -229,6 +296,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
     let command = match cli.command {
         Command::Docker { command } => command,
         Command::Containerlab { command } => return run_containerlab_command(command, runner),
+        Command::Sonda { flags, command } => return run_sonda(flags, command),
     };
     match command {
         DockerCommand::Build { flags, services } => {
@@ -399,6 +467,128 @@ fn run_containerlab(
             1
         }
     }
+}
+
+fn given(value: Option<String>) -> Option<String> {
+    value.filter(|text| !text.trim().is_empty())
+}
+
+fn run_sonda(flags: SondaFlags, command: SondaCommand) -> i32 {
+    let server = given(flags.server)
+        .or_else(|| given(std::env::var("SONDA_SERVER_URL").ok()))
+        .unwrap_or_else(|| Sonda::DEFAULT_URL.to_string());
+    let key = given(flags.api_key).or_else(|| given(std::env::var("SONDA_API_KEY").ok()));
+    let sonda = Sonda::new(server).api_key(key);
+    match command {
+        SondaCommand::Health => answer(sonda.health(), print_body),
+        SondaCommand::Ready => answer(sonda.ready(), print_body),
+        SondaCommand::List => answer(sonda.list(), print_table),
+        SondaCommand::Show { id } => answer(sonda.show(&id), print_body),
+        SondaCommand::Stats { id } => answer(sonda.stats(&id), print_body),
+        SondaCommand::Delete { id } => answer(sonda.delete(&id), print_body),
+        SondaCommand::Load { file } => {
+            let Some(text) = read_file(&file, |path| fs::read_to_string(path)) else {
+                return 1;
+            };
+            if let Err(reason) = check_runnable(&text) {
+                eprintln!("nobs: {}: {reason}", file.display());
+                return 1;
+            }
+            answer(sonda.load(text.as_bytes()), print_body)
+        }
+        SondaCommand::Event { file } => {
+            let Some(bytes) = read_file(&file, |path| fs::read(path)) else {
+                return 1;
+            };
+            answer(sonda.event(&bytes), print_body)
+        }
+        SondaCommand::Metrics => answer(sonda.metrics(), print_body),
+        SondaCommand::Version => answer(sonda.metrics(), print_version),
+    }
+}
+
+fn read_file<T>(path: &Path, read: impl FnOnce(&Path) -> std::io::Result<T>) -> Option<T> {
+    read(path)
+        .map_err(|error| eprintln!("nobs: {}: {error}", path.display()))
+        .ok()
+}
+
+fn answer(result: Result<Reply, String>, print: impl FnOnce(&str) -> i32) -> i32 {
+    match result {
+        Err(text) => {
+            eprintln!("nobs: {text}");
+            1
+        }
+        Ok(reply) if reply.status >= 400 => {
+            eprintln!("nobs: sonda answered {}: {}", reply.status, reply.body);
+            1
+        }
+        Ok(reply) => print(&reply.body),
+    }
+}
+
+fn print_body(body: &str) -> i32 {
+    println!("{}", pretty(body).trim_end_matches('\n'));
+    0
+}
+
+fn print_table(body: &str) -> i32 {
+    match scenario_rows(body) {
+        Ok(rows) => {
+            println!("{}", table(&rows));
+            0
+        }
+        Err(reason) => {
+            eprintln!("nobs: sonda answered a list nobs cannot read: {reason}");
+            1
+        }
+    }
+}
+
+fn print_version(metrics: &str) -> i32 {
+    match build_info(metrics) {
+        Some(info) => {
+            println!("sonda-server {} {}", info.version, info.git_sha);
+            0
+        }
+        None => {
+            eprintln!("nobs: sonda answered without sonda_server_build_info");
+            1
+        }
+    }
+}
+
+fn table(rows: &[ScenarioRow]) -> String {
+    let header = ["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"].map(String::from);
+    let mut lines = vec![header];
+    lines.extend(rows.iter().map(|row| {
+        [
+            row.id.clone(),
+            row.name.clone(),
+            row.state.clone(),
+            row.elapsed_secs.clone(),
+            row.degraded.clone(),
+        ]
+    }));
+    let widths: [usize; 5] = std::array::from_fn(|i| {
+        lines
+            .iter()
+            .map(|l| l[i].chars().count())
+            .max()
+            .unwrap_or(0)
+    });
+    lines
+        .iter()
+        .map(|line| {
+            let cells: Vec<String> = line
+                .iter()
+                .zip(widths)
+                .map(|(cell, width)| format!("{cell:<width$}"))
+                .collect();
+            cells.join("  ").trim_end().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn run_docker(runner: &dyn Runner, args: &[OsString]) -> i32 {
