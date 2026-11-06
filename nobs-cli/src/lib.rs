@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
@@ -2620,6 +2620,7 @@ fn run_try_it(flags: TryItFlags, located: &Located) -> i32 {
             || try_it::count(&loki, &path.query, SystemTime::now()),
             Duration::from_secs(flags.timeout),
             std::thread::sleep,
+            Instant::now,
         );
         match matched {
             Some(found) => println!("{} (Loki match count={found})", path.label),

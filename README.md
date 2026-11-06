@@ -689,7 +689,7 @@ One run goes through these steps in order. Steps 4 to 9 repeat for each path.
 
 When the Infrahub address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line before any other line, as described in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance).
 
-The wait: nobs asks Loki at once, and then every 5 seconds (the last pause is only the time that is left), until a line matches or `--timeout` seconds have passed. Each ask looks at the last 5 minutes and counts at most 1000 lines. A Loki that does not answer counts as no match. A line that an earlier run wrote in the last 5 minutes also counts as a match, so a run right after another one can match before the automation has done anything new.
+The wait: nobs asks Loki at once, and then every 5 seconds (the last pause is only the time that is left), until a line matches or `--timeout` seconds have passed. `--timeout` is the whole wait of one path, the time Loki takes to answer included: nobs reads the clock when the wait starts and gives up at that time plus `--timeout`, and an ask that has started is not cut off. Each ask looks at the last 5 minutes and counts at most 1000 lines. A Loki that does not answer counts as no match. A line that an earlier run wrote in the last 5 minutes also counts as a match, so a run right after another one can match before the automation has done anything new.
 
 The pause: without `--auto`, nobs prints a blank line and `  [Enter to continue, Ctrl-C to bail] ` and waits for Enter. With `--auto`, it prints nothing and waits 2 seconds. When the input is closed, so nobs reads nothing, it exits with 1 and prints nothing more. Ctrl-C at a pause ends nobs at once, and the shell shows the exit code 130.
 
@@ -734,7 +734,7 @@ The lines that start with `nobs:` go to standard error (the channel for error me
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 1 | a service is not ready in the pre-flight: `nobs: <service> NOT reachable at <url> - bring the stack up first (nobs <name> up)` for Prometheus, Loki or Alertmanager, where `<url>` is the address with `/-/ready` or `/ready`, or `nobs: Infrahub NOT reachable - bring the stack up first (nobs <name> up)`; `<name>` is the `name` setting of the workshop; nobs posts nothing to the webhook |
 | 1 | the input is closed at a pause, with no message |
-| 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel, and the flag can stay true when it failed on the way back |
+| 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel, and the flag can stay true when it failed on the way back, and also when Ctrl-C ends nobs between setting and clearing the flag on path 2 |
 | 1 | a wait timed out: `nobs: <n> of 4 waits timed out`, printed after the `Done` panel |
 | 2 | a flag nobs does not know, or a value that is not a whole number of 0 or more for `--timeout`, for example `-1` |
 

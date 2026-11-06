@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::loki::Loki;
 
@@ -99,24 +99,25 @@ pub fn wait(
     mut poll: impl FnMut() -> u64,
     timeout: Duration,
     mut sleep: impl FnMut(Duration),
+    mut now: impl FnMut() -> Instant,
 ) -> Option<u64> {
-    let mut left = timeout;
+    let deadline = now() + timeout;
     loop {
         let found = poll();
         if found > 0 {
             return Some(found);
         }
-        if left.is_zero() {
+        let current = now();
+        if current >= deadline {
             return None;
         }
-        let pause = left.min(POLL);
-        sleep(pause);
-        left -= pause;
+        sleep((deadline - current).min(POLL));
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::time::UNIX_EPOCH;
 
     use super::*;
@@ -163,15 +164,42 @@ mod tests {
         );
     }
 
+    struct Clock {
+        start: Instant,
+        elapsed: Cell<Duration>,
+    }
+
+    impl Clock {
+        fn new() -> Self {
+            Self {
+                start: Instant::now(),
+                elapsed: Cell::new(Duration::ZERO),
+            }
+        }
+
+        fn now(&self) -> Instant {
+            self.start + self.elapsed.get()
+        }
+
+        fn advance(&self, by: Duration) {
+            self.elapsed.set(self.elapsed.get() + by);
+        }
+    }
+
     #[test]
     fn wait_gives_the_first_count_above_zero_after_a_sleep_of_five_seconds_per_empty_poll() {
+        let clock = Clock::new();
         let mut answers = [0, 0, 3].into_iter();
         let mut sleeps = Vec::new();
 
         let found = wait(
             || answers.next().unwrap(),
             seconds(60),
-            |pause| sleeps.push(pause),
+            |pause| {
+                sleeps.push(pause);
+                clock.advance(pause);
+            },
+            || clock.now(),
         );
 
         assert_eq!(found, Some(3));
@@ -180,6 +208,7 @@ mod tests {
 
     #[test]
     fn wait_sleeps_only_the_time_left_and_polls_once_more_before_giving_up() {
+        let clock = Clock::new();
         let mut polls = 0;
         let mut sleeps = Vec::new();
 
@@ -189,7 +218,11 @@ mod tests {
                 0
             },
             seconds(12),
-            |pause| sleeps.push(pause),
+            |pause| {
+                sleeps.push(pause);
+                clock.advance(pause);
+            },
+            || clock.now(),
         );
 
         assert_eq!(found, None);
@@ -199,6 +232,7 @@ mod tests {
 
     #[test]
     fn wait_with_no_time_polls_once_and_never_sleeps() {
+        let clock = Clock::new();
         let mut polls = 0;
         let mut sleeps = Vec::new();
 
@@ -208,7 +242,36 @@ mod tests {
                 0
             },
             Duration::ZERO,
-            |pause| sleeps.push(pause),
+            |pause| {
+                sleeps.push(pause);
+                clock.advance(pause);
+            },
+            || clock.now(),
+        );
+
+        assert_eq!(found, None);
+        assert_eq!(polls, 1);
+        assert!(sleeps.is_empty());
+    }
+
+    #[test]
+    fn wait_ends_at_the_deadline_when_the_asks_themselves_take_the_time() {
+        let clock = Clock::new();
+        let mut polls = 0;
+        let mut sleeps = Vec::new();
+
+        let found = wait(
+            || {
+                polls += 1;
+                clock.advance(seconds(6));
+                0
+            },
+            seconds(5),
+            |pause| {
+                sleeps.push(pause);
+                clock.advance(pause);
+            },
+            || clock.now(),
         );
 
         assert_eq!(found, None);
