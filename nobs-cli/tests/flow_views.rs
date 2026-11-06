@@ -330,6 +330,18 @@ fn rca_with_no_arguments_asks_loki_for_any_device_and_peer_and_says_when_it_find
 }
 
 #[test]
+fn rca_takes_the_loki_address_from_the_flag_before_the_env_file() {
+    let loki = loki(NO_STREAMS);
+    let copy = Copy::new("rca-flag", &format!("LOKI_URL={}\n", closed_port_url()));
+
+    let output = run(&copy, &["rca", "--loki-url", loki.url()]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).starts_with("No AI RCA records found"));
+    assert_eq!(loki.requests().len(), 1);
+}
+
+#[test]
 fn rca_names_the_device_or_the_peer_that_was_given_in_the_hint() {
     let loki = loki(NO_STREAMS);
     let copy = Copy::new("rca-scope", &format!("LOKI_URL={}\n", loki.url()));
@@ -486,32 +498,49 @@ fn evidence_prints_the_four_blocks() {
 
 #[test]
 fn evidence_asks_infrahub_once_then_prometheus_six_times_in_order_then_loki_once() {
-    let stack = Stack::healthy("evidence-requests");
+    let metric_paths: Vec<String> = METRICS
+        .iter()
+        .map(|name| format!("/api/v1/query?query={name}*"))
+        .collect();
+    let metric_bodies = VALUES.map(series);
+    let loki_body = loki_reply(&[(OLDER, LOG_OLDER), (NEWER, LOG_NEWER)]);
+    let mut routes = vec![
+        ("POST", GRAPHQL, 200, INTENT),
+        ("GET", LOKI_ROUTE, 200, loki_body.as_str()),
+    ];
+    routes.extend(
+        metric_paths
+            .iter()
+            .zip(&metric_bodies)
+            .map(|(path, body)| ("GET", path.as_str(), 200, body.as_str())),
+    );
+    let everything = Stub::start(&routes);
+    let url = everything.url();
+    let copy = Copy::new("evidence-requests", &env(url, url, url, true));
 
-    let output = stack.run(&["evidence", "srl1", "10.1.99.2"]);
+    let output = run(&copy, &["evidence", "srl1", "10.1.99.2"]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let infrahub = stack.infrahub.requests();
-    assert_eq!(infrahub.len(), 1);
-    assert_eq!(infrahub[0].method, "POST");
-    assert_eq!(infrahub[0].path, GRAPHQL);
-    assert_eq!(infrahub[0].header("X-INFRAHUB-KEY"), Some(TOKEN));
-    let body = String::from_utf8_lossy(&infrahub[0].body).into_owned();
-    assert!(body.contains(r#""variables":{"name":"srl1"}"#), "{body}");
-    let prometheus: Vec<String> = stack
-        .prometheus
-        .requests()
-        .into_iter()
-        .map(|seen| seen.path)
-        .collect();
-    let expected: Vec<String> = METRICS
+    let requests = everything.requests();
+    let order: Vec<String> = requests
         .iter()
-        .map(|name| format!("/api/v1/query?query={name}{LABELS}"))
+        .map(|seen| match seen.path.starts_with(LOKI_PATH) {
+            true => format!("{} {LOKI_PATH}", seen.method),
+            false => format!("{} {}", seen.method, seen.path),
+        })
         .collect();
-    assert_eq!(prometheus, expected);
-    let loki = stack.loki.requests();
-    assert_eq!(loki.len(), 1);
-    let parameters = parameters(&loki[0]);
+    let mut expected = vec![format!("POST {GRAPHQL}")];
+    expected.extend(
+        METRICS
+            .iter()
+            .map(|name| format!("GET /api/v1/query?query={name}{LABELS}")),
+    );
+    expected.push(format!("GET {LOKI_PATH}"));
+    assert_eq!(order, expected);
+    assert_eq!(requests[0].header("X-INFRAHUB-KEY"), Some(TOKEN));
+    let body = String::from_utf8_lossy(&requests[0].body).into_owned();
+    assert!(body.contains(r#""variables":{"name":"srl1"}"#), "{body}");
+    let parameters = parameters(&requests[7]);
     assert_eq!(
         parameters[0],
         "query=%7Bdevice%3D%22srl1%22%2Cpeer_address%3D%2210.1.99.2%22%7D%20!%3D%20%22license%22"
