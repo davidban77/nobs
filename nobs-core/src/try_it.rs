@@ -101,12 +101,16 @@ pub fn wait(
     mut sleep: impl FnMut(Duration),
     mut now: impl FnMut() -> Instant,
 ) -> Option<u64> {
-    let deadline = now() + timeout;
+    let deadline = now().checked_add(timeout);
     loop {
         let found = poll();
         if found > 0 {
             return Some(found);
         }
+        let Some(deadline) = deadline else {
+            sleep(POLL);
+            continue;
+        };
         let current = now();
         if current >= deadline {
             return None;
@@ -277,6 +281,26 @@ mod tests {
         assert_eq!(found, None);
         assert_eq!(polls, 1);
         assert!(sleeps.is_empty());
+    }
+
+    #[test]
+    fn wait_with_a_timeout_too_big_for_a_deadline_never_times_out_and_does_not_panic() {
+        let clock = Clock::new();
+        let mut answers = [0, 0, 3].into_iter();
+        let mut sleeps = Vec::new();
+
+        let found = wait(
+            || answers.next().unwrap(),
+            Duration::MAX,
+            |pause| {
+                sleeps.push(pause);
+                clock.advance(pause);
+            },
+            || clock.now(),
+        );
+
+        assert_eq!(found, Some(3));
+        assert_eq!(sleeps, [seconds(5), seconds(5)]);
     }
 
     #[test]
