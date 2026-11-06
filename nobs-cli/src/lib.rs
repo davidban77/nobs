@@ -202,13 +202,13 @@ pub enum WorkshopCommand {
         #[command(flatten)]
         flags: MaintenanceFlags,
     },
-    #[command(about = "Print the most recent AI RCA narratives from Loki.")]
+    #[command(about = "Print the most recent AI RCA narratives from Loki")]
     Rca {
         #[command(flatten)]
         flags: RcaFlags,
     },
     #[command(
-        about = "Print the source-of-truth gate, BGP metrics snapshot, recent log lines, and a policy hint for one device and peer."
+        about = "Print the source-of-truth gate, BGP metrics snapshot, recent log lines, and a policy hint for one device and peer"
     )]
     Evidence {
         #[command(flatten)]
