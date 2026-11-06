@@ -747,13 +747,15 @@ fn an_address_that_names_the_container_is_rewritten_to_localhost_and_the_line_co
 }
 
 #[test]
-fn maintenance_prints_the_rewrite_line_before_it_asks_infrahub() {
+fn maintenance_prints_the_rewrite_line_before_it_checks_the_token() {
     let copy = Copy::new("rewrite-maintenance", "http://infrahub-server:8000");
+    copy.write_env("INFRAHUB_ADDRESS=http://infrahub-server:8000\n");
 
     let output = nobs(&copy, &["maintenance", "-d", "srl1"]);
 
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stdout(&output), REWRITTEN);
+    assert_eq!(stderr(&output), TOKEN_REQUIRED);
 }
 
 #[test]

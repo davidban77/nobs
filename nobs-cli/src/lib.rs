@@ -11,7 +11,8 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
 use nobs_core::infrahub::{
-    annotation, read_schema, Error as InfrahubError, Infrahub, Seed, DEFAULT_ADDRESS, KINDS,
+    annotation, host_address, read_schema, Error as InfrahubError, Infrahub, Seed, DEFAULT_ADDRESS,
+    KINDS,
 };
 use nobs_core::lab_vars;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
@@ -1363,15 +1364,12 @@ fn require_token(token: Option<String>) -> Option<String> {
     token
 }
 
-fn connect(address: &str, token: &str) -> Infrahub {
-    let infrahub = Infrahub::new(address, token);
-    if infrahub.address() != address.trim_end_matches('/') {
-        println!(
-            "INFRAHUB_ADDRESS rewritten to host-reachable {}",
-            infrahub.address()
-        );
+fn announce_rewrite(address: &str) {
+    let host = host_address(address);
+    let host = host.trim_end_matches('/');
+    if host != address.trim_end_matches('/') {
+        println!("INFRAHUB_ADDRESS rewritten to host-reachable {host}");
     }
-    infrahub
 }
 
 fn infrahub_failed(error: impl std::fmt::Display) -> i32 {
@@ -1419,10 +1417,11 @@ fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
+    announce_rewrite(&address);
     let Some(token) = require_token(token) else {
         return 1;
     };
-    let infrahub = connect(&address, &token);
+    let infrahub = Infrahub::new(&address, &token);
     let schema_file = located
         .dir
         .join(flags.schema.as_ref().unwrap_or(&workshop.schema_file));
@@ -1499,14 +1498,15 @@ fn seed_table(seed: &Seed) -> String {
 }
 
 fn run_schema_load(file: &Path, flags: InfrahubFlags) -> i32 {
+    let (address, token) = infrahub_settings(flags, |name| std::env::var(name).ok());
+    announce_rewrite(&address);
     if is_missing(file, "schema") {
         return 1;
     }
-    let (address, token) = infrahub_settings(flags, |name| std::env::var(name).ok());
     let Some(token) = require_token(token) else {
         return 1;
     };
-    let infrahub = connect(&address, &token);
+    let infrahub = Infrahub::new(&address, &token);
     let Some(schema) = read_input(file, "schema", read_schema) else {
         return 1;
     };
@@ -1522,10 +1522,11 @@ fn event_addresses(lookup: impl Fn(&str) -> Option<String>) -> (String, String) 
 fn run_maintenance(flags: MaintenanceFlags) -> i32 {
     let state = flags.state || !flags.clear;
     let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
+    announce_rewrite(&address);
     let Some(token) = require_token(token) else {
         return 1;
     };
-    let infrahub = connect(&address, &token);
+    let infrahub = Infrahub::new(&address, &token);
     let saved = match infrahub.maintenance(&flags.kind, &flags.device, state) {
         Ok(saved) => saved,
         Err(error) => return infrahub_failed(error),
