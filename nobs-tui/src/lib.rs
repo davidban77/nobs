@@ -2,6 +2,7 @@ use std::fmt::Display;
 use std::io::{self, IsTerminal};
 use std::panic;
 use std::sync::mpsc::Receiver;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEvent};
@@ -26,9 +27,12 @@ pub fn run(sonda: Sonda) -> Result<(), String> {
         return Err("the screen needs a terminal".to_string());
     }
     let mut model = Model::new(sonda.url().to_string());
+    let main = thread::current().id();
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        restore();
+        if thread::current().id() == main {
+            restore();
+        }
         previous(info);
     }));
     let screen = Screen::open()?;
@@ -190,9 +194,10 @@ mod tests {
     }
 
     #[test]
-    fn an_update_sent_during_a_turn_is_drawn_on_the_next_turn() {
-        let (stub, poller, _updates, notes) = held();
+    fn an_update_and_a_note_sent_during_a_turn_are_drawn_on_the_next_turn() {
+        let (stub, poller, _updates, _notes) = held();
         let (sender, updates) = mpsc::channel();
+        let (note_sender, notes) = mpsc::channel();
         let mut model = Model::new(stub.url().to_string());
         let mut terminal = terminal();
         let mut turn = 0;
@@ -207,6 +212,12 @@ mod tests {
                         selected: None,
                     })
                     .unwrap();
+                note_sender
+                    .send(Note {
+                        at: Instant::now(),
+                        text: "loaded x1".to_string(),
+                    })
+                    .unwrap();
                 return Ok(None);
             }
             Ok(Some(q()))
@@ -216,6 +227,8 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
         assert!(screen.contains("> a1       cpu"), "{screen}");
+        let bottom: String = (0..80).map(|x| buffer[(x, 23)].symbol()).collect();
+        assert!(bottom.starts_with("loaded x1"), "{bottom}");
         poller.send(Command::Stop);
     }
 }
