@@ -336,7 +336,7 @@ pub struct PageFlags {
     #[arg(
         long,
         value_name = "HH:MM",
-        help = "Override the wall-clock printed in the page (HH:MM). Default: real time."
+        help = "Override the wall-clock printed in the page (HH:MM). Default: the current time in UTC."
     )]
     now: Option<String>,
     #[arg(

@@ -107,7 +107,7 @@ Options:
   -a, --alert <ALERT>    Alertname to filter by; the default is BgpSessionNotUp
   -d, --device <DEVICE>  Filter to alerts on this device.
   -p, --peer <PEER>      Filter to alerts on this peer_address.
-      --now <HH:MM>      Override the wall-clock printed in the page (HH:MM). Default: real time.
+      --now <HH:MM>      Override the wall-clock printed in the page (HH:MM). Default: the current time in UTC.
       --am-url <URL>     Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093
   -h, --help             Print help
 ";
