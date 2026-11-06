@@ -629,6 +629,10 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             "LOKI_URL",
             "ALERTMANAGER_URL",
             "INFRAHUB_ADDRESS",
+            "INFRAHUB_API_TOKEN",
+            "SONDA_SERVER_URL",
+            "SONDA_LOKI_SINK_URL",
+            "SONDA_API_KEY",
         ]);
     }
     let given = cli.dir.or_else(|| {
@@ -1473,6 +1477,12 @@ fn run_schema_load(file: &Path, flags: InfrahubFlags, runner: &dyn Runner) -> i3
     apply_schema(&connect(&address, &token), runner, file)
 }
 
+fn event_addresses(lookup: impl Fn(&str) -> Option<String>) -> (String, String) {
+    let server = given(lookup("SONDA_SERVER_URL")).unwrap_or_else(|| Urls::defaults().sonda);
+    let sink = given(lookup("SONDA_LOKI_SINK_URL")).unwrap_or_else(|| LOKI_SINK.to_string());
+    (server, sink)
+}
+
 fn run_maintenance(flags: MaintenanceFlags, runner: &dyn Runner) -> i32 {
     let state = flags.state || !flags.clear;
     let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
@@ -1485,11 +1495,8 @@ fn run_maintenance(flags: MaintenanceFlags, runner: &dyn Runner) -> i32 {
         Err(error) => return infrahub_failed(error),
     };
     println!("{}.maintenance: {} → {state}", flags.device, saved.previous);
-    let server =
-        given(std::env::var("SONDA_SERVER_URL").ok()).unwrap_or_else(|| Urls::defaults().sonda);
+    let (server, sink) = event_addresses(|name| std::env::var(name).ok());
     let key = given(std::env::var("SONDA_API_KEY").ok());
-    let sink =
-        given(std::env::var("SONDA_LOKI_SINK_URL").ok()).unwrap_or_else(|| LOKI_SINK.to_string());
     let body = annotation(&flags.device, state, &sink);
     let posted = match Sonda::new(server).api_key(key).event(body.as_bytes()) {
         Ok(reply) if reply.status >= 400 => {
@@ -1946,6 +1953,35 @@ mod tests {
         assert_eq!(
             alertmanager_address(Some(String::new()), |_| Some("  ".to_string())),
             "http://localhost:9093"
+        );
+    }
+
+    #[test]
+    fn the_event_addresses_are_the_variables_then_the_defaults() {
+        assert_eq!(
+            event_addresses(|_| None),
+            (
+                "http://localhost:8085".to_string(),
+                "http://loki:3001".to_string()
+            )
+        );
+        assert_eq!(
+            event_addresses(|name| match name {
+                "SONDA_SERVER_URL" => Some("http://var-sonda".to_string()),
+                "SONDA_LOKI_SINK_URL" => Some("http://var-sink".to_string()),
+                _ => None,
+            }),
+            (
+                "http://var-sonda".to_string(),
+                "http://var-sink".to_string()
+            )
+        );
+        assert_eq!(
+            event_addresses(|_| Some("  ".to_string())),
+            (
+                "http://localhost:8085".to_string(),
+                "http://loki:3001".to_string()
+            )
         );
     }
 

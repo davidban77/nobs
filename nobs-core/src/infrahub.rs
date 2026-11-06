@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::fmt;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -65,10 +67,24 @@ pub struct Infrahub {
 struct TempScript(PathBuf);
 
 impl TempScript {
-    fn new() -> Self {
+    fn create() -> Result<Self, Error> {
         let number = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
         let name = format!("nobs-infrahub-{}-{number}.py", std::process::id());
-        Self(std::env::temp_dir().join(name))
+        Self::create_at(std::env::temp_dir().join(name))
+    }
+
+    fn create_at(path: PathBuf) -> Result<Self, Error> {
+        let cannot =
+            |error: io::Error| Error::Uv(format!("cannot write {}: {error}", path.display()));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(cannot)?;
+        let script = Self(path.clone());
+        file.write_all(SCRIPT.as_bytes()).map_err(cannot)?;
+        Ok(script)
     }
 }
 
@@ -143,11 +159,10 @@ impl Infrahub {
     }
 
     fn call(&self, runner: &dyn Runner, words: &[OsString]) -> Result<String, Error> {
-        let script = TempScript::new();
-        fs::write(&script.0, SCRIPT)
-            .map_err(|error| Error::Uv(format!("cannot write {}: {error}", script.0.display())))?;
+        let script = TempScript::create()?;
         let mut args: Vec<OsString> = vec![
             "run".into(),
+            "--quiet".into(),
             "--script".into(),
             script.0.clone().into_os_string(),
         ];
@@ -214,8 +229,8 @@ pub fn annotation(device: &str, state: bool, sink: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::io;
+    use std::cell::{Cell, RefCell};
+    use std::os::unix::fs::PermissionsExt;
 
     use serde_json::json;
 
@@ -228,6 +243,7 @@ mod tests {
         fail: bool,
         code: i32,
         held: RefCell<Option<(PathBuf, Option<String>)>>,
+        mode: Cell<Option<u32>>,
     }
 
     impl Spy {
@@ -236,6 +252,7 @@ mod tests {
                 fail,
                 code,
                 held: RefCell::new(None),
+                mode: Cell::new(None),
             }
         }
 
@@ -261,8 +278,13 @@ mod tests {
             args: &[OsString],
             _: &[(String, String)],
         ) -> io::Result<Output> {
-            let path = PathBuf::from(&args[2]);
+            let path = PathBuf::from(&args[3]);
             let content = fs::read_to_string(&path).ok();
+            self.mode.set(
+                fs::metadata(&path)
+                    .ok()
+                    .map(|meta| meta.permissions().mode() & 0o777),
+            );
             *self.held.borrow_mut() = Some((path, content));
             if self.fail {
                 return Err(io::Error::other("no uv"));
@@ -347,8 +369,8 @@ mod tests {
         let call = only_call(&runner);
         assert_eq!(call.program, "uv");
         let args = texts(&call.args);
-        assert_eq!(args[..2], ["run", "--script"]);
-        assert_eq!(args[3..], ["schema", "/w/schema.yml"]);
+        assert_eq!(args[..3], ["run", "--quiet", "--script"]);
+        assert_eq!(args[4..], ["schema", "/w/schema.yml"]);
         assert_eq!(
             call.env,
             vec![
@@ -386,7 +408,7 @@ mod tests {
             .unwrap();
 
         let args = texts(&only_call(&runner).args);
-        assert_eq!(args[3..], ["seed", "/w/lab_vars.yml"]);
+        assert_eq!(args[4..], ["seed", "/w/lab_vars.yml"]);
     }
 
     #[test]
@@ -402,11 +424,11 @@ mod tests {
 
         let calls = runner.outputs();
         assert_eq!(
-            texts(&calls[0].args)[3..],
+            texts(&calls[0].args)[4..],
             ["maintenance", "srl1", "true", "--kind", "WorkshopDevice"]
         );
         assert_eq!(
-            texts(&calls[1].args)[3..],
+            texts(&calls[1].args)[4..],
             ["maintenance", "srl2", "false", "--kind", "Other"]
         );
     }
@@ -416,6 +438,37 @@ mod tests {
         let spy = Spy::new(false, 0);
         infrahub().schema(&spy, Path::new("s.yml")).unwrap();
         spy.assert_script_was_there_and_is_gone();
+    }
+
+    #[test]
+    fn the_temporary_file_can_be_read_and_written_by_its_owner_only_during_the_call() {
+        let spy = Spy::new(false, 0);
+        infrahub().schema(&spy, Path::new("s.yml")).unwrap();
+        assert_eq!(spy.mode.get(), Some(0o600));
+    }
+
+    #[test]
+    fn a_file_that_already_has_the_path_is_an_error_and_is_left_unchanged() {
+        let path = std::env::temp_dir().join(format!(
+            "nobs-infrahub-test-{}-existing.py",
+            std::process::id()
+        ));
+        fs::write(&path, "not the script").unwrap();
+
+        let result = TempScript::create_at(path.clone());
+
+        let kept = fs::read_to_string(&path);
+        let _ = fs::remove_file(&path);
+        match result.err() {
+            Some(Error::Uv(reason)) => {
+                assert!(
+                    reason.starts_with(&format!("cannot write {}: ", path.display())),
+                    "{reason}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(kept.unwrap(), "not the script");
     }
 
     #[test]
@@ -445,8 +498,8 @@ mod tests {
         infrahub().schema(&runner, Path::new("b.yml")).unwrap();
 
         let calls = runner.outputs();
-        let first = PathBuf::from(&calls[0].args[2]);
-        let second = PathBuf::from(&calls[1].args[2]);
+        let first = PathBuf::from(&calls[0].args[3]);
+        let second = PathBuf::from(&calls[1].args[3]);
         assert_ne!(first, second);
         for path in [first, second] {
             assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));
@@ -563,18 +616,20 @@ mod tests {
 
     #[test]
     fn no_call_changes_the_environment_of_nobs() {
+        let address = std::env::var_os("INFRAHUB_ADDRESS");
+        let token = std::env::var_os("INFRAHUB_API_TOKEN");
         for runner in [
             FakeRunner::answering(SEED_REPLY),
             FakeRunner::failing(),
             FakeRunner::returning(1),
         ] {
             let _ = infrahub().schema(&runner, Path::new("s.yml"));
-            assert_eq!(std::env::var_os("INFRAHUB_ADDRESS"), None);
+            assert_eq!(std::env::var_os("INFRAHUB_ADDRESS"), address);
             let _ = infrahub().seed(&runner, Path::new("l.yml"));
-            assert_eq!(std::env::var_os("INFRAHUB_ADDRESS"), None);
+            assert_eq!(std::env::var_os("INFRAHUB_ADDRESS"), address);
             let _ = infrahub().maintenance(&runner, "WorkshopDevice", "srl1", true);
-            assert_eq!(std::env::var_os("INFRAHUB_ADDRESS"), None);
-            assert_eq!(std::env::var_os("INFRAHUB_API_TOKEN"), None);
+            assert_eq!(std::env::var_os("INFRAHUB_ADDRESS"), address);
+            assert_eq!(std::env::var_os("INFRAHUB_API_TOKEN"), token);
         }
     }
 

@@ -180,8 +180,8 @@ impl Logged {
     fn words(&self) -> &str {
         let rest = self
             .args
-            .strip_prefix("run --script ")
-            .expect("uv was run with run --script");
+            .strip_prefix("run --quiet --script ")
+            .expect("uv was run with run --quiet --script");
         rest.split_once(' ').map_or("", |(_, words)| words)
     }
 }
@@ -701,6 +701,20 @@ fn a_blank_flag_counts_as_not_given() {
     let call = &logged(&copy)[0];
     assert_eq!(call.address, HOST_ADDRESS);
     assert_eq!(call.token, TOKEN);
+}
+
+#[test]
+fn a_blank_token_in_the_shell_lets_the_dot_env_token_through() {
+    let copy = Copy::new("blank-shell-token");
+
+    let output = nobs_env(
+        &copy,
+        &["load-infrahub", "--skip-schema"],
+        &[("INFRAHUB_API_TOKEN", "  ")],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(logged(&copy)[0].token, TOKEN);
 }
 
 #[test]

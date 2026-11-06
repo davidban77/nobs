@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["infrahub-sdk==1.23.2", "pyyaml>=6"]
+# dependencies = ["infrahub-sdk==1.23.2", "pyyaml==6.0.3"]
 # ///
 """Fallback Infrahub client for nobs: schema load, workshop seed and the maintenance toggle."""
 
