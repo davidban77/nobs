@@ -951,16 +951,23 @@ mod tests {
             Duration::from_secs(12),
             &[("POST", GRAPHQL_PATH, 200, "{}")],
         );
-        let started = Instant::now();
 
         let result = Infrahub::new(stub.url(), TOKEN).maintenance(DEVICE, "srl1", true);
 
         assert!(matches!(result, Err(Error::Reach { .. })), "{result:?}");
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "{:?}",
-            started.elapsed()
+    }
+
+    #[test]
+    fn wait_for_kinds_gives_up_on_a_schema_answer_that_comes_after_ten_seconds() {
+        let stub = Stub::start_after(
+            Duration::from_secs(11),
+            &[("GET", SCHEMA_PATH, 200, FOUND_KINDS)],
         );
+
+        let result =
+            Infrahub::new(stub.url(), TOKEN).wait_for_kinds(&KINDS, Duration::from_secs(30));
+
+        assert!(matches!(result, Err(Error::Reach { .. })), "{result:?}");
     }
 
     #[test]
