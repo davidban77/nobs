@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are seventeen. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca` and `evidence` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are nineteen. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca`, `evidence`, `cycle` and `page` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -124,6 +124,8 @@ known: nobs-t-two
 | `nobs <workshop> maintenance -d NAME [OPTIONS]` | no Docker call | sets or clears the maintenance flag of a device in Infrahub, then tells Sonda; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
 | `nobs <workshop> rca [DEVICE] [PEER] [OPTIONS]` | no Docker call | prints the most recent AI RCA records from Loki; the options are in [rca and evidence](#rca-and-evidence) |
 | `nobs <workshop> evidence DEVICE PEER [OPTIONS]` | no Docker call | prints what Infrahub, Prometheus and Loki say about one BGP session, then a policy hint; the options are in [rca and evidence](#rca-and-evidence) |
+| `nobs <workshop> cycle DEVICE PEER [OPTIONS]` | no Docker call | prints four panels about one BGP session: its alert, its silences, the flow runs of the automation and the last decision; with `--trigger` it first starts a new cycle through the webhook; the options are in [cycle and page](#cycle-and-page) |
+| `nobs <workshop> page [OPTIONS]` | no Docker call | prints a fake on-call page for a firing alert; the options are in [cycle and page](#cycle-and-page) |
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
@@ -174,7 +176,7 @@ schema_file = "infrahub/schema.yml"
 sonda = "ghcr.io/davidban77/sonda:1.22.2"
 ```
 
-Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file` and `evidence_query`; it checks the others but does not use them.
+Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file`, `evidence_query` and `workflow_label`; it checks the others but does not use them. `cycle` uses `workflow_label` as the value of the `workflow` label it looks for in Loki (see [cycle and page](#cycle-and-page)).
 
 The `evidence_query` setting is a Loki query. It may hold the placeholders `{device}` and `{peer}`. `nobs <workshop> evidence` replaces each one with the device and the peer you give it, and sends the result to Loki. For example, `evidence_query = "{device=\"{device}\"} != \"license\""` becomes `{device="srl1"} != "license"` for the device `srl1`. The braces around the placeholders belong to the query and stay.
 
@@ -520,9 +522,137 @@ The last block shows the first row of this table that fits:
 | Exit code | When |
 |---|---|
 | 0 | `rca` printed records or the line that says there are none; `evidence` printed its four blocks |
-| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query Loki at <address>: <reason>`. `<reason>` is why nobs could not connect; or `Loki answered <status> on /loki/api/v1/query_range: <answer>`, where `<answer>` is the first 200 characters of the answer; or `Loki answered with text nobs cannot read: <reason>` |
+| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query Loki at <address>: <reason>`. `<reason>` is one of three texts: why nobs could not connect; `Loki answered <status> on /loki/api/v1/query_range: <answer>`, where `<answer>` is the first 200 characters of the answer; or `Loki answered with text nobs cannot read: <error>`, where `<error>` says what was wrong with the answer |
 | 1 | `evidence` has no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 2 | a flag nobs does not know, a missing `DEVICE` or `PEER` for `evidence`, or a value that is not a whole number of 0 or more for `--last`, `--minutes`, `--log-minutes` or `--log-limit` |
+
+### cycle and page
+
+Two commands show a BGP session from the side of the automation that reacts to its alert. Both only read, except `cycle --trigger`, and neither makes a Docker call. Inside a workshop folder, `nobs cycle` and `nobs page` do the same. Prefect is the tool that runs the automation flows of the workshop, and a flow run is one run of a flow. The webhook is a web address that receives an alert and starts the flow that handles it. An annotation is a pair of a key and a value, like a label, but it holds text for people, such as `summary`.
+
+| Command | What it does |
+|---|---|
+| `nobs <workshop> cycle DEVICE PEER` | prints four panels about one BGP session: its alert, its silences, the flow runs of the automation and the last decision |
+| `nobs <workshop> page` | prints a fake on-call page for a firing alert, as if a pager had just gone off |
+
+| Command | Argument or flag | What it does |
+|---|---|---|
+| `cycle` | `DEVICE`, `PEER` | give the device and the IP address of its peer; both are required |
+| `cycle` | `--trigger` | before the panels, sends a new alert to the webhook and waits for the flow run it starts |
+| `cycle` | `--status STATUS` | gives the status of the alert that `--trigger` sends, `firing` or `resolved`; the default is `firing`; any other value is a usage error, with or without `--trigger` |
+| `cycle` | `--minutes N` | gives how far back the flow runs and the decision are looked for; the default is 30 |
+| `cycle` | `--am-url URL`, `--loki-url URL`, `--prefect-url URL`, `--webhook-url URL` | give the addresses of Alertmanager, Loki, Prefect and the webhook |
+| `page` | `-a ALERT`, `--alert ALERT` | shows only an alert with this name; the default is `BgpSessionNotUp`, and an empty name filters nothing |
+| `page` | `-d DEVICE`, `--device DEVICE` | shows only an alert on this device; the default is empty, which filters nothing |
+| `page` | `-p PEER`, `--peer PEER` | shows only an alert for this peer address; the default is empty, which filters nothing |
+| `page` | `--now HH:MM` | gives the time printed after `PAGED`; the default is the current time in UTC |
+| `page` | `--am-url URL` | gives the address of Alertmanager |
+
+nobs finds each address in this order: the flag, then the variable, then the default.
+
+| Value | Flag | Variable | Default |
+|---|---|---|---|
+| the address of Alertmanager | `--am-url URL` | `ALERTMANAGER_URL` | `http://localhost:9093` |
+| the address of Loki (`cycle`) | `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` |
+| the address of Prefect (`cycle`) | `--prefect-url URL` | `PREFECT_API_URL` | `http://localhost:4200` |
+| the address of the webhook (`cycle`) | `--webhook-url URL` | `WEBHOOK_URL` | `http://localhost:9997/v1/api/webhook` |
+
+A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Alertmanager, Loki or Prefect is dropped, and so is a trailing `/api` on the address of Prefect, so `http://localhost:4200/api` works as well as `http://localhost:4200`. The address of the webhook is used as it is given. `nobs <workshop> status` does not read `PREFECT_API_URL`. Each call waits at most 10 seconds, and the post to the webhook waits at most 15.
+
+`cycle` prints a blank line, a title line and a body for each of four panels, in the order of the table below. When a call fails, the panel keeps its title and its body is the error. The exit code stays 0 whatever the panels found. For example, with an alert that a silence mutes, and a flow that started three child flows:
+
+```
+$ nobs nobs-t-one cycle srl1 10.1.99.2
+
+Alert
+BgpSessionNotUp · warning · state=suppressed · age 4m29s
+silencedBy: 3f2a9c1e-7b4…
+
+Silences (this peer)
+ID             State   Starts    Ends      Remaining
+3f2a9c1e-7b4…  active  10:16:00  10:36:00  16m0s
+
+Prefect flow runs (last 30m)
+Started   State      Flow
+10:15:40  COMPLETED  quarantine_bgp | srl1:10.1.99.2
+10:15:41  COMPLETED    ├─ evidence
+10:15:44  COMPLETED    ├─ policy
+10:15:45  COMPLETED    └─ action
+
+Most recent decision
+10:15:48  decision=proceed
+reason: SoT expects peer up, but metrics show mismatch
+
+  To drive a fresh cycle (bypassing Alertmanager's repeat_interval):
+    nobs nobs-t-one cycle srl1 10.1.99.2 --trigger
+```
+
+| Panel | What it shows | When nothing is found | When the call fails |
+|---|---|---|---|
+| `Alert` | the alerts named `BgpSessionNotUp` whose `device` and `peer_address` labels are `DEVICE` and `PEER`, from one call to Alertmanager that includes silenced and inhibited alerts | `No BgpSessionNotUp alert active for <device> → <peer>.` | `Alertmanager query failed: <error>` |
+| `Silences (this peer)` | the silences that match `device` equal to `DEVICE` and `peer_address` equal to `PEER`, in every state, the newest start first, at most 5 | `No silences scoped to <device> → <peer>.` | `silences query failed: <error>` |
+| `Prefect flow runs (last <minutes>m)` | the flow runs of this device and peer that started within `--minutes`, the newest first, at most 5 runs, each with its child runs | `No quarantine_bgp / resolved_bgp runs for <device>:<peer> in the last <minutes>m.` | `Prefect query failed: <error>` |
+| `Most recent decision` | the newest decision record in Loki for this device and peer within `--minutes` | `No decision audit records for <device> → <peer> in the last <minutes>m.` | `Loki query failed: <error>` |
+
+Each alert in the first panel gives two lines. The first is `BgpSessionNotUp · <severity> · state=<state> · age <age>`. `<severity>` is the `severity` label, or `?` when the alert has none. `<state>` is `firing` when Alertmanager sent the state `active`, `pending` for `unprocessed`, `?` when it sent none, and otherwise the state as it sent it, for example `suppressed`. `<age>` is the time since the alert started, written as in the `alerts` table (`42s`, `3m05s`, `2h07m` or `1d3h`), or `?` when nobs cannot read the start time. The second line is `silencedBy: <id>…` with the first 12 characters of the first silence that mutes the alert, followed by ` (+<n> more)` when `<n>` more silences mute it, or `silencedBy: (none)`.
+
+The silence table has one header line and one line per silence, with these columns:
+
+| Column | What it shows |
+|---|---|
+| `ID` | the first 12 characters of the silence id, then `…`; `?` when it has none |
+| `State` | the state Alertmanager sent, for example `active`, `pending` or `expired`, or `?` when it sent none |
+| `Starts` | the time part `HH:MM:SS` of the start, in UTC |
+| `Ends` | the time part `HH:MM:SS` of the end, in UTC |
+| `Remaining` | the time until the end as in `silences`, for example `16m0s`; `—` when the end has passed, and `?` when nobs cannot read the end time |
+
+For the flow runs, nobs asks Prefect for the 100 newest flow runs and keeps those whose `device` and `peer_address` parameters are `DEVICE` and `PEER`. Some flows start other flows. When a selected run has a parent, nobs asks Prefect for the task runs it needs, and shows each child run under its parent as `├─ <name>`, with `└─ <name>` for the last one, the oldest first. The name of a child is cut before the first ` | `. A run with no parent among the selected runs gets its own line. When no selected run has a parent, or when the call for the task runs fails, the list is flat. The columns are `Started` (the time part `HH:MM:SS` of the start, in UTC), `State` (the state type that Prefect sent, for example `COMPLETED`, `RUNNING` or `FAILED`, or `?`) and `Flow` (the name of the run, or `?` when it has none).
+
+For the decision, nobs sends one request to Loki for the newest line that has the labels `source="prefect"`, `workflow` equal to the `workflow_label` setting of the workshop, `device`, `peer_address` and a `decision` that is not empty. It prints `<time>  decision=<decision>` and `reason: <message>`, where `<time>` is the `HH:MM:SS` part of the `timestamp` of the line, `<decision>` is its `decision` label (`?` when it is missing) and `<message>` is its `message`. When the line is not a JSON object, the body is `Could not parse latest decision JSON.`
+
+Without `--trigger`, nobs ends with the blank line and the two lines of the example above, where `<name>` is the `name` setting of the workshop. With `--trigger`, nobs first does this:
+
+| Step | What nobs does |
+|---|---|
+| 1 | asks Prefect for the flow runs of this device and peer that started in the last 120 minutes, and notes the start of the newest one; when there is none, or the call fails, it notes the current time |
+| 2 | sends one alert for `BgpSessionNotUp`, with the status from `--status`, to the webhook; this skips the `repeat_interval` of Alertmanager, the time it waits before it sends the same alert again |
+| 3 | prints `posted <status> payload for <device> → <peer>; waiting for new flow run …` |
+| 4 | asks Prefect again every 2 seconds, at most 15 times and at most 30 seconds in all, for the flow runs of the last 120 minutes; at the first run that started after the note it prints `new flow run started at <HH:MM:SS>`; when there is none it prints `no new flow run appeared within 30s; rendering current state anyway.`; a call that fails counts as no run |
+| 5 | waits 2 more seconds, then prints the four panels, without the last two lines of the example above |
+
+`page` asks Alertmanager once for the alerts. It keeps the alerts in the state `active`, and, for each of `-a`, `-d` and `-p` that is not empty, the alerts whose `alertname`, `device` or `peer_address` label is equal to it. An alert that a silence or an inhibit rule mutes has the state `suppressed`, so once the automation has silenced a peer, `page` does not find its alert. nobs prints the page of the first alert that is left. The folder in the last line is the workshop folder as nobs found it. For example:
+
+```
+$ nobs nobs-t-one page -d srl1 -p 10.1.99.2 --now 02:14
+on-call
+PAGED 02:14
+BgpSessionNotUp on srl1 — peer 10.1.99.2
+BGP peer 10.1.99.2 not reaching Established
+firing for: ~4 min
+severity: warning
+
+You're awake. The dashboard is your only friend.
+
+  Confirm the alert: nobs nobs-t-one alerts
+  Open the runbook:  /home/me/repo/workshops/nobs-t-one/guides/
+```
+
+| Line | What it shows |
+|---|---|
+| `PAGED <time>` | the time you gave with `--now`, as you gave it; without `--now`, the current time in UTC as `HH:MM`, because nobs does not know the time zone of the machine |
+| the third line | the `alertname` label (`unknown alert` when it is missing), then ` on <device>` when the `device` label is set, then ` — peer <peer_address>` when the `peer_address` label is set |
+| the fourth line | the `summary` annotation of the alert when it has one; otherwise `BGP peer <peer_address> not reaching Established` for `BgpSessionNotUp`, `interface <interface> flapping above threshold` for `PeerInterfaceFlapping`, and `alert <alertname> firing` for any other alert, where a missing label shows as `?` |
+| `firing for: <time>` | the time since the alert started, rounded: `<1 min`, `~<m> min` under an hour, `~<h>h<mm>m` from an hour, and `unknown` when nobs cannot read the start time |
+| `severity: <severity>` | the `severity` label, or `unknown` when it is missing |
+| the last two lines | the command that lists the alerts, with the `name` setting of the workshop, and the `guides/` folder of the workshop |
+
+| Exit code | When |
+|---|---|
+| 0 | `cycle` printed its panels, whatever they found; `page` printed the page |
+| 1 | `cycle --trigger` could not post to the webhook: `nobs: could not POST to webhook: <reason>`, where `<reason>` is `cannot reach <address>: <error>` or `the webhook answered <status>: <answer>`, and `<answer>` is the first 200 characters of the answer |
+| 1 | `page` could not get the alerts: `nobs: Alertmanager fetch failed: <error>` |
+| 1 | `page` found no active alert that fits the filters: ``nobs: no firing alert matched the filters. Run `nobs <name> alerts` to see what's currently firing.`` |
+| 2 | a flag nobs does not know, a missing `DEVICE` or `PEER` for `cycle`, a `--status` other than `firing` or `resolved`, or a value that is not a whole number of 0 or more for `--minutes` |
 
 ## Setup and preflight
 
