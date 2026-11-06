@@ -98,7 +98,7 @@ pub fn probe(target: &Target) -> Probe {
         (target.base.clone(), result)
     } else {
         let url = format!("{}{}", target.base, target.path);
-        let result = http::get(&url, TIMEOUT);
+        let result = http::get(&url, TIMEOUT).map(|reply| reply.status);
         (url, result)
     };
     let state = match result {
