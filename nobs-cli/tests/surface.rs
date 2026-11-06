@@ -93,6 +93,12 @@ fn the_root_help_names_the_groups_workshops_and_the_dir_flag() {
 }
 
 #[test]
+fn the_root_help_names_tui() {
+    let commands = commands_block(&help(&[]));
+    assert!(commands.iter().any(|word| word == "tui"), "{commands:?}");
+}
+
+#[test]
 fn the_root_help_names_setup_and_preflight_with_their_descriptions() {
     let help = help(&[]);
     let commands = commands_block(&help);

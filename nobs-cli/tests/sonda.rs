@@ -283,6 +283,44 @@ fn health_against_a_closed_port_exits_1_and_says_cannot_reach() {
 }
 
 #[test]
+fn tui_help_names_the_two_flags_and_says_what_the_screen_is() {
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["tui", "--help"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let help = stdout(&output);
+    for text in [
+        "--server",
+        "--api-key",
+        "screen with the scenarios of a running sonda-server",
+    ] {
+        assert!(help.contains(text), "{text}\n{help}");
+    }
+}
+
+#[test]
+fn tui_without_a_terminal_exits_1_with_the_reason_and_prints_nothing() {
+    let folder = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sonda-no-dot-env");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["tui", "--server", "http://127.0.0.1:1"])
+        .env_remove("SONDA_SERVER_URL")
+        .env_remove("SONDA_API_KEY")
+        .current_dir(folder)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let message = stderr(&output);
+    assert!(message.starts_with("nobs: "), "{message}");
+    assert!(message.contains("terminal"), "{message}");
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
 fn the_hello_fixture_is_a_runnable_scenario_named_for_the_tests() {
     let text = std::fs::read_to_string(fixture("hello.yaml")).unwrap();
 

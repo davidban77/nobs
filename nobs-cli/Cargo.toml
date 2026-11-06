@@ -15,3 +15,4 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 nobs-core = { path = "../nobs-core" }
+nobs-tui = { path = "../nobs-tui" }
