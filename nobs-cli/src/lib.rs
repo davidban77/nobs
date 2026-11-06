@@ -83,6 +83,13 @@ pub enum Command {
         #[command(subcommand)]
         command: SondaCommand,
     },
+    #[command(
+        about = "Open a screen with the scenarios of a running sonda-server, refreshed every second"
+    )]
+    Tui {
+        #[command(flatten)]
+        flags: SondaFlags,
+    },
     #[command(about = "List the workshops nobs can find")]
     Workshops,
     #[command(
@@ -731,7 +738,7 @@ pub enum DockerCommand {
 }
 
 pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
-    if matches!(cli.command, Command::Sonda { .. }) {
+    if matches!(cli.command, Command::Sonda { .. } | Command::Tui { .. }) {
         remove_blank_variables(&["SONDA_SERVER_URL", "SONDA_API_KEY"]);
     }
     if matches!(cli.command, Command::External(_)) {
@@ -760,6 +767,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         Command::Sonda { flags, command } => {
             return with_env(Path::new("."), || run_sonda(flags, command))
         }
+        Command::Tui { flags } => return with_env(Path::new("."), || run_tui(flags)),
         Command::Workshops => return with_env(Path::new("."), || list_workshops(given)),
         Command::Setup => {
             return with_env(Path::new("."), || {
@@ -1914,12 +1922,26 @@ fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
     1
 }
 
-fn run_sonda(flags: SondaFlags, command: SondaCommand) -> i32 {
+fn sonda_client(flags: SondaFlags) -> Sonda {
     let server = given(flags.server)
         .or_else(|| given(std::env::var("SONDA_SERVER_URL").ok()))
         .unwrap_or_else(|| Sonda::DEFAULT_URL.to_string());
     let key = given(flags.api_key).or_else(|| given(std::env::var("SONDA_API_KEY").ok()));
-    let sonda = Sonda::new(server).api_key(key);
+    Sonda::new(server).api_key(key)
+}
+
+fn run_tui(flags: SondaFlags) -> i32 {
+    match nobs_tui::run(sonda_client(flags)) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("nobs: {error}");
+            1
+        }
+    }
+}
+
+fn run_sonda(flags: SondaFlags, command: SondaCommand) -> i32 {
+    let sonda = sonda_client(flags);
     match command {
         SondaCommand::Health => answer(sonda.health(), print_body),
         SondaCommand::Ready => answer(sonda.ready(), print_body),
