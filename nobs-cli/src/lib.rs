@@ -1658,9 +1658,14 @@ fn run_maintenance(flags: MaintenanceFlags) -> i32 {
     0
 }
 
-fn service_address(flag: Option<String>, variable: &str, default: &str) -> String {
+fn service_address(
+    flag: Option<String>,
+    variable: &str,
+    default: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> String {
     given(flag)
-        .or_else(|| given(std::env::var(variable).ok()))
+        .or_else(|| given(lookup(variable)))
         .unwrap_or_else(|| default.to_string())
 }
 
@@ -1682,6 +1687,7 @@ fn run_rca(flags: RcaFlags, located: &Located) -> i32 {
         flags.loki_url,
         "LOKI_URL",
         loki::DEFAULT_URL,
+        |name| std::env::var(name).ok(),
     ));
     let lines = match client.query_range(&query, flags.minutes, flags.last, SystemTime::now()) {
         Ok(lines) => lines,
@@ -1846,6 +1852,7 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
         flags.prom_url,
         "PROMETHEUS_URL",
         prometheus::DEFAULT_URL,
+        |name| std::env::var(name).ok(),
     ));
     let metrics = read_metrics(
         &prometheus,
@@ -1859,6 +1866,7 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
         flags.loki_url,
         "LOKI_URL",
         loki::DEFAULT_URL,
+        |name| std::env::var(name).ok(),
     ))
     .query_range(
         &query,
@@ -2337,6 +2345,36 @@ mod tests {
             alertmanager_address(Some(String::new()), |_| Some("  ".to_string())),
             "http://localhost:9093"
         );
+    }
+
+    #[test]
+    fn the_loki_and_prometheus_addresses_are_the_flag_then_the_variable_then_the_default() {
+        let variable = |name: &str| Some(format!("http://var-{name}"));
+        let blank = |_: &str| Some("  ".to_string());
+        let cases = [
+            ("LOKI_URL", loki::DEFAULT_URL),
+            ("PROMETHEUS_URL", prometheus::DEFAULT_URL),
+        ];
+
+        for (name, default) in cases {
+            assert_eq!(
+                service_address(Some("http://flag".to_string()), name, default, variable),
+                "http://flag"
+            );
+            assert_eq!(
+                service_address(Some(" ".to_string()), name, default, variable),
+                format!("http://var-{name}")
+            );
+            assert_eq!(
+                service_address(None, name, default, variable),
+                format!("http://var-{name}")
+            );
+            assert_eq!(service_address(None, name, default, |_| None), default);
+            assert_eq!(
+                service_address(Some(String::new()), name, default, blank),
+                default
+            );
+        }
     }
 
     #[test]

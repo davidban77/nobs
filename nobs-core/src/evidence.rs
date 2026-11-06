@@ -125,7 +125,7 @@ pub fn rca_record(line: &str) -> Option<RcaRecord> {
         .strip_prefix(RCA_PREFIX)
         .map_or(message.as_str(), |rest| rest.trim_start_matches('\n'));
     Some(RcaRecord {
-        timestamp: text(record.get("timestamp"), UNKNOWN_FIELD),
+        timestamp: text(record.get("timestamp"), ""),
         device: text(record.pointer("/labels/device"), UNKNOWN_FIELD),
         peer: text(record.pointer("/labels/peer_address"), UNKNOWN_FIELD),
         message: message.to_string(),
@@ -401,7 +401,7 @@ mod tests {
 
     fn all_unknown() -> RcaRecord {
         RcaRecord {
-            timestamp: "?".to_string(),
+            timestamp: String::new(),
             device: "?".to_string(),
             peer: "?".to_string(),
             message: String::new(),
@@ -456,7 +456,8 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_null_field_reads_as_a_question_mark_and_a_missing_message_as_empty() {
+    fn a_missing_or_null_label_reads_as_a_question_mark_and_a_missing_timestamp_or_message_as_empty(
+    ) {
         for line in [
             "{}",
             r#"{"timestamp":null,"message":null,"labels":null}"#,
@@ -468,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn a_json_value_that_is_not_an_object_reads_as_question_marks() {
+    fn a_json_value_that_is_not_an_object_has_an_empty_timestamp_and_question_mark_labels() {
         for line in ["123", "null", r#""AI RCA: text""#, r#"["srl1"]"#] {
             assert_eq!(record(line), all_unknown(), "{line}");
         }
