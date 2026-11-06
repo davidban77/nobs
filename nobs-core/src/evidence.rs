@@ -1,6 +1,10 @@
+use serde_json::Value;
+
 use crate::infrahub::{DeviceIntent, IntentSession};
 
 const MISSING: &str = "—";
+const UNKNOWN_FIELD: &str = "?";
+const RCA_PREFIX: &str = "AI RCA:";
 const ADMIN: [&str; 2] = ["enable", "disable"];
 const OPER: [&str; 5] = ["up", "down", "idle", "connect", "active"];
 const DEFAULT_AFI_SAFI: &str = "ipv4-unicast";
@@ -99,6 +103,33 @@ pub fn fill(query: &str, device: &str, peer: &str) -> String {
         .map(|part| part.replace("{peer}", peer))
         .collect::<Vec<_>>()
         .join(device)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RcaRecord {
+    pub timestamp: String,
+    pub device: String,
+    pub peer: String,
+    pub message: String,
+}
+
+pub fn rca_record(line: &str) -> Option<RcaRecord> {
+    let record: Value = serde_json::from_str(line).ok()?;
+    let text = |value: Option<&Value>, missing: &str| match value {
+        None | Some(Value::Null) => missing.to_string(),
+        Some(Value::String(text)) => text.clone(),
+        Some(other) => other.to_string(),
+    };
+    let message = text(record.get("message"), "");
+    let message = message
+        .strip_prefix(RCA_PREFIX)
+        .map_or(message.as_str(), |rest| rest.trim_start_matches('\n'));
+    Some(RcaRecord {
+        timestamp: text(record.get("timestamp"), UNKNOWN_FIELD),
+        device: text(record.pointer("/labels/device"), UNKNOWN_FIELD),
+        peer: text(record.pointer("/labels/peer_address"), UNKNOWN_FIELD),
+        message: message.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -358,5 +389,88 @@ mod tests {
             result,
             pair("proceed", "SoT expects peer up, but metrics show mismatch")
         );
+    }
+
+    fn record(line: &str) -> RcaRecord {
+        rca_record(line).unwrap()
+    }
+
+    fn message_of(text: &str) -> String {
+        record(&format!(r#"{{"message":"{text}"}}"#)).message
+    }
+
+    fn all_unknown() -> RcaRecord {
+        RcaRecord {
+            timestamp: "?".to_string(),
+            device: "?".to_string(),
+            peer: "?".to_string(),
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_line_that_is_not_json_is_not_a_record() {
+        for line in ["", "not json", r#"{"message":"#, "2026-11-06 BGP down"] {
+            assert_eq!(rca_record(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn rca_record_reads_the_timestamp_the_labels_and_the_message() {
+        let line = r#"{"timestamp":"2026-11-06T10:15:48.201Z","message":"plain text","labels":{"device":"srl1","peer_address":"10.1.99.2"}}"#;
+
+        assert_eq!(
+            record(line),
+            RcaRecord {
+                timestamp: "2026-11-06T10:15:48.201Z".to_string(),
+                device: "srl1".to_string(),
+                peer: "10.1.99.2".to_string(),
+                message: "plain text".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_device_and_the_peer_are_read_one_by_one() {
+        let device_only = record(r#"{"labels":{"device":"srl1"}}"#);
+        let peer_only = record(r#"{"labels":{"peer_address":"10.1.99.2"}}"#);
+
+        assert_eq!(device_only.device, "srl1");
+        assert_eq!(device_only.peer, "?");
+        assert_eq!(peer_only.device, "?");
+        assert_eq!(peer_only.peer, "10.1.99.2");
+    }
+
+    #[test]
+    fn the_prefix_and_the_newlines_right_after_it_are_removed_and_a_following_space_is_kept() {
+        assert_eq!(message_of(r"AI RCA:\n\n## Cause\nmore"), "## Cause\nmore");
+        assert_eq!(message_of("AI RCA: Check it"), " Check it");
+        assert_eq!(message_of(r"AI RCA:\n Check it"), " Check it");
+        assert_eq!(message_of("AI RCA:"), "");
+    }
+
+    #[test]
+    fn a_message_without_the_prefix_at_its_start_is_kept_whole() {
+        assert_eq!(message_of(r"\nAI RCA: later"), "\nAI RCA: later");
+        assert_eq!(message_of("Note: AI RCA: later"), "Note: AI RCA: later");
+    }
+
+    #[test]
+    fn a_missing_or_null_field_reads_as_a_question_mark_and_a_missing_message_as_empty() {
+        for line in [
+            "{}",
+            r#"{"timestamp":null,"message":null,"labels":null}"#,
+            r#"{"labels":{"device":null,"peer_address":null}}"#,
+            r#"{"labels":"srl1"}"#,
+        ] {
+            assert_eq!(record(line), all_unknown(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_json_value_that_is_not_an_object_reads_as_question_marks() {
+        for line in ["123", "null", r#""AI RCA: text""#, r#"["srl1"]"#] {
+            assert_eq!(record(line), all_unknown(), "{line}");
+        }
     }
 }

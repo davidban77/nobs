@@ -10,13 +10,16 @@ use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
+use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::infrahub::{
-    annotation, host_address, read_schema, Error as InfrahubError, Infrahub, Seed, DEFAULT_ADDRESS,
-    KINDS,
+    annotation, host_address, read_schema, DeviceIntent, Error as InfrahubError, Infrahub,
+    IntentSession, Seed, DEFAULT_ADDRESS, KINDS,
 };
 use nobs_core::lab_vars;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
+use nobs_core::loki::{self, Loki};
 use nobs_core::preflight::{preflight, Check, Status};
+use nobs_core::prometheus::{self, Prometheus};
 use nobs_core::runner::Runner;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
@@ -195,6 +198,106 @@ pub enum WorkshopCommand {
         #[command(flatten)]
         flags: MaintenanceFlags,
     },
+    #[command(about = "Print the most recent AI RCA narratives from Loki.")]
+    Rca {
+        #[command(flatten)]
+        flags: RcaFlags,
+    },
+    #[command(
+        about = "Print the source-of-truth gate, BGP metrics snapshot, recent log lines, and a policy hint for one device and peer."
+    )]
+    Evidence {
+        #[command(flatten)]
+        flags: EvidenceFlags,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct RcaFlags {
+    #[arg(help = "Device name (e.g. srl1). Optional — defaults to any device.")]
+    device: Option<String>,
+    #[arg(help = "Peer IP (e.g. 10.1.99.2). Optional — defaults to any peer.")]
+    peer: Option<String>,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 1,
+        help = "Number of most-recent records to show."
+    )]
+    last: u64,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 60,
+        help = "How far back to look."
+    )]
+    minutes: u64,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
+    )]
+    loki_url: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EvidenceFlags {
+    #[arg(help = "Device name (e.g. srl1).")]
+    device: String,
+    #[arg(help = "Peer IP address (e.g. 10.1.99.2).")]
+    peer: String,
+    #[arg(
+        long,
+        value_name = "NAME",
+        default_value = "ipv4-unicast",
+        help = "Address family of the BGP session"
+    )]
+    afi_safi: String,
+    #[arg(
+        long,
+        value_name = "NAME",
+        default_value = "default",
+        help = "Name of the network instance of the BGP session"
+    )]
+    instance: String,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 10,
+        help = "How many minutes back to look for log lines"
+    )]
+    log_minutes: u64,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 20,
+        help = "How many log lines to show at most"
+    )]
+    log_limit: u64,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090"
+    )]
+    prom_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
+    )]
+    loki_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
+    )]
+    infrahub_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN"
+    )]
+    token: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1097,6 +1200,8 @@ fn run_workshop_command(
             command: SchemaCommand::Load { path, infrahub },
         } => run_schema_load(&located.dir.join(path), infrahub),
         WorkshopCommand::Maintenance { flags } => run_maintenance(flags),
+        WorkshopCommand::Rca { flags } => run_rca(flags, located),
+        WorkshopCommand::Evidence { flags } => run_evidence(flags, located),
     }
 }
 
@@ -1550,6 +1655,247 @@ fn run_maintenance(flags: MaintenanceFlags) -> i32 {
     } else {
         println!("The next alert for this device will be evaluated normally.");
     }
+    0
+}
+
+fn service_address(flag: Option<String>, variable: &str, default: &str) -> String {
+    given(flag)
+        .or_else(|| given(std::env::var(variable).ok()))
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn run_rca(flags: RcaFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let device = given(flags.device);
+    let peer = given(flags.peer);
+    let mut query = String::from(r#"{source="prefect", ai_rca="true""#);
+    if let Some(device) = &device {
+        query.push_str(&format!(r#", device="{device}""#));
+    }
+    if let Some(peer) = &peer {
+        query.push_str(&format!(r#", peer_address="{peer}""#));
+    }
+    query.push('}');
+    let client = Loki::new(service_address(
+        flags.loki_url,
+        "LOKI_URL",
+        loki::DEFAULT_URL,
+    ));
+    let lines = match client.query_range(&query, flags.minutes, flags.last, SystemTime::now()) {
+        Ok(lines) => lines,
+        Err(error) => {
+            let reason = match error {
+                loki::Error::Reach { reason, .. } => reason,
+                other => other.to_string(),
+            };
+            eprintln!("nobs: Failed to query Loki at {}: {reason}", client.url());
+            return 1;
+        }
+    };
+    if lines.is_empty() {
+        let scope = match (&device, &peer) {
+            (Some(device), Some(peer)) => format!("device={device} peer={peer}"),
+            (Some(device), None) => format!("device={device}"),
+            (None, Some(peer)) => format!("peer={peer}"),
+            (None, None) => "any device/peer".to_string(),
+        };
+        println!(
+            "No AI RCA records found in the last {}m for {scope}. If you haven't enabled it yet, set ENABLE_AI_RCA=true in {}/.env and re-run `nobs {} up`.",
+            flags.minutes,
+            located.dir.display(),
+            workshop.name
+        );
+        return 0;
+    }
+    println!();
+    for (number, line) in (1..).zip(&lines) {
+        match rca_record(&line.text) {
+            Some(record) => println!(
+                "{}  device={}  peer={}\n{}\n",
+                record.timestamp, record.device, record.peer, record.message
+            ),
+            None => println!("(skipping unparseable record #{number})"),
+        }
+    }
+    0
+}
+
+fn read_metrics(
+    client: &Prometheus,
+    device: &str,
+    peer: &str,
+    afi_safi: &str,
+    instance: &str,
+) -> Metrics {
+    let labels = format!(
+        r#"{{device="{device}",peer_address="{peer}",afi_safi_name="{afi_safi}",name="{instance}"}}"#
+    );
+    let ask = |metric: &str| client.instant(&format!("{metric}{labels}")).ok().flatten();
+    Metrics {
+        admin: ask("bgp_admin_state"),
+        oper: ask("bgp_oper_state"),
+        received: ask("bgp_received_routes"),
+        sent: ask("bgp_sent_routes"),
+        active: ask("bgp_active_routes"),
+        suppressed: ask("bgp_suppressed_routes"),
+    }
+}
+
+fn source_found(intent: &DeviceIntent, session: Option<&IntentSession>) -> String {
+    let unknown = |text: &Option<String>| text.clone().unwrap_or_else(|| "?".to_string());
+    let row = |label: &str, value: &str| format!("{label:<16}{value}");
+    let mut lines = vec![
+        "Source of truth (Infrahub)".to_string(),
+        format!(
+            "{:<16}{}   site={}  role={}",
+            "device",
+            intent.name,
+            unknown(&intent.site),
+            unknown(&intent.role)
+        ),
+        row("maintenance", &intent.maintenance.to_string()),
+        row(
+            "intended peer",
+            if session.is_some() { "yes" } else { "no" },
+        ),
+    ];
+    if let Some(session) = session {
+        let expected = session
+            .expected_state
+            .as_deref()
+            .filter(|text| !text.is_empty());
+        lines.push(row("expected state", expected.unwrap_or(DASH)));
+        if let Some(reason) = session.reason.as_deref().filter(|text| !text.is_empty()) {
+            lines.push(row("reason", reason));
+        }
+        if let Some(remote_as) = session.remote_as.filter(|number| *number != 0) {
+            lines.push(row("remote_as", &remote_as.to_string()));
+        }
+    }
+    lines.join("\n")
+}
+
+fn metrics_block(metrics: &Metrics) -> String {
+    let rows = [
+        (
+            "admin_state",
+            value_text(metrics.admin, "-1"),
+            decode_admin(metrics.admin),
+        ),
+        (
+            "oper_state",
+            value_text(metrics.oper, "-1"),
+            decode_oper(metrics.oper),
+        ),
+        (
+            "received_routes",
+            value_text(metrics.received, "0"),
+            DASH.to_string(),
+        ),
+        (
+            "sent_routes",
+            value_text(metrics.sent, "0"),
+            DASH.to_string(),
+        ),
+        (
+            "active_routes",
+            value_text(metrics.active, "0"),
+            DASH.to_string(),
+        ),
+        (
+            "suppressed_routes",
+            value_text(metrics.suppressed, "0"),
+            DASH.to_string(),
+        ),
+    ];
+    let width = rows
+        .iter()
+        .map(|(_, value, _)| value.chars().count())
+        .fold("Value".len(), usize::max);
+    let mut lines = vec![[
+        "Metric".to_string(),
+        format!("{:>width$}", "Value"),
+        "Decoded".to_string(),
+    ]];
+    lines.extend(
+        rows.into_iter()
+            .map(|(name, value, decoded)| [name.to_string(), format!("{value:>width$}"), decoded]),
+    );
+    format!("BGP metrics snapshot (Prometheus)\n{}", pad_lines(&lines))
+}
+
+fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let (infrahub_address, token) = infrahub_settings(
+        InfrahubFlags {
+            address: flags.infrahub_url,
+            token: flags.token,
+        },
+        |name| std::env::var(name).ok(),
+    );
+    announce_rewrite(&infrahub_address);
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let intent = Infrahub::new(&infrahub_address, &token).device_intent(&flags.device);
+    let prometheus = Prometheus::new(service_address(
+        flags.prom_url,
+        "PROMETHEUS_URL",
+        prometheus::DEFAULT_URL,
+    ));
+    let metrics = read_metrics(
+        &prometheus,
+        &flags.device,
+        &flags.peer,
+        &flags.afi_safi,
+        &flags.instance,
+    );
+    let query = evidence::fill(&workshop.evidence_query, &flags.device, &flags.peer);
+    let lines = Loki::new(service_address(
+        flags.loki_url,
+        "LOKI_URL",
+        loki::DEFAULT_URL,
+    ))
+    .query_range(
+        &query,
+        flags.log_minutes,
+        flags.log_limit,
+        SystemTime::now(),
+    )
+    .unwrap_or_default();
+    let found = intent.as_ref().ok().and_then(Option::as_ref);
+    let session = found.and_then(|found| evidence::session(found, &flags.peer, &flags.afi_safi));
+    let missing = match &intent {
+        Ok(_) => "device not found in Infrahub".to_string(),
+        Err(error) => format!("Infrahub query failed: {error}"),
+    };
+    let source = match (found, &intent) {
+        (Some(found), _) => source_found(found, session),
+        (None, Ok(_)) => format!("Source of truth\n{missing}."),
+        (None, Err(_)) => format!("Source of truth\n{missing}"),
+    };
+    let logs = if lines.is_empty() {
+        "Loki\nNo relevant log lines in the window.".to_string()
+    } else {
+        let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+        format!(
+            "Loki - last {} relevant line(s)\n{}",
+            lines.len(),
+            texts.join("\n")
+        )
+    };
+    let (verdict, reason) = evidence::decision(found, session, &metrics, &missing);
+    let blocks = [
+        source,
+        metrics_block(&metrics),
+        logs,
+        format!("Policy hint\ndecision: {verdict}\nreason  : {reason}"),
+    ];
+    println!("\n{}", blocks.join("\n\n"));
     0
 }
 
