@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::time::Duration;
 
-use nobs_core::infrahub::{Infrahub, KINDS};
+use nobs_core::infrahub::{read_schema, Infrahub, KINDS};
 use nobs_core::lab_vars;
 use serde_json::{json, Map, Value};
 
@@ -236,7 +236,7 @@ fn the_schema_body_equals_the_one_the_1_11_2_capture_sent() {
                 .is_some_and(|url| url.contains("/api/schema/load"))
         })
         .unwrap();
-    let schema: Value = serde_saphyr::from_str(SCHEMA).unwrap();
+    let schema = read_schema(SCHEMA).unwrap();
     let stub = Stub::start(&[(
         "POST",
         "/api/schema/load?branch=main",
