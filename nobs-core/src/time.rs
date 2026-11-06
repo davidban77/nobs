@@ -64,6 +64,20 @@ pub fn age(start: &str, now: i64) -> String {
     }
 }
 
+pub fn age_rough(start: &str, now: i64) -> String {
+    let Some(start) = parse_rfc3339(start) else {
+        return "unknown".to_string();
+    };
+    let minutes = (now - start).div_euclid(60);
+    if minutes < 1 {
+        "<1 min".to_string()
+    } else if minutes < 60 {
+        format!("~{minutes} min")
+    } else {
+        format!("~{}h{:02}m", minutes / 60, minutes % 60)
+    }
+}
+
 pub fn remaining(end: &str, now: i64) -> String {
     let Some(end) = parse_rfc3339(end) else {
         return "?".to_string();
@@ -100,6 +114,35 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let day_of_year = (153 * month_from_march + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146097 + day_of_era - 719468
+}
+
+pub(crate) fn rfc3339_utc(seconds: i64) -> String {
+    let (year, month, day) = civil_from_days(seconds.div_euclid(86400));
+    let of_day = seconds.rem_euclid(86400);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        of_day / 3600,
+        of_day % 3600 / 60,
+        of_day % 60
+    )
+}
+
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let days = days + 719468;
+    let era = days.div_euclid(146097);
+    let day_of_era = days - era * 146097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_from_march = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
+    let month = if month_from_march < 10 {
+        month_from_march + 3
+    } else {
+        month_from_march - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
 }
 
 #[cfg(test)]
@@ -154,6 +197,40 @@ mod tests {
     fn age_is_a_dash_for_an_unreadable_start_and_negative_seconds_for_a_future_one() {
         assert_eq!(age("soon", NOW), "—");
         assert_eq!(age("2026-11-06T10:15:35Z", NOW), "-5s");
+    }
+
+    #[test]
+    fn age_rough_prints_under_a_minute_minutes_and_hours_with_two_digit_minutes() {
+        let start = "2026-11-06T10:15:30Z";
+        assert_eq!(age_rough(start, NOW + 30), "<1 min");
+        assert_eq!(age_rough(start, NOW + 59), "<1 min");
+        assert_eq!(age_rough(start, NOW + 60), "~1 min");
+        assert_eq!(age_rough(start, NOW + 240), "~4 min");
+        assert_eq!(age_rough(start, NOW + 3599), "~59 min");
+        assert_eq!(age_rough(start, NOW + 3600), "~1h00m");
+        assert_eq!(age_rough(start, NOW + 3720), "~1h02m");
+        assert_eq!(age_rough(start, NOW + 90000), "~25h00m");
+    }
+
+    #[test]
+    fn age_rough_is_unknown_for_an_empty_or_unreadable_start_and_under_a_minute_for_a_future_one() {
+        assert_eq!(age_rough("", NOW), "unknown");
+        assert_eq!(age_rough("soon", NOW), "unknown");
+        assert_eq!(age_rough("2026-11-06T10:15:35Z", NOW), "<1 min");
+    }
+
+    #[test]
+    fn rfc3339_utc_prints_whole_seconds_and_reads_back_through_parse_rfc3339() {
+        assert_eq!(rfc3339_utc(NOW), "2026-11-06T10:15:30Z");
+        for text in [
+            "1970-01-01T00:00:00Z",
+            "1999-12-31T23:59:59Z",
+            "2000-02-29T12:00:00Z",
+            "2024-02-29T23:59:59Z",
+            "2026-03-01T00:00:00Z",
+        ] {
+            assert_eq!(rfc3339_utc(parse_rfc3339(text).unwrap()), text);
+        }
     }
 
     #[test]
