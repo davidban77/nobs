@@ -27,6 +27,8 @@ pub struct Alert {
     pub silenced: bool,
     pub inhibited: bool,
     pub starts_at: String,
+    pub silenced_by: Vec<String>,
+    pub annotations: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +117,18 @@ pub fn parse_alerts(body: &str) -> Result<Vec<Alert>, String> {
             silenced: has_items(&alert["status"]["silencedBy"]),
             inhibited: has_items(&alert["status"]["inhibitedBy"]),
             starts_at: text(&alert["startsAt"]),
+            silenced_by: alert["status"]["silencedBy"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|id| Some(id.as_str()?.to_string()))
+                .collect(),
+            annotations: alert["annotations"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_string())))
+                .collect(),
         })
         .collect())
 }
@@ -199,6 +213,8 @@ mod tests {
                     silenced: true,
                     inhibited: false,
                     starts_at: "2026-11-06T10:15:30.123Z".to_string(),
+                    silenced_by: vec!["s1".to_string()],
+                    annotations: BTreeMap::new(),
                 },
                 Alert {
                     labels: BTreeMap::from([(
@@ -209,6 +225,8 @@ mod tests {
                     silenced: false,
                     inhibited: true,
                     starts_at: "2026-11-06T10:20:00Z".to_string(),
+                    silenced_by: Vec::new(),
+                    annotations: BTreeMap::new(),
                 },
             ]
         );
@@ -233,7 +251,22 @@ mod tests {
                 silenced: false,
                 inhibited: false,
                 starts_at: String::new(),
+                silenced_by: Vec::new(),
+                annotations: BTreeMap::new(),
             }]
+        );
+    }
+
+    #[test]
+    fn parse_alerts_reads_the_silencing_ids_and_the_string_annotations() {
+        let body = r#"[{"labels":{},"status":{"state":"suppressed","silencedBy":["s1","s2"],"inhibitedBy":[]},"annotations":{"summary":"BGP peer down","count":3},"startsAt":"2026-11-06T10:15:30Z"}]"#;
+
+        let alert = &parse_alerts(body).unwrap()[0];
+
+        assert_eq!(alert.silenced_by, ["s1", "s2"]);
+        assert_eq!(
+            alert.annotations,
+            BTreeMap::from([("summary".to_string(), "BGP peer down".to_string())])
         );
     }
 
