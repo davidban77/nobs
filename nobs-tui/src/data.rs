@@ -15,7 +15,7 @@ pub struct Model {
     stats: Option<String>,
     show: Option<String>,
     refreshed_at: Option<Instant>,
-    error: Option<String>,
+    error: Option<(String, Instant)>,
     prompt: Prompt,
     note: Option<Note>,
     quit: bool,
@@ -89,7 +89,7 @@ impl Model {
                 self.refreshed_at = Some(update.at);
                 self.error = None;
             }
-            Err(text) => self.error = Some(text),
+            Err(text) => self.error = Some((text, update.at)),
         }
         let Some((id, show, stats)) = update.selected else {
             return;
@@ -99,11 +99,11 @@ impl Model {
         }
         match show {
             Ok(body) => self.show = Some(body),
-            Err(text) => self.error = Some(text),
+            Err(text) => self.error = Some((text, update.at)),
         }
         match stats {
             Ok(body) => self.stats = Some(body),
-            Err(text) => self.error = Some(text),
+            Err(text) => self.error = Some((text, update.at)),
         }
     }
 
@@ -172,7 +172,7 @@ impl Model {
     }
 
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(|(text, _)| text.as_str())
     }
 
     pub fn prompt(&self) -> &Prompt {
@@ -196,6 +196,10 @@ impl Model {
 
     pub(crate) fn selected_index(&self) -> Option<usize> {
         self.selected
+    }
+
+    pub(crate) fn error_at(&self) -> Option<Instant> {
+        self.error.as_ref().map(|(_, at)| *at)
     }
 
     fn step(&mut self, by: isize) -> Vec<Command> {
@@ -321,7 +325,7 @@ fn send_note(notes: &Sender<Note>, text: String) {
 
 #[cfg(test)]
 #[path = "../../tests/support/stub.rs"]
-mod stub;
+pub(crate) mod stub;
 
 #[cfg(test)]
 mod tests {
@@ -399,12 +403,13 @@ mod tests {
     }
 
     #[test]
-    fn apply_with_an_error_list_keeps_the_rows_and_records_the_error() {
+    fn apply_with_an_error_list_keeps_the_rows_and_records_the_error_with_its_time() {
         let mut model = model(&["a1", "b2"]);
         let at = model.refreshed_at();
+        let failed_at = Instant::now() + Duration::from_secs(5);
 
         model.apply(Update {
-            at: Instant::now(),
+            at: failed_at,
             list: Err("cannot reach http://sonda: refused".to_string()),
             selected: None,
         });
@@ -412,6 +417,7 @@ mod tests {
         assert_eq!(ids(&model), ["a1", "b2"]);
         assert_eq!(model.refreshed_at(), at);
         assert_eq!(model.error(), Some("cannot reach http://sonda: refused"));
+        assert_eq!(model.error_at(), Some(failed_at));
     }
 
     #[test]
