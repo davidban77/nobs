@@ -9,6 +9,7 @@ use clap::{Args, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
+use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::env::load_env;
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::infrahub::{
@@ -18,6 +19,7 @@ use nobs_core::infrahub::{
 use nobs_core::lab_vars;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
 use nobs_core::loki::{self, Loki};
+use nobs_core::prefect::{self, FlowRun, Prefect};
 use nobs_core::preflight::{preflight, Check, Status};
 use nobs_core::prometheus::{self, Prometheus};
 use nobs_core::runner::Runner;
@@ -26,6 +28,7 @@ use nobs_core::sonda::{
 };
 use nobs_core::status::{probe_all, Probe, State, Urls};
 use nobs_core::time;
+use nobs_core::webhook;
 use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
@@ -37,6 +40,26 @@ const LOKI_SINK: &str = "http://loki:3001";
 const LOKI_ADDRESS: (&str, &str) = ("LOKI_URL", loki::DEFAULT_URL);
 
 const PROMETHEUS_ADDRESS: (&str, &str) = ("PROMETHEUS_URL", prometheus::DEFAULT_URL);
+
+const PREFECT_ADDRESS: (&str, &str) = ("PREFECT_API_URL", prefect::DEFAULT_URL);
+
+const WEBHOOK_ADDRESS: (&str, &str) = ("WEBHOOK_URL", webhook::DEFAULT_URL);
+
+const ALERTNAME: &str = "BgpSessionNotUp";
+
+const FLOW_RUN_LIMIT: u64 = 100;
+
+const TRIGGER_WINDOW_MINUTES: u64 = 120;
+
+const TRIGGER_TRIES: u32 = 15;
+
+const TRIGGER_SECONDS: i64 = 30;
+
+const TRIGGER_PAUSE: Duration = Duration::from_secs(2);
+
+const SILENCES_SHOWN: usize = 5;
+
+const GROUPS_SHOWN: usize = 5;
 
 const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
 
@@ -214,6 +237,114 @@ pub enum WorkshopCommand {
         #[command(flatten)]
         flags: EvidenceFlags,
     },
+    #[command(
+        about = "Capture the workflow's full cycle state for one device and peer; optionally re-drive it"
+    )]
+    Cycle {
+        #[command(flatten)]
+        flags: CycleFlags,
+    },
+    #[command(about = "Render a fake on-call page from a live alert")]
+    Page {
+        #[command(flatten)]
+        flags: PageFlags,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct CycleFlags {
+    #[arg(help = "Device name (e.g. srl1).")]
+    device: String,
+    #[arg(help = "Peer IP (e.g. 10.1.99.2).")]
+    peer: String,
+    #[arg(
+        long,
+        help = "Post a fresh alert payload through the webhook before rendering."
+    )]
+    trigger: bool,
+    #[arg(
+        long,
+        value_name = "STATUS",
+        default_value = "firing",
+        value_parser = ["firing", "resolved"],
+        hide_default_value = true,
+        help = "Alert status to post with --trigger: 'firing' (default) or 'resolved'."
+    )]
+    status: String,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 30,
+        help = "Lookback window for recent panels."
+    )]
+    minutes: u64,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
+    )]
+    am_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
+    )]
+    loki_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Prefect; nobs looks at --prefect-url, then PREFECT_API_URL, then http://localhost:4200"
+    )]
+    prefect_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of the webhook; nobs looks at --webhook-url, then WEBHOOK_URL, then http://localhost:9997/v1/api/webhook"
+    )]
+    webhook_url: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PageFlags {
+    #[arg(
+        short,
+        long,
+        value_name = "ALERT",
+        default_value = ALERTNAME,
+        hide_default_value = true,
+        help = "Alertname to filter by; the default is BgpSessionNotUp"
+    )]
+    alert: String,
+    #[arg(
+        short,
+        long,
+        value_name = "DEVICE",
+        default_value = "",
+        hide_default_value = true,
+        help = "Filter to alerts on this device."
+    )]
+    device: String,
+    #[arg(
+        short,
+        long,
+        value_name = "PEER",
+        default_value = "",
+        hide_default_value = true,
+        help = "Filter to alerts on this peer_address."
+    )]
+    peer: String,
+    #[arg(
+        long,
+        value_name = "HH:MM",
+        help = "Override the wall-clock printed in the page (HH:MM). Default: real time."
+    )]
+    now: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
+    )]
+    am_url: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -739,6 +870,8 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             "PROMETHEUS_URL",
             "LOKI_URL",
             "ALERTMANAGER_URL",
+            "PREFECT_API_URL",
+            "WEBHOOK_URL",
             "INFRAHUB_ADDRESS",
             "INFRAHUB_API_TOKEN",
             "SONDA_SERVER_URL",
@@ -1206,6 +1339,8 @@ fn run_workshop_command(
         WorkshopCommand::Maintenance { flags } => run_maintenance(flags),
         WorkshopCommand::Rca { flags } => run_rca(flags, located),
         WorkshopCommand::Evidence { flags } => run_evidence(flags, located),
+        WorkshopCommand::Cycle { flags } => run_cycle(flags, located),
+        WorkshopCommand::Page { flags } => run_page(flags, located),
     }
 }
 
@@ -1380,11 +1515,15 @@ fn label_filter(text: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("--label must be key=value (got '{text}')"))
 }
 
-fn now_seconds() -> i64 {
-    SystemTime::now()
+fn seconds_of(moment: SystemTime) -> i64 {
+    moment
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
         .unwrap_or_default()
+}
+
+fn now_seconds() -> i64 {
+    seconds_of(SystemTime::now())
 }
 
 fn run_alerts(flags: AlertsFlags) -> i32 {
@@ -1903,6 +2042,390 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
     0
 }
 
+fn recent_runs(prefect: &Prefect, device: &str, peer: &str, now: i64) -> Vec<FlowRun> {
+    prefect
+        .flow_runs(FLOW_RUN_LIMIT)
+        .map(|runs| cycle::select(runs, device, peer, TRIGGER_WINDOW_MINUTES, now))
+        .unwrap_or_default()
+}
+
+fn poll_until<T>(
+    mut clock: impl FnMut() -> i64,
+    mut attempt: impl FnMut(i64) -> Option<T>,
+    mut pause: impl FnMut(),
+) -> Option<T> {
+    let mut first = None;
+    for _ in 0..TRIGGER_TRIES {
+        let now = clock();
+        if now - *first.get_or_insert(now) >= TRIGGER_SECONDS {
+            return None;
+        }
+        if let Some(found) = attempt(now) {
+            return Some(found);
+        }
+        pause();
+    }
+    None
+}
+
+fn drive_cycle(
+    prefect: &Prefect,
+    webhook_url: &str,
+    device: &str,
+    peer: &str,
+    status: &str,
+) -> Option<i32> {
+    let now = SystemTime::now();
+    let seconds = seconds_of(now);
+    let baseline = recent_runs(prefect, device, peer, seconds)
+        .first()
+        .and_then(|run| time::parse_rfc3339(&run.start_time))
+        .unwrap_or(seconds);
+    if let Err(error) = webhook::post(webhook_url, &webhook::payload(device, peer, status, now)) {
+        eprintln!("nobs: could not POST to webhook: {error}");
+        return Some(1);
+    }
+    println!("posted {status} payload for {device} → {peer}; waiting for new flow run …");
+    let started = poll_until(
+        now_seconds,
+        |seconds| {
+            let runs = recent_runs(prefect, device, peer, seconds);
+            cycle::newer_than(&runs, baseline).map(|run| time::clock(&run.start_time))
+        },
+        || std::thread::sleep(TRIGGER_PAUSE),
+    );
+    match started {
+        Some(clock) => println!("new flow run started at {clock}"),
+        None => println!("no new flow run appeared within 30s; rendering current state anyway."),
+    }
+    std::thread::sleep(TRIGGER_PAUSE);
+    None
+}
+
+fn short_id(id: &str) -> String {
+    format!("{}…", id.chars().take(12).collect::<String>())
+}
+
+fn cycle_alert_lines(alert: &Alert, now: i64) -> String {
+    let severity = alert.labels.get("severity").map_or("?", String::as_str);
+    let state = match alert.state.as_str() {
+        "active" => "firing",
+        "unprocessed" => "pending",
+        "" => "?",
+        other => other,
+    };
+    let age = if time::parse_rfc3339(&alert.starts_at).is_some() {
+        time::age(&alert.starts_at, now)
+    } else {
+        "?".to_string()
+    };
+    let silenced = match alert.silenced_by.split_first() {
+        None => "(none)".to_string(),
+        Some((first, [])) => short_id(first),
+        Some((first, more)) => format!("{} (+{} more)", short_id(first), more.len()),
+    };
+    format!("{ALERTNAME} · {severity} · state={state} · age {age}\nsilencedBy: {silenced}")
+}
+
+fn alert_panel(alertmanager: &Alertmanager, device: &str, peer: &str, now: i64) -> String {
+    let body = match alertmanager.alerts(true, true) {
+        Err(error) => format!("Alertmanager query failed: {error}"),
+        Ok(alerts) => {
+            let lines: Vec<String> = alerts
+                .iter()
+                .filter(|alert| {
+                    let label = |name: &str| alert.labels.get(name).map(String::as_str);
+                    label("device") == Some(device)
+                        && label("peer_address") == Some(peer)
+                        && label("alertname") == Some(ALERTNAME)
+                })
+                .map(|alert| cycle_alert_lines(alert, now))
+                .collect();
+            if lines.is_empty() {
+                format!("No {ALERTNAME} alert active for {device} → {peer}.")
+            } else {
+                lines.join("\n")
+            }
+        }
+    };
+    format!("\nAlert\n{body}")
+}
+
+fn scoped_to(silence: &Silence, device: &str, peer: &str) -> bool {
+    let matchers: BTreeMap<&str, &str> = silence
+        .matchers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    matchers.get("device") == Some(&device) && matchers.get("peer_address") == Some(&peer)
+}
+
+fn peer_silences_table(silences: &[Silence], now: i64) -> String {
+    let header = ["ID", "State", "Starts", "Ends", "Remaining"].map(String::from);
+    let mut lines = vec![header];
+    lines.extend(silences.iter().map(|silence| {
+        [
+            if silence.id.is_empty() {
+                "?".to_string()
+            } else {
+                short_id(&silence.id)
+            },
+            if silence.state.is_empty() {
+                "?".to_string()
+            } else {
+                silence.state.clone()
+            },
+            time::clock(&silence.starts_at),
+            time::clock(&silence.ends_at),
+            time::remaining(&silence.ends_at, now),
+        ]
+    }));
+    pad_lines(&lines)
+}
+
+fn silences_panel(alertmanager: &Alertmanager, device: &str, peer: &str, now: i64) -> String {
+    let body = match alertmanager.silences() {
+        Err(error) => format!("silences query failed: {error}"),
+        Ok(silences) => {
+            let mut scoped: Vec<Silence> = silences
+                .into_iter()
+                .filter(|silence| scoped_to(silence, device, peer))
+                .collect();
+            scoped.sort_by(|first, second| second.starts_at.cmp(&first.starts_at));
+            scoped.truncate(SILENCES_SHOWN);
+            if scoped.is_empty() {
+                format!("No silences scoped to {device} → {peer}.")
+            } else {
+                peer_silences_table(&scoped, now)
+            }
+        }
+    };
+    format!("\nSilences (this peer)\n{body}")
+}
+
+fn flow_runs_table(groups: &[Group]) -> String {
+    let name = |run: &FlowRun| {
+        if run.name.is_empty() {
+            "?".to_string()
+        } else {
+            run.name.clone()
+        }
+    };
+    let header = ["Started", "State", "Flow"].map(String::from);
+    let mut lines = vec![header];
+    for group in groups {
+        lines.push([
+            time::clock(&group.run.start_time),
+            group.run.state.clone(),
+            name(&group.run),
+        ]);
+        let last = group.children.len().saturating_sub(1);
+        for (index, child) in group.children.iter().enumerate() {
+            let branch = if index == last { "└─" } else { "├─" };
+            lines.push([
+                time::clock(&child.start_time),
+                child.state.clone(),
+                format!("  {branch} {}", name(child)),
+            ]);
+        }
+    }
+    pad_lines(&lines)
+}
+
+fn flow_runs_panel(prefect: &Prefect, device: &str, peer: &str, minutes: u64, now: i64) -> String {
+    let body = match prefect.flow_runs(FLOW_RUN_LIMIT) {
+        Err(error) => format!("Prefect query failed: {error}"),
+        Ok(runs) => {
+            let selected = cycle::select(runs, device, peer, minutes, now);
+            if selected.is_empty() {
+                format!("No quarantine_bgp / resolved_bgp runs for {device}:{peer} in the last {minutes}m.")
+            } else {
+                let mut parents: Vec<String> = Vec::new();
+                for parent in selected
+                    .iter()
+                    .filter_map(|run| run.parent_task_run_id.clone())
+                {
+                    if !parents.contains(&parent) {
+                        parents.push(parent);
+                    }
+                }
+                let task_runs = if parents.is_empty() {
+                    Vec::new()
+                } else {
+                    prefect.task_runs(&parents).unwrap_or_default()
+                };
+                let mut groups = cycle::group(selected, &task_runs);
+                groups.truncate(GROUPS_SHOWN);
+                flow_runs_table(&groups)
+            }
+        }
+    };
+    format!("\nPrefect flow runs (last {minutes}m)\n{body}")
+}
+
+fn decision_panel(
+    loki: &Loki,
+    workflow_label: &str,
+    device: &str,
+    peer: &str,
+    minutes: u64,
+    now: SystemTime,
+) -> String {
+    let query = format!(
+        r#"{{source="prefect", workflow="{workflow_label}", device="{device}", peer_address="{peer}", decision=~".+"}} | json"#
+    );
+    let body = match loki.query_range(&query, minutes, 1, now) {
+        Err(error) => format!("Loki query failed: {error}"),
+        Ok(lines) => match lines.first() {
+            None => {
+                format!("No decision audit records for {device} → {peer} in the last {minutes}m.")
+            }
+            Some(line) => match decision_record(&line.text) {
+                None => "Could not parse latest decision JSON.".to_string(),
+                Some(record) => format!(
+                    "{}  decision={}\nreason: {}",
+                    time::clock(&record.timestamp),
+                    record.decision,
+                    record.message
+                ),
+            },
+        },
+    };
+    format!("\nMost recent decision\n{body}")
+}
+
+fn run_cycle(flags: CycleFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let CycleFlags {
+        device,
+        peer,
+        trigger,
+        status,
+        minutes,
+        am_url,
+        loki_url,
+        prefect_url,
+        webhook_url,
+    } = flags;
+    let lookup = |name: &str| std::env::var(name).ok();
+    let prefect = Prefect::new(service_address(prefect_url, PREFECT_ADDRESS, lookup));
+    if trigger {
+        let webhook_url = service_address(webhook_url, WEBHOOK_ADDRESS, lookup);
+        if let Some(code) = drive_cycle(&prefect, &webhook_url, &device, &peer, &status) {
+            return code;
+        }
+    }
+    let alertmanager = Alertmanager::new(alertmanager_address(am_url, lookup));
+    let loki = Loki::new(service_address(loki_url, LOKI_ADDRESS, lookup));
+    let now = SystemTime::now();
+    let seconds = seconds_of(now);
+    println!("{}", alert_panel(&alertmanager, &device, &peer, seconds));
+    println!("{}", silences_panel(&alertmanager, &device, &peer, seconds));
+    println!(
+        "{}",
+        flow_runs_panel(&prefect, &device, &peer, minutes, seconds)
+    );
+    println!(
+        "{}",
+        decision_panel(
+            &loki,
+            &workshop.workflow_label,
+            &device,
+            &peer,
+            minutes,
+            now
+        )
+    );
+    if !trigger {
+        println!(
+            "\n  To drive a fresh cycle (bypassing Alertmanager's repeat_interval):\n    nobs {} cycle {device} {peer} --trigger",
+            workshop.name
+        );
+    }
+    0
+}
+
+fn default_summary(labels: &BTreeMap<String, String>) -> String {
+    let label = |name: &str| labels.get(name).map_or("?", String::as_str);
+    match labels.get("alertname").map_or("", String::as_str) {
+        ALERTNAME => format!(
+            "BGP peer {} not reaching Established",
+            label("peer_address")
+        ),
+        "PeerInterfaceFlapping" => {
+            format!("interface {} flapping above threshold", label("interface"))
+        }
+        name => format!("alert {name} firing"),
+    }
+}
+
+fn utc_clock() -> String {
+    let seconds = now_seconds().rem_euclid(86400);
+    format!("{:02}:{:02}", seconds / 3600, seconds % 3600 / 60)
+}
+
+fn run_page(flags: PageFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let alertmanager = Alertmanager::new(alertmanager_address(flags.am_url, |name| {
+        std::env::var(name).ok()
+    }));
+    let alerts = match alertmanager.alerts(true, true) {
+        Ok(alerts) => alerts,
+        Err(error) => {
+            eprintln!("nobs: Alertmanager fetch failed: {error}");
+            return 1;
+        }
+    };
+    let filters = [
+        ("alertname", &flags.alert),
+        ("device", &flags.device),
+        ("peer_address", &flags.peer),
+    ];
+    let chosen = alerts.iter().find(|alert| {
+        alert.state == "active"
+            && filters
+                .iter()
+                .all(|(name, wanted)| wanted.is_empty() || alert.labels.get(*name) == Some(*wanted))
+    });
+    let Some(alert) = chosen else {
+        eprintln!(
+            "nobs: no firing alert matched the filters. Run `nobs {} alerts` to see what's currently firing.",
+            workshop.name
+        );
+        return 1;
+    };
+    let label = |name: &str| alert.labels.get(name).map(String::as_str);
+    let mut title = label("alertname").unwrap_or("unknown alert").to_string();
+    if let Some(device) = label("device").filter(|text| !text.is_empty()) {
+        title.push_str(&format!(" on {device}"));
+    }
+    if let Some(peer) = label("peer_address").filter(|text| !text.is_empty()) {
+        title.push_str(&format!(" — peer {peer}"));
+    }
+    let summary = alert
+        .annotations
+        .get("summary")
+        .filter(|text| !text.is_empty())
+        .cloned()
+        .unwrap_or_else(|| default_summary(&alert.labels));
+    let clock = flags
+        .now
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(utc_clock);
+    println!(
+        "on-call\nPAGED {clock}\n{title}\n{summary}\nfiring for: {}\nseverity: {}\n\nYou're awake. The dashboard is your only friend.\n\n  Confirm the alert: nobs {} alerts\n  Open the runbook:  {}/guides/",
+        time::age_rough(&alert.starts_at, now_seconds()),
+        label("severity").unwrap_or("unknown"),
+        workshop.name,
+        located.dir.display()
+    );
+    0
+}
+
 fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
     let urls = urls(flags, |name| std::env::var(name).ok());
     let probes = probe_all(&urls);
@@ -2379,6 +2902,76 @@ mod tests {
     }
 
     #[test]
+    fn the_prefect_and_webhook_addresses_are_the_flag_then_the_variable_then_the_default() {
+        let blank = |_: &str| Some("  ".to_string());
+        let cases = [
+            (PREFECT_ADDRESS, "PREFECT_API_URL", "http://localhost:4200"),
+            (
+                WEBHOOK_ADDRESS,
+                "WEBHOOK_URL",
+                "http://localhost:9997/v1/api/webhook",
+            ),
+        ];
+
+        for (address, name, default) in cases {
+            let variable = move |asked: &str| (asked == name).then(|| format!("http://var-{name}"));
+
+            assert_eq!(
+                service_address(Some("http://flag".to_string()), address, variable),
+                "http://flag"
+            );
+            assert_eq!(
+                service_address(Some(" ".to_string()), address, variable),
+                format!("http://var-{name}")
+            );
+            assert_eq!(service_address(None, address, |_| None), default);
+            assert_eq!(
+                service_address(Some(String::new()), address, blank),
+                default
+            );
+        }
+    }
+
+    #[test]
+    fn polling_stops_after_fifteen_tries_when_nothing_is_found() {
+        let mut tries = 0;
+        let mut pauses = 0;
+
+        let found: Option<()> = poll_until(
+            || 0,
+            |_| {
+                tries += 1;
+                None
+            },
+            || pauses += 1,
+        );
+
+        assert_eq!(found, None);
+        assert_eq!((tries, pauses), (15, 15));
+    }
+
+    #[test]
+    fn polling_stops_once_thirty_seconds_have_passed_by_the_clock_it_reads_on_each_try() {
+        let mut now = -10;
+        let mut tries = 0;
+
+        let found: Option<()> = poll_until(
+            || {
+                now += 10;
+                now
+            },
+            |_| {
+                tries += 1;
+                None
+            },
+            || {},
+        );
+
+        assert_eq!(found, None);
+        assert_eq!(tries, 3);
+    }
+
+    #[test]
     fn the_infrahub_settings_are_the_flag_then_the_variable_then_the_default() {
         let flags = |address: Option<&str>, token: Option<&str>| InfrahubFlags {
             address: address.map(String::from),
@@ -2444,6 +3037,8 @@ mod tests {
             silenced,
             inhibited,
             starts_at: "2026-11-06T10:15:30Z".to_string(),
+            silenced_by: Vec::new(),
+            annotations: BTreeMap::new(),
         }
     }
 
