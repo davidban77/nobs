@@ -443,6 +443,10 @@ fn quoted(text: &str) -> String {
     escaped
 }
 
+pub fn read_schema(text: &str) -> Result<Value, String> {
+    serde_saphyr::from_str(text).map_err(|error| error.to_string())
+}
+
 pub fn annotation(device: &str, state: bool, sink: &str) -> String {
     let flag = if state { "True" } else { "False" };
     let message = quoted(&format!(
@@ -1061,5 +1065,14 @@ mod tests {
             value["log"]["message"],
             "Configured from CLI: a\"b.maintenance = True"
         );
+    }
+
+    #[test]
+    fn read_schema_gives_the_yaml_as_json_and_an_error_for_text_that_is_not_yaml() {
+        assert_eq!(
+            read_schema("version: '1.0'\nnodes:\n  - name: Device\n    namespace: Workshop\n"),
+            Ok(json!({"version": "1.0", "nodes": [{"name": "Device", "namespace": "Workshop"}]}))
+        );
+        assert!(read_schema("nodes: [").is_err());
     }
 }
