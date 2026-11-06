@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ureq::Agent;
+use ureq::{Agent, Body};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reply {
@@ -8,20 +8,35 @@ pub struct Reply {
     pub body: String,
 }
 
-pub fn get(url: &str, timeout: Duration) -> Result<Reply, String> {
+pub fn agent(timeout: Duration) -> Agent {
     let config = Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(timeout))
         .build();
     Agent::new_with_config(config)
-        .get(url)
-        .call()
-        .and_then(|mut response| {
-            let status = response.status().as_u16();
-            let body = response.body_mut().read_to_string()?;
-            Ok(Reply { status, body })
-        })
-        .map_err(|error| format!("cannot reach {url}: {error}"))
+}
+
+pub fn read(
+    url: &str,
+    sent: Result<ureq::http::Response<Body>, ureq::Error>,
+) -> Result<Reply, String> {
+    sent.and_then(|mut response| {
+        let status = response.status().as_u16();
+        let body = response.body_mut().read_to_string()?;
+        Ok(Reply { status, body })
+    })
+    .map_err(|error| format!("cannot reach {url}: {error}"))
+}
+
+pub fn reason(error: String, url: &str) -> String {
+    match error.strip_prefix(&format!("cannot reach {url}: ")) {
+        Some(rest) => rest.to_string(),
+        None => error,
+    }
+}
+
+pub fn get(url: &str, timeout: Duration) -> Result<Reply, String> {
+    read(url, agent(timeout).get(url).call())
 }
 
 #[cfg(test)]

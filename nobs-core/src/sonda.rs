@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use serde_json::Value;
-use ureq::{Agent, Body, RequestBuilder};
+use ureq::{Agent, RequestBuilder};
+
+use crate::http;
+pub use crate::http::Reply;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const EVENT_TIMEOUT: Duration = Duration::from_secs(35);
@@ -10,12 +13,6 @@ pub struct Sonda {
     url: String,
     key: Option<String>,
     agent: Agent,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reply {
-    pub status: u16,
-    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,12 +37,12 @@ impl Sonda {
         Self {
             url: url.into().trim_end_matches('/').to_string(),
             key: None,
-            agent: agent(TIMEOUT),
+            agent: http::agent(TIMEOUT),
         }
     }
 
     pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.agent = agent(timeout);
+        self.agent = http::agent(timeout);
         self
     }
 
@@ -82,7 +79,7 @@ impl Sonda {
         let request = self
             .agent
             .delete(self.endpoint(&format!("/scenarios/{id}")));
-        self.finish(self.with_key(request, true).call())
+        http::read(&self.url, self.with_key(request, true).call())
     }
 
     pub fn load(&self, yaml: &[u8]) -> Result<Reply, String> {
@@ -110,7 +107,7 @@ impl Sonda {
 
     fn get(&self, path: &str, send_key: bool) -> Result<Reply, String> {
         let request = self.agent.get(self.endpoint(path));
-        self.finish(self.with_key(request, send_key).call())
+        http::read(&self.url, self.with_key(request, send_key).call())
     }
 
     fn post(
@@ -127,29 +124,8 @@ impl Sonda {
             .timeout_global(Some(timeout))
             .build()
             .content_type(content_type);
-        self.finish(self.with_key(request, true).send(body))
+        http::read(&self.url, self.with_key(request, true).send(body))
     }
-
-    fn finish(
-        &self,
-        result: Result<ureq::http::Response<Body>, ureq::Error>,
-    ) -> Result<Reply, String> {
-        result
-            .and_then(|mut response| {
-                let status = response.status().as_u16();
-                let body = response.body_mut().read_to_string()?;
-                Ok(Reply { status, body })
-            })
-            .map_err(|error| format!("cannot reach {}: {error}", self.url))
-    }
-}
-
-fn agent(timeout: Duration) -> Agent {
-    let config = Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(timeout))
-        .build();
-    Agent::new_with_config(config)
 }
 
 pub fn scenario_rows(list_body: &str) -> Result<Vec<ScenarioRow>, String> {
