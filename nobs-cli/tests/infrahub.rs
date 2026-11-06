@@ -747,15 +747,27 @@ fn an_address_that_names_the_container_is_rewritten_to_localhost_and_the_line_co
 }
 
 #[test]
-fn maintenance_prints_the_rewrite_line_before_it_checks_the_token() {
-    let copy = Copy::new("rewrite-maintenance", "http://infrahub-server:8000");
+fn the_rewrite_line_comes_before_the_token_and_file_checks_of_all_three_commands() {
+    let copy = Copy::new("rewrite-first", "http://infrahub-server:8000");
     copy.write_env("INFRAHUB_ADDRESS=http://infrahub-server:8000\n");
+    let missing = format!(
+        "nobs: schema file not found: {}/missing.yml\n",
+        copy.shown()
+    );
+    let commands: [(&[&str], &str); 4] = [
+        (&["load-infrahub"], TOKEN_REQUIRED),
+        (&["schema", "load", "infrahub/schema.yml"], TOKEN_REQUIRED),
+        (&["maintenance", "-d", "srl1"], TOKEN_REQUIRED),
+        (&["schema", "load", "missing.yml"], &missing),
+    ];
 
-    let output = nobs(&copy, &["maintenance", "-d", "srl1"]);
+    for (args, error) in commands {
+        let output = nobs(&copy, args);
 
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stdout(&output), REWRITTEN);
-    assert_eq!(stderr(&output), TOKEN_REQUIRED);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), REWRITTEN, "{args:?}");
+        assert_eq!(stderr(&output), error, "{args:?}");
+    }
 }
 
 #[test]
