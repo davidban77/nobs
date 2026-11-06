@@ -10,6 +10,7 @@ use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
+use nobs_core::infrahub::{annotation, Infrahub, Seed, DEFAULT_ADDRESS};
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
 use nobs_core::preflight::{preflight, Check, Status};
 use nobs_core::runner::Runner;
@@ -23,6 +24,12 @@ use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
 
 const DASH: &str = "—";
+
+const DEVICE_KIND: &str = "WorkshopDevice";
+
+const LOKI_SINK: &str = "http://loki:3001";
+
+const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
 
 const HOSTS: [&str; 5] = [
     "ghcr.io",
@@ -168,6 +175,100 @@ pub enum WorkshopCommand {
     Silences {
         #[command(flatten)]
         flags: SilencesFlags,
+    },
+    #[command(about = "Apply the schema to Infrahub, then load the lab variables into it")]
+    LoadInfrahub {
+        #[command(flatten)]
+        flags: LoadInfrahubFlags,
+    },
+    #[command(about = "Manage the Infrahub schema")]
+    Schema {
+        #[command(subcommand)]
+        command: SchemaCommand,
+    },
+    #[command(about = "Set or clear the maintenance flag of a device in Infrahub")]
+    Maintenance {
+        #[command(flatten)]
+        flags: MaintenanceFlags,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct InfrahubFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Infrahub; nobs looks at --address, then INFRAHUB_ADDRESS, then http://localhost:8000"
+    )]
+    address: Option<String>,
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN"
+    )]
+    token: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct LoadInfrahubFlags {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Schema file; the schema_file setting of nobs.toml when none is given"
+    )]
+    schema: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Lab variables file; lab_vars.yml when none is given"
+    )]
+    lab_vars: Option<PathBuf>,
+    #[arg(long, help = "Do not apply the schema; only load the lab variables")]
+    skip_schema: bool,
+    #[command(flatten)]
+    infrahub: InfrahubFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct MaintenanceFlags {
+    #[arg(
+        short,
+        long,
+        value_name = "NAME",
+        help = "Name of the device in Infrahub"
+    )]
+    device: String,
+    #[arg(
+        long,
+        overrides_with = "clear",
+        help = "Set maintenance to true; this is on by default"
+    )]
+    state: bool,
+    #[arg(
+        long,
+        overrides_with = "state",
+        help = "Set maintenance to false; --state is on by default"
+    )]
+    clear: bool,
+    #[arg(
+        long,
+        value_name = "KIND",
+        default_value = DEVICE_KIND,
+        help = "Kind of the Infrahub node to update"
+    )]
+    kind: String,
+    #[command(flatten)]
+    infrahub: InfrahubFlags,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SchemaCommand {
+    #[command(about = "Apply a schema file to Infrahub")]
+    Load {
+        #[arg(help = "Schema file; a relative path is taken from the workshop folder")]
+        path: PathBuf,
+        #[command(flatten)]
+        infrahub: InfrahubFlags,
     },
 }
 
@@ -983,6 +1084,11 @@ fn run_workshop_command(
         }
         WorkshopCommand::Alerts { flags } => run_alerts(flags),
         WorkshopCommand::Silences { flags } => run_silences(flags),
+        WorkshopCommand::LoadInfrahub { flags } => run_load_infrahub(flags, located, runner),
+        WorkshopCommand::Schema {
+            command: SchemaCommand::Load { path, infrahub },
+        } => run_schema_load(&located.dir.join(path), infrahub, runner),
+        WorkshopCommand::Maintenance { flags } => run_maintenance(flags, runner),
     }
 }
 
@@ -1228,6 +1334,177 @@ fn run_silences(flags: SilencesFlags) -> i32 {
         println!("No silences {states} in Alertmanager at {}.", client.url());
     } else {
         println!("{}", silences_table(&shown, now_seconds()));
+    }
+    0
+}
+
+fn infrahub_settings(
+    flags: InfrahubFlags,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> (String, Option<String>) {
+    let address = given(flags.address)
+        .or_else(|| given(lookup("INFRAHUB_ADDRESS")))
+        .unwrap_or_else(|| DEFAULT_ADDRESS.to_string());
+    let token = given(flags.token).or_else(|| given(lookup("INFRAHUB_API_TOKEN")));
+    (address, token)
+}
+
+fn require_token(token: Option<String>) -> Option<String> {
+    if token.is_none() {
+        eprintln!("nobs: {TOKEN_REQUIRED}");
+    }
+    token
+}
+
+fn connect(address: &str, token: &str) -> Infrahub {
+    let infrahub = Infrahub::new(address, token);
+    if infrahub.address() != address.trim_end_matches('/') {
+        println!(
+            "INFRAHUB_ADDRESS rewritten to host-reachable {}",
+            infrahub.address()
+        );
+    }
+    infrahub
+}
+
+fn infrahub_failed(error: impl std::fmt::Display) -> i32 {
+    eprintln!("nobs: {error}");
+    1
+}
+
+fn apply_schema(infrahub: &Infrahub, runner: &dyn Runner, file: &Path) -> i32 {
+    println!("Applying schema {}", file.display());
+    match infrahub.schema(runner, file) {
+        Ok(()) => {
+            println!("Schema applied");
+            0
+        }
+        Err(error) => infrahub_failed(error),
+    }
+}
+
+fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located, runner: &dyn Runner) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let schema = located
+        .dir
+        .join(flags.schema.as_ref().unwrap_or(&workshop.schema_file));
+    let lab_vars = located.dir.join(
+        flags
+            .lab_vars
+            .unwrap_or_else(|| PathBuf::from("lab_vars.yml")),
+    );
+    if !flags.skip_schema && !schema.is_file() {
+        eprintln!("nobs: schema file not found: {}", schema.display());
+        return 1;
+    }
+    if !lab_vars.is_file() {
+        eprintln!("nobs: lab_vars file not found: {}", lab_vars.display());
+        return 1;
+    }
+    let infrahub = connect(&address, &token);
+    if !flags.skip_schema {
+        let code = apply_schema(&infrahub, runner, &schema);
+        if code != 0 {
+            return code;
+        }
+    }
+    println!(
+        "Loading {} into Infrahub at {}",
+        lab_vars.display(),
+        infrahub.address()
+    );
+    let seed = match infrahub.seed(runner, &lab_vars) {
+        Ok(seed) => seed,
+        Err(error) => return infrahub_failed(error),
+    };
+    println!("{}", seed_table(&seed));
+    let nodes: u64 = seed
+        .rows
+        .iter()
+        .map(|(_, created, updated)| u64::from(*created) + u64::from(*updated))
+        .sum();
+    println!(
+        "Done: {nodes} nodes across {} types. Open Infrahub at {}.",
+        seed.rows.len(),
+        infrahub.address()
+    );
+    if seed
+        .rows
+        .iter()
+        .any(|(kind, created, updated)| kind == DEVICE_KIND && *created == 0 && *updated == 0)
+    {
+        eprintln!(
+            "nobs: no devices found in {}: is --lab-vars the right file?",
+            lab_vars.display()
+        );
+    }
+    0
+}
+
+fn seed_table(seed: &Seed) -> String {
+    let header = ["Node type", "Created", "Updated", "Total"].map(String::from);
+    let mut lines = vec![header];
+    lines.extend(seed.rows.iter().map(|(kind, created, updated)| {
+        [
+            kind.clone(),
+            created.to_string(),
+            updated.to_string(),
+            (u64::from(*created) + u64::from(*updated)).to_string(),
+        ]
+    }));
+    pad_lines(&lines)
+}
+
+fn run_schema_load(file: &Path, flags: InfrahubFlags, runner: &dyn Runner) -> i32 {
+    if !file.is_file() {
+        eprintln!("nobs: schema file not found: {}", file.display());
+        return 1;
+    }
+    let (address, token) = infrahub_settings(flags, |name| std::env::var(name).ok());
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    apply_schema(&connect(&address, &token), runner, file)
+}
+
+fn run_maintenance(flags: MaintenanceFlags, runner: &dyn Runner) -> i32 {
+    let state = flags.state || !flags.clear;
+    let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let infrahub = connect(&address, &token);
+    let saved = match infrahub.maintenance(runner, &flags.kind, &flags.device, state) {
+        Ok(saved) => saved,
+        Err(error) => return infrahub_failed(error),
+    };
+    println!("{}.maintenance: {} → {state}", flags.device, saved.previous);
+    let server =
+        given(std::env::var("SONDA_SERVER_URL").ok()).unwrap_or_else(|| Urls::defaults().sonda);
+    let key = given(std::env::var("SONDA_API_KEY").ok());
+    let sink =
+        given(std::env::var("SONDA_LOKI_SINK_URL").ok()).unwrap_or_else(|| LOKI_SINK.to_string());
+    let body = annotation(&flags.device, state, &sink);
+    let posted = match Sonda::new(server).api_key(key).event(body.as_bytes()) {
+        Ok(reply) if reply.status >= 400 => {
+            Err(format!("sonda answered {}: {}", reply.status, reply.body))
+        }
+        other => other.map(|_| ()),
+    };
+    if let Err(error) = posted {
+        eprintln!("nobs: sonda /events post failed: {error}");
+        return 1;
+    }
+    if state {
+        println!("The next alert for this device will be SKIPPED by the policy.");
+    } else {
+        println!("The next alert for this device will be evaluated normally.");
     }
     0
 }

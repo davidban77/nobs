@@ -91,8 +91,12 @@ impl Infrahub {
     }
 
     pub fn schema(&self, runner: &dyn Runner, file: &Path) -> Result<(), Error> {
-        self.call(runner, &["schema".into(), file.into()])?;
-        Ok(())
+        let value = parse(&self.call(runner, &["schema".into(), file.into()])?)?;
+        if flag(&value, "ok")? {
+            Ok(())
+        } else {
+            Err(Error::Body(format!("\"ok\" is false in {value}")))
+        }
     }
 
     pub fn seed(&self, runner: &dyn Runner, lab_vars: &Path) -> Result<Seed, Error> {
@@ -183,7 +187,17 @@ fn count(value: &Value, kind: &str, field: &str) -> Result<u32, Error> {
 }
 
 fn quoted(text: &str) -> String {
-    Value::String(text.to_string()).to_string()
+    let mut escaped = String::new();
+    for character in Value::String(text.to_string()).to_string().chars() {
+        if character.is_ascii() && character != '\u{7f}' {
+            escaped.push(character);
+            continue;
+        }
+        for unit in character.encode_utf16(&mut [0; 2]) {
+            escaped.push_str(&format!("\\u{unit:04x}"));
+        }
+    }
+    escaped
 }
 
 pub fn annotation(device: &str, state: bool, sink: &str) -> String {
@@ -255,7 +269,7 @@ mod tests {
             }
             Ok(Output {
                 code: self.code,
-                stdout: String::new(),
+                stdout: r#"{"ok": true}"#.to_string(),
             })
         }
     }
@@ -348,9 +362,19 @@ mod tests {
     }
 
     #[test]
-    fn schema_does_not_read_what_the_script_printed() {
-        let runner = FakeRunner::answering("not json");
-        assert_eq!(infrahub().schema(&runner, Path::new("s.yml")), Ok(()));
+    fn schema_is_ok_only_when_the_script_printed_ok_true() {
+        let ok = FakeRunner::answering(r#"{"ok": true}"#);
+        assert_eq!(infrahub().schema(&ok, Path::new("s.yml")), Ok(()));
+        for text in ["not json", "{}", r#"{"ok": false}"#, ""] {
+            let runner = FakeRunner::answering(text);
+            assert!(
+                matches!(
+                    infrahub().schema(&runner, Path::new("s.yml")),
+                    Err(Error::Body(_))
+                ),
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -416,7 +440,7 @@ mod tests {
 
     #[test]
     fn two_calls_in_one_process_never_share_a_temporary_file() {
-        let runner = FakeRunner::answering("{}");
+        let runner = FakeRunner::answering(r#"{"ok": true}"#);
         infrahub().schema(&runner, Path::new("a.yml")).unwrap();
         infrahub().schema(&runner, Path::new("b.yml")).unwrap();
 
@@ -600,6 +624,29 @@ mod tests {
     fn annotation_drops_the_trailing_slash_of_the_sink() {
         let text = annotation("srl1", true, "http://loki:3001/");
         assert!(text.ends_with(r#""url": "http://loki:3001"}}"#), "{text}");
+    }
+
+    #[test]
+    fn annotation_writes_every_non_ascii_character_as_utf16_escapes_like_python() {
+        let text = annotation("é😀\u{7f}", true, "http://loki:3001");
+
+        assert!(text.is_ascii(), "{text}");
+        let escaped: String = [0xe9_u16, 0xd83d, 0xde00, 0x7f]
+            .iter()
+            .map(|unit| format!("{}u{unit:04x}", '\\'))
+            .collect();
+        assert!(
+            text.contains(&format!(r#""device": "{escaped}""#)),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                r#""message": "Configured from CLI: {escaped}.maintenance = True""#
+            )),
+            "{text}"
+        );
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["labels"]["device"], "é😀\u{7f}");
     }
 
     #[test]
