@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
+use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
@@ -14,9 +17,12 @@ use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
 use nobs_core::status::{probe_all, Probe, State, Urls};
+use nobs_core::time;
 use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
+
+const DASH: &str = "—";
 
 const HOSTS: [&str; 5] = [
     "ghcr.io",
@@ -153,6 +159,69 @@ pub enum WorkshopCommand {
         #[command(flatten)]
         flags: StatusFlags,
     },
+    #[command(about = "List the active alerts of Alertmanager as one table")]
+    Alerts {
+        #[command(flatten)]
+        flags: AlertsFlags,
+    },
+    #[command(about = "List the silences of Alertmanager as one table")]
+    Silences {
+        #[command(flatten)]
+        flags: SilencesFlags,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct AlertsFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
+    )]
+    am_url: Option<String>,
+    #[arg(
+        short,
+        long,
+        value_name = "KEY=VALUE",
+        help = "Show only alerts that have this label; repeat it for more labels, and an alert must have them all"
+    )]
+    label: Vec<String>,
+    #[arg(
+        long,
+        overrides_with = "no_silenced",
+        help = "Show silenced alerts; this is on by default"
+    )]
+    silenced: bool,
+    #[arg(
+        long,
+        overrides_with = "silenced",
+        help = "Leave out silenced alerts; they are shown by default"
+    )]
+    no_silenced: bool,
+    #[arg(
+        long,
+        overrides_with = "no_inhibited",
+        help = "Show inhibited alerts; this is on by default"
+    )]
+    inhibited: bool,
+    #[arg(
+        long,
+        overrides_with = "inhibited",
+        help = "Leave out inhibited alerts; they are shown by default"
+    )]
+    no_inhibited: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SilencesFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
+    )]
+    am_url: Option<String>,
+    #[arg(long, help = "Show expired silences too")]
+    show_expired: bool,
 }
 
 #[derive(Debug, Args)]
@@ -912,6 +981,8 @@ fn run_workshop_command(
             };
             run_status(flags, &workshop.name)
         }
+        WorkshopCommand::Alerts { flags } => run_alerts(flags),
+        WorkshopCommand::Silences { flags } => run_silences(flags),
     }
 }
 
@@ -1074,6 +1145,93 @@ fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
     }
 }
 
+fn alertmanager_address(flag: Option<String>, lookup: impl Fn(&str) -> Option<String>) -> String {
+    given(flag)
+        .or_else(|| given(lookup("ALERTMANAGER_URL")))
+        .unwrap_or_else(|| Urls::defaults().alertmanager)
+}
+
+fn label_filter(text: &str) -> Result<(String, String), String> {
+    text.split_once('=')
+        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+        .ok_or_else(|| format!("--label must be key=value (got '{text}')"))
+}
+
+fn now_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn run_alerts(flags: AlertsFlags) -> i32 {
+    let filters: Result<BTreeMap<_, _>, _> =
+        flags.label.iter().map(|text| label_filter(text)).collect();
+    let filters = match filters {
+        Ok(filters) => filters,
+        Err(message) => {
+            eprintln!("nobs: {message}");
+            return 2;
+        }
+    };
+    let client = Alertmanager::new(alertmanager_address(flags.am_url, |name| {
+        std::env::var(name).ok()
+    }));
+    let alerts = match client.alerts(
+        flags.silenced || !flags.no_silenced,
+        flags.inhibited || !flags.no_inhibited,
+    ) {
+        Ok(alerts) => alerts,
+        Err(error) => {
+            eprintln!("nobs: {error}");
+            return 1;
+        }
+    };
+    let kept: Vec<Alert> = alerts
+        .into_iter()
+        .filter(|alert| {
+            filters
+                .iter()
+                .all(|(key, value)| alert.labels.get(key) == Some(value))
+        })
+        .collect();
+    let table = alerts_table(&kept, now_seconds());
+    if kept.is_empty() {
+        println!("{table}\nNo alerts match.");
+    } else {
+        println!("{table}");
+    }
+    0
+}
+
+fn run_silences(flags: SilencesFlags) -> i32 {
+    let client = Alertmanager::new(alertmanager_address(flags.am_url, |name| {
+        std::env::var(name).ok()
+    }));
+    let silences = match client.silences() {
+        Ok(silences) => silences,
+        Err(error) => {
+            eprintln!("nobs: {error}");
+            return 1;
+        }
+    };
+    let shown: Vec<Silence> = silences
+        .into_iter()
+        .filter(|silence| flags.show_expired || silence.state != "expired")
+        .collect();
+    if shown.is_empty() {
+        let states = if flags.show_expired {
+            "(any state)"
+        } else {
+            "active or pending"
+        };
+        println!("No silences {states} in Alertmanager at {}.", client.url());
+    } else {
+        println!("{}", silences_table(&shown, now_seconds()));
+    }
+    0
+}
+
 fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
     let urls = urls(flags, |name| std::env::var(name).ok());
     let probes = probe_all(&urls);
@@ -1196,6 +1354,86 @@ fn status_table(probes: &[Probe]) -> String {
         ]
     }));
     pad_lines(&lines)
+}
+
+fn alerts_table(alerts: &[Alert], now: i64) -> String {
+    let header = ["Alertname", "Severity", "Device / target", "State", "Age"].map(String::from);
+    let mut lines = vec![header];
+    lines.extend(alerts.iter().map(|alert| alert_row(alert, now)));
+    pad_lines(&lines)
+}
+
+fn alert_row(alert: &Alert, now: i64) -> [String; 5] {
+    let label = |name: &str| alert.labels.get(name).map_or("", String::as_str);
+    let or_dash = |text: &str| String::from(if text.is_empty() { DASH } else { text });
+    let device = or_dash(label("device"));
+    let target = match ["peer_address", "interface"]
+        .into_iter()
+        .map(label)
+        .find(|text| !text.is_empty())
+    {
+        Some(peer) => format!("{device} → {peer}"),
+        None => device,
+    };
+    let state = if alert.silenced {
+        "silenced".to_string()
+    } else if alert.inhibited {
+        "inhibited".to_string()
+    } else {
+        match alert.state.to_lowercase().as_str() {
+            "active" => "firing".to_string(),
+            other => or_dash(other),
+        }
+    };
+    [
+        alert
+            .labels
+            .get("alertname")
+            .cloned()
+            .unwrap_or_else(|| DASH.to_string()),
+        or_dash(label("severity")),
+        target,
+        state,
+        time::age(&alert.starts_at, now),
+    ]
+}
+
+fn silences_table(silences: &[Silence], now: i64) -> String {
+    let header = [
+        "ID",
+        "State",
+        "Starts (UTC)",
+        "Ends (UTC)",
+        "Remaining",
+        "Matchers",
+        "Creator",
+    ]
+    .map(String::from);
+    let mut lines = vec![header];
+    lines.extend(silences.iter().map(|silence| silence_row(silence, now)));
+    pad_lines(&lines)
+}
+
+fn silence_row(silence: &Silence, now: i64) -> [String; 7] {
+    let first = |text: &str, count: usize| text.chars().take(count).collect::<String>();
+    [
+        format!("{}…", first(&silence.id, 12)),
+        if silence.state.is_empty() {
+            "?".to_string()
+        } else {
+            silence.state.clone()
+        },
+        time::clock(&silence.starts_at),
+        time::clock(&silence.ends_at),
+        time::remaining(&silence.ends_at, now),
+        silence
+            .matchers
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        first(&silence.created_by, 14),
+    ]
 }
 
 fn state_text(state: &State) -> String {
@@ -1409,6 +1647,117 @@ mod tests {
         assert_eq!(
             urls(flags_all(None), |_| Some("  ".to_string())),
             Urls::defaults()
+        );
+    }
+
+    #[test]
+    fn the_alertmanager_address_is_the_flag_then_the_variable_then_the_default() {
+        let variable = |_: &str| Some("http://var-alertmanager".to_string());
+
+        assert_eq!(
+            alertmanager_address(Some("http://flag".to_string()), variable),
+            "http://flag"
+        );
+        assert_eq!(
+            alertmanager_address(Some(" ".to_string()), variable),
+            "http://var-alertmanager"
+        );
+        assert_eq!(
+            alertmanager_address(None, variable),
+            "http://var-alertmanager"
+        );
+        assert_eq!(
+            alertmanager_address(Some(String::new()), |_| Some("  ".to_string())),
+            "http://localhost:9093"
+        );
+    }
+
+    const NOW: i64 = 1_793_960_130 + 42;
+
+    fn alert(labels: &[(&str, &str)], state: &str, silenced: bool, inhibited: bool) -> Alert {
+        Alert {
+            labels: labels
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            state: state.to_string(),
+            silenced,
+            inhibited,
+            starts_at: "2026-11-06T10:15:30Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_alert_row_follows_the_label_and_state_rules() {
+        let row = |labels: &[(&str, &str)], state: &str, silenced, inhibited| {
+            alert_row(&alert(labels, state, silenced, inhibited), NOW)
+        };
+
+        assert_eq!(row(&[], "", false, false), ["—", "—", "—", "—", "42s"]);
+        assert_eq!(
+            row(
+                &[
+                    ("alertname", "A"),
+                    ("severity", "critical"),
+                    ("device", "srl1"),
+                    ("interface", "ethernet-1/1"),
+                ],
+                "active",
+                false,
+                false
+            ),
+            ["A", "critical", "srl1 → ethernet-1/1", "firing", "42s"]
+        );
+        assert_eq!(
+            row(
+                &[
+                    ("severity", ""),
+                    ("peer_address", "10.0.0.2"),
+                    ("interface", "ethernet-1/1")
+                ],
+                "active",
+                false,
+                true
+            ),
+            ["—", "—", "— → 10.0.0.2", "inhibited", "42s"]
+        );
+        assert_eq!(
+            row(
+                &[("device", "srl1"), ("peer_address", "")],
+                "Suppressed",
+                false,
+                false
+            )[2..4],
+            ["srl1", "suppressed"]
+        );
+        assert_eq!(row(&[], "ACTIVE", true, true)[3], "silenced");
+    }
+
+    #[test]
+    fn a_silence_row_cuts_the_id_and_creator_by_character_and_marks_a_missing_state() {
+        let silence = Silence {
+            id: "é".repeat(13),
+            state: String::new(),
+            starts_at: "2026-11-06T10:00:00.000Z".to_string(),
+            ends_at: "2026-11-06T10:17:35.000Z".to_string(),
+            matchers: vec![
+                ("alertname".to_string(), "A".to_string()),
+                ("device".to_string(), "srl1".to_string()),
+            ],
+            created_by: "ü".repeat(15),
+        };
+
+        assert_eq!(
+            silence_row(&silence, NOW - 42),
+            [
+                format!("{}…", "é".repeat(12)),
+                "?".to_string(),
+                "10:00:00".to_string(),
+                "10:17:35".to_string(),
+                "2m5s".to_string(),
+                "alertname=A, device=srl1".to_string(),
+                "ü".repeat(14),
+            ]
         );
     }
 
