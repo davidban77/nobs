@@ -81,6 +81,36 @@ Options:
       --token <TOKEN>       Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN
   -h, --help                Print help
 ";
+const CYCLE_HELP: &str = "Capture the workflow's full cycle state for one device and peer; optionally re-drive it
+
+Usage: nobs <workshop> cycle [OPTIONS] <DEVICE> <PEER>
+
+Arguments:
+  <DEVICE>  Device name (e.g. srl1).
+  <PEER>    Peer IP (e.g. 10.1.99.2).
+
+Options:
+      --trigger            Post a fresh alert payload through the webhook before rendering.
+      --status <STATUS>    Alert status to post with --trigger: 'firing' (default) or 'resolved'. [possible values: firing, resolved]
+      --minutes <N>        Lookback window for recent panels. [default: 30]
+      --am-url <URL>       Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093
+      --loki-url <URL>     Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001
+      --prefect-url <URL>  Address of Prefect; nobs looks at --prefect-url, then PREFECT_API_URL, then http://localhost:4200
+      --webhook-url <URL>  Address of the webhook; nobs looks at --webhook-url, then WEBHOOK_URL, then http://localhost:9997/v1/api/webhook
+  -h, --help               Print help
+";
+const PAGE_HELP: &str = "Render a fake on-call page from a live alert
+
+Usage: nobs <workshop> page [OPTIONS]
+
+Options:
+  -a, --alert <ALERT>    Alertname to filter by; the default is BgpSessionNotUp
+  -d, --device <DEVICE>  Filter to alerts on this device.
+  -p, --peer <PEER>      Filter to alerts on this peer_address.
+      --now <HH:MM>      Override the wall-clock printed in the page (HH:MM). Default: real time.
+      --am-url <URL>     Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093
+  -h, --help             Print help
+";
 
 struct Copy(PathBuf);
 
@@ -310,6 +340,16 @@ fn the_rca_help_page_holds_the_arguments_and_the_flags() {
 #[test]
 fn the_evidence_help_page_holds_the_arguments_and_the_flags() {
     assert_eq!(help("evidence"), EVIDENCE_HELP);
+}
+
+#[test]
+fn the_cycle_help_page_holds_the_arguments_and_the_flags() {
+    assert_eq!(help("cycle"), CYCLE_HELP);
+}
+
+#[test]
+fn the_page_help_page_holds_the_flags() {
+    assert_eq!(help("page"), PAGE_HELP);
 }
 
 #[test]
@@ -1149,7 +1189,7 @@ fn cycle_asks_in_order_and_prints_the_four_panels_then_the_hint() {
     );
     assert_eq!(
         String::from_utf8_lossy(&requests[3].body),
-        r#"{"task_runs":{"id":{"any_":["t3","t2","t1","t0"]}},"limit":4}"#
+        r#"{"task_runs":{"id":{"any_":["t0","t1","t2","t3"]}},"limit":4}"#
     );
     let parameters = parameters(&requests[4]);
     assert_eq!(
@@ -1305,6 +1345,32 @@ fn cycle_with_trigger_stops_after_the_post_when_the_webhook_answers_500() {
 }
 
 #[test]
+fn cycle_with_trigger_takes_the_current_time_as_the_baseline_when_the_first_query_fails() {
+    let t = now();
+    let newer = run_json("n1", QUARANTINE, &rfc3339(t + 30), None);
+    let mut responses = Responses::packt(t);
+    responses.flow_runs = vec![
+        (500, "boom".to_string()),
+        (200, packt_runs(t, &[])),
+        (200, packt_runs(t, &[newer])),
+    ];
+    let stub = responses.serve();
+    let copy = Copy::new("cycle-baseline-500", &cycle_env(stub.url()));
+
+    let output = run(&copy, &["cycle", "srl1", "10.1.99.2", "--trigger"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(
+        out.starts_with(&format!(
+            "{POSTED}\nnew flow run started at {}\n\nAlert\n",
+            clock_of(t + 30)
+        )),
+        "{out}"
+    );
+}
+
+#[test]
 fn cycle_refuses_a_status_other_than_firing_or_resolved_with_or_without_trigger() {
     let stub = Responses::packt(now()).serve();
     let copy = Copy::new("cycle-status", &cycle_env(stub.url()));
@@ -1373,35 +1439,42 @@ fn cycle_takes_every_address_from_its_flag_and_posts_the_status_it_was_given() {
 }
 
 #[test]
-fn cycle_shows_every_run_as_its_own_row_and_asks_for_no_task_runs_when_none_has_a_parent() {
+fn cycle_shows_at_most_five_runs_each_on_its_own_row_and_asks_for_no_task_runs_without_a_parent() {
     let t = now();
     let mut responses = Responses::packt(t);
-    let first = run_json("q1", QUARANTINE, &rfc3339(t - 260), None);
-    let second = run_json(
-        "q2",
-        "resolved_bgp | srl1:10.1.99.2",
-        &rfc3339(t - 100),
-        None,
-    );
-    responses.flow_runs = vec![(200, format!("[{second},{first}]"))];
+    let offsets = [100, 120, 140, 160, 180, 260];
+    let runs: Vec<String> = offsets
+        .iter()
+        .enumerate()
+        .map(|(index, offset)| {
+            run_json(
+                &format!("q{index}"),
+                &format!("flow_{index} | srl1:10.1.99.2"),
+                &rfc3339(t - offset),
+                None,
+            )
+        })
+        .collect();
+    responses.flow_runs = vec![(200, format!("[{}]", runs.join(",")))];
     let stub = responses.serve();
     let copy = Copy::new("cycle-flat", &cycle_env(stub.url()));
 
     let output = run(&copy, &["cycle", "srl1", "10.1.99.2"]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let mut rows = vec![
+        "Prefect flow runs (last 30m)".to_string(),
+        "Started   State      Flow".to_string(),
+    ];
+    rows.extend(offsets.iter().enumerate().take(5).map(|(index, offset)| {
+        format!(
+            "{}  COMPLETED  flow_{index} | srl1:10.1.99.2",
+            clock_of(t - offset)
+        )
+    }));
     assert_eq!(
         panel(&output, "Prefect flow runs (last 30m)"),
-        [
-            "Prefect flow runs (last 30m)".to_string(),
-            "Started   State      Flow".to_string(),
-            format!(
-                "{}  COMPLETED  resolved_bgp | srl1:10.1.99.2",
-                clock_of(t - 100)
-            ),
-            format!("{}  COMPLETED  {QUARANTINE}", clock_of(t - 260)),
-        ]
-        .join("\n")
+        rows.join("\n")
     );
     assert!(!order(&stub.requests()).contains(&format!("POST {TASK_RUNS_ROUTE}")));
 }
@@ -1745,6 +1818,18 @@ fn page_filters_by_alertname_device_and_peer_and_an_empty_alertname_filters_noth
         (vec!["page", "-a", "", "-d", "srl1"], bgp_title),
         (vec!["page", "-a", "", "-p", "10.1.99.2"], bgp_title),
         (vec!["page", "-a", "PeerInterfaceFlapping"], flapping_title),
+        (
+            vec![
+                "page",
+                "--alert",
+                "BgpSessionNotUp",
+                "--device",
+                "srl1",
+                "--peer",
+                "10.1.99.2",
+            ],
+            bgp_title,
+        ),
     ] {
         let mut args = args;
         args.extend(["--now", "02:14"]);

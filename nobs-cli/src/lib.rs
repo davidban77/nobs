@@ -2249,6 +2249,7 @@ fn flow_runs_panel(prefect: &Prefect, device: &str, peer: &str, minutes: u64, no
                         parents.push(parent);
                     }
                 }
+                parents.sort();
                 let task_runs = if parents.is_empty() {
                     Vec::new()
                 } else {
