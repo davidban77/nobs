@@ -32,20 +32,21 @@ pub fn draw(frame: &mut Frame, model: &Model, now: Instant) {
 
 fn top_line(model: &Model, now: Instant) -> Line<'static> {
     let age = match model.refreshed_at() {
-        Some(at) => format!(
-            "refreshed {}s ago",
-            now.saturating_duration_since(at).as_secs()
-        ),
+        Some(at) => format!("refreshed {}s ago", seconds(now, at)),
         None => "no answer yet".to_string(),
     };
     let mut spans = vec![Span::raw(format!("{}  {age}", model.server()))];
-    if let Some(error) = model.error() {
+    if let (Some(error), Some(at)) = (model.error(), model.error_at()) {
         spans.push(Span::styled(
-            format!("  {error}"),
+            format!("  {error} ({}s ago)", seconds(now, at)),
             Style::new().fg(Color::Red),
         ));
     }
     Line::from(spans)
+}
+
+fn seconds(now: Instant, at: Instant) -> u64 {
+    now.saturating_duration_since(at).as_secs()
 }
 
 fn table(model: &Model) -> Table<'_> {
@@ -212,6 +213,25 @@ mod tests {
     }
 
     #[test]
+    fn the_top_line_holds_the_error_and_its_age_after_the_age_of_the_last_answer() {
+        let at = Instant::now();
+        let mut model = model(at);
+        model.apply(Update {
+            at: at + Duration::from_secs(1),
+            list: Err("cannot reach http://sonda: refused".to_string()),
+            selected: None,
+        });
+
+        let lines = screen(&model, at + Duration::from_secs(3), 100, 30);
+
+        assert!(
+            lines[0].contains("refreshed 3s ago  cannot reach http://sonda: refused (2s ago)"),
+            "{}",
+            lines[0]
+        );
+    }
+
+    #[test]
     fn the_table_holds_the_header_and_one_row_per_scenario_with_its_state() {
         let now = Instant::now();
 
@@ -257,7 +277,11 @@ mod tests {
 
         let lines = screen(&model(now), now, 100, 30);
 
-        assert!(lines[29].starts_with(KEYS), "{}", lines[29]);
+        assert!(
+            lines[29].starts_with("q quit  j/k select  r refresh  l load  d delete"),
+            "{}",
+            lines[29]
+        );
     }
 
     #[test]
@@ -295,7 +319,11 @@ mod tests {
         let after = screen(&model, now + Duration::from_secs(3), 100, 30);
 
         assert!(within[29].starts_with("loaded x1"), "{}", within[29]);
-        assert!(after[29].starts_with(KEYS), "{}", after[29]);
+        assert!(
+            after[29].starts_with("q quit  j/k select  r refresh  l load  d delete"),
+            "{}",
+            after[29]
+        );
     }
 
     #[test]
