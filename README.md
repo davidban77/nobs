@@ -216,12 +216,12 @@ Some services are not ready yet: give them a minute, or check nobs nobs-t-one lo
 
 ### alerts and silences
 
-`nobs <workshop> alerts` lists the active alerts of Alertmanager as one table. `nobs <workshop> silences` lists its silences as one table. Neither makes a Docker call. Each sends one HTTP GET request (a request that only reads) to Alertmanager and waits at most 10 seconds for the answer. Inside a workshop folder, `nobs alerts` and `nobs silences` do the same.
+`nobs <workshop> alerts` lists the active alerts of Alertmanager as one table. `nobs <workshop> silences` lists its silences as one table. Each alert carries labels: pairs of a key and a value, like `device=srl1`. A silence is a rule in Alertmanager that mutes the alerts whose labels match it, for a set time. An alert is inhibited when an inhibit rule in Alertmanager mutes it because another, related alert is firing. Neither command makes a Docker call. Each sends one HTTP GET request (a request that only reads) to Alertmanager and waits at most 10 seconds for the answer. Inside a workshop folder, `nobs alerts` and `nobs silences` do the same.
 
 | Command | Flag | What it does |
 |---|---|---|
 | both | `--am-url URL` | gives the address of Alertmanager |
-| `alerts` | `-l KEY=VALUE`, `--label KEY=VALUE` | shows only the alerts that have this label; repeat it to ask for more labels, and an alert must match every key, with the last value given for that key |
+| `alerts` | `-l KEY=VALUE`, `--label KEY=VALUE` | shows only the alerts that have this label; repeat it for more labels, and an alert must have them all |
 | `alerts` | `--silenced`, `--no-silenced` | shows or leaves out the silenced alerts; they are shown by default |
 | `alerts` | `--inhibited`, `--no-inhibited` | shows or leaves out the inhibited alerts; they are shown by default |
 | `silences` | `--show-expired` | shows the expired silences too |
@@ -243,11 +243,21 @@ InterfaceDown    warning   srl2 → ethernet-1/1  silenced  20s
 |---|---|
 | `Alertname` | the `alertname` label, or `—` when the alert has none |
 | `Severity` | the `severity` label, or `—` when it is missing or empty |
-| `Device / target` | the `device` label, or `—` when it is missing or empty; then ` → ` and the `peer_address` label, or the `interface` label when there is no `peer_address`, when one of them is not empty |
-| `State` | `silenced` when a silence covers the alert, else `inhibited` when another alert inhibits it, else `firing` when Alertmanager calls it `active`, else the state Alertmanager sent, in lower case, or `—` when it sent none |
+| `Device / target` | the `device` label, or `—` when it is missing. Then ` → ` and the target, when the alert has one. The target is the `peer_address` label, or else the `interface` label. An empty label counts as missing. |
+| `State` | what the alert is now; see the next table |
 | `Age` | the time since the alert started: `42s`, `3m05s`, `2h07m` or `1d3h`; `—` when nobs cannot read the start time |
 
-When no alert is left after the filter, nobs prints the header line, then `No alerts match.`, and exits with 0.
+`State` shows the first row of this table that fits the alert:
+
+| State | When |
+|---|---|
+| `silenced` | a silence covers the alert |
+| `inhibited` | another alert inhibits it |
+| `firing` | Alertmanager sent the state `active` |
+| the state Alertmanager sent, in lower case | Alertmanager sent another state |
+| `—` | Alertmanager sent no state |
+
+When no alert is left to show, nobs prints the header line, then `No alerts match.`, and exits with 0.
 
 `silences` leaves out the expired silences unless you give `--show-expired`. The table has one header line and one line per silence, in the order Alertmanager sent them. For example, with `--show-expired`:
 
@@ -262,10 +272,10 @@ ffffffff-000…  expired  00:50:09      01:49:09    —          device=srl2    
 |---|---|
 | `ID` | the first 12 characters of the silence id, then `…` |
 | `State` | the state Alertmanager sent, for example `active`, `pending` or `expired`, or `?` when it sent none |
-| `Starts (UTC)` | the time part `HH:MM:SS` of the start, in UTC |
-| `Ends (UTC)` | the time part `HH:MM:SS` of the end, in UTC |
+| `Starts (UTC)` | the time part `HH:MM:SS` of the start, in UTC; empty when the time is missing |
+| `Ends (UTC)` | the time part `HH:MM:SS` of the end, in UTC; empty when the time is missing |
 | `Remaining` | the time until the end as `<minutes>m<seconds>s`, for example `60m0s` (minutes are not turned into hours); `—` when the end has passed, and `?` when nobs cannot read the end time |
-| `Matchers` | `name=value` for each matcher, joined by `, `; nobs does not show whether a matcher is a regular expression |
+| `Matchers` | `name=value` for each matcher, joined by `, `; nobs does not show whether a matcher is a regular expression or a "not equal" matcher |
 | `Creator` | the first 14 characters of the name of the creator |
 
 When no silence is left to show, nobs prints one line and no table, and exits with 0. `<address>` is the address nobs used:
@@ -278,7 +288,9 @@ When no silence is left to show, nobs prints one line and no table, and exits wi
 | Exit code | When |
 |---|---|
 | 0 | nobs printed the table, or the empty text |
-| 1 | nobs got no usable answer from Alertmanager: `nobs: cannot reach Alertmanager at <address>: <error>` when it did not answer, `nobs: Alertmanager at <address> answered <status>` when the status code was 400 or more, or `nobs: Alertmanager at <address> answered with a body nobs cannot read: <reason>` when the answer is not a JSON list |
+| 1 | Alertmanager did not answer: `nobs: cannot reach Alertmanager at <address>: <error>` |
+| 1 | Alertmanager answered with a status code of 400 or more: `nobs: Alertmanager at <address> answered <status>` |
+| 1 | the answer is not a JSON list: `nobs: Alertmanager at <address> answered with a body nobs cannot read: <reason>` |
 | 2 | a `--label` without `=`, or a flag nobs does not know |
 
 ## Setup and preflight

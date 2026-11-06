@@ -183,7 +183,7 @@ pub struct AlertsFlags {
         short,
         long,
         value_name = "KEY=VALUE",
-        help = "Show only alerts that have this label; repeat it to ask for more labels"
+        help = "Show only alerts that have this label; repeat it for more labels, and an alert must have them all"
     )]
     label: Vec<String>,
     #[arg(
