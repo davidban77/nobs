@@ -234,6 +234,30 @@ fn every_given_label_must_match_and_the_key_and_the_value_are_trimmed() {
 }
 
 #[test]
+fn when_a_key_is_given_twice_the_last_value_counts() {
+    let copy = Copy::new("repeated-key");
+    let stub = alert_stub();
+
+    let output = nobs(
+        &copy,
+        &[
+            "alerts",
+            "--am-url",
+            stub.url(),
+            "-l",
+            "device=srl1",
+            "-l",
+            "device=srl2",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert_eq!(cells(out.lines().nth(1).unwrap())[0], "InterfaceDown");
+}
+
+#[test]
 fn no_alert_left_prints_the_header_and_no_alerts_match_and_exits_0() {
     let copy = Copy::new("no-match");
     let stub = alert_stub();
@@ -294,7 +318,7 @@ fn no_silenced_sends_silenced_false() {
 #[test]
 fn the_last_flag_of_a_pair_wins() {
     let copy = Copy::new("last-wins");
-    let path = "/api/v2/alerts?active=true&silenced=false&inhibited=true";
+    let path = "/api/v2/alerts?active=true&silenced=false&inhibited=false";
     let stub = Stub::start(&[("GET", path, 200, "[]")]);
 
     let output = nobs(
@@ -305,8 +329,8 @@ fn the_last_flag_of_a_pair_wins() {
             stub.url(),
             "--silenced",
             "--no-silenced",
-            "--no-inhibited",
             "--inhibited",
+            "--no-inhibited",
         ],
     );
 
@@ -333,6 +357,22 @@ fn a_closed_port_exits_1_and_says_it_cannot_reach_alertmanager() {
     let closed = closed_port_url();
 
     let output = nobs(&copy, &["alerts", "--am-url", &closed]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).starts_with(&format!("nobs: cannot reach Alertmanager at {closed}: ")),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
+fn a_closed_port_makes_silences_exit_1_and_say_it_cannot_reach_alertmanager() {
+    let copy = Copy::new("silences-closed-port");
+    let closed = closed_port_url();
+
+    let output = nobs(&copy, &["silences", "--am-url", &closed]);
 
     assert_eq!(output.status.code(), Some(1));
     assert!(

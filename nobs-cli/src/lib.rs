@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::IsTerminal;
@@ -1164,7 +1165,8 @@ fn now_seconds() -> i64 {
 }
 
 fn run_alerts(flags: AlertsFlags) -> i32 {
-    let filters: Result<Vec<_>, _> = flags.label.iter().map(|text| label_filter(text)).collect();
+    let filters: Result<BTreeMap<_, _>, _> =
+        flags.label.iter().map(|text| label_filter(text)).collect();
     let filters = match filters {
         Ok(filters) => filters,
         Err(message) => {

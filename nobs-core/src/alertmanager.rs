@@ -290,6 +290,14 @@ mod tests {
     }
 
     #[test]
+    fn new_waits_at_most_10_seconds() {
+        assert_eq!(
+            Alertmanager::new("http://x").timeout,
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
     fn alerts_sends_one_get_with_the_query_and_returns_the_alerts() {
         let stub = Stub::start(&[("GET", ALERTS_PATH, 200, ONE_ALERT)]);
 
