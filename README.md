@@ -298,7 +298,7 @@ When no silence is left to show, nobs prints one line and no table, and exits wi
 
 ### load-infrahub, schema load and maintenance
 
-Infrahub is the database where the workshop keeps its devices, interfaces and BGP sessions. Each device, interface or BGP session in Infrahub is a node, and each node has a kind, for example `WorkshopDevice`. A schema file tells Infrahub which kinds of node it holds. A lab variables file lists the nodes to put in. Three commands talk to Infrahub, and none makes a Docker call. They talk to Infrahub over plain HTTP.
+Infrahub is the database where the workshop keeps its devices, interfaces and BGP sessions. Each device, interface or BGP session in Infrahub is a node, and each node has a kind, for example `WorkshopDevice`. A schema file tells Infrahub which kinds of node it holds. A lab variables file lists the nodes to put in. Three commands talk to Infrahub, and none makes a Docker call. nobs sends their requests to Infrahub itself, over plain HTTP: an `http://` address, with no encryption.
 
 | Command | What it does |
 |---|---|
@@ -329,11 +329,11 @@ nobs finds the address and the token in this order: the flag, then the variable,
 
 A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it. So keep the token in the `.env` file.
 
-The containers reach Infrahub by the name `infrahub-server`, and your machine cannot. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead, and before the other lines it prints `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000`. A trailing `/` is dropped without a message.
+The containers reach Infrahub by the name `infrahub-server`, and your machine cannot. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead. Before any other line, it then prints the rewrite line: `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000`. The line says `INFRAHUB_ADDRESS` even when the address came from `--address`. A trailing `/` is dropped without a message.
 
 `load-infrahub` and `maintenance` check the token first. Then `load-infrahub` reads the schema file (unless you give `--skip-schema`) and the lab variables file. `schema load` first checks that its schema file is there, then checks the token, then reads the file. `load-infrahub` and `schema load` send nothing to Infrahub before they have read their files. When a file is missing, nobs prints `nobs: schema file not found: <path>` or `nobs: lab_vars file not found: <path>`. When a file is there but is not valid YAML, or does not have the shape nobs expects, nobs prints `nobs: cannot read <path>: <reason>`.
 
-`load-infrahub` prints the rewrite line when there is one, then `Applying schema <path>` and `Schema applied` (both left out with `--skip-schema`), then `Loading <path> into Infrahub at <address>`. Infrahub needs a moment before it shows the kinds of a new schema, so nobs waits up to 30 seconds until Infrahub shows `WorkshopDevice`, `WorkshopInterface` and `WorkshopBgpSession`. A progress line comes next for each device, as soon as nobs is done with it, for example `device srl1 created` or `device srl1 updated`. Then one table and one last line. For example:
+`load-infrahub` prints the rewrite line when there is one, then `Applying schema <path>` and `Schema applied` (both left out with `--skip-schema`), then `Loading <path> into Infrahub at <address>`. Infrahub needs a moment before it shows the kinds of a new schema, so nobs waits up to 30 seconds until Infrahub shows `WorkshopDevice`, `WorkshopInterface` and `WorkshopBgpSession`. Then nobs prints one progress line for each device, as soon as it has created or updated that device, for example `device srl1 created` or `device srl1 updated`. After that line, nobs loads the interfaces and BGP sessions of the device, and prints no line for them. Then one table and one last line. For example:
 
 ```
 $ nobs nobs-t-one load-infrahub
@@ -350,7 +350,7 @@ WorkshopBgpSession  6        0        6
 Done: 16 nodes across 3 types. Open Infrahub at http://localhost:8000.
 ```
 
-The table has one line for each kind of node, and `Total` is `Created` plus `Updated`. In the last line, the number is the sum of the `Total` column. Run the command again, and the same nodes show under `Updated` instead of `Created`. When the `WorkshopDevice` line shows 0 created and 0 updated, nobs also prints `nobs: no devices found in <path>: is --lab-vars the right file?` on standard error, the output a program uses for errors and warnings. The exit code stays 0.
+The table has one line for each kind of node, and `Total` is `Created` plus `Updated`. In the last line, the number is the sum of the `Total` column. Run the command again, and the same nodes show under `Updated` instead of `Created`. When the lab variables file lists no device, nobs also prints `nobs: no devices found in <path>: is --lab-vars the right file?` after the last line, on standard error, the output a program uses for errors and warnings. The exit code stays 0.
 
 `schema load` prints the rewrite line when there is one, then `Applying schema <path>` and `Schema applied`.
 
@@ -395,14 +395,14 @@ These three variables follow the same rule as the Infrahub variables: the shell 
 | 1 | Infrahub did not answer: `nobs: cannot reach <address>: <reason>` |
 | 1 | Infrahub answered with a status code other than 200: `nobs: Infrahub answered <status> on <path>: <answer>`, where `<answer>` is the first 200 characters of the answer |
 | 1 | Infrahub answered 200 with an error message: `nobs: Infrahub: <message>` |
-| 1 | Infrahub did not show the three kinds of node in 30 seconds: `nobs: workshop schema kinds <kinds> not visible to Infrahub after 30 s` |
+| 1 | Infrahub did not show all three kinds of node in 30 seconds: `nobs: workshop schema kinds <kinds> not visible to Infrahub after 30 s`, where `<kinds>` are the ones still missing |
 | 1 | `maintenance` found no such node: `nobs: <kind> <device> not found in Infrahub.` |
 | 1 | the post to Sonda failed: `nobs: sonda /events post failed: <error>`; the flag stays saved in Infrahub |
 | 2 | a flag nobs does not know, a missing `-d`, or a missing `PATH` after `schema load` |
 
 In the post failure line, `<error>` is `cannot reach <address>: <reason>` when Sonda does not answer, or `sonda answered <status>: <body>` when it answers with a status code of 400 or more.
 
-The files under `captures/` are the record of what the Python SDK sent to Infrahub 1.1 and 1.11.2, and the tests of nobs use them.
+The files under `captures/` are the record of what the Python SDK (Infrahub's own client library) sent to Infrahub 1.1 and 1.11.2, and what Infrahub answered. The tests of nobs use them.
 
 ## Setup and preflight
 
