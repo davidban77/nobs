@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are fifteen. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load` and `maintenance` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are seventeen. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca` and `evidence` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -122,6 +122,8 @@ known: nobs-t-two
 | `nobs <workshop> load-infrahub [OPTIONS]` | no Docker call | applies the schema file to Infrahub, then loads the lab variables into it; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
 | `nobs <workshop> schema load PATH [OPTIONS]` | no Docker call | applies one schema file to Infrahub; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
 | `nobs <workshop> maintenance -d NAME [OPTIONS]` | no Docker call | sets or clears the maintenance flag of a device in Infrahub, then tells Sonda; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
+| `nobs <workshop> rca [DEVICE] [PEER] [OPTIONS]` | no Docker call | prints the most recent AI RCA narratives from Loki; the options are in [rca and evidence](#rca-and-evidence) |
+| `nobs <workshop> evidence DEVICE PEER [OPTIONS]` | no Docker call | prints what Infrahub, Prometheus and Loki say about one BGP session, then a policy hint; the options are in [rca and evidence](#rca-and-evidence) |
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
@@ -172,7 +174,9 @@ schema_file = "infrahub/schema.yml"
 sonda = "ghcr.io/davidban77/sonda:1.22.2"
 ```
 
-Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project` and `schema_file`; it checks the others but does not use them.
+Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file` and `evidence_query`; it checks the others but does not use them.
+
+The `evidence_query` setting is a Loki query. It may hold the placeholders `{device}` and `{peer}`. `nobs <workshop> evidence` replaces each one with the device and the peer you give it, and sends the result to Loki. For example, `evidence_query = "{device=\"{device}\"} != \"license\""` becomes `{device="srl1"} != "license"` for the device `srl1`. The braces around the placeholders belong to the query and stay.
 
 ### status
 
@@ -403,6 +407,122 @@ These three variables follow the same rule as the Infrahub variables: the shell 
 In the post failure line, `<error>` is `cannot reach <address>: <reason>` when Sonda does not answer, or `sonda answered <status>: <body>` when it answers with a status code of 400 or more.
 
 The files under `captures/` are the record of what the Python SDK (Infrahub's own client library) sent to Infrahub 1.1 and 1.11.2, and what Infrahub answered. The tests of nobs use them.
+
+### rca and evidence
+
+Two commands show what the running stack knows about a BGP session. Both only read, and neither makes a Docker call. Inside a workshop folder, `nobs rca` and `nobs evidence` do the same. RCA means root cause analysis. An AI RCA record is a log line in Loki, written by the workshop's automation, that holds a short explanation of why an alert fired. SoT means source of truth: what Infrahub holds about the lab.
+
+| Command | What it does |
+|---|---|
+| `nobs <workshop> rca [DEVICE] [PEER]` | prints the most recent AI RCA records from Loki |
+| `nobs <workshop> evidence DEVICE PEER` | prints what Infrahub, Prometheus and Loki say about one BGP session of one device, then a policy hint |
+
+| Command | Argument or flag | What it does |
+|---|---|---|
+| `rca` | `DEVICE` | shows only the records of this device; optional |
+| `rca` | `PEER` | shows only the records of this peer address; optional |
+| `rca` | `--last N` | gives how many of the most recent records to show; the default is 1 |
+| `rca` | `--minutes N` | gives how far back to look; the default is 60 |
+| `rca` | `--loki-url URL` | gives the address of Loki |
+| `evidence` | `DEVICE`, `PEER` | give the device and the IP address of its peer; both are required |
+| `evidence` | `--afi-safi NAME` | gives the address family of the session; the default is `ipv4-unicast` |
+| `evidence` | `--instance NAME` | gives the network instance of the session; the default is `default` |
+| `evidence` | `--log-minutes N` | gives how many minutes back to look for log lines; the default is 10 |
+| `evidence` | `--log-limit N` | gives how many log lines to show at most; the default is 20 |
+| `evidence` | `--prom-url URL`, `--loki-url URL`, `--infrahub-url URL` | give the addresses of Prometheus, Loki and Infrahub |
+| `evidence` | `--token TOKEN` | gives the token for Infrahub |
+
+nobs finds each address and the token in this order: the flag, then the variable, then the default.
+
+| Value | Flag | Variable | Default |
+|---|---|---|---|
+| the address of Prometheus (`evidence`) | `--prom-url URL` | `PROMETHEUS_URL` | `http://localhost:9090` |
+| the address of Loki | `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` |
+| the address of Infrahub (`evidence`) | `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
+| the token for Infrahub (`evidence`) | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none |
+
+A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. Each call waits at most 10 seconds. `evidence` treats the Infrahub address and the token as `load-infrahub` does (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)): when the address names `infrahub-server`, nobs prints the rewrite line first and uses `http://localhost:8000`, and with no token it prints the required-token line and sends nothing.
+
+`rca` sends one request to Loki for the lines that carry the labels `source="prefect"` and `ai_rca="true"`, and the labels `device` and `peer_address` when you give them. It asks for the newest lines first, at most `--last` of them. When Loki returns no line, nobs prints one line, where `<scope>` is `device=D peer=P`, `device=D`, `peer=P` or `any device/peer`, `<folder>` is the workshop folder, and `<name>` is the `name` setting in its `nobs.toml`:
+
+```
+No AI RCA records found in the last <minutes>m for <scope>. If you haven't enabled it yet, set ENABLE_AI_RCA=true in <folder>/.env and re-run `nobs <name> up`.
+```
+
+Otherwise nobs prints a blank line, then one entry for each line, newest first, numbered from 1. A line that is not JSON gives `(skipping unparseable record #<n>)`. A JSON record gives its `timestamp`, the `device` and `peer_address` labels (each `?` when missing), then its `message` as plain text, then a blank line. nobs removes a leading `AI RCA:` from the message, and the line breaks right after it. It does not render Markdown. For example:
+
+```
+$ nobs nobs-t-one rca srl1 10.1.99.2 --last 2
+
+2026-11-06T10:15:48.201Z  device=srl1  peer=10.1.99.2
+## Most likely cause
+The peer 10.1.99.2 stopped answering.
+
+(skipping unparseable record #2)
+```
+
+`evidence` asks Infrahub for the device, asks Prometheus for six numbers one after another, and asks Loki for log lines once. A query to Prometheus or Loki that fails, or that finds nothing, never changes the exit code: the number counts as missing, and the log lines as none. The six numbers are `bgp_admin_state`, `bgp_oper_state`, `bgp_received_routes`, `bgp_sent_routes`, `bgp_active_routes` and `bgp_suppressed_routes`, each with the labels `device`, `peer_address`, `afi_safi_name` and `name` (the instance). The Loki query is the `evidence_query` setting of the workshop with `{device}` and `{peer}` filled in (see [Workshops](#workshops)); `--log-minutes` and `--log-limit` set its window and its size.
+
+Then nobs prints a blank line and four blocks, separated by blank lines. Each block is a title line and its body. For example:
+
+```
+$ nobs nobs-t-one evidence srl1 10.1.99.2
+
+Source of truth (Infrahub)
+device          srl1   site=lab  role=edge
+maintenance     false
+intended peer   yes
+expected state  established
+reason          ip-mismatch-demo
+remote_as       65102
+
+BGP metrics snapshot (Prometheus)
+Metric             Value  Decoded
+admin_state            1  enable
+oper_state             5  active
+received_routes        0  —
+sent_routes           10  —
+active_routes         10  —
+suppressed_routes      0  —
+
+Loki - last 2 relevant line(s)
+2026-11-06T10:20:00Z srl1 bgp neighbor 10.1.99.2 session state changed to active
+2026-11-06T10:15:48Z srl1 bgp neighbor 10.1.99.2 session state changed to idle
+
+Policy hint
+decision: proceed
+reason  : SoT expects peer up, but metrics show mismatch
+```
+
+The first block depends on what Infrahub answered. A peer is intended when the device has a BGP session with that peer address and with the `--afi-safi` family (a session with no family counts as `ipv4-unicast`). The lines `expected state`, `reason` and `remote_as` come from that session, and only when the peer is intended. `expected state` is `—` when the session has none, `reason` is left out when it is empty, and `remote_as` is left out when it is 0. A missing `site` or `role` shows as `?`.
+
+| Infrahub | First block |
+|---|---|
+| has the device | `Source of truth (Infrahub)` and the lines of the example |
+| has no such device | `Source of truth`, then `device not found in Infrahub.` |
+| did not answer, or answered with an error | `Source of truth`, then `Infrahub query failed: <error>`, where `<error>` is `cannot reach <address>: <reason>`, `Infrahub answered <status> on <path>: <answer>` or `Infrahub: <message>` |
+
+In the second block, the `Value` column is right-aligned. A whole number shows without a fraction (`1`, `10`) and any other number as it is (`0.5`). A missing `admin_state` or `oper_state` shows as `-1`, a missing counter as `0`, and a number that is not finite as `?`. `Decoded` is `enable` for an `admin_state` of 1 and `disable` for 2, and `up`, `down`, `idle`, `connect` or `active` for an `oper_state` of 1 to 5. Any other number is `unknown`, a missing state is `—`, and the four counters always show `—`.
+
+The third block is `Loki - last <n> relevant line(s)` with the lines as Loki holds them, newest first. When there is none, the block is `Loki` and `No relevant log lines in the window.`
+
+The last block shows the first row of this table that fits:
+
+| decision | reason | When |
+|---|---|---|
+| `stop` | `device not found in Infrahub`, or the `Infrahub query failed` text | the first block is not `Source of truth (Infrahub)` |
+| `skip` | `device under maintenance` | the device has `maintenance` set to true |
+| `skip` | `peer not intended in SoT` | the peer is not intended |
+| `skip` | `SoT expects this peer to be down/disabled` | the expected state, in lower case, is `down` or `disabled`; with no expected state, nobs reads `established` |
+| `skip` | `peer matches SoT intent (enabled + up)` | `admin_state` is 1 and `oper_state` is 1 |
+| `proceed` | `SoT expects peer up, but metrics show mismatch` | none of the rows above fits |
+
+| Exit code | When |
+|---|---|
+| 0 | `rca` printed records or the line that says there are none; `evidence` printed its four blocks |
+| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query Loki at <address>: <reason>`, where `<reason>` is the error text, or `Loki answered <status> on /loki/api/v1/query_range: <answer>`, or `Loki answered with text nobs cannot read: <reason>` |
+| 1 | `evidence` has no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
+| 2 | a flag nobs does not know, a missing `DEVICE` or `PEER` for `evidence`, or a value that is not a whole number of 0 or more for `--last`, `--minutes`, `--log-minutes` or `--log-limit` |
 
 ## Setup and preflight
 
