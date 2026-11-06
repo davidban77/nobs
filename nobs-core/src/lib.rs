@@ -1,3 +1,4 @@
+pub mod alertmanager;
 pub mod compose;
 pub mod containerlab;
 pub mod env;
@@ -9,4 +10,5 @@ pub mod runner;
 pub mod settings;
 pub mod sonda;
 pub mod status;
+pub mod time;
 pub mod workshop;

@@ -2,7 +2,13 @@ use std::time::Duration;
 
 use ureq::Agent;
 
-pub fn get(url: &str, timeout: Duration) -> Result<u16, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub status: u16,
+    pub body: String,
+}
+
+pub fn get(url: &str, timeout: Duration) -> Result<Reply, String> {
     let config = Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(timeout))
@@ -10,7 +16,11 @@ pub fn get(url: &str, timeout: Duration) -> Result<u16, String> {
     Agent::new_with_config(config)
         .get(url)
         .call()
-        .map(|response| response.status().as_u16())
+        .and_then(|mut response| {
+            let status = response.status().as_u16();
+            let body = response.body_mut().read_to_string()?;
+            Ok(Reply { status, body })
+        })
         .map_err(|error| format!("cannot reach {url}: {error}"))
 }
 
@@ -30,14 +40,26 @@ mod tests {
 
     #[test]
     fn get_returns_the_status_of_a_200_reply() {
-        let stub = Stub::start(&[("GET", "/up", 200, "")]);
-        assert_eq!(get(&format!("{}/up", stub.url()), WAIT), Ok(200));
+        let stub = Stub::start(&[("GET", "/up", 200, "ready")]);
+        assert_eq!(
+            get(&format!("{}/up", stub.url()), WAIT),
+            Ok(Reply {
+                status: 200,
+                body: "ready".to_string()
+            })
+        );
     }
 
     #[test]
     fn get_returns_a_status_of_400_or_more_as_a_reply_not_an_error() {
-        let stub = Stub::start(&[("GET", "/up", 503, "")]);
-        assert_eq!(get(&format!("{}/up", stub.url()), WAIT), Ok(503));
+        let stub = Stub::start(&[("GET", "/up", 503, "down")]);
+        assert_eq!(
+            get(&format!("{}/up", stub.url()), WAIT),
+            Ok(Reply {
+                status: 503,
+                body: "down".to_string()
+            })
+        );
     }
 
     #[test]
