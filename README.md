@@ -594,10 +594,10 @@ The screen has four parts:
 
 | Part | What it shows |
 |---|---|
-| top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error, when there is one |
+| top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error and its age, `(<n>s ago)`, when there is one |
 | left table | the scenarios, with the columns `ID` (its first 8 characters), `NAME`, `STATE`, `ELAPSED` (seconds) and `DEGRADED`; `>` marks the selected scenario |
-| right panel | the stats of the selected scenario (the numbers `nobs sonda stats` prints) as `field  value` lines sorted by name, then what `nobs sonda show` prints for it; the lines that do not fit are cut off |
-| bottom line | the keys; or the open question; or, for three seconds, the answer to a load or a delete |
+| right panel | what `nobs sonda stats` prints for the selected scenario, as `field  value` lines sorted by name (a text value keeps its quotes, for example `state  "running"`), then what `nobs sonda show` prints for it; the lines that do not fit are cut off |
+| bottom line | the keys; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
 
 A state is shown as the server sends it, for example `running`, `paused` or `finished`.
 
@@ -608,12 +608,16 @@ A state is shown as the server sends it, for example `running`, `paused` or `fin
 | `r` | ask the server for the list now |
 | `l` | ask for the path of a scenario file: type it, then press `Enter` to load it or `Esc` to cancel; `Backspace` removes the last character |
 | `d` | ask `delete <name>? y/n` about the selected scenario: `y` deletes it, any other key cancels |
-| `q` or `Esc` | close the screen and give the terminal back as it was; when a question is open, `Esc` closes the question first |
+| `q` or `Esc` | close the screen and give the terminal back as it was |
+
+While a question is open (the path after `l`, or the delete question after `d`), the keys answer the question: `Esc` closes it, and `q` does not close the screen (in the path, `q` is typed like any other letter; in the delete question, any key but `y` cancels).
 
 The flags `--server URL` and `--api-key KEY` work as they do for `nobs sonda`, and nobs looks for the address and the key in the same places (see [Sonda](#sonda)).
 
-When the server stops answering, or no reply comes within 10 seconds, the screen keeps the last good list and stats. The top line then shows how old they are and the error.
+`nobs tui` needs no lab folder. Like `nobs sonda`, it works from any folder and ignores `--dir` and `NOBS_DIR`.
+
+When the server stops answering, or no reply comes within 10 seconds, the screen keeps the last good list and stats. The top line then shows how old they are, the error and how old the error is.
 
 `l` sends a file only when `nobs sonda load` would send it. A pack, or any other file that is not `runnable`, is refused, and the bottom line shows `nobs: <path>: <reason>`. A path that does not start with `/` is read from the folder where you started nobs.
 
-`nobs tui` needs a terminal. When its input or output is not a terminal, for example a pipe or a file, it prints `nobs: the screen needs a terminal` and exits with 1. After `q` it exits with 0.
+`nobs tui` needs a terminal. When its input or output is not a terminal, for example a pipe or a file, it prints `nobs: the screen needs a terminal` and exits with 1. When the terminal fails while the screen is open, nobs gives the terminal back, prints `nobs: the screen failed: <error>` and exits with 1. After `q` or `Esc` it exits with 0.
