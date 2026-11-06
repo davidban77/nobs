@@ -659,7 +659,7 @@ You're awake. The dashboard is your only friend.
 
 ### try-it
 
-`try-it` walks the four paths of the alert automation of the workshop, one after another, and proves each path with a query to Loki. For each path, nobs sends a fake alert to the webhook, then asks Loki until a log line shows what the automation decided. The workshops' smoke job runs it with `--auto`. Inside a workshop folder, `nobs try-it` does the same. It makes no Docker call. The webhook is the web address that receives an alert and starts the flow that handles it. A Loki match is a log line in Loki that fits the query of the path. The maintenance flag is a setting of a device in Infrahub: while it is true, the automation skips the alerts of that device.
+`try-it` walks the four paths of the alert automation of the workshop, one after another, and proves each path with a query to Loki. The webhook is the web address that receives an alert and starts the flow that handles it. For each path, nobs sends a fake alert to the webhook, then asks Loki until a log line shows what the automation decided. A Loki match is a log line in Loki that fits the query of the path. The maintenance flag is a setting of a device in Infrahub: while it is true, the automation skips the alerts of that device. `try-it` changes the lab: each alert starts real flow runs, and path 2 sets and then clears the maintenance flag of `srl1`. To run it with nobody at the keyboard, for example in CI (an automatic test job), give `--auto`. Inside a workshop folder, `nobs try-it` does the same. It makes no Docker call.
 
 The four paths always run in this order. Every path uses the device `srl1`. The panel title of a path is `Path <number> - <title>`. `<workflow_label>` is the `workflow_label` setting of the workshop's `nobs.toml`.
 
@@ -670,7 +670,7 @@ The four paths always run in this order. Every path uses the device `srl1`. The 
 | 3 | Healthy peer → skip | a `firing` alert for `srl1` and its peer `10.1.2.2` | `{source="prefect", workflow="<workflow_label>", device="srl1", peer_address="10.1.2.2", decision="skip"}` |
 | 4 | Resolved → audit | a `resolved` alert for `srl1` and its peer `10.1.99.2` | `{source="prefect", workflow="<workflow_label>", device="srl1", decision="resolved"}` |
 
-Unlike `nobs <workshop> maintenance`, `try-it` does not tell Sonda about the flag.
+Unlike `nobs <workshop> maintenance`, `try-it` does not tell Sonda about the flag, so no maintenance event from Sonda reaches Loki.
 
 One run goes through these steps in order. Steps 4 to 9 repeat for each path.
 
@@ -689,14 +689,16 @@ One run goes through these steps in order. Steps 4 to 9 repeat for each path.
 
 When the Infrahub address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line before any other line, as described in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance).
 
-The wait: nobs asks Loki at once, and then every 5 seconds (the last pause is only the time that is left), until a line matches or `--timeout` seconds have passed. `--timeout` is the whole wait of one path, the time Loki takes to answer included: nobs reads the clock when the wait starts and gives up at that time plus `--timeout`, and an ask that has started is not cut off. Each ask looks at the last 5 minutes and counts at most 1000 lines. A Loki that does not answer counts as no match. A line that an earlier run wrote in the last 5 minutes also counts as a match, so a run right after another one can match before the automation has done anything new.
+The wait: nobs asks Loki at once. When the answer has no match, nobs waits 5 seconds and asks again, until a line matches or the time is up. The time is up `--timeout` seconds after the wait started, by the clock, and the time Loki takes to answer counts. When less than 5 seconds are left, nobs waits only the time that is left, then asks one last time. An ask that has started is not cut off, so one wait can last up to 10 seconds longer than `--timeout`. Each ask looks at the last 5 minutes and counts at most 1000 lines. A Loki that does not answer counts as no match. A line that an earlier run wrote in the last 5 minutes also counts as a match, so a run right after another one can match before the automation has done anything new.
 
-The pause: without `--auto`, nobs prints a blank line and `  [Enter to continue, Ctrl-C to bail] ` and waits for Enter. With `--auto`, it prints nothing and waits 2 seconds. When the input is closed, so nobs reads nothing, it exits with 1 and prints nothing more. Ctrl-C at a pause ends nobs at once, and the shell shows the exit code 130.
+The pause: without `--auto`, nobs prints a blank line and `  [Enter to continue, Ctrl-C to bail] ` and waits for Enter. With `--auto`, it prints nothing and waits 2 seconds. When there is no more input to read, for example with `< /dev/null`, nobs exits with 1 and prints nothing more.
+
+Ctrl-C ends nobs at once, at a pause or at any other moment, and the shell shows the exit code 130. nobs does not clean up first. If you press Ctrl-C on path 2 after the line `srl1.maintenance = true` and before the line `srl1.maintenance = false`, `srl1` stays in maintenance. To clear the flag, run `nobs <name> maintenance -d srl1 --clear`.
 
 | Flag | Variable | Default | What it does |
 |---|---|---|---|
 | `--auto` | | off | waits 2 seconds at a pause instead of waiting for Enter |
-| `--timeout SECONDS` | | 60 | gives how many seconds nobs waits for the Loki match of each path; a whole number of 0 or more, and with 0 nobs asks Loki once |
+| `--timeout SECONDS` | | 60 | gives how many seconds nobs waits for the Loki match of each path; a whole number from 0 to 18446744073709551615; with 0 nobs asks Loki once; a number too large for the clock of the machine means nobs waits until Loki matches |
 | `--prom-url URL` | `PROMETHEUS_URL` | `http://localhost:9090` | gives the address of Prometheus |
 | `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` | gives the address of Loki |
 | `--am-url URL` | `ALERTMANAGER_URL` | `http://localhost:9093` | gives the address of Alertmanager |
@@ -704,7 +706,7 @@ The pause: without `--auto`, nobs prints a blank line and `  [Enter to continue,
 | `--webhook-url URL` | `WEBHOOK_URL` | `http://localhost:9997/v1/api/webhook` | gives the address of the webhook |
 | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none | gives the token for Infrahub; it is required |
 
-nobs finds each address and the token in this order: the flag, then the variable, then the default, as in [cycle and page](#cycle-and-page). A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Prometheus, Loki, Alertmanager or Infrahub is dropped. The address of the webhook is used as it is given. Each call to Loki or Infrahub waits at most 10 seconds, and the post to the webhook waits at most 15.
+nobs finds each address and the token in this order: the flag, then the variable, then the default, as in [cycle and page](#cycle-and-page). A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Prometheus, Loki, Alertmanager or Infrahub is dropped. The address of the webhook is used as it is given. After the pre-flight, each call to Loki or Infrahub waits at most 10 seconds, and the post to the webhook waits at most 15.
 
 nobs prints a blank line before each panel. For example, this is path 2:
 
@@ -734,9 +736,9 @@ The lines that start with `nobs:` go to standard error (the channel for error me
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 1 | a service is not ready in the pre-flight: `nobs: <service> NOT reachable at <url> - bring the stack up first (nobs <name> up)` for Prometheus, Loki or Alertmanager, where `<url>` is the address with `/-/ready` or `/ready`, or `nobs: Infrahub NOT reachable - bring the stack up first (nobs <name> up)`; `<name>` is the `name` setting of the workshop; nobs posts nothing to the webhook |
 | 1 | the input is closed at a pause, with no message |
-| 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel, and the flag can stay true when it failed on the way back, and also when Ctrl-C ends nobs between setting and clearing the flag on path 2 |
+| 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel; when the clear failed, `srl1` can stay in maintenance, and you clear it as described in the Ctrl-C paragraph |
 | 1 | a wait timed out: `nobs: <n> of 4 waits timed out`, printed after the `Done` panel |
-| 2 | a flag nobs does not know, or a value that is not a whole number of 0 or more for `--timeout`, for example `-1` |
+| 2 | a flag nobs does not know, or a value for `--timeout` that is not a whole number from 0 to 18446744073709551615, for example `-1` |
 
 ## Setup and preflight
 
