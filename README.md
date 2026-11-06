@@ -94,7 +94,7 @@ When the first word after `nobs` is not one of its commands, nobs takes it as a 
 
 So inside a workshop folder, or below it, you can leave the workshop name out. For example, from `/home/me/repo/workshops/nobs-t-one/sub`, `nobs up` does the same as `nobs nobs-t-one up`. This also works when `--dir` or `NOBS_DIR` names the workshop folder.
 
-The commands of nobs itself (`docker`, `containerlab`, `sonda`, `workshops`, `setup`, `preflight` and `help`) keep their meaning in every folder. So inside a workshop, `nobs setup` is still the setup of every workshop (see [Setup and preflight](#setup-and-preflight)), not `nobs <workshop> setup`.
+The commands of nobs itself (`docker`, `containerlab`, `sonda`, `tui`, `workshops`, `setup`, `preflight` and `help`) keep their meaning in every folder. So inside a workshop, `nobs setup` is still the setup of every workshop (see [Setup and preflight](#setup-and-preflight)), not `nobs <workshop> setup`.
 
 When the first word is not a workshop name, and you are not inside a workshop, nobs prints the error below and exits with 2. The second line lists the names nobs did find, and is left out when there are none.
 
@@ -585,3 +585,39 @@ When the reply is JSON (a text format for data), nobs prints it with one field p
 A scenario file names its type on a line that begins with `kind:`, with nothing before it on the line. The value `runnable` means a scenario the server can run. The value `composable` means a pack, a reusable set of metric definitions that other scenario files refer to and that is not run on its own. `nobs sonda load FILE` sends a file only when it has a `kind:` line with the value `runnable`. For any other file, including a JSON file, nobs prints the reason, exits with 1, and sends nothing.
 
 When the server answers with a status of 400 or more, nobs prints `nobs: sonda answered <status>: <body>` and exits with 1. When the server cannot be reached, or no reply comes within 10 seconds (35 seconds for `event`), nobs prints `nobs: cannot reach <url>: <error>` and exits with 1.
+
+## Screen
+
+`nobs tui` opens a screen in the terminal with the scenarios of a running `sonda-server`. The screen asks the server for the list every second. It never waits for the server, so a key works at once even when the server does not answer.
+
+The screen has four parts:
+
+| Part | What it shows |
+|---|---|
+| top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error and its age, `(<n>s ago)`, when there is one |
+| left table | the scenarios, with the columns `ID` (its first 8 characters), `NAME`, `STATE`, `ELAPSED` (seconds) and `DEGRADED`; `>` marks the selected scenario |
+| right panel | what `nobs sonda stats` prints for the selected scenario, as `field  value` lines sorted by name (a text value keeps its quotes, for example `state  "running"`), then what `nobs sonda show` prints for it; the lines that do not fit are cut off |
+| bottom line | the keys; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
+
+A state is shown as the server sends it, for example `running`, `paused` or `finished`.
+
+| Key | What it does |
+|---|---|
+| `j` or down arrow | select the next scenario |
+| `k` or up arrow | select the previous scenario |
+| `r` | ask the server for the list now |
+| `l` | ask for the path of a scenario file: type it, then press `Enter` to load it or `Esc` to cancel; `Backspace` removes the last character |
+| `d` | ask `delete <name>? y/n` about the selected scenario: `y` deletes it, any other key cancels |
+| `q` or `Esc` | close the screen and give the terminal back as it was |
+
+While a question is open (the path after `l`, or the delete question after `d`), the keys answer the question: `Esc` closes it, and `q` does not close the screen (in the path, `q` is typed like any other letter; in the delete question, any key but `y` cancels).
+
+The flags `--server URL` and `--api-key KEY` work as they do for `nobs sonda`, and nobs looks for the address and the key in the same places (see [Sonda](#sonda)).
+
+`nobs tui` needs no lab folder. Like `nobs sonda`, it works from any folder and ignores `--dir` and `NOBS_DIR`.
+
+When the server stops answering, or no reply comes within 10 seconds, the screen keeps the last good list and stats. The top line then shows how old they are, the error and how old the error is.
+
+`l` sends a file only when `nobs sonda load` would send it. A pack, or any other file that is not `runnable`, is refused, and the bottom line shows `nobs: <path>: <reason>`. A path that does not start with `/` is read from the folder where you started nobs.
+
+`nobs tui` needs a terminal. When its input or output is not a terminal, for example a pipe or a file, it prints `nobs: the screen needs a terminal` and exits with 1. When the terminal fails while the screen is open, nobs gives the terminal back, prints `nobs: the screen failed: <error>` and exits with 1. After `q` or `Esc` it exits with 0.

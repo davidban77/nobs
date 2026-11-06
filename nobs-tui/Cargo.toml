@@ -1,0 +1,10 @@
+[package]
+name = "nobs-tui"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+nobs-core = { path = "../nobs-core" }
+ratatui.workspace = true
+crossterm.workspace = true
