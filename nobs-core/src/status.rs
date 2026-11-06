@@ -94,7 +94,7 @@ pub fn probe(target: &Target) -> Probe {
     let state = match result {
         Ok(status) if status < 400 => State::Ok,
         Ok(status) => State::Http(status),
-        Err(error) => State::Down(reason(error, &url)),
+        Err(error) => State::Down(http::reason(error, &url)),
     };
     Probe {
         target: target.clone(),
@@ -104,13 +104,6 @@ pub fn probe(target: &Target) -> Probe {
 
 pub fn probe_all(urls: &Urls) -> Vec<Probe> {
     targets(urls).iter().map(probe).collect()
-}
-
-fn reason(error: String, url: &str) -> String {
-    match error.strip_prefix(&format!("cannot reach {url}: ")) {
-        Some(rest) => rest.to_string(),
-        None => error,
-    }
 }
 
 #[cfg(test)]

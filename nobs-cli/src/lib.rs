@@ -3,13 +3,17 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::env::load_env;
+use nobs_core::infrahub::{
+    annotation, read_schema, Error as InfrahubError, Infrahub, Seed, DEFAULT_ADDRESS, KINDS,
+};
+use nobs_core::lab_vars;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
 use nobs_core::preflight::{preflight, Check, Status};
 use nobs_core::runner::Runner;
@@ -23,6 +27,12 @@ use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
 
 const DASH: &str = "—";
+
+const LOKI_SINK: &str = "http://loki:3001";
+
+const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
+
+const KIND_WAIT: Duration = Duration::from_secs(30);
 
 const HOSTS: [&str; 5] = [
     "ghcr.io",
@@ -168,6 +178,100 @@ pub enum WorkshopCommand {
     Silences {
         #[command(flatten)]
         flags: SilencesFlags,
+    },
+    #[command(about = "Apply the schema to Infrahub, then load the lab variables into it")]
+    LoadInfrahub {
+        #[command(flatten)]
+        flags: LoadInfrahubFlags,
+    },
+    #[command(about = "Manage the Infrahub schema")]
+    Schema {
+        #[command(subcommand)]
+        command: SchemaCommand,
+    },
+    #[command(about = "Set or clear the maintenance flag of a device in Infrahub")]
+    Maintenance {
+        #[command(flatten)]
+        flags: MaintenanceFlags,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct InfrahubFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Infrahub; nobs looks at --address, then INFRAHUB_ADDRESS, then http://localhost:8000"
+    )]
+    address: Option<String>,
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN"
+    )]
+    token: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct LoadInfrahubFlags {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Schema file; the schema_file setting of nobs.toml when none is given; a relative path is taken from the workshop folder"
+    )]
+    schema: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Lab variables file; lab_vars.yml when none is given; a relative path is taken from the workshop folder"
+    )]
+    lab_vars: Option<PathBuf>,
+    #[arg(long, help = "Do not apply the schema; only load the lab variables")]
+    skip_schema: bool,
+    #[command(flatten)]
+    infrahub: InfrahubFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct MaintenanceFlags {
+    #[arg(
+        short,
+        long,
+        value_name = "NAME",
+        help = "Name of the device in Infrahub"
+    )]
+    device: String,
+    #[arg(
+        long,
+        overrides_with = "clear",
+        help = "Set the maintenance flag to true; this is the default"
+    )]
+    state: bool,
+    #[arg(
+        long,
+        overrides_with = "state",
+        help = "Set the maintenance flag to false"
+    )]
+    clear: bool,
+    #[arg(
+        long,
+        value_name = "KIND",
+        default_value = "WorkshopDevice",
+        help = "Kind of the Infrahub node to update"
+    )]
+    kind: String,
+    #[command(flatten)]
+    infrahub: InfrahubFlags,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SchemaCommand {
+    #[command(about = "Apply a schema file to Infrahub")]
+    Load {
+        #[arg(help = "Schema file; a relative path is taken from the workshop folder")]
+        path: PathBuf,
+        #[command(flatten)]
+        infrahub: InfrahubFlags,
     },
 }
 
@@ -528,6 +632,10 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             "LOKI_URL",
             "ALERTMANAGER_URL",
             "INFRAHUB_ADDRESS",
+            "INFRAHUB_API_TOKEN",
+            "SONDA_SERVER_URL",
+            "SONDA_LOKI_SINK_URL",
+            "SONDA_API_KEY",
         ]);
     }
     let given = cli.dir.or_else(|| {
@@ -983,6 +1091,11 @@ fn run_workshop_command(
         }
         WorkshopCommand::Alerts { flags } => run_alerts(flags),
         WorkshopCommand::Silences { flags } => run_silences(flags),
+        WorkshopCommand::LoadInfrahub { flags } => run_load_infrahub(flags, located),
+        WorkshopCommand::Schema {
+            command: SchemaCommand::Load { path, infrahub },
+        } => run_schema_load(&located.dir.join(path), infrahub),
+        WorkshopCommand::Maintenance { flags } => run_maintenance(flags),
     }
 }
 
@@ -1228,6 +1341,213 @@ fn run_silences(flags: SilencesFlags) -> i32 {
         println!("No silences {states} in Alertmanager at {}.", client.url());
     } else {
         println!("{}", silences_table(&shown, now_seconds()));
+    }
+    0
+}
+
+fn infrahub_settings(
+    flags: InfrahubFlags,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> (String, Option<String>) {
+    let address = given(flags.address)
+        .or_else(|| given(lookup("INFRAHUB_ADDRESS")))
+        .unwrap_or_else(|| DEFAULT_ADDRESS.to_string());
+    let token = given(flags.token).or_else(|| given(lookup("INFRAHUB_API_TOKEN")));
+    (address, token)
+}
+
+fn require_token(token: Option<String>) -> Option<String> {
+    if token.is_none() {
+        eprintln!("nobs: {TOKEN_REQUIRED}");
+    }
+    token
+}
+
+fn connect(address: &str, token: &str) -> Infrahub {
+    let infrahub = Infrahub::new(address, token);
+    if infrahub.address() != address.trim_end_matches('/') {
+        println!(
+            "INFRAHUB_ADDRESS rewritten to host-reachable {}",
+            infrahub.address()
+        );
+    }
+    infrahub
+}
+
+fn infrahub_failed(error: impl std::fmt::Display) -> i32 {
+    eprintln!("nobs: {error}");
+    1
+}
+
+fn is_missing(file: &Path, label: &str) -> bool {
+    let missing = !file.is_file();
+    if missing {
+        eprintln!("nobs: {label} file not found: {}", file.display());
+    }
+    missing
+}
+
+fn read_input<T>(file: &Path, label: &str, parse: fn(&str) -> Result<T, String>) -> Option<T> {
+    if is_missing(file, label) {
+        return None;
+    }
+    let read = fs::read_to_string(file)
+        .map_err(|error| error.to_string())
+        .and_then(|text| parse(&text));
+    match read {
+        Ok(value) => Some(value),
+        Err(reason) => {
+            eprintln!("nobs: cannot read {}: {reason}", file.display());
+            None
+        }
+    }
+}
+
+fn apply_schema(file: &Path, load: impl FnOnce() -> Result<bool, InfrahubError>) -> i32 {
+    println!("Applying schema {}", file.display());
+    match load() {
+        Ok(_) => {
+            println!("Schema applied");
+            0
+        }
+        Err(error) => infrahub_failed(error),
+    }
+}
+
+fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let infrahub = connect(&address, &token);
+    let schema_file = located
+        .dir
+        .join(flags.schema.as_ref().unwrap_or(&workshop.schema_file));
+    let lab_file = located.dir.join(
+        flags
+            .lab_vars
+            .unwrap_or_else(|| PathBuf::from("lab_vars.yml")),
+    );
+    let schema = if flags.skip_schema {
+        None
+    } else {
+        let Some(schema) = read_input(&schema_file, "schema", read_schema) else {
+            return 1;
+        };
+        Some(schema)
+    };
+    let Some(lab) = read_input(&lab_file, "lab_vars", lab_vars::read) else {
+        return 1;
+    };
+    if let Some(schema) = &schema {
+        let code = apply_schema(&schema_file, || infrahub.load_schema(schema));
+        if code != 0 {
+            return code;
+        }
+    }
+    println!(
+        "Loading {} into Infrahub at {}",
+        lab_file.display(),
+        infrahub.address()
+    );
+    if let Err(error) = infrahub.wait_for_kinds(&KINDS, KIND_WAIT) {
+        return infrahub_failed(error);
+    }
+    let seed = infrahub.seed(&lab, &mut |name, created| {
+        let done = if created { "created" } else { "updated" };
+        println!("device {name} {done}");
+    });
+    let seed = match seed {
+        Ok(seed) => seed,
+        Err(error) => return infrahub_failed(error),
+    };
+    println!("{}", seed_table(&seed));
+    let nodes: u64 = seed
+        .rows
+        .iter()
+        .map(|(_, created, updated)| u64::from(*created) + u64::from(*updated))
+        .sum();
+    println!(
+        "Done: {nodes} nodes across {} types. Open Infrahub at {}.",
+        seed.rows.len(),
+        infrahub.address()
+    );
+    if lab.devices.is_empty() {
+        eprintln!(
+            "nobs: no devices found in {}: is --lab-vars the right file?",
+            lab_file.display()
+        );
+    }
+    0
+}
+
+fn seed_table(seed: &Seed) -> String {
+    let header = ["Node type", "Created", "Updated", "Total"].map(String::from);
+    let mut lines = vec![header];
+    lines.extend(seed.rows.iter().map(|(kind, created, updated)| {
+        [
+            kind.clone(),
+            created.to_string(),
+            updated.to_string(),
+            (u64::from(*created) + u64::from(*updated)).to_string(),
+        ]
+    }));
+    pad_lines(&lines)
+}
+
+fn run_schema_load(file: &Path, flags: InfrahubFlags) -> i32 {
+    if is_missing(file, "schema") {
+        return 1;
+    }
+    let (address, token) = infrahub_settings(flags, |name| std::env::var(name).ok());
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let infrahub = connect(&address, &token);
+    let Some(schema) = read_input(file, "schema", read_schema) else {
+        return 1;
+    };
+    apply_schema(file, || infrahub.load_schema(&schema))
+}
+
+fn event_addresses(lookup: impl Fn(&str) -> Option<String>) -> (String, String) {
+    let server = given(lookup("SONDA_SERVER_URL")).unwrap_or_else(|| Urls::defaults().sonda);
+    let sink = given(lookup("SONDA_LOKI_SINK_URL")).unwrap_or_else(|| LOKI_SINK.to_string());
+    (server, sink)
+}
+
+fn run_maintenance(flags: MaintenanceFlags) -> i32 {
+    let state = flags.state || !flags.clear;
+    let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let infrahub = connect(&address, &token);
+    let saved = match infrahub.maintenance(&flags.kind, &flags.device, state) {
+        Ok(saved) => saved,
+        Err(error) => return infrahub_failed(error),
+    };
+    println!("{}.maintenance: {} → {state}", flags.device, saved.previous);
+    let (server, sink) = event_addresses(|name| std::env::var(name).ok());
+    let key = given(std::env::var("SONDA_API_KEY").ok());
+    let body = annotation(&flags.device, state, &sink);
+    let posted = match Sonda::new(server).api_key(key).event(body.as_bytes()) {
+        Ok(reply) if reply.status >= 400 => {
+            Err(format!("sonda answered {}: {}", reply.status, reply.body))
+        }
+        other => other.map(|_| ()),
+    };
+    if let Err(error) = posted {
+        eprintln!("nobs: sonda /events post failed: {error}");
+        return 1;
+    }
+    if state {
+        println!("The next alert for this device will be SKIPPED by the policy.");
+    } else {
+        println!("The next alert for this device will be evaluated normally.");
     }
     0
 }
@@ -1669,6 +1989,60 @@ mod tests {
         assert_eq!(
             alertmanager_address(Some(String::new()), |_| Some("  ".to_string())),
             "http://localhost:9093"
+        );
+    }
+
+    #[test]
+    fn the_infrahub_settings_are_the_flag_then_the_variable_then_the_default() {
+        let flags = |address: Option<&str>, token: Option<&str>| InfrahubFlags {
+            address: address.map(String::from),
+            token: token.map(String::from),
+        };
+        let variable = |name: &str| Some(format!("var-{name}"));
+
+        assert_eq!(
+            infrahub_settings(flags(Some("flag-address"), Some("flag-token")), variable),
+            ("flag-address".to_string(), Some("flag-token".to_string()))
+        );
+        assert_eq!(
+            infrahub_settings(flags(Some(" "), Some(" ")), variable),
+            (
+                "var-INFRAHUB_ADDRESS".to_string(),
+                Some("var-INFRAHUB_API_TOKEN".to_string())
+            )
+        );
+        assert_eq!(
+            infrahub_settings(flags(None, None), |_| Some("  ".to_string())),
+            ("http://localhost:8000".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn the_event_addresses_are_the_variables_then_the_defaults() {
+        assert_eq!(
+            event_addresses(|_| None),
+            (
+                "http://localhost:8085".to_string(),
+                "http://loki:3001".to_string()
+            )
+        );
+        assert_eq!(
+            event_addresses(|name| match name {
+                "SONDA_SERVER_URL" => Some("http://var-sonda".to_string()),
+                "SONDA_LOKI_SINK_URL" => Some("http://var-sink".to_string()),
+                _ => None,
+            }),
+            (
+                "http://var-sonda".to_string(),
+                "http://var-sink".to_string()
+            )
+        );
+        assert_eq!(
+            event_addresses(|_| Some("  ".to_string())),
+            (
+                "http://localhost:8085".to_string(),
+                "http://loki:3001".to_string()
+            )
         );
     }
 
