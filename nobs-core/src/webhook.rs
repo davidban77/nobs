@@ -87,6 +87,18 @@ struct AlertLabels<'a> {
 }
 
 pub fn payload(device: &str, peer: &str, status: &str, now: SystemTime) -> String {
+    let key = format!("cycle-{device}-{peer}");
+    payload_keyed(device, peer, status, now, &key, &key)
+}
+
+pub fn payload_keyed(
+    device: &str,
+    peer: &str,
+    status: &str,
+    now: SystemTime,
+    group_key: &str,
+    fingerprint: &str,
+) -> String {
     let seconds = now.duration_since(UNIX_EPOCH).map_or(0, |elapsed| {
         i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
     });
@@ -96,10 +108,9 @@ pub fn payload(device: &str, peer: &str, status: &str, now: SystemTime) -> Strin
     } else {
         NO_END.to_string()
     };
-    let key = format!("cycle-{device}-{peer}");
     let payload = Payload {
         version: "4",
-        group_key: key.clone(),
+        group_key: group_key.to_string(),
         truncated_alerts: 0,
         status,
         receiver: "webhook-receiver",
@@ -126,7 +137,7 @@ pub fn payload(device: &str, peer: &str, status: &str, now: SystemTime) -> Strin
             starts_at,
             ends_at,
             generator_url: "",
-            fingerprint: key,
+            fingerprint: fingerprint.to_string(),
         }],
     };
     serde_json::to_string(&payload).expect("the payload is always valid JSON")
@@ -203,6 +214,29 @@ mod tests {
         assert_eq!(
             resolved,
             firing_text("2026-11-06T10:20:00Z").replace("\"firing\"", "\"resolved\"")
+        );
+    }
+
+    #[test]
+    fn a_keyed_payload_carries_the_group_key_and_the_fingerprint_it_was_given() {
+        assert_eq!(
+            payload_keyed(
+                "srl1",
+                "10.1.99.2",
+                "firing",
+                now(),
+                "try-it-try-it-1",
+                "try-it-1"
+            ),
+            firing_text("0001-01-01T00:00:00Z")
+                .replace(
+                    r#""groupKey":"cycle-srl1-10.1.99.2""#,
+                    r#""groupKey":"try-it-try-it-1""#
+                )
+                .replace(
+                    r#""fingerprint":"cycle-srl1-10.1.99.2""#,
+                    r#""fingerprint":"try-it-1""#
+                )
         );
     }
 
