@@ -934,6 +934,36 @@ mod tests {
     }
 
     #[test]
+    fn load_schema_waits_for_an_answer_that_comes_after_eleven_seconds() {
+        let stub = Stub::start_after(
+            Duration::from_secs(11),
+            &[("POST", SCHEMA_LOAD_PATH, 200, r#"{"schema_updated":true}"#)],
+        );
+
+        let result = Infrahub::new(stub.url(), TOKEN).load_schema(&json!({}));
+
+        assert_eq!(result, Ok(true));
+    }
+
+    #[test]
+    fn a_graphql_call_gives_up_on_an_answer_that_comes_after_ten_seconds() {
+        let stub = Stub::start_after(
+            Duration::from_secs(12),
+            &[("POST", GRAPHQL_PATH, 200, "{}")],
+        );
+        let started = Instant::now();
+
+        let result = Infrahub::new(stub.url(), TOKEN).maintenance(DEVICE, "srl1", true);
+
+        assert!(matches!(result, Err(Error::Reach { .. })), "{result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
     fn the_error_texts_are_the_ones_the_commands_print() {
         assert_eq!(
             Error::Reach {
