@@ -122,7 +122,7 @@ known: nobs-t-two
 | `nobs <workshop> load-infrahub [OPTIONS]` | no Docker call | applies the schema file to Infrahub, then loads the lab variables into it; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
 | `nobs <workshop> schema load PATH [OPTIONS]` | no Docker call | applies one schema file to Infrahub; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
 | `nobs <workshop> maintenance -d NAME [OPTIONS]` | no Docker call | sets or clears the maintenance flag of a device in Infrahub, then tells Sonda; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
-| `nobs <workshop> rca [DEVICE] [PEER] [OPTIONS]` | no Docker call | prints the most recent AI RCA narratives from Loki; the options are in [rca and evidence](#rca-and-evidence) |
+| `nobs <workshop> rca [DEVICE] [PEER] [OPTIONS]` | no Docker call | prints the most recent AI RCA records from Loki; the options are in [rca and evidence](#rca-and-evidence) |
 | `nobs <workshop> evidence DEVICE PEER [OPTIONS]` | no Docker call | prints what Infrahub, Prometheus and Loki say about one BGP session, then a policy hint; the options are in [rca and evidence](#rca-and-evidence) |
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
@@ -420,7 +420,7 @@ Two commands show what the running stack knows about a BGP session. Both only re
 | Command | Argument or flag | What it does |
 |---|---|---|
 | `rca` | `DEVICE` | shows only the records of this device; optional |
-| `rca` | `PEER` | shows only the records of this peer address; optional |
+| `rca` | `PEER` | shows only the records of this peer address; optional; to give a peer without a device, give an empty device: `rca "" 10.1.99.2` |
 | `rca` | `--last N` | gives how many of the most recent records to show; the default is 1 |
 | `rca` | `--minutes N` | gives how far back to look; the default is 60 |
 | `rca` | `--loki-url URL` | gives the address of Loki |
@@ -449,7 +449,7 @@ A variable can be set in the shell or in the `.env` file of the workshop; the sh
 No AI RCA records found in the last <minutes>m for <scope>. If you haven't enabled it yet, set ENABLE_AI_RCA=true in <folder>/.env and re-run `nobs <name> up`.
 ```
 
-Otherwise nobs prints a blank line, then one entry for each line, newest first, numbered from 1. A line that is not JSON gives `(skipping unparseable record #<n>)`. A JSON record gives its `timestamp`, the `device` and `peer_address` labels (each `?` when missing), then its `message` as plain text, then a blank line. nobs removes a leading `AI RCA:` from the message, and the line breaks right after it. It does not render Markdown. For example:
+Otherwise nobs prints a blank line, then one entry for each line, newest first. A line that is not JSON gives `(skipping unparseable record #<n>)`, where `<n>` is the place of that line in the list, counting from 1. A JSON record gives a first line `<timestamp>  device=<device>  peer=<peer>`, from the record's `timestamp` and its `device` and `peer_address` labels. A missing timestamp leaves that part empty, and a missing label shows as `?`. Then come the record's `message` as plain text and a blank line. nobs removes a leading `AI RCA:` from the message, and the line breaks right after it; a space after it stays. It does not render Markdown. For example:
 
 ```
 $ nobs nobs-t-one rca srl1 10.1.99.2 --last 2
@@ -494,7 +494,7 @@ decision: proceed
 reason  : SoT expects peer up, but metrics show mismatch
 ```
 
-The first block depends on what Infrahub answered. A peer is intended when the device has a BGP session with that peer address and with the `--afi-safi` family (a session with no family counts as `ipv4-unicast`). The lines `expected state`, `reason` and `remote_as` come from that session, and only when the peer is intended. `expected state` is `—` when the session has none, `reason` is left out when it is empty, and `remote_as` is left out when it is 0. A missing `site` or `role` shows as `?`.
+The first block depends on what Infrahub answered. A peer is intended when the device has a BGP session with that peer address and with the `--afi-safi` family (a session with no family counts as `ipv4-unicast`). The lines `expected state`, `reason` and `remote_as` come from that session, and only when the peer is intended. `expected state` is `—` when the session has none, `reason` is left out when it is missing or empty, and `remote_as` is left out when it is missing or 0. A missing `site` or `role` shows as `?`.
 
 | Infrahub | First block |
 |---|---|
@@ -520,7 +520,7 @@ The last block shows the first row of this table that fits:
 | Exit code | When |
 |---|---|
 | 0 | `rca` printed records or the line that says there are none; `evidence` printed its four blocks |
-| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query Loki at <address>: <reason>`, where `<reason>` is the error text, or `Loki answered <status> on /loki/api/v1/query_range: <answer>`, or `Loki answered with text nobs cannot read: <reason>` |
+| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query Loki at <address>: <reason>`. `<reason>` is why nobs could not connect; or `Loki answered <status> on /loki/api/v1/query_range: <answer>`, where `<answer>` is the first 200 characters of the answer; or `Loki answered with text nobs cannot read: <reason>` |
 | 1 | `evidence` has no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 2 | a flag nobs does not know, a missing `DEVICE` or `PEER` for `evidence`, or a value that is not a whole number of 0 or more for `--last`, `--minutes`, `--log-minutes` or `--log-limit` |
 

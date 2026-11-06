@@ -47,7 +47,7 @@ const LOG_NEWER: &str =
 const LOG_OLDER: &str =
     "2026-11-06T10:15:48Z srl1 bgp neighbor 10.1.99.2 session state changed to idle";
 
-const RCA_HELP: &str = "Print the most recent AI RCA narratives from Loki.
+const RCA_HELP: &str = "Print the most recent AI RCA narratives from Loki
 
 Usage: nobs <workshop> rca [OPTIONS] [DEVICE] [PEER]
 
@@ -61,7 +61,7 @@ Options:
       --loki-url <URL>  Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001
   -h, --help            Print help
 ";
-const EVIDENCE_HELP: &str = "Print the source-of-truth gate, BGP metrics snapshot, recent log lines, and a policy hint for one device and peer.
+const EVIDENCE_HELP: &str = "Print the source-of-truth gate, BGP metrics snapshot, recent log lines, and a policy hint for one device and peer
 
 Usage: nobs <workshop> evidence [OPTIONS] <DEVICE> <PEER>
 
