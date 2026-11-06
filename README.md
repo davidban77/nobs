@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are ten. Every one except `setup` and `status` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are twelve. Every one except `setup`, `status`, `alerts` and `silences` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -117,6 +117,8 @@ known: nobs-t-two
 | `nobs <workshop> exec SERVICE [COMMAND]` | `exec [-T] SERVICE COMMAND` | runs `sh` when you give no command; adds `-T` when the input is not a terminal; put words that start with a dash after `--` |
 | `nobs <workshop> build [SERVICES]` | `build [SERVICES]`, then `up -d [SERVICES]` | builds the images, then starts the services |
 | `nobs <workshop> status [OPTIONS]` | no Docker call | asks the seven services if they are up and prints one table; the seven `--…-url` options are in [status](#status) |
+| `nobs <workshop> alerts [OPTIONS]` | no Docker call | lists the active alerts of Alertmanager as one table; the options are in [alerts and silences](#alerts-and-silences) |
+| `nobs <workshop> silences [OPTIONS]` | no Docker call | lists the silences of Alertmanager as one table; the options are in [alerts and silences](#alerts-and-silences) |
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
@@ -211,6 +213,85 @@ Prefect       http://localhost:4200  ok
 Sonda         http://localhost:8085  ok
 Some services are not ready yet: give them a minute, or check nobs nobs-t-one logs.
 ```
+
+### alerts and silences
+
+`nobs <workshop> alerts` lists the active alerts of Alertmanager as one table. `nobs <workshop> silences` lists its silences as one table. Each alert carries labels: pairs of a key and a value, like `device=srl1`. A silence is a rule in Alertmanager that mutes the alerts whose labels match it, for a set time. An alert is inhibited when an inhibit rule in Alertmanager mutes it because another, related alert is firing. Neither command makes a Docker call. Each sends one HTTP GET request (a request that only reads) to Alertmanager and waits at most 10 seconds for the answer. Inside a workshop folder, `nobs alerts` and `nobs silences` do the same.
+
+| Command | Flag | What it does |
+|---|---|---|
+| both | `--am-url URL` | gives the address of Alertmanager |
+| `alerts` | `-l KEY=VALUE`, `--label KEY=VALUE` | shows only the alerts that have this label; repeat it for more labels, and an alert must have them all |
+| `alerts` | `--silenced`, `--no-silenced` | shows or leaves out the silenced alerts; they are shown by default |
+| `alerts` | `--inhibited`, `--no-inhibited` | shows or leaves out the inhibited alerts; they are shown by default |
+| `silences` | `--show-expired` | shows the expired silences too |
+
+When you give both flags of a pair, the last one wins. For the address, nobs looks at `--am-url`, then the variable `ALERTMANAGER_URL`, then the default address `http://localhost:9093`. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped.
+
+For `alerts`, nobs asks Alertmanager for the active alerts, and tells it to leave out the silenced or inhibited ones when you give `--no-silenced` or `--no-inhibited`. nobs splits each label at the first `=` and trims spaces around the key and the value. When the same key is given twice, the last value counts. A label without `=` is a mistake: nobs checks every label before it sends anything, and when one is wrong it prints `nobs: --label must be key=value (got '<text>')` and exits with 2.
+
+The table has one header line and one line per alert, in the order Alertmanager sent them. For example, with two alerts:
+
+```
+$ nobs nobs-t-one alerts
+Alertname        Severity  Device / target      State     Age
+BgpSessionNotUp  critical  srl1 → 10.0.0.2      firing    20s
+InterfaceDown    warning   srl2 → ethernet-1/1  silenced  20s
+```
+
+| Column | What it shows |
+|---|---|
+| `Alertname` | the `alertname` label, or `—` when the alert has none |
+| `Severity` | the `severity` label, or `—` when it is missing or empty |
+| `Device / target` | the `device` label, or `—` when it is missing. Then ` → ` and the target, when the alert has one. The target is the `peer_address` label, or else the `interface` label. An empty label counts as missing. |
+| `State` | what the alert is now; see the next table |
+| `Age` | the time since the alert started: `42s`, `3m05s`, `2h07m` or `1d3h`; `—` when nobs cannot read the start time |
+
+`State` shows the first row of this table that fits the alert:
+
+| State | When |
+|---|---|
+| `silenced` | a silence covers the alert |
+| `inhibited` | another alert inhibits it |
+| `firing` | Alertmanager sent the state `active` |
+| the state Alertmanager sent, in lower case | Alertmanager sent another state |
+| `—` | Alertmanager sent no state |
+
+When no alert is left to show, nobs prints the header line, then `No alerts match.`, and exits with 0.
+
+`silences` leaves out the expired silences unless you give `--show-expired`. The table has one header line and one line per silence, in the order Alertmanager sent them. For example, with `--show-expired`:
+
+```
+$ nobs nobs-t-one silences --show-expired
+ID             State    Starts (UTC)  Ends (UTC)  Remaining  Matchers                                Creator
+0a1b2c3d-4e5…  active   00:50:09      02:50:09    60m0s      alertname=BgpSessionNotUp, device=srl1  alice-the-very
+ffffffff-000…  expired  00:50:09      01:49:09    —          device=srl2                             bob
+```
+
+| Column | What it shows |
+|---|---|
+| `ID` | the first 12 characters of the silence id, then `…` |
+| `State` | the state Alertmanager sent, for example `active`, `pending` or `expired`, or `?` when it sent none |
+| `Starts (UTC)` | the time part `HH:MM:SS` of the start, in UTC; empty when the time is missing |
+| `Ends (UTC)` | the time part `HH:MM:SS` of the end, in UTC; empty when the time is missing |
+| `Remaining` | the time until the end as `<minutes>m<seconds>s`, for example `60m0s` (minutes are not turned into hours); `—` when the end has passed, and `?` when nobs cannot read the end time |
+| `Matchers` | `name=value` for each matcher, joined by `, `; nobs does not show whether a matcher is a regular expression or a "not equal" matcher |
+| `Creator` | the first 14 characters of the name of the creator |
+
+When no silence is left to show, nobs prints one line and no table, and exits with 0. `<address>` is the address nobs used:
+
+| When | Line |
+|---|---|
+| without `--show-expired` | `No silences active or pending in Alertmanager at <address>.` |
+| with `--show-expired` | `No silences (any state) in Alertmanager at <address>.` |
+
+| Exit code | When |
+|---|---|
+| 0 | nobs printed the table, or the empty text |
+| 1 | Alertmanager did not answer: `nobs: cannot reach Alertmanager at <address>: <error>` |
+| 1 | Alertmanager answered with a status code of 400 or more: `nobs: Alertmanager at <address> answered <status>` |
+| 1 | the answer is not a JSON list: `nobs: Alertmanager at <address> answered with a body nobs cannot read: <reason>` |
+| 2 | a `--label` without `=`, or a flag nobs does not know |
 
 ## Setup and preflight
 
