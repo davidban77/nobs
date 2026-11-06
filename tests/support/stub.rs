@@ -121,18 +121,29 @@ fn serve(
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
 
-    let (status, reply) = routes
-        .iter()
-        .find(|route| route.method == method && route.path == path)
-        .map(|route| (route.status, route.body.clone()))
-        .unwrap_or((404, String::new()));
-
-    seen.lock().expect("stub requests").push(Seen {
-        method,
-        path,
-        headers,
-        body,
-    });
+    let (status, reply) = {
+        let mut seen = seen.lock().expect("stub requests");
+        let earlier = seen
+            .iter()
+            .filter(|request| request.method == method && request.path == path)
+            .count();
+        let matching: Vec<&Route> = routes
+            .iter()
+            .filter(|route| route.method == method && route.path == path)
+            .collect();
+        let answer = matching
+            .get(earlier)
+            .or(matching.last())
+            .map(|route| (route.status, route.body.clone()))
+            .unwrap_or((404, String::new()));
+        seen.push(Seen {
+            method,
+            path,
+            headers,
+            body,
+        });
+        answer
+    };
 
     thread::sleep(delay);
     write!(
