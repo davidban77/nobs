@@ -87,6 +87,13 @@ impl Stub {
     }
 }
 
+fn matches(pattern: &str, path: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => path.starts_with(prefix),
+        None => pattern == path,
+    }
+}
+
 fn serve(
     mut stream: TcpStream,
     routes: &[Route],
@@ -123,13 +130,17 @@ fn serve(
 
     let (status, reply) = {
         let mut seen = seen.lock().expect("stub requests");
+        let pattern = routes
+            .iter()
+            .find(|route| route.method == method && matches(&route.path, &path))
+            .map_or("", |route| route.path.as_str());
         let earlier = seen
             .iter()
-            .filter(|request| request.method == method && request.path == path)
+            .filter(|request| request.method == method && matches(pattern, &request.path))
             .count();
         let matching: Vec<&Route> = routes
             .iter()
-            .filter(|route| route.method == method && route.path == path)
+            .filter(|route| route.method == method && route.path == pattern)
             .collect();
         let answer = matching
             .get(earlier)
