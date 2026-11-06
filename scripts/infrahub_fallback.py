@@ -236,7 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fallback Infrahub client for nobs.")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("schema", help="load a schema file").add_argument("file")
-    commands.add_parser("seed", help="upsert the workshop nodes from a lab_vars file").add_argument("lab_vars")
+    commands.add_parser("seed", help="create or update the workshop nodes from a lab_vars file").add_argument("lab_vars")
     toggle = commands.add_parser("maintenance", help="set a device's maintenance flag")
     toggle.add_argument("device")
     toggle.add_argument("state", choices=["true", "false"])

@@ -298,7 +298,9 @@ When no silence is left to show, nobs prints one line and no table, and exits wi
 
 ### load-infrahub, schema load and maintenance
 
-Infrahub is the database where the workshop keeps its devices, interfaces and BGP sessions. A schema file tells Infrahub which kinds of node it holds. A lab variables file lists the nodes to put in. Three commands talk to Infrahub, and none makes a Docker call. Until nobs has its own Infrahub client, each of them runs a Python script through `uv` (a tool that runs a Python script together with the packages it needs), so `uv` must be on the `PATH`, and the first run may download packages. nobs writes the script to a temporary file for each call and removes the file after the call. The script's own progress lines and error lines show on the screen as they come.
+Infrahub is the database where the workshop keeps its devices, interfaces and BGP sessions. Each device, interface or BGP session in Infrahub is a node, and each node has a kind, for example `WorkshopDevice`. A schema file tells Infrahub which kinds of node it holds. A lab variables file lists the nodes to put in. Three commands talk to Infrahub, and none makes a Docker call.
+
+Until nobs has its own Infrahub client, each of the three commands runs a Python script through `uv`. `uv` is a tool that runs a Python script together with the packages the script needs, so `uv` must be on the `PATH`. On the first run, `uv` downloads these packages. This can take a while, and `uv` prints nothing while it works, so the command can seem to hang. nobs writes the script to a temporary file for each call and removes the file after the call. The script's own progress lines and error lines show on the screen as they come.
 
 | Command | What it does |
 |---|---|
@@ -306,7 +308,7 @@ Infrahub is the database where the workshop keeps its devices, interfaces and BG
 | `nobs <workshop> schema load PATH` | applies one schema file |
 | `nobs <workshop> maintenance -d NAME` | sets or clears the `maintenance` flag of one device in Infrahub, then tells Sonda |
 
-| Command | Flag | What it does |
+| Command | Flag or argument | What it does |
 |---|---|---|
 | `load-infrahub` | `--schema PATH` | gives the schema file; the default is the `schema_file` setting of `nobs.toml` |
 | `load-infrahub` | `--lab-vars PATH` | gives the lab variables file; the default is `lab_vars.yml` |
@@ -314,11 +316,20 @@ Infrahub is the database where the workshop keeps its devices, interfaces and BG
 | `schema load` | `PATH` | gives the schema file |
 | `maintenance` | `-d NAME`, `--device NAME` | gives the name of the device; this flag is required |
 | `maintenance` | `--state`, `--clear` | sets the flag to true or to false; the last one wins, and `--state` is the default |
-| `maintenance` | `--kind KIND` | gives the kind of the node, for example `WorkshopDevice`, which is the default |
+| `maintenance` | `--kind KIND` | gives the kind of the node; the default is `WorkshopDevice` |
 | all three | `--address URL` | gives the address of Infrahub |
-| all three | `--token TOKEN` | gives the API token of Infrahub |
+| all three | `--token TOKEN` | gives the token: the secret key that lets nobs use Infrahub |
 
-A relative path is taken from the workshop folder, not from the current folder. An absolute path is used as it is. For the address, nobs looks at `--address`, then the variable `INFRAHUB_ADDRESS`, then the default address `http://localhost:8000`. For the token, nobs looks at `--token`, then the variable `INFRAHUB_API_TOKEN`; there is no default token. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. nobs gives the address and the token to the script as environment variables, never as arguments. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it, so the `.env` file is the place for the token.
+A relative path is taken from the workshop folder, not from the current folder. An absolute path is used as it is.
+
+nobs finds the address and the token in this order: the flag, then the variable, then the default.
+
+| Value | Flag | Variable | Default |
+|---|---|---|---|
+| the address of Infrahub | `--address URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
+| the token | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none |
+
+A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. nobs gives the address and the token to the script as environment variables, never as arguments. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it. So keep the token in the `.env` file.
 
 The containers reach Infrahub by the name `infrahub-server`, and your machine cannot. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead, and before the other lines it prints `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000`. A trailing `/` is dropped without a message.
 
@@ -332,18 +343,30 @@ INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000
 Applying schema /home/me/repo/workshops/nobs-t-one/infrahub/schema.yml
 Schema applied
 Loading /home/me/repo/workshops/nobs-t-one/lab_vars.yml into Infrahub at http://localhost:8000
+device srl1 created
+device srl2 created
 Node type           Created  Updated  Total
-WorkshopDevice      1        2        3
-WorkshopInterface   3        4        7
-WorkshopBgpSession  5        6        11
-Done: 21 nodes across 3 types. Open Infrahub at http://localhost:8000.
+WorkshopDevice      2        0        2
+WorkshopInterface   8        0        8
+WorkshopBgpSession  6        0        6
+Done: 16 nodes across 3 types. Open Infrahub at http://localhost:8000.
 ```
 
-The table has one line for each kind of node, and `Total` is `Created` plus `Updated`. In the last line, the number is the sum of the `Total` column. When the `WorkshopDevice` line shows 0 created and 0 updated, nobs also prints `nobs: no devices found in <path>: is --lab-vars the right file?` on standard error, and the exit code stays 0.
+The table has one line for each kind of node, and `Total` is `Created` plus `Updated`. In the last line, the number is the sum of the `Total` column. Run the command again, and the same nodes show under `Updated` instead of `Created`. When the `WorkshopDevice` line shows 0 created and 0 updated, nobs also prints `nobs: no devices found in <path>: is --lab-vars the right file?` on standard error, the output a program uses for errors and warnings. The exit code stays 0.
 
 `schema load` prints the rewrite line when there is one, then `Applying schema <path>` and `Schema applied`.
 
-`maintenance` prints the rewrite line when there is one, then `<device>.maintenance: <before> → <after>`, where each value is `false` or `true`. When Infrahub has no node of that kind with that name, it prints `nobs: <kind> <device> not found in Infrahub.`, exits with 1 and tells Sonda nothing. Otherwise it saves the flag and posts one event to Sonda, so that the change shows on the Grafana annotation panel. The event is a log line with the labels `device`, `source` (`workshop-trigger`), `event` (`config-push`) and `level` (`info`), and the message `Configured from CLI: <device>.maintenance = True` or `= False`. Sonda sends it on to Loki. Then nobs prints one of these lines:
+The `maintenance` flag is a field of each device in Infrahub, `true` or `false`. `maintenance` prints the rewrite line when there is one. When Infrahub has no node of that kind with that name, nobs then prints `nobs: <kind> <device> not found in Infrahub.`, exits with 1 and tells Sonda nothing. Otherwise nobs saves the flag and prints `<device>.maintenance: <before> → <after>`, where each value is `false` or `true`. Then it posts one event to Sonda, and Sonda sends it on to Loki. Grafana shows the event on its annotation panel; an annotation is a mark on a graph at the time of an event. The event is a log line with these parts:
+
+| Part | Value |
+|---|---|
+| label `device` | the name of the device |
+| label `source` | `workshop-trigger` |
+| label `event` | `config-push` |
+| label `level` | `info` |
+| message | `Configured from CLI: <device>.maintenance = True`, or `= False` with `--clear` |
+
+Last, nobs prints one of these lines:
 
 | Flag | Line |
 |---|---|
@@ -352,6 +375,7 @@ The table has one line for each kind of node, and `Total` is `Created` plus `Upd
 
 ```
 $ nobs nobs-t-one maintenance -d srl1 --state
+INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000
 srl1.maintenance: false → true
 The next alert for this device will be SKIPPED by the policy.
 ```
@@ -362,7 +386,7 @@ The next alert for this device will be SKIPPED by the policy.
 | `SONDA_API_KEY` | the key nobs sends to Sonda | none |
 | `SONDA_LOKI_SINK_URL` | the address of Loki as Sonda sees it, where Sonda sends the event | `http://loki:3001` |
 
-These three variables follow the same rule as the Infrahub variables: the shell or the `.env` file, the shell wins, and an empty value counts as not given. nobs waits at most 35 seconds for Sonda.
+These three variables follow the same rule as the Infrahub variables: the shell or the `.env` file, the shell wins, and a value that is empty or only spaces counts as not given. The default address of Sonda here is `http://localhost:8085`, the address of the workshop's Sonda; `nobs sonda` uses `http://localhost:8080` by default. nobs waits at most 35 seconds for Sonda.
 
 | Exit code | When |
 |---|---|
@@ -370,15 +394,15 @@ These three variables follow the same rule as the Infrahub variables: the shell 
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 1 | a file is missing: `nobs: schema file not found: <path>` or `nobs: lab_vars file not found: <path>` |
 | 1 | `maintenance` found no such node: `nobs: <kind> <device> not found in Infrahub.` |
-| 1 | the script ended with an error: `nobs: the Infrahub script exited <code>`, after the error lines of the script |
+| 1 | `uv` or the script ended with an error: `nobs: the Infrahub script exited <code>`, after the error lines they printed |
 | 1 | the script printed text nobs cannot read: `nobs: the Infrahub script answered with text nobs cannot read: <reason>` |
-| 1 | nobs cannot start `uv`: `nobs: cannot run uv: <reason>` |
+| 1 | nobs cannot write the script file, or cannot start `uv`: `nobs: cannot run uv: <reason>`; when the file cannot be written, `<reason>` is `cannot write <path>: <error>` |
 | 1 | the post to Sonda failed: `nobs: sonda /events post failed: <error>`; the flag stays saved in Infrahub |
-| 2 | a flag nobs does not know, or a missing `-d` |
+| 2 | a flag nobs does not know, a missing `-d`, or a missing `PATH` after `schema load` |
 
 In the post failure line, `<error>` is `cannot reach <address>: <reason>` when Sonda does not answer, or `sonda answered <status>: <body>` when it answers with a status code of 400 or more.
 
-The files `captures/infrahub-1.1.jsonl` and `captures/infrahub-1.11.2.jsonl` hold the HTTP requests the script sent to Infrahub 1.1 and to Infrahub 1.11.2, one JSON object per line: the method, the address, the headers, the body, the status and the answer. The value of the token is replaced by `<token>` in them.
+The files `captures/infrahub-1.1.jsonl` and `captures/infrahub-1.11.2.jsonl` hold the HTTP requests the script sent to Infrahub 1.1 and to Infrahub 1.11.2, one JSON object per line. Each call of the script starts with one line that names the call and its arguments. Then each request has one line: the method, the address, the headers, the body, the status and the answer. The value of the token is replaced by `<token>` in them.
 
 ## Setup and preflight
 

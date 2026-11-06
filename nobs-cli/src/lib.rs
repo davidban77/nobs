@@ -214,13 +214,13 @@ pub struct LoadInfrahubFlags {
     #[arg(
         long,
         value_name = "PATH",
-        help = "Schema file; the schema_file setting of nobs.toml when none is given"
+        help = "Schema file; the schema_file setting of nobs.toml when none is given; a relative path is taken from the workshop folder"
     )]
     schema: Option<PathBuf>,
     #[arg(
         long,
         value_name = "PATH",
-        help = "Lab variables file; lab_vars.yml when none is given"
+        help = "Lab variables file; lab_vars.yml when none is given; a relative path is taken from the workshop folder"
     )]
     lab_vars: Option<PathBuf>,
     #[arg(long, help = "Do not apply the schema; only load the lab variables")]
@@ -241,13 +241,13 @@ pub struct MaintenanceFlags {
     #[arg(
         long,
         overrides_with = "clear",
-        help = "Set maintenance to true; this is on by default"
+        help = "Set the maintenance flag to true; this is the default"
     )]
     state: bool,
     #[arg(
         long,
         overrides_with = "state",
-        help = "Set maintenance to false; --state is on by default"
+        help = "Set the maintenance flag to false"
     )]
     clear: bool,
     #[arg(
