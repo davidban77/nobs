@@ -1867,3 +1867,267 @@ fn page_prints_the_utc_clock_when_now_is_not_given() {
     let allowed = [before, after].map(|seconds| format!("PAGED {}", hours_and_minutes(seconds)));
     assert!(allowed.contains(&printed), "{printed} not in {allowed:?}");
 }
+
+const WEBHOOK_POST: &str = "POST /v1/api/webhook";
+const GRAPHQL_POST: &str = "POST /graphql/main";
+const LOKI_GET: &str = "GET /loki/api/v1/query_range";
+const INGESTER_NOT_READY: &str = "Ingester not ready: waiting for 15s after being ready";
+const DEVICE_FOUND: &str = r#"{"data":{"WorkshopDevice":{"count":1,"edges":[{"node":{"id":"node-1","maintenance":{"value":false}}}]}}}"#;
+const DEVICE_UPDATED: &str =
+    r#"{"data":{"WorkshopDeviceUpdate":{"ok":true,"object":{"id":"node-1"}}}}"#;
+const HEALTHY_PEER_ROUTE: &str = "/loki/api/v1/query_range?query=%7Bsource%3D%22prefect%22%2C%20workflow%3D%22nobs_t_one_quarantine_bgp%22%2C%20device%3D%22srl1%22%2C%20peer_address%3D%2210.1.2.2%22*";
+const PREFLIGHT: [&str; 7] = [
+    "",
+    "Pre-flight",
+    "Checking the stack is reachable...",
+    "Prometheus reachable",
+    "Loki reachable",
+    "Alertmanager reachable",
+    "Infrahub reachable",
+];
+const DONE: [&str; 6] = [
+    "",
+    "Done",
+    "All four canonical paths exercised.",
+    "Open Grafana → Explore → Loki and run:",
+    "  {workflow=\"nobs_t_one_quarantine_bgp\"}",
+    "to see the audit trail.",
+];
+const HEALTHY_PEER_TIMEOUT: &str =
+    "quarantine flow decided 'skip' for healthy peer - no Loki match after 1s\n";
+
+fn try_it_env(url: &str, alertmanager: &str, token: bool) -> String {
+    format!(
+        "{}ALERTMANAGER_URL={alertmanager}\nWEBHOOK_URL={url}{WEBHOOK_ROUTE}\n",
+        env(url, url, url, token)
+    )
+}
+
+fn try_it_stub(loki_ready: (u16, &str), healthy_peer_matches: bool) -> Stub {
+    let one_line = loki_reply(&[(NEWER, "decided")]);
+    let healthy_peer = if healthy_peer_matches {
+        one_line.as_str()
+    } else {
+        NO_STREAMS
+    };
+    Stub::start(&[
+        ("GET", "/-/ready", 200, ""),
+        ("GET", "/ready", loki_ready.0, loki_ready.1),
+        ("GET", "/api/healthcheck", 200, ""),
+        ("POST", GRAPHQL, 200, DEVICE_FOUND),
+        ("POST", GRAPHQL, 200, DEVICE_UPDATED),
+        ("POST", GRAPHQL, 200, DEVICE_FOUND),
+        ("POST", GRAPHQL, 200, DEVICE_UPDATED),
+        ("POST", WEBHOOK_ROUTE, 204, ""),
+        ("GET", HEALTHY_PEER_ROUTE, 200, healthy_peer),
+        ("GET", LOKI_ROUTE, 200, &one_line),
+    ])
+}
+
+#[test]
+fn try_it_walks_the_four_paths_in_order_and_proves_each_one_with_a_loki_query() {
+    let stub = try_it_stub((200, ""), true);
+    let copy = Copy::new("try-it-paths", &try_it_env(stub.url(), stub.url(), true));
+
+    let output = run(&copy, &["try-it", "--auto"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    let mut lines = PREFLIGHT.to_vec();
+    lines.extend([
+        "",
+        "Path 1 - Actionable / mismatch → proceed",
+        "The lab ships srl1→10.1.99.2 and srl2→10.1.11.1 as intentionally broken.",
+        "Replay a firing payload for one of those peers and expect decision='proceed'.",
+        "replayed firing payload for srl1 → 10.1.99.2",
+        "Waiting for: quarantine flow decided 'proceed' for the actionable mismatch",
+        "quarantine flow decided 'proceed' for the actionable mismatch (Loki match count=1)",
+        "",
+        "Path 2 - In-maintenance → skip",
+        "Mark srl1 as in maintenance, replay an alert, expect decision='skip'.",
+        "srl1.maintenance = true",
+        "replayed firing payload for srl1 → 10.1.99.2",
+        "Waiting for: quarantine flow saw maintenance=true and skipped",
+        "quarantine flow saw maintenance=true and skipped (Loki match count=1)",
+        "Clearing srl1 maintenance back to false.",
+        "srl1.maintenance = false",
+        "",
+        "Path 3 - Healthy peer → skip",
+        "Replay an alert payload for srl1→10.1.2.2 (a healthy peer). Decision should be 'skip'.",
+        "replayed firing payload for srl1 → 10.1.2.2",
+        "Waiting for: quarantine flow decided 'skip' for healthy peer",
+        "quarantine flow decided 'skip' for healthy peer (Loki match count=1)",
+        "",
+        "Path 4 - Resolved → audit",
+        "Replay a 'resolved' payload. The resolved_bgp_flow should annotate decision='resolved'.",
+        "replayed resolved payload for srl1 → 10.1.99.2",
+        "Waiting for: resolved_bgp_flow ran and annotated 'resolved'",
+        "resolved_bgp_flow ran and annotated 'resolved' (Loki match count=1)",
+    ]);
+    lines.extend(DONE);
+    assert_eq!(stdout(&output), format!("{}\n", lines.join("\n")));
+    let requests = stub.requests();
+    assert_eq!(
+        order(&requests),
+        [
+            "GET /-/ready",
+            "GET /ready",
+            "GET /-/ready",
+            "GET /api/healthcheck",
+            WEBHOOK_POST,
+            LOKI_GET,
+            GRAPHQL_POST,
+            GRAPHQL_POST,
+            WEBHOOK_POST,
+            LOKI_GET,
+            GRAPHQL_POST,
+            GRAPHQL_POST,
+            WEBHOOK_POST,
+            LOKI_GET,
+            WEBHOOK_POST,
+            LOKI_GET,
+        ]
+    );
+    let sent = |path: &str| -> Vec<String> {
+        requests
+            .iter()
+            .filter(|seen| seen.path == path)
+            .map(|seen| String::from_utf8_lossy(&seen.body).into_owned())
+            .collect()
+    };
+    for (number, body) in sent(WEBHOOK_ROUTE).iter().enumerate() {
+        let number = number + 1;
+        assert!(
+            body.contains(&format!(r#""groupKey":"try-it-try-it-{number}""#)),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!(r#""fingerprint":"try-it-{number}""#)),
+            "{body}"
+        );
+    }
+    let graphql = sent(GRAPHQL);
+    assert!(
+        graphql[1].contains("maintenance: {value: true}"),
+        "{graphql:?}"
+    );
+    assert!(
+        graphql[3].contains("maintenance: {value: false}"),
+        "{graphql:?}"
+    );
+    let searches = requests
+        .iter()
+        .filter(|seen| seen.path.starts_with(LOKI_PATH));
+    for (seen, decision) in searches.zip(["proceed", "skip", "skip", "resolved"]) {
+        let parameters = parameters(seen);
+        let query = decoded(parameters[0].strip_prefix("query=").unwrap());
+        assert!(
+            query.ends_with(&format!(r#"decision="{decision}"}}"#)),
+            "{query}"
+        );
+        assert!(parameters.contains(&"limit=1000"), "{parameters:?}");
+        assert_eq!(window_minutes(&parameters), 5);
+    }
+}
+
+#[test]
+fn try_it_runs_all_four_paths_and_exits_1_when_a_wait_times_out() {
+    let stub = try_it_stub((200, ""), false);
+    let copy = Copy::new("try-it-timeout", &try_it_env(stub.url(), stub.url(), true));
+
+    let output = run(&copy, &["try-it", "--auto", "--timeout", "1"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        format!("{HEALTHY_PEER_TIMEOUT}nobs: 1 of 4 waits timed out\n")
+    );
+    let out = stdout(&output);
+    assert_eq!(out.matches("(Loki match count=1)").count(), 3, "{out}");
+    assert!(out.ends_with(&format!("{}\n", DONE.join("\n"))), "{out}");
+    let posts = order(&stub.requests())
+        .iter()
+        .filter(|request| *request == WEBHOOK_POST)
+        .count();
+    assert_eq!(posts, 4);
+}
+
+#[test]
+fn try_it_counts_a_loki_that_says_its_ingester_is_not_ready_as_reachable() {
+    let stub = try_it_stub((503, INGESTER_NOT_READY), true);
+    let copy = Copy::new("try-it-ingester", &try_it_env(stub.url(), stub.url(), true));
+
+    let output = run(&copy, &["try-it"]);
+
+    assert_eq!(stderr(&output), "");
+    assert!(
+        stdout(&output).contains("\nLoki reachable\n"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn try_it_names_the_service_that_is_not_reachable_and_sends_nothing() {
+    let stub = try_it_stub((200, ""), true);
+    let closed = closed_port_url();
+    let copy = Copy::new("try-it-closed", &try_it_env(stub.url(), &closed, true));
+
+    let output = run(&copy, &["try-it", "--auto"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "nobs: Alertmanager NOT reachable at {closed}/-/ready - bring the stack up first (nobs nobs-t-one up)\n"
+        )
+    );
+    assert_eq!(stdout(&output), format!("{}\n", PREFLIGHT[..5].join("\n")));
+    assert_eq!(order(&stub.requests()), ["GET /-/ready", "GET /ready"]);
+}
+
+#[test]
+fn try_it_without_a_token_prints_the_required_line_and_sends_nothing() {
+    let stub = try_it_stub((200, ""), true);
+    let copy = Copy::new(
+        "try-it-no-token",
+        &try_it_env(stub.url(), stub.url(), false),
+    );
+
+    let output = run(&copy, &["try-it", "--auto"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), TOKEN_REQUIRED);
+    assert!(stub.requests().is_empty());
+}
+
+#[test]
+fn try_it_refuses_a_negative_timeout_before_it_sends_anything() {
+    let stub = try_it_stub((200, ""), true);
+    let copy = Copy::new("try-it-negative", &try_it_env(stub.url(), stub.url(), true));
+
+    let output = run(&copy, &["try-it", "--timeout", "-1"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stub.requests().is_empty());
+}
+
+#[test]
+fn try_it_stops_with_exit_1_after_the_pre_flight_when_it_has_no_answer_to_its_prompt() {
+    let stub = try_it_stub((200, ""), true);
+    let copy = Copy::new("try-it-prompt", &try_it_env(stub.url(), stub.url(), true));
+
+    let output = run(&copy, &["try-it"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "{}\n\n  [Enter to continue, Ctrl-C to bail] ",
+            PREFLIGHT.join("\n")
+        )
+    );
+    assert_eq!(stderr(&output), "");
+    assert!(!order(&stub.requests()).contains(&WEBHOOK_POST.to_string()));
+}
