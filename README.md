@@ -2,7 +2,7 @@
 
 A terminal program (a text user interface) for network labs and observability workshops. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs sonda` group (10 commands), `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## Commands
 
@@ -55,7 +55,7 @@ These commands need a lab folder:
 - a `nobs containerlab` command without a `TOPOLOGY` file;
 - `nobs <workshop> ...` (see [Workshops](#workshops)).
 
-These commands do not need a lab folder. They work from any folder and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)).
+These commands do not need a lab folder. They work from any folder and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, `nobs tui`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)).
 
 In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.yml` in the book lab. In a workshop or a labcli lab, it uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml`. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`.
 
@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are nineteen. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca`, `evidence`, `cycle` and `page` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are twenty. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca`, `evidence`, `cycle`, `page` and `try-it` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -126,6 +126,7 @@ known: nobs-t-two
 | `nobs <workshop> evidence DEVICE PEER [OPTIONS]` | no Docker call | prints what Infrahub, Prometheus and Loki say about one BGP session, then a policy hint; the options are in [rca and evidence](#rca-and-evidence) |
 | `nobs <workshop> cycle DEVICE PEER [OPTIONS]` | no Docker call | prints four panels about one BGP session: its alert, its silences, the flow runs of the automation and the last decision; with `--trigger` it first starts a new cycle through the webhook; the options are in [cycle and page](#cycle-and-page) |
 | `nobs <workshop> page [OPTIONS]` | no Docker call | prints a fake on-call page for a firing alert; the options are in [cycle and page](#cycle-and-page) |
+| `nobs <workshop> try-it [OPTIONS]` | no Docker call | walks the four paths of the workshop's alert automation one after another and proves each with a Loki query; the options are in [try-it](#try-it) |
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
@@ -651,10 +652,91 @@ You're awake. The dashboard is your only friend.
 | Exit code | When |
 |---|---|
 | 0 | `cycle` printed its panels, whatever they found; `page` printed the page |
-| 1 | `cycle --trigger` could not post to the webhook: `nobs: could not POST to webhook: <reason>`, where `<reason>` is `cannot reach <address>: <error>` or `the webhook answered <status>: <answer>`, and `<answer>` is the first 200 characters of the answer |
+| 1 | `cycle --trigger` could not post to the webhook: `nobs: could not POST to webhook: <error>`, where `<error>` is `cannot reach <address>: <reason>` or `the webhook answered <status>: <answer>`, and `<answer>` is the first 200 characters of the answer |
 | 1 | `page` could not get the alerts: `nobs: Alertmanager fetch failed: <error>` |
 | 1 | `page` found no active alert that fits the filters: ``nobs: no firing alert matched the filters. Run `nobs <name> alerts` to see what's currently firing.`` |
 | 2 | a flag nobs does not know, a missing `DEVICE` or `PEER` for `cycle`, a `--status` other than `firing` or `resolved`, or a value that is not a whole number of 0 or more for `--minutes` |
+
+### try-it
+
+`try-it` walks the four paths of the alert automation of the workshop, one after another, and proves each path with a query to Loki. For each path, nobs sends a fake alert to the webhook, then asks Loki until a log line shows what the automation decided. The workshops' smoke job runs it with `--auto`. Inside a workshop folder, `nobs try-it` does the same. It makes no Docker call. The webhook is the web address that receives an alert and starts the flow that handles it. A Loki match is a log line in Loki that fits the query of the path. The maintenance flag is a setting of a device in Infrahub: while it is true, the automation skips the alerts of that device.
+
+The four paths always run in this order. Every path uses the device `srl1`. The panel title of a path is `Path <number> - <title>`. `<workflow_label>` is the `workflow_label` setting of the workshop's `nobs.toml`.
+
+| Path | Title | What nobs sends | The Loki query nobs waits for |
+|---|---|---|---|
+| 1 | Actionable / mismatch → proceed | a `firing` alert for `srl1` and its peer `10.1.99.2` | `{source="prefect", workflow="<workflow_label>", device="srl1", peer_address="10.1.99.2", decision="proceed"}` |
+| 2 | In-maintenance → skip | a `firing` alert for `srl1` and its peer `10.1.99.2`; before it, nobs sets the maintenance flag of `srl1` in Infrahub to true, and after the wait it sets it back to false | `{source="prefect", workflow="<workflow_label>", device="srl1", decision="skip"}` |
+| 3 | Healthy peer → skip | a `firing` alert for `srl1` and its peer `10.1.2.2` | `{source="prefect", workflow="<workflow_label>", device="srl1", peer_address="10.1.2.2", decision="skip"}` |
+| 4 | Resolved → audit | a `resolved` alert for `srl1` and its peer `10.1.99.2` | `{source="prefect", workflow="<workflow_label>", device="srl1", decision="resolved"}` |
+
+Unlike `nobs <workshop> maintenance`, `try-it` does not tell Sonda about the flag.
+
+One run goes through these steps in order. Steps 4 to 9 repeat for each path.
+
+| Step | What nobs does |
+|---|---|
+| 1 | reads the addresses and the token (see the table below), and stops when there is no token |
+| 2 | the pre-flight: prints the panel `Pre-flight`, then asks Prometheus on `/-/ready`, Loki on `/ready`, Alertmanager on `/-/ready` and Infrahub on `/api/healthcheck` (or, when that fails, on `/health`), in this order; each call waits at most 3 seconds; an answer with a status below 400 counts as ready, and so does an answer from Loki with the status 503 whose text holds `Ingester not ready`; it prints `<service> reachable` for each one and stops at the first that is not ready |
+| 3 | a pause |
+| 4 | prints the panel of the path: a blank line, the title and one or two lines about the path |
+| 5 | path 2 only: sets the maintenance flag of `srl1` to true and prints `srl1.maintenance = true` |
+| 6 | posts the alert to the webhook and prints `replayed <status> payload for <device> → <peer>` |
+| 7 | prints `Waiting for: <label>`, where `<label>` says what the path proves, and waits for the Loki match; on a match it prints `<label> (Loki match count=<n>)` |
+| 8 | path 2 only: prints `Clearing srl1 maintenance back to false.`, sets the flag to false and prints `srl1.maintenance = false` |
+| 9 | after paths 1 to 3: a pause |
+| 10 | prints the panel `Done`, which names the query `{workflow="<workflow_label>"}` to run in Grafana under Explore, Loki |
+
+When the Infrahub address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line before any other line, as described in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance).
+
+The wait: nobs asks Loki at once, and then every 5 seconds (the last pause is only the time that is left), until a line matches or `--timeout` seconds have passed. Each ask looks at the last 5 minutes and counts at most 1000 lines. A Loki that does not answer counts as no match. A line that an earlier run wrote in the last 5 minutes also counts as a match, so a run right after another one can match before the automation has done anything new.
+
+The pause: without `--auto`, nobs prints a blank line and `  [Enter to continue, Ctrl-C to bail] ` and waits for Enter. With `--auto`, it prints nothing and waits 2 seconds. When the input is closed, so nobs reads nothing, it exits with 1 and prints nothing more. Ctrl-C at a pause ends nobs at once, and the shell shows the exit code 130.
+
+| Flag | Variable | Default | What it does |
+|---|---|---|---|
+| `--auto` | | off | waits 2 seconds at a pause instead of waiting for Enter |
+| `--timeout SECONDS` | | 60 | gives how many seconds nobs waits for the Loki match of each path; a whole number of 0 or more, and with 0 nobs asks Loki once |
+| `--prom-url URL` | `PROMETHEUS_URL` | `http://localhost:9090` | gives the address of Prometheus |
+| `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` | gives the address of Loki |
+| `--am-url URL` | `ALERTMANAGER_URL` | `http://localhost:9093` | gives the address of Alertmanager |
+| `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` | gives the address of Infrahub |
+| `--webhook-url URL` | `WEBHOOK_URL` | `http://localhost:9997/v1/api/webhook` | gives the address of the webhook |
+| `--token TOKEN` | `INFRAHUB_API_TOKEN` | none | gives the token for Infrahub; it is required |
+
+nobs finds each address and the token in this order: the flag, then the variable, then the default, as in [cycle and page](#cycle-and-page). A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Prometheus, Loki, Alertmanager or Infrahub is dropped. The address of the webhook is used as it is given. Each call to Loki or Infrahub waits at most 10 seconds, and the post to the webhook waits at most 15.
+
+nobs prints a blank line before each panel. For example, this is path 2:
+
+```
+$ nobs nobs-t-one try-it --auto
+
+Path 2 - In-maintenance → skip
+Mark srl1 as in maintenance, replay an alert, expect decision='skip'.
+srl1.maintenance = true
+replayed firing payload for srl1 → 10.1.99.2
+Waiting for: quarantine flow saw maintenance=true and skipped
+quarantine flow saw maintenance=true and skipped (Loki match count=1)
+Clearing srl1 maintenance back to false.
+srl1.maintenance = false
+```
+
+The lines that start with `nobs:` go to standard error (the channel for error messages), and so does the line `<label> - no Loki match after <timeout>s`, which replaces the match line when a wait times out. Everything else goes to standard output. Two problems do not stop the run, and each prints one line to standard error:
+
+| Line | When |
+|---|---|
+| `nobs: could not POST to webhook: <error>` | the webhook could not be reached or answered with a status of 400 or more; `<error>` is `cannot reach <address>: <reason>` or `the webhook answered <status>: <answer>`, where `<reason>` is why nobs could not connect and `<answer>` is the first 200 characters of the answer; the run goes on and waits for the Loki match, which most likely times out |
+| `nobs: could not find srl1 in Infrahub (maintenance toggle skipped)` | Infrahub has no device `srl1`, when nobs sets or clears the flag on path 2; the run goes on |
+
+| Exit code | When |
+|---|---|
+| 0 | every path found its Loki match |
+| 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
+| 1 | a service is not ready in the pre-flight: `nobs: <service> NOT reachable at <url> - bring the stack up first (nobs <name> up)` for Prometheus, Loki or Alertmanager, where `<url>` is the address with `/-/ready` or `/ready`, or `nobs: Infrahub NOT reachable - bring the stack up first (nobs <name> up)`; `<name>` is the `name` setting of the workshop; nobs posts nothing to the webhook |
+| 1 | the input is closed at a pause, with no message |
+| 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel, and the flag can stay true when it failed on the way back |
+| 1 | a wait timed out: `nobs: <n> of 4 waits timed out`, printed after the `Done` panel |
+| 2 | a flag nobs does not know, or a value that is not a whole number of 0 or more for `--timeout`, for example `-1` |
 
 ## Setup and preflight
 
