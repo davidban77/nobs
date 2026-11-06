@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nobs-core", "nobs-cli"]
+members = ["nobs-core", "nobs-cli", "nobs-tui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,3 +13,5 @@ serde_json = "=1.0.154"
 toml = { version = "=1.2.0", default-features = false, features = ["parse", "serde"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde-saphyr = "=2.1.1"
+ratatui = "=0.30.2"
+crossterm = "=0.29.0"
