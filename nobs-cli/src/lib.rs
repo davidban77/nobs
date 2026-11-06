@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
@@ -12,6 +12,7 @@ use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::env::load_env;
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
+use nobs_core::http;
 use nobs_core::infrahub::{
     annotation, host_address, read_schema, DeviceIntent, Error as InfrahubError, Infrahub,
     IntentSession, Seed, DEFAULT_ADDRESS, KINDS,
@@ -26,8 +27,9 @@ use nobs_core::runner::Runner;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
-use nobs_core::status::{probe_all, Probe, State, Urls};
+use nobs_core::status::{self, probe_all, Probe, State, Urls};
 use nobs_core::time;
+use nobs_core::try_it;
 use nobs_core::webhook;
 use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
 
@@ -56,6 +58,8 @@ const TRIGGER_TRIES: u32 = 15;
 const TRIGGER_SECONDS: i64 = 30;
 
 const TRIGGER_PAUSE: Duration = Duration::from_secs(2);
+
+const AUTO_PAUSE: Duration = Duration::from_secs(2);
 
 const SILENCES_SHOWN: usize = 5;
 
@@ -256,6 +260,60 @@ pub enum WorkshopCommand {
         #[command(flatten)]
         flags: PageFlags,
     },
+    #[command(about = "Walk the four canonical alert paths one at a time and prove each in Loki")]
+    TryIt {
+        #[command(flatten)]
+        flags: TryItFlags,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct TryItFlags {
+    #[arg(long, help = "Skip the between-step prompts (CI mode).")]
+    auto: bool,
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 60,
+        help = "How many seconds to wait for the Loki match of each path"
+    )]
+    timeout: u64,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090"
+    )]
+    prom_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
+    )]
+    loki_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
+    )]
+    am_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
+    )]
+    infrahub_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of the webhook; nobs looks at --webhook-url, then WEBHOOK_URL, then http://localhost:9997/v1/api/webhook"
+    )]
+    webhook_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN"
+    )]
+    token: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1349,6 +1407,7 @@ fn run_workshop_command(
         WorkshopCommand::Evidence { flags } => run_evidence(flags, located),
         WorkshopCommand::Cycle { flags } => run_cycle(flags, located),
         WorkshopCommand::Page { flags } => run_page(flags, located),
+        WorkshopCommand::TryIt { flags } => run_try_it(flags, located),
     }
 }
 
@@ -2432,6 +2491,165 @@ fn run_page(flags: PageFlags, located: &Located) -> i32 {
         workshop.name,
         located.dir.display()
     );
+    0
+}
+
+fn print_panel(title: &str, body: &str) {
+    println!("\n{title}\n{body}");
+}
+
+fn pause(auto: bool) -> bool {
+    if auto {
+        std::thread::sleep(AUTO_PAUSE);
+        return true;
+    }
+    print!("\n  [Enter to continue, Ctrl-C to bail] ");
+    let _ = std::io::stdout().flush();
+    matches!(std::io::stdin().read_line(&mut String::new()), Ok(read) if read > 0)
+}
+
+fn stack_ready(
+    workshop: &str,
+    prometheus: &str,
+    loki: &str,
+    alertmanager: &str,
+    infrahub: &str,
+) -> bool {
+    print_panel("Pre-flight", "Checking the stack is reachable...");
+    for (name, base, path) in [
+        ("Prometheus", prometheus, "/-/ready"),
+        ("Loki", loki, "/ready"),
+        ("Alertmanager", alertmanager, "/-/ready"),
+    ] {
+        let url = format!("{}{path}", base.trim_end_matches('/'));
+        let ready = http::get(&url, status::TIMEOUT).is_ok_and(|reply| {
+            reply.status < 400
+                || (name == "Loki"
+                    && reply.status == 503
+                    && reply.body.contains("Ingester not ready"))
+        });
+        if !ready {
+            eprintln!(
+                "nobs: {name} NOT reachable at {url} - bring the stack up first (nobs {workshop} up)"
+            );
+            return false;
+        }
+        println!("{name} reachable");
+    }
+    let healthy = ["/api/healthcheck", "/health"].iter().any(|path| {
+        http::get(&format!("{infrahub}{path}"), status::TIMEOUT)
+            .is_ok_and(|reply| reply.status < 400)
+    });
+    if healthy {
+        println!("Infrahub reachable");
+    } else {
+        eprintln!("nobs: Infrahub NOT reachable - bring the stack up first (nobs {workshop} up)");
+    }
+    healthy
+}
+
+fn set_maintenance(infrahub: &Infrahub, device: &str, state: bool) -> Option<i32> {
+    match infrahub.maintenance(KINDS[0], device, state) {
+        Ok(_) => println!("{device}.maintenance = {state}"),
+        Err(InfrahubError::NotFound { .. }) => {
+            eprintln!("nobs: could not find {device} in Infrahub (maintenance toggle skipped)")
+        }
+        Err(error) => return Some(infrahub_failed(error)),
+    }
+    None
+}
+
+fn run_try_it(flags: TryItFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let lookup = |name: &str| std::env::var(name).ok();
+    let prometheus = service_address(flags.prom_url, PROMETHEUS_ADDRESS, lookup);
+    let loki_address = service_address(flags.loki_url, LOKI_ADDRESS, lookup);
+    let webhook_url = service_address(flags.webhook_url, WEBHOOK_ADDRESS, lookup);
+    let alertmanager = alertmanager_address(flags.am_url, lookup);
+    let (infrahub_address, token) = infrahub_settings(
+        InfrahubFlags {
+            address: flags.infrahub_url,
+            token: flags.token,
+        },
+        lookup,
+    );
+    announce_rewrite(&infrahub_address);
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let infrahub = Infrahub::new(&infrahub_address, &token);
+    if !stack_ready(
+        &workshop.name,
+        &prometheus,
+        &loki_address,
+        &alertmanager,
+        infrahub.address(),
+    ) || !pause(flags.auto)
+    {
+        return 1;
+    }
+    let loki = Loki::new(loki_address);
+    let paths = try_it::paths(&workshop.workflow_label);
+    let mut timed_out = 0;
+    for (index, path) in paths.iter().enumerate() {
+        print_panel(path.title, path.body);
+        if path.maintenance {
+            if let Some(code) = set_maintenance(&infrahub, path.device, true) {
+                return code;
+            }
+        }
+        let body = webhook::payload_keyed(
+            path.device,
+            path.peer,
+            path.status,
+            SystemTime::now(),
+            &path.key,
+            &path.fingerprint,
+        );
+        match webhook::post(&webhook_url, &body) {
+            Ok(()) => println!(
+                "replayed {} payload for {} → {}",
+                path.status, path.device, path.peer
+            ),
+            Err(error) => eprintln!("nobs: could not POST to webhook: {error}"),
+        }
+        println!("Waiting for: {}", path.label);
+        let matched = try_it::wait(
+            || try_it::count(&loki, &path.query, SystemTime::now()),
+            Duration::from_secs(flags.timeout),
+            std::thread::sleep,
+            Instant::now,
+        );
+        match matched {
+            Some(found) => println!("{} (Loki match count={found})", path.label),
+            None => {
+                eprintln!("{} - no Loki match after {}s", path.label, flags.timeout);
+                timed_out += 1;
+            }
+        }
+        if path.maintenance {
+            println!("Clearing {} maintenance back to false.", path.device);
+            if let Some(code) = set_maintenance(&infrahub, path.device, false) {
+                return code;
+            }
+        }
+        if index + 1 < paths.len() && !pause(flags.auto) {
+            return 1;
+        }
+    }
+    print_panel(
+        "Done",
+        &format!(
+            "All four canonical paths exercised.\nOpen Grafana → Explore → Loki and run:\n  {{workflow=\"{}\"}}\nto see the audit trail.",
+            workshop.workflow_label
+        ),
+    );
+    if timed_out > 0 {
+        eprintln!("nobs: {timed_out} of {} waits timed out", paths.len());
+        return 1;
+    }
     0
 }
 
