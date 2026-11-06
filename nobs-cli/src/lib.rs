@@ -34,6 +34,10 @@ const DASH: &str = "—";
 
 const LOKI_SINK: &str = "http://loki:3001";
 
+const LOKI_ADDRESS: (&str, &str) = ("LOKI_URL", loki::DEFAULT_URL);
+
+const PROMETHEUS_ADDRESS: (&str, &str) = ("PROMETHEUS_URL", prometheus::DEFAULT_URL);
+
 const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
 
 const KIND_WAIT: Duration = Duration::from_secs(30);
@@ -1660,8 +1664,7 @@ fn run_maintenance(flags: MaintenanceFlags) -> i32 {
 
 fn service_address(
     flag: Option<String>,
-    variable: &str,
-    default: &str,
+    (variable, default): (&str, &str),
     lookup: impl Fn(&str) -> Option<String>,
 ) -> String {
     given(flag)
@@ -1683,12 +1686,9 @@ fn run_rca(flags: RcaFlags, located: &Located) -> i32 {
         query.push_str(&format!(r#", peer_address="{peer}""#));
     }
     query.push('}');
-    let client = Loki::new(service_address(
-        flags.loki_url,
-        "LOKI_URL",
-        loki::DEFAULT_URL,
-        |name| std::env::var(name).ok(),
-    ));
+    let client = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, |name| {
+        std::env::var(name).ok()
+    }));
     let lines = match client.query_range(&query, flags.minutes, flags.last, SystemTime::now()) {
         Ok(lines) => lines,
         Err(error) => {
@@ -1850,8 +1850,7 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
     let intent = Infrahub::new(&infrahub_address, &token).device_intent(&flags.device);
     let prometheus = Prometheus::new(service_address(
         flags.prom_url,
-        "PROMETHEUS_URL",
-        prometheus::DEFAULT_URL,
+        PROMETHEUS_ADDRESS,
         |name| std::env::var(name).ok(),
     ));
     let metrics = read_metrics(
@@ -1862,12 +1861,9 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
         &flags.instance,
     );
     let query = evidence::fill(&workshop.evidence_query, &flags.device, &flags.peer);
-    let lines = Loki::new(service_address(
-        flags.loki_url,
-        "LOKI_URL",
-        loki::DEFAULT_URL,
-        |name| std::env::var(name).ok(),
-    ))
+    let lines = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, |name| {
+        std::env::var(name).ok()
+    }))
     .query_range(
         &query,
         flags.log_minutes,
@@ -2349,29 +2345,34 @@ mod tests {
 
     #[test]
     fn the_loki_and_prometheus_addresses_are_the_flag_then_the_variable_then_the_default() {
-        let variable = |name: &str| Some(format!("http://var-{name}"));
         let blank = |_: &str| Some("  ".to_string());
         let cases = [
-            ("LOKI_URL", loki::DEFAULT_URL),
-            ("PROMETHEUS_URL", prometheus::DEFAULT_URL),
+            (LOKI_ADDRESS, "LOKI_URL", "http://localhost:3001"),
+            (
+                PROMETHEUS_ADDRESS,
+                "PROMETHEUS_URL",
+                "http://localhost:9090",
+            ),
         ];
 
-        for (name, default) in cases {
+        for (address, name, default) in cases {
+            let variable = move |asked: &str| (asked == name).then(|| format!("http://var-{name}"));
+
             assert_eq!(
-                service_address(Some("http://flag".to_string()), name, default, variable),
+                service_address(Some("http://flag".to_string()), address, variable),
                 "http://flag"
             );
             assert_eq!(
-                service_address(Some(" ".to_string()), name, default, variable),
+                service_address(Some(" ".to_string()), address, variable),
                 format!("http://var-{name}")
             );
             assert_eq!(
-                service_address(None, name, default, variable),
+                service_address(None, address, variable),
                 format!("http://var-{name}")
             );
-            assert_eq!(service_address(None, name, default, |_| None), default);
+            assert_eq!(service_address(None, address, |_| None), default);
             assert_eq!(
-                service_address(Some(String::new()), name, default, blank),
+                service_address(Some(String::new()), address, blank),
                 default
             );
         }
