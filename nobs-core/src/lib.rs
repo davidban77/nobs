@@ -18,5 +18,6 @@ pub mod settings;
 pub mod sonda;
 pub mod status;
 pub mod time;
+pub mod try_it;
 pub mod webhook;
 pub mod workshop;
