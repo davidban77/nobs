@@ -112,11 +112,14 @@ fn the_root_help_names_setup_and_preflight_with_their_descriptions() {
 }
 
 #[test]
-fn the_workshop_help_page_inside_a_workshop_names_exactly_the_ten_commands_in_order() {
+fn the_workshop_help_page_inside_a_workshop_names_exactly_the_twelve_commands_in_order() {
     let help = workshop_help(&["nobs-t-one", "--help"]);
     assert_eq!(
         commands_block(&help),
-        ["setup", "up", "down", "destroy", "restart", "ps", "logs", "exec", "build", "status"]
+        [
+            "setup", "up", "down", "destroy", "restart", "ps", "logs", "exec", "build", "status",
+            "alerts", "silences"
+        ]
     );
 }
 
