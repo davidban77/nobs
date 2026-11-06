@@ -249,6 +249,7 @@ fn a_foreign_stack_stops_up_build_and_restart_before_anything_else() {
     enter(&repo);
     let asked = Call {
         program: "docker".to_string(),
+        env: Vec::new(),
         args: [
             "ps",
             "-a",

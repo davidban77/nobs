@@ -6,9 +6,6 @@ use crate::workshop::URLS;
 
 pub const TIMEOUT: Duration = Duration::from_secs(3);
 
-const CONTAINER_INFRAHUB_HOST: &str = "infrahub-server";
-const HOST_INFRAHUB_ADDRESS: &str = "http://localhost:8000";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Urls {
     pub grafana: String,
@@ -61,16 +58,8 @@ fn default_url(name: &str) -> String {
         .expect("workshop::URLS lists every service")
 }
 
-pub fn host_address(infrahub: &str) -> String {
-    if infrahub.contains(CONTAINER_INFRAHUB_HOST) {
-        HOST_INFRAHUB_ADDRESS.to_string()
-    } else {
-        infrahub.to_string()
-    }
-}
-
 pub fn targets(urls: &Urls) -> Vec<Target> {
-    let infrahub = host_address(&urls.infrahub);
+    let infrahub = crate::infrahub::host_address(&urls.infrahub);
     [
         ("Grafana", urls.grafana.as_str(), "/api/health"),
         ("Prometheus", urls.prometheus.as_str(), "/-/ready"),
@@ -158,35 +147,6 @@ mod tests {
             prefect: base.to_string(),
             sonda: base.to_string(),
         }
-    }
-
-    #[test]
-    fn host_address_swaps_the_container_name_for_localhost() {
-        assert_eq!(
-            host_address("http://infrahub-server:8000"),
-            "http://localhost:8000"
-        );
-        assert_eq!(
-            host_address("http://infrahub-server:8000/"),
-            "http://localhost:8000"
-        );
-    }
-
-    #[test]
-    fn host_address_gives_localhost_8000_whatever_port_the_container_name_had() {
-        assert_eq!(
-            host_address("http://infrahub-server:9999"),
-            "http://localhost:8000"
-        );
-    }
-
-    #[test]
-    fn host_address_returns_any_other_address_unchanged() {
-        assert_eq!(host_address("http://10.0.0.5:8000"), "http://10.0.0.5:8000");
-        assert_eq!(
-            host_address("http://localhost:8000"),
-            "http://localhost:8000"
-        );
     }
 
     #[test]

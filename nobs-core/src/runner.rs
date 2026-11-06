@@ -13,6 +13,12 @@ pub struct Output {
 pub trait Runner {
     fn run(&self, program: &str, args: &[OsString]) -> io::Result<i32>;
     fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output>;
+    fn output_env(
+        &self,
+        program: &str,
+        args: &[OsString],
+        env: &[(String, String)],
+    ) -> io::Result<Output>;
 }
 
 pub struct RealRunner;
@@ -31,8 +37,18 @@ impl Runner for RealRunner {
     }
 
     fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
+        self.output_env(program, args, &[])
+    }
+
+    fn output_env(
+        &self,
+        program: &str,
+        args: &[OsString],
+        env: &[(String, String)],
+    ) -> io::Result<Output> {
         let output = Command::new(program)
             .args(args)
+            .envs(env.iter().map(|(name, value)| (name, value)))
             .stdin(Stdio::inherit())
             .stderr(Stdio::inherit())
             .output()?;
@@ -47,6 +63,7 @@ impl Runner for RealRunner {
 pub struct Call {
     pub program: String,
     pub args: Vec<OsString>,
+    pub env: Vec<(String, String)>,
 }
 
 pub struct FakeRunner {
@@ -106,15 +123,26 @@ impl Runner for FakeRunner {
         self.calls.borrow_mut().push(Call {
             program: program.to_string(),
             args: args.to_vec(),
+            env: Vec::new(),
         });
         self.exit_code
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "fake runner failure"))
     }
 
     fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
+        self.output_env(program, args, &[])
+    }
+
+    fn output_env(
+        &self,
+        program: &str,
+        args: &[OsString],
+        env: &[(String, String)],
+    ) -> io::Result<Output> {
         self.outputs.borrow_mut().push(Call {
             program: program.to_string(),
             args: args.to_vec(),
+            env: env.to_vec(),
         });
         let code = self
             .exit_code
@@ -185,11 +213,13 @@ mod tests {
             vec![
                 Call {
                     program: "docker".to_string(),
-                    args: args(&["ps"])
+                    args: args(&["ps"]),
+                    env: Vec::new()
                 },
                 Call {
                     program: "docker".to_string(),
-                    args: args(&["info"])
+                    args: args(&["info"]),
+                    env: Vec::new()
                 },
             ]
         );
@@ -231,6 +261,7 @@ mod tests {
         let asked = Call {
             program: "docker".to_string(),
             args: args(&["ps"]),
+            env: Vec::new(),
         };
         assert_eq!(runner.outputs(), vec![asked.clone()]);
         assert!(runner.calls().is_empty());
@@ -241,7 +272,8 @@ mod tests {
             runner.calls(),
             vec![Call {
                 program: "docker".to_string(),
-                args: args(&["info"])
+                args: args(&["info"]),
+                env: Vec::new()
             }]
         );
     }
@@ -260,6 +292,43 @@ mod tests {
             }
         );
         assert_eq!(runner.run("df", &[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn fake_runner_output_env_records_the_variables_and_answers_like_output() {
+        let runner = FakeRunner::answering("hi");
+        let env = vec![("NOBS_T_A".to_string(), "1".to_string())];
+
+        let output = runner.output_env("uv", &args(&["run"]), &env).unwrap();
+
+        assert_eq!(
+            output,
+            Output {
+                code: 0,
+                stdout: "hi".to_string()
+            }
+        );
+        assert_eq!(
+            runner.outputs(),
+            vec![Call {
+                program: "uv".to_string(),
+                args: args(&["run"]),
+                env
+            }]
+        );
+        assert!(FakeRunner::failing().output_env("uv", &[], &[]).is_err());
+    }
+
+    #[test]
+    fn real_runner_output_env_gives_the_child_the_variables_and_not_nobs() {
+        let env = vec![("NOBS_T_RUNNER".to_string(), "seen".to_string())];
+
+        let output = RealRunner
+            .output_env("sh", &args(&["-c", "printf %s \"$NOBS_T_RUNNER\""]), &env)
+            .unwrap();
+
+        assert_eq!(output.stdout, "seen");
+        assert_eq!(std::env::var_os("NOBS_T_RUNNER"), None);
     }
 
     #[test]

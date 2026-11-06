@@ -3,6 +3,7 @@ pub mod compose;
 pub mod containerlab;
 pub mod env;
 pub mod http;
+pub mod infrahub;
 pub mod locate;
 pub mod preflight;
 pub mod provider;

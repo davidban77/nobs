@@ -136,6 +136,7 @@ mod tests {
             runner.outputs(),
             vec![Call {
                 program: "docker".to_string(),
+                env: Vec::new(),
                 args: expected
             }]
         );
