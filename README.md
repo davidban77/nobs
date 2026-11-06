@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are nine. Every one except `setup` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are ten. Every one except `setup` and `status` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -116,6 +116,7 @@ known: nobs-t-two
 | `nobs <workshop> logs [--tail N] [--no-follow] [SERVICE]` | `logs -f --tail=N [SERVICE]` | shows the last 200 lines of each service by default and keeps following; `--no-follow` shows the lines and stops, and leaves out `-f` |
 | `nobs <workshop> exec SERVICE [COMMAND]` | `exec [-T] SERVICE COMMAND` | runs `sh` when you give no command; adds `-T` when the input is not a terminal; put words that start with a dash after `--` |
 | `nobs <workshop> build [SERVICES]` | `build [SERVICES]`, then `up -d [SERVICES]` | builds the images, then starts the services |
+| `nobs <workshop> status [OPTIONS]` | no Docker call | asks the seven services if they are up and prints one table; the seven `--…-url` options are in [status](#status) |
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
@@ -167,6 +168,49 @@ sonda = "ghcr.io/davidban77/sonda:1.22.2"
 ```
 
 Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title` and `project`; it checks the others but does not use them.
+
+### status
+
+`nobs <workshop> status` asks each of the seven services whether it is up, one after another, and prints one table. It makes no Docker call. Inside a workshop folder, `nobs status` does the same. Run it after `up` to see when the stack is ready.
+
+For each service, nobs sends one HTTP GET request (a request that only reads) to the address plus the path in the table below.
+
+| Service | Path | Flag | Variable | Default address |
+|---|---|---|---|---|
+| Grafana | `/api/health` | `--grafana-url` | none | `http://localhost:3000` |
+| Prometheus | `/-/ready` | `--prom-url` | `PROMETHEUS_URL` | `http://localhost:9090` |
+| Loki | `/ready` | `--loki-url` | `LOKI_URL` | `http://localhost:3001` |
+| Alertmanager | `/-/ready` | `--am-url` | `ALERTMANAGER_URL` | `http://localhost:9093` |
+| Infrahub | `/health` | `--infrahub-url` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
+| Prefect | `/api/health` | `--prefect-url` | none | `http://localhost:4200` |
+| Sonda | `/health` | `--sonda-url` | none | `http://localhost:8085` |
+
+For each address, nobs looks at the flag, then the variable when there is one, then the default address. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. So an empty shell variable does not hide the value in `.env`. A trailing `/` on an address is dropped. When the Infrahub address names `infrahub-server`, the name the containers use among themselves, nobs probes `http://localhost:8000` instead.
+
+nobs waits at most 3 seconds for each service. The table has one header line and one line per service, in the order of the table above, with the columns `Service`, `URL` and `State`. The `URL` column shows the address nobs used. `State` shows one of three things:
+
+| State | When |
+|---|---|
+| `ok` | the service answered with a status code below 400 |
+| `http <code>` | the service answered with a status code of 400 or more, for example `http 503` |
+| `down (<reason>)` | the service did not answer, for example because nothing listens on the port or the 3 seconds ran out |
+
+The status code is the number at the start of every HTTP reply. `<reason>` is the error text, and it differs between systems. For example, on macOS a port where nothing listens gives `down (io: Connection refused (os error 61))`.
+
+When every service is `ok`, nobs prints nothing more and exits with 0. Otherwise it prints one more line and exits with 1. That line names the workshop (the `name` setting in its `nobs.toml`), so you can copy the `logs` command from it. In this example the workshop is `nobs-t-one`, and Loki is not ready yet:
+
+```
+$ nobs nobs-t-one status
+Service       URL                    State
+Grafana       http://localhost:3000  ok
+Prometheus    http://localhost:9090  ok
+Loki          http://localhost:3001  http 503
+Alertmanager  http://localhost:9093  ok
+Infrahub      http://localhost:8000  ok
+Prefect       http://localhost:4200  ok
+Sonda         http://localhost:8085  ok
+Some services are not ready yet: give them a minute, or check nobs nobs-t-one logs.
+```
 
 ## Setup and preflight
 

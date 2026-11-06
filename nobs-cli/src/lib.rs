@@ -13,6 +13,7 @@ use nobs_core::runner::Runner;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
+use nobs_core::status::{probe_all, Probe, State, Urls};
 use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
@@ -147,6 +148,57 @@ pub enum WorkshopCommand {
         #[arg(help = SERVICES_HELP)]
         services: Vec<String>,
     },
+    #[command(about = "Ask each of the seven services if it is up, and print one table")]
+    Status {
+        #[command(flatten)]
+        flags: StatusFlags,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct StatusFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090"
+    )]
+    prom_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
+    )]
+    loki_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
+    )]
+    am_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
+    )]
+    infrahub_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Grafana; nobs looks at --grafana-url, then http://localhost:3000"
+    )]
+    grafana_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Prefect; nobs looks at --prefect-url, then http://localhost:4200"
+    )]
+    prefect_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Sonda; nobs looks at --sonda-url, then http://localhost:8085"
+    )]
+    sonda_url: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -399,7 +451,15 @@ pub enum DockerCommand {
 
 pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
     if matches!(cli.command, Command::Sonda { .. }) {
-        remove_blank_sonda_variables();
+        remove_blank_variables(&["SONDA_SERVER_URL", "SONDA_API_KEY"]);
+    }
+    if matches!(cli.command, Command::External(_)) {
+        remove_blank_variables(&[
+            "PROMETHEUS_URL",
+            "LOKI_URL",
+            "ALERTMANAGER_URL",
+            "INFRAHUB_ADDRESS",
+        ]);
     }
     let given = cli.dir.or_else(|| {
         std::env::var_os("NOBS_DIR")
@@ -846,6 +906,12 @@ fn run_workshop_command(
                 ]
             })
         }
+        WorkshopCommand::Status { flags } => {
+            let Kind::Workshop(workshop) = &located.kind else {
+                unreachable!("a workshop command runs in a workshop");
+            };
+            run_status(flags, &workshop.name)
+        }
     }
 }
 
@@ -970,8 +1036,8 @@ fn run_topology(
     }
 }
 
-fn remove_blank_sonda_variables() {
-    for name in ["SONDA_SERVER_URL", "SONDA_API_KEY"] {
+fn remove_blank_variables(names: &[&str]) {
+    for name in names {
         if std::env::var_os(name).is_some_and(|value| value.to_string_lossy().trim().is_empty()) {
             std::env::remove_var(name);
         }
@@ -980,6 +1046,43 @@ fn remove_blank_sonda_variables() {
 
 fn given(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
+}
+
+fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
+    let defaults = Urls::defaults();
+    let address = |flag: Option<String>, variable: Option<&str>, default: String| {
+        given(flag)
+            .or_else(|| variable.and_then(|name| given(lookup(name))))
+            .unwrap_or(default)
+    };
+    Urls {
+        grafana: address(flags.grafana_url, None, defaults.grafana),
+        prometheus: address(flags.prom_url, Some("PROMETHEUS_URL"), defaults.prometheus),
+        loki: address(flags.loki_url, Some("LOKI_URL"), defaults.loki),
+        alertmanager: address(
+            flags.am_url,
+            Some("ALERTMANAGER_URL"),
+            defaults.alertmanager,
+        ),
+        infrahub: address(
+            flags.infrahub_url,
+            Some("INFRAHUB_ADDRESS"),
+            defaults.infrahub,
+        ),
+        prefect: address(flags.prefect_url, None, defaults.prefect),
+        sonda: address(flags.sonda_url, None, defaults.sonda),
+    }
+}
+
+fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
+    let urls = urls(flags, |name| std::env::var(name).ok());
+    let probes = probe_all(&urls);
+    println!("{}", status_table(&probes));
+    if probes.iter().all(|probe| probe.state == State::Ok) {
+        return 0;
+    }
+    println!("Some services are not ready yet: give them a minute, or check nobs {workshop} logs.");
+    1
 }
 
 fn run_sonda(flags: SondaFlags, command: SondaCommand) -> i32 {
@@ -1079,7 +1182,32 @@ fn table(rows: &[ScenarioRow]) -> String {
             row.degraded.clone(),
         ]
     }));
-    let widths: [usize; 5] = std::array::from_fn(|i| {
+    pad_lines(&lines)
+}
+
+fn status_table(probes: &[Probe]) -> String {
+    let header = ["Service", "URL", "State"].map(String::from);
+    let mut lines = vec![header];
+    lines.extend(probes.iter().map(|probe| {
+        [
+            probe.target.name.to_string(),
+            probe.target.base.clone(),
+            state_text(&probe.state),
+        ]
+    }));
+    pad_lines(&lines)
+}
+
+fn state_text(state: &State) -> String {
+    match state {
+        State::Ok => "ok".to_string(),
+        State::Http(code) => format!("http {code}"),
+        State::Down(reason) => format!("down ({reason})"),
+    }
+}
+
+fn pad_lines<const N: usize>(lines: &[[String; N]]) -> String {
+    let widths: [usize; N] = std::array::from_fn(|i| {
         lines
             .iter()
             .map(|l| l[i].chars().count())
@@ -1199,6 +1327,89 @@ mod tests {
             status,
             detail: detail.to_string(),
         }
+    }
+
+    fn flags_all(text: Option<&str>) -> StatusFlags {
+        let flag = || text.map(String::from);
+        StatusFlags {
+            prom_url: flag(),
+            loki_url: flag(),
+            am_url: flag(),
+            infrahub_url: flag(),
+            grafana_url: flag(),
+            prefect_url: flag(),
+            sonda_url: flag(),
+        }
+    }
+
+    fn variables(name: &str) -> Option<String> {
+        match name {
+            "PROMETHEUS_URL" => Some("http://var-prometheus".to_string()),
+            "LOKI_URL" => Some("http://var-loki".to_string()),
+            "ALERTMANAGER_URL" => Some("http://var-alertmanager".to_string()),
+            "INFRAHUB_ADDRESS" => Some("http://var-infrahub".to_string()),
+            _ => None,
+        }
+    }
+
+    fn with_variables_only() -> Urls {
+        Urls {
+            prometheus: "http://var-prometheus".to_string(),
+            loki: "http://var-loki".to_string(),
+            alertmanager: "http://var-alertmanager".to_string(),
+            infrahub: "http://var-infrahub".to_string(),
+            ..Urls::defaults()
+        }
+    }
+
+    #[test]
+    fn with_no_flag_and_no_variable_each_address_is_its_own_default() {
+        assert_eq!(urls(flags_all(None), |_| None), Urls::defaults());
+    }
+
+    #[test]
+    fn each_variable_gives_its_own_address_when_there_is_no_flag() {
+        assert_eq!(urls(flags_all(None), variables), with_variables_only());
+    }
+
+    #[test]
+    fn each_flag_gives_its_own_address_and_beats_the_variable() {
+        let flags = StatusFlags {
+            prom_url: Some("http://flag-prometheus".to_string()),
+            loki_url: Some("http://flag-loki".to_string()),
+            am_url: Some("http://flag-alertmanager".to_string()),
+            infrahub_url: Some("http://flag-infrahub".to_string()),
+            grafana_url: Some("http://flag-grafana".to_string()),
+            prefect_url: Some("http://flag-prefect".to_string()),
+            sonda_url: Some("http://flag-sonda".to_string()),
+        };
+
+        assert_eq!(
+            urls(flags, variables),
+            Urls {
+                grafana: "http://flag-grafana".to_string(),
+                prometheus: "http://flag-prometheus".to_string(),
+                loki: "http://flag-loki".to_string(),
+                alertmanager: "http://flag-alertmanager".to_string(),
+                infrahub: "http://flag-infrahub".to_string(),
+                prefect: "http://flag-prefect".to_string(),
+                sonda: "http://flag-sonda".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_blank_flag_counts_as_not_given() {
+        assert_eq!(urls(flags_all(Some(" ")), variables), with_variables_only());
+        assert_eq!(urls(flags_all(Some("")), |_| None), Urls::defaults());
+    }
+
+    #[test]
+    fn a_blank_variable_counts_as_not_given() {
+        assert_eq!(
+            urls(flags_all(None), |_| Some("  ".to_string())),
+            Urls::defaults()
+        );
     }
 
     #[test]

@@ -37,15 +37,16 @@ impl Sonda {
     pub const DEFAULT_URL: &'static str = "http://localhost:8080";
 
     pub fn new(url: impl Into<String>) -> Self {
-        let config = Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(TIMEOUT))
-            .build();
         Self {
             url: url.into().trim_end_matches('/').to_string(),
             key: None,
-            agent: Agent::new_with_config(config),
+            agent: agent(TIMEOUT),
         }
+    }
+
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.agent = agent(timeout);
+        self
     }
 
     pub fn api_key(mut self, key: Option<String>) -> Self {
@@ -141,6 +142,14 @@ impl Sonda {
             })
             .map_err(|error| format!("cannot reach {}: {error}", self.url))
     }
+}
+
+fn agent(timeout: Duration) -> Agent {
+    let config = Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .build();
+    Agent::new_with_config(config)
 }
 
 pub fn scenario_rows(list_body: &str) -> Result<Vec<ScenarioRow>, String> {
@@ -394,5 +403,23 @@ mod tests {
     #[test]
     fn the_event_timeout_is_longer_than_the_server_own_30_seconds() {
         assert!(EVENT_TIMEOUT > Duration::from_secs(30), "{EVENT_TIMEOUT:?}");
+    }
+
+    #[test]
+    fn timeout_makes_a_call_give_up_on_a_silent_server_sooner_than_ten_seconds() {
+        let stub = crate::http::stub::Stub::start_silent(Duration::from_secs(20));
+        let started = std::time::Instant::now();
+
+        let error = Sonda::new(stub.url())
+            .timeout(Duration::from_millis(300))
+            .health()
+            .unwrap_err();
+
+        assert!(error.starts_with("cannot reach "), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }
