@@ -82,10 +82,7 @@ impl Alertmanager {
         let url = format!("{}{target}", self.url);
         let reply = http::get(&url, self.timeout).map_err(|error| Error::Unreachable {
             url: self.url.clone(),
-            reason: match error.strip_prefix(&format!("cannot reach {url}: ")) {
-                Some(rest) => rest.to_string(),
-                None => error,
-            },
+            reason: http::reason(error, &url),
         })?;
         if reply.status >= 400 {
             return Err(Error::Status {
