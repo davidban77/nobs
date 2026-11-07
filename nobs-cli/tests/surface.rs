@@ -118,7 +118,7 @@ fn the_root_help_names_setup_and_preflight_with_their_descriptions() {
 }
 
 #[test]
-fn the_workshop_help_page_inside_a_workshop_names_exactly_the_twenty_commands_in_order() {
+fn the_workshop_help_page_inside_a_workshop_names_exactly_the_twenty_three_commands_in_order() {
     let help = workshop_help(&["nobs-t-one", "--help"]);
     assert_eq!(
         commands_block(&help),
@@ -142,7 +142,10 @@ fn the_workshop_help_page_inside_a_workshop_names_exactly_the_twenty_commands_in
             "evidence",
             "cycle",
             "page",
-            "try-it"
+            "try-it",
+            "flap-interface",
+            "incident",
+            "scenarios"
         ]
     );
 }
@@ -171,6 +174,53 @@ fn the_workshop_status_help_shows_the_seven_address_flags() {
                 .any(|line| line.trim_start().starts_with(&option)),
             "{flag}\n{help}"
         );
+    }
+}
+
+#[test]
+fn the_cascade_command_help_pages_name_every_carried_flag_with_its_short_form() {
+    let pages: [(&str, &[&str]); 3] = [
+        (
+            "flap-interface",
+            &[
+                "-d, --device <DEVICE>",
+                "-i, --interface <INTERFACE>",
+                "--duration <DURATION>",
+                "--up-duration <DURATION>",
+                "--down-duration <DURATION>",
+                "--cascade-delay <DURATION>",
+                "--no-cascade",
+                "--sonda-url <URL>",
+                "--loki-url <URL>",
+                "--sonda-api-key <KEY>",
+                "--follow",
+            ],
+        ),
+        (
+            "incident",
+            &[
+                "-d, --device <DEVICE>",
+                "--primary-interface <INTERFACE>",
+                "--backup-interface <INTERFACE>",
+                "-k, --kind <KIND>",
+                "--duration <DURATION>",
+                "--sonda-url <URL>",
+                "--prom-url <URL>",
+                "--sonda-api-key <KEY>",
+                "--follow",
+            ],
+        ),
+        ("scenarios", &["--sonda-url <URL>"]),
+    ];
+
+    for (command, flags) in pages {
+        let help = workshop_help(&["nobs-t-one", command, "--help"]);
+        for flag in flags {
+            assert!(
+                help.lines().any(|line| line.trim_start().starts_with(flag)),
+                "{command} {flag}\n{help}"
+            );
+        }
     }
 }
 

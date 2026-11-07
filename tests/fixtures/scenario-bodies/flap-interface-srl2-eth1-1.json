@@ -1,0 +1,88 @@
+{
+  "version": 2,
+  "kind": "runnable",
+  "scenario_name": "packt-cascade-srl2-intf-ethernet-1-1",
+  "category": "network",
+  "description": "Packt inversion cascade \u2014 pauses srl2:ethernet-1/1 baseline during DOWN phase.",
+  "defaults": {
+    "rate": 1,
+    "duration": "4m",
+    "labels": {
+      "agent_host": "srl2"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "cascade_active",
+      "signal_type": "metrics",
+      "name": "cascade_active",
+      "generator": {
+        "type": "flap",
+        "up_duration": "30s",
+        "down_duration": "60s",
+        "up_value": 0,
+        "down_value": 1
+      }
+    },
+    {
+      "id": "cascade_oper_state",
+      "signal_type": "metrics",
+      "name": "ifOperStatus",
+      "generator": {
+        "type": "constant",
+        "value": 2.0
+      },
+      "while": {
+        "ref": "cascade_active",
+        "op": ">",
+        "value": 0
+      },
+      "labels": {
+        "ifDescr": "ethernet-1/1",
+        "collection_type": "snmp"
+      }
+    },
+    {
+      "id": "updown_logs_down",
+      "signal_type": "logs",
+      "name": "updown_logs_down",
+      "rate": 0.5,
+      "while": {
+        "ref": "cascade_active",
+        "op": ">",
+        "value": 0
+      },
+      "delay": {
+        "open": "10s",
+        "close": "0s"
+      },
+      "labels": {
+        "device": "srl2",
+        "type": "srlinux",
+        "vendor_facility": "srlinux",
+        "vendor_facility_process": "UPDOWN",
+        "interface": "ethernet-1/1",
+        "interface_status": "down",
+        "pipeline": "direct"
+      },
+      "log_generator": {
+        "type": "template",
+        "templates": [
+          {
+            "message": "Interface ethernet-1/1 changed state to down"
+          }
+        ],
+        "severity_weights": {
+          "warning": 1.0
+        }
+      },
+      "encoder": {
+        "type": "json_lines"
+      },
+      "sink": {
+        "type": "loki",
+        "url": "http://loki:3001"
+      }
+    }
+  ]
+}

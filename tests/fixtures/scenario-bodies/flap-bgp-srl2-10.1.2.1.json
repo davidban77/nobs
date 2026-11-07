@@ -1,0 +1,154 @@
+{
+  "version": 2,
+  "kind": "runnable",
+  "scenario_name": "packt-cascade-srl2-bgp-10-1-2-1",
+  "category": "network",
+  "description": "Packt inversion cascade \u2014 pauses srl2 peer 10.1.2.1 baseline during BGP-DOWN phase.",
+  "defaults": {
+    "rate": 1,
+    "duration": "4m",
+    "labels": {
+      "agent_host": "srl2"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "cascade_active",
+      "signal_type": "metrics",
+      "name": "cascade_active",
+      "generator": {
+        "type": "flap",
+        "up_duration": "40s",
+        "down_duration": "50s",
+        "up_value": 0,
+        "down_value": 1
+      }
+    },
+    {
+      "id": "cascade_cbgpPeerOperStatus",
+      "signal_type": "metrics",
+      "name": "cbgpPeerOperStatus",
+      "generator": {
+        "type": "constant",
+        "value": 2.0
+      },
+      "while": {
+        "ref": "cascade_active",
+        "op": ">",
+        "value": 0
+      },
+      "labels": {
+        "bgpPeerRemoteAddr": "10.1.2.1",
+        "bgpPeerRemoteAs": "65101",
+        "afi_safi_name": "ipv4-unicast",
+        "name": "default",
+        "collection_type": "snmp"
+      }
+    },
+    {
+      "id": "cascade_bgpPeerState",
+      "signal_type": "metrics",
+      "name": "bgpPeerState",
+      "generator": {
+        "type": "constant",
+        "value": 2.0
+      },
+      "while": {
+        "ref": "cascade_active",
+        "op": ">",
+        "value": 0
+      },
+      "labels": {
+        "bgpPeerRemoteAddr": "10.1.2.1",
+        "bgpPeerRemoteAs": "65101",
+        "afi_safi_name": "ipv4-unicast",
+        "name": "default",
+        "collection_type": "snmp"
+      }
+    },
+    {
+      "id": "cascade_cbgpPeerAcceptedPrefixes",
+      "signal_type": "metrics",
+      "name": "cbgpPeerAcceptedPrefixes",
+      "generator": {
+        "type": "constant",
+        "value": 0.0
+      },
+      "while": {
+        "ref": "cascade_active",
+        "op": ">",
+        "value": 0
+      },
+      "labels": {
+        "bgpPeerRemoteAddr": "10.1.2.1",
+        "bgpPeerRemoteAs": "65101",
+        "afi_safi_name": "ipv4-unicast",
+        "name": "default",
+        "collection_type": "snmp"
+      }
+    },
+    {
+      "id": "cascade_bgpPeerInPrefixes",
+      "signal_type": "metrics",
+      "name": "bgpPeerInPrefixes",
+      "generator": {
+        "type": "constant",
+        "value": 0.0
+      },
+      "while": {
+        "ref": "cascade_active",
+        "op": ">",
+        "value": 0
+      },
+      "labels": {
+        "bgpPeerRemoteAddr": "10.1.2.1",
+        "bgpPeerRemoteAs": "65101",
+        "afi_safi_name": "ipv4-unicast",
+        "name": "default",
+        "collection_type": "snmp"
+      }
+    },
+    {
+      "id": "cascade_bgpPeerOutPrefixes",
+      "signal_type": "metrics",
+      "name": "bgpPeerOutPrefixes",
+      "generator": {
+        "type": "constant",
+        "value": 0.0
+      },
+      "while": {
+        "ref": "cascade_active",
+        "op": ">",
+        "value": 0
+      },
+      "labels": {
+        "bgpPeerRemoteAddr": "10.1.2.1",
+        "bgpPeerRemoteAs": "65101",
+        "afi_safi_name": "ipv4-unicast",
+        "name": "default",
+        "collection_type": "snmp"
+      }
+    },
+    {
+      "id": "cascade_cbgpPeerActivePrefixes",
+      "signal_type": "metrics",
+      "name": "cbgpPeerActivePrefixes",
+      "generator": {
+        "type": "constant",
+        "value": 0.0
+      },
+      "while": {
+        "ref": "cascade_active",
+        "op": ">",
+        "value": 0
+      },
+      "labels": {
+        "bgpPeerRemoteAddr": "10.1.2.1",
+        "bgpPeerRemoteAs": "65101",
+        "afi_safi_name": "ipv4-unicast",
+        "name": "default",
+        "collection_type": "snmp"
+      }
+    }
+  ]
+}
