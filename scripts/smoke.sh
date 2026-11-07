@@ -22,9 +22,13 @@ join_lines() {
 read_settings() {
     PROJECT=""
     NAME=""
+    NETWORK=""
+    FIXED=""
     if cd "$ROOT/workshops/$WS" 2>/dev/null; then
         PROJECT=$(grep -m 1 '^project = "' nobs.toml 2>/dev/null | sed 's/^project = "\([^"]*\)".*$/\1/')
         NAME=$(grep -m 1 '^name = "' nobs.toml 2>/dev/null | sed 's/^name = "\([^"]*\)".*$/\1/')
+        NETWORK=$(grep -m 1 '^network = "' nobs.toml 2>/dev/null | sed 's/^network = "\([^"]*\)".*$/\1/')
+        FIXED=$(sed -n 's/^[[:space:]]*container_name:[[:space:]]*//p' docker-compose.yml 2>/dev/null | sed -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")
     fi
     if [ -z "$PROJECT" ]; then
         say "no project in nobs.toml; refusing to start"
@@ -34,19 +38,51 @@ read_settings() {
         say "no name in nobs.toml; refusing to start"
         return 1
     fi
+    if [ -z "$NETWORK" ]; then
+        say "no network in nobs.toml; refusing to start"
+        return 1
+    fi
+}
+
+listing() {
+    local name=$1 code
+    shift
+    LISTED=$("$@")
+    code=$?
+    if [ "$code" -ne 0 ]; then
+        say "docker $name failed (exit $code); refusing to start"
+        return 1
+    fi
 }
 
 guard() {
-    local noun=$1 listing=$2 out code
-    shift 2
-    out=$("$@")
-    code=$?
-    if [ "$code" -ne 0 ]; then
-        say "docker $listing failed (exit $code); refusing to start"
+    local noun=$1
+    shift
+    listing "$@" || return 1
+    if [ -n "$LISTED" ]; then
+        say "$noun of project $PROJECT exist ($(printf '%s\n' "$LISTED" | join_lines)); refusing to start"
         return 1
     fi
-    if [ -n "$out" ]; then
-        say "$noun of project $PROJECT exist ($(printf '%s\n' "$out" | join_lines)); refusing to start"
+}
+
+guard_fixed_names() {
+    local fixed found=""
+    listing ps docker ps -a --format '{{.Names}}' || return 1
+    for fixed in $FIXED; do
+        if printf '%s\n' "$LISTED" | grep -Fxq -- "$fixed"; then
+            found=${found:+$found, }$fixed
+        fi
+    done
+    if [ -n "$found" ]; then
+        say "containers named by the compose file exist ($found); refusing to start"
+        return 1
+    fi
+}
+
+guard_network() {
+    listing "network ls" docker network ls --format '{{.Name}}' || return 1
+    if printf '%s\n' "$LISTED" | grep -Fxq -- "$NETWORK"; then
+        say "network $NETWORK exists; refusing to start"
         return 1
     fi
 }
@@ -56,6 +92,8 @@ guards() {
     guard containers ps docker ps -a --filter "$label" --format '{{.Names}}' || return 1
     guard volumes "volume ls" docker volume ls --filter "$label" --format '{{.Name}}' || return 1
     guard networks "network ls" docker network ls --filter "$label" --format '{{.Name}}' || return 1
+    guard_fixed_names || return 1
+    guard_network || return 1
     for port in $SMOKE_PORTS; do
         if (exec 3<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
             busy=${busy:+$busy, }$port

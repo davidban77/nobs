@@ -1163,7 +1163,9 @@ $ scripts/smoke.sh ../workshops packt
 
 The script takes the program from `NOBS`, which is `nobs` on the path unless you set it. A `NOBS` that holds a slash but does not start with one also counts from the folder you run the script in.
 
-Each workshop folder needs a `nobs.toml` with a line `project = "..."` and a line `name = "..."`, each written with one space on both sides of `=`. The `project` is the compose project of the stack. A compose project is the group of containers, networks and volumes that Docker Compose makes for one stack. The `name` is the workshop name that nobs knows, and it can differ from the folder name. The script runs every nobs command by that name, from the workshop folder: `nobs <name> setup`, `nobs <name> up`, and so on. When `ROOT` or the workshop folder does not exist, the script treats the `project` as missing and refuses the workshop.
+Each workshop folder needs a `nobs.toml` with a line `project = "..."`, a line `name = "..."` and a line `network = "..."`, each written with one space on both sides of `=`. The `project` is the compose project of the stack. A compose project is the group of containers, networks and volumes that Docker Compose makes for one stack. The `name` is the workshop name that nobs knows, and it can differ from the folder name. The `network` is the name of the Docker network of the stack. The script runs every nobs command by that name, from the workshop folder: `nobs <name> setup`, `nobs <name> up`, and so on. When `ROOT` or the workshop folder does not exist, the script treats the `project` as missing and refuses the workshop.
+
+The script also reads the fixed container names of the stack from the `docker-compose.yml` in the workshop folder. It takes the value of every `container_name:` line, with or without quotes around it. A line that starts with `#` is not a name. A workshop folder without that file has no fixed names.
 
 For each workshop, the script runs these steps in order. The first step that fails stops the steps. A failed workshop does not stop the next one.
 
@@ -1185,8 +1187,12 @@ A workshop that runs for more than 25 minutes (1500 seconds) also counts as fail
 Before a workshop starts, the script runs its guards. A guard is a check that must pass before the script does anything. The script refuses the workshop in these cases:
 
 - containers, volumes or networks of its compose project already exist (the script lists them with `docker ps -a`, `docker volume ls` and `docker network ls`, filtered by the Docker label `com.docker.compose.project=<project>`);
+- a container has one of the fixed names of the compose file, whatever its project (the script lists all containers with `docker ps -a` and compares the names exactly, so `webhook2` is not `webhook`);
+- a Docker network has the name in the `network` setting, whatever its project (the script lists all networks with `docker network ls`);
 - one of these `docker` listings fails;
 - one of the host ports in `SMOKE_PORTS` is in use (a connection to `127.0.0.1` on that port works).
+
+The two name guards look at every container and network on the machine, not only at those of the project. The reason is that a container or a network that already has one of these fixed names stops the stack from starting, whoever owns it, and the script would have created other parts of the stack before it failed.
 
 Only when all the guards pass does the script arm its clean-up. The reason is that `destroy` runs `down --volumes --remove-orphans`, which removes the containers, the networks and the volumes of the project. Without the guards, the script could delete a stack, and its data, that it did not create. A refused workshop touches nothing, runs no nobs command, and counts as failed.
 
@@ -1208,8 +1214,11 @@ The table below lists every line the script prints itself. `<ws>` is the worksho
 | `smoke: usage: scripts/smoke.sh ROOT [WORKSHOP ...]` | you gave no `ROOT`; the script exits with 2 |
 | `smoke: <ws>: no project in nobs.toml; refusing to start` | the `project` line is missing, or the workshop folder or its `nobs.toml` cannot be read |
 | `smoke: <ws>: no name in nobs.toml; refusing to start` | the `name` line is missing |
+| `smoke: <ws>: no network in nobs.toml; refusing to start` | the `network` line is missing |
 | `smoke: <ws>: docker <listing> failed (exit <code>); refusing to start` | a `docker` listing exits with a non-zero code; `<listing>` is `ps`, `volume ls` or `network ls` |
 | `smoke: <ws>: <things> of project <project> exist (<list>); refusing to start` | the compose project already has parts; `<things>` is `containers`, `volumes` or `networks`, and `<list>` holds their names, separated by `, ` |
+| `smoke: <ws>: containers named by the compose file exist (<names>); refusing to start` | a container has one of the fixed names of the compose file, whatever its project; `<names>` holds the fixed names that exist, separated by `, ` |
+| `smoke: <ws>: network <network> exists; refusing to start` | a Docker network has the name in the `network` setting, whatever its project |
 | `smoke: <ws>: ports in use (<ports>); refusing to start` | one or more ports of `SMOKE_PORTS` are in use; `<ports>` holds them, separated by `, ` |
 | `smoke: <ws>: <command>` | before each nobs command; `<command>` is `setup`, `up`, `load-infrahub`, `try-it --auto` or `destroy` |
 | `smoke: <ws>: <command> failed (exit <code>)` | that nobs command exited with a non-zero code |
@@ -1221,7 +1230,7 @@ The table below lists every line the script prints itself. `<ws>` is the worksho
 | `smoke: <ws>: Infrahub HTTP listener never came up` | the listener did not answer in time |
 | `smoke: <ws>: wait Infrahub schema writes` | before the schema-write wait |
 | `smoke: <ws>: Infrahub schema-write path is ready` | the schema write returned HTTP 200 |
-| `smoke: <ws>: Infrahub never ready for schema writes (last code: <code>)` | no try returned HTTP 200; `<code>` is the HTTP code of the last try, or `000` when `curl` failed |
+| `smoke: <ws>: Infrahub never ready for schema writes (last code: <code>)` | no try returned HTTP 200; `<code>` is the HTTP code of the last try, or `000000` when `curl` could not connect or timed out |
 | `smoke: <ws>: wait <alert> alert` | before the alert wait |
 | `smoke: <ws>: <alert> is firing (<count> alert(s))` | the alert wait passed; `<count>` is the number of lines with `firing` |
 | `smoke: <ws>: alerts failed (exit <code>)` | the alert wait timed out and the last `alerts` call exited with a non-zero code; printed just before the line below |
