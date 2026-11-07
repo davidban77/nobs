@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are twenty-five, the full set of the workshop's own commands. Sixteen of them make no Docker call, and the second column below says so. Each of the others runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are twenty-five, the full set of the workshop's own commands. Sixteen of them make no Docker call, and the second column below says so. Each of the others runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -698,7 +698,7 @@ The wait: nobs asks Loki at once. When the answer has no match, nobs waits 5 sec
 
 The pause: without `--auto`, nobs prints a blank line and `  [Enter to continue, Ctrl-C to bail] ` and waits for Enter. With `--auto`, it prints nothing and waits 2 seconds. When there is no more input to read, for example with `< /dev/null`, nobs exits with 1 and prints nothing more.
 
-Ctrl-C ends nobs at once, at a pause or at any other moment, and the shell shows the exit code 130. nobs does not clean up first. If you press Ctrl-C on path 2 after the line `srl1.maintenance = true` and before the line `srl1.maintenance = false`, `srl1` stays in maintenance. To clear the flag, run `nobs <name> maintenance -d srl1 --clear`.
+Ctrl-C ends nobs at once, at a pause or at any other moment. nobs does not clean up first. If you press Ctrl-C on path 2 after the line `srl1.maintenance = true` and before the line `srl1.maintenance = false`, `srl1` stays in maintenance. To clear the flag, run `nobs <name> maintenance -d srl1 --clear`, where `<name>` is the `name` setting of the workshop.
 
 | Flag | Variable | Default | What it does |
 |---|---|---|---|
@@ -728,7 +728,7 @@ Clearing srl1 maintenance back to false.
 srl1.maintenance = false
 ```
 
-The lines that start with `nobs:` go to standard error (the channel for error messages), and so does the line `<label> - no Loki match after <timeout>s`, which replaces the match line when a wait times out. Everything else goes to standard output. Two problems do not stop the run, and each prints one line to standard error:
+The lines that start with `nobs:` go to standard error (the channel for error messages), and so does the line `<label> - no Loki match after <timeout>s`, where `<timeout>` is the value of `--timeout`, which replaces the match line when a wait times out. Everything else goes to standard output. Two problems do not stop the run, and each prints one line to standard error:
 
 | Line | When |
 |---|---|
@@ -740,7 +740,7 @@ The lines that start with `nobs:` go to standard error (the channel for error me
 | 0 | every path found its Loki match |
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 1 | a service is not ready in the pre-flight: `nobs: <service> NOT reachable at <url> - bring the stack up first (nobs <name> up)` for Prometheus, Loki or Alertmanager, where `<url>` is the address with `/-/ready` or `/ready`, or `nobs: Infrahub NOT reachable - bring the stack up first (nobs <name> up)`; `<name>` is the `name` setting of the workshop; nobs posts nothing to the webhook |
-| 1 | the input is closed at a pause, with no message |
+| 1 | without `--auto`, there is no more input to read at a pause, for example with `< /dev/null`; no message |
 | 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel; when the clear failed, `srl1` can stay in maintenance, and you clear it as described in the Ctrl-C paragraph |
 | 1 | a wait timed out: `nobs: <n> of 4 waits timed out`, printed after the `Done` panel |
 | 2 | a flag nobs does not know, or a value for `--timeout` that is not a whole number from 0 to 18446744073709551615, for example `-1` |
@@ -793,7 +793,7 @@ A duration is a number with a unit: `500ms`, `30s`, `5m` or `1h`. A bare number 
 | 6 | posts the interface body, then the BGP body of each peer, one after the other |
 | 7 | prints the table, then the `registered` line and three hint lines, or follows the scenarios |
 
-`incident` checks the kind, posts its body, prints the table and then the `registered` line and two hint lines, or follows the scenarios. In both examples below, the IDs and the states come from Sonda's answer; the values here are only an example. This is `flap-interface`:
+`incident` checks the kind, posts its body, prints the table and then the `registered` line and two hint lines, or follows the scenarios. In both examples below, the IDs come from Sonda's answer, and so do the names and the states in the `incident` table; the values here are only an example. This is `flap-interface`:
 
 ```
 $ nobs nobs-t-one flap-interface
@@ -863,7 +863,7 @@ In the post and poll lines, `<error>` is `cannot reach <url>: <reason>` or `sond
 |---|---|
 | 1 | asks Infrahub for its devices of the kind `WorkshopDevice`; when there are fewer than two, it loads the schema file and `lab_vars.yml` as `load-infrahub` does |
 | 2 | clears the `maintenance` flag of `srl1`, then of `srl2`, and tells Sonda about each one, as `maintenance --clear` does |
-| 3 | runs `docker compose` with `up sonda-setup`, and waits until it has finished; `sonda-setup` is the container of the workshop's compose file that posts the baseline scenarios to `sonda-server` and then exits |
+| 3 | runs `docker compose` with `up sonda-setup`, and waits until the container has posted the baseline scenarios and exited |
 | 4 | expires the active silences of Alertmanager whose comment or creator contains one of the `silence_hints` of the workshop |
 | 5 | deletes every Sonda scenario named `cascade_active`, `incident_backup_link_utilization`, `incident_latency_ms` or `updown_logs_down`; `flap-interface` and `incident` start scenarios with these names, and one name can belong to more than one scenario; `reset` does not delete the other scenarios that these two commands start |
 | 6 | looks for baseline scenarios that are stuck, and when it finds one, restarts `sonda-server`, waits 5 seconds and runs `sonda-setup` again |
@@ -1005,7 +1005,7 @@ Layer B reads the dashboard files in the order of their names. It takes every pa
 | `<n> frames, 0 rows` | the frames hold no row; `<n>` is the number of frames that hold values |
 | `<n> frames, <m> rows` | the frames hold `<m>` rows; this is the only good answer |
 
-A target is good when its answer is the last one. A panel passes when one of its targets is good, fails when none is, and is skipped when it has no target. Layer B exits with 1 when a panel failed, and with 0 otherwise.
+A target is good only when its answer is `<n> frames, <m> rows`. A panel passes when one of its targets is good, fails when none is, and is skipped when it has no target. Layer B exits with 1 when a panel failed, and with 0 otherwise.
 
 | Flag | Variable | Default | What it does |
 |---|---|---|---|
