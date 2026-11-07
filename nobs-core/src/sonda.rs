@@ -86,6 +86,10 @@ impl Sonda {
         self.post("/scenarios", "application/x-yaml", yaml, TIMEOUT)
     }
 
+    pub fn post_scenario(&self, json: &[u8]) -> Result<Reply, String> {
+        self.post("/scenarios", "application/json", json, TIMEOUT)
+    }
+
     pub fn event(&self, json: &[u8]) -> Result<Reply, String> {
         self.post("/events", "application/json", json, EVENT_TIMEOUT)
     }
@@ -374,6 +378,37 @@ mod tests {
     fn pretty_returns_a_body_that_is_not_json_unchanged() {
         let text = "# TYPE up gauge\nup 1\n";
         assert_eq!(pretty(text), text);
+    }
+
+    #[test]
+    fn post_scenario_sends_the_bytes_given_as_json_to_scenarios() {
+        let stub = crate::http::stub::Stub::start(&[("POST", "/scenarios", 201, "{}")]);
+
+        let reply = Sonda::new(stub.url()).post_scenario(b"{\"a\":1}").unwrap();
+
+        assert_eq!(reply.status, 201);
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path, "/scenarios");
+        assert_eq!(requests[0].header("content-type"), Some("application/json"));
+        assert_eq!(requests[0].body, b"{\"a\":1}");
+        assert_eq!(requests[0].header("authorization"), None);
+    }
+
+    #[test]
+    fn post_scenario_sends_the_key_as_a_bearer_token() {
+        let stub = crate::http::stub::Stub::start(&[("POST", "/scenarios", 201, "{}")]);
+
+        Sonda::new(stub.url())
+            .api_key(Some("secret".to_string()))
+            .post_scenario(b"{}")
+            .unwrap();
+
+        assert_eq!(
+            stub.requests()[0].header("authorization"),
+            Some("Bearer secret")
+        );
     }
 
     #[test]
