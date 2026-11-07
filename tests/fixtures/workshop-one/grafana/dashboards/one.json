@@ -1,0 +1,62 @@
+{
+  "title": "Workshop One",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "BGP sessions",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "bgp_oper_state{device=\"$device\"}"}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "Interface events",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {"expr": "{vendor_facility_process=\"UPDOWN\"}"}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "row",
+      "title": "Inventory",
+      "panels": [
+        {
+          "id": 4,
+          "type": "table",
+          "title": "Device record",
+          "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+          "targets": [
+            {
+              "refId": "A",
+              "queryText": "device record",
+              "url_options": {
+                "method": "POST",
+                "body_graphql_query": "{ device(name: \"${device}\") { name } }"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Lab is up",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "up"},
+        {"refId": "B", "expr": "metric_that_does_not_exist"}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "text",
+      "title": "Notes",
+      "options": {"mode": "markdown", "content": "Read this first."}
+    }
+  ]
+}
