@@ -37,10 +37,10 @@ networks:
   # name: nobs-t-commented-net
   backend:
     name: \"nobs-t-back-net\"
+name: nobs-t-compose-project
 volumes:
   data:
     name: nobs-t-volume-name
-name: nobs-t-compose-project
 ";
 
 struct Fixture {
