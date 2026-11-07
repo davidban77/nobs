@@ -159,7 +159,7 @@ fn a_scenario_in_a_book_lab_uses_the_chapter_compose_file() {
     assert_eq!(code, 0);
     assert_eq!(
         runner.calls()[0].args,
-        compose_ps(None, &here.join("docker-compose.yml"), &[])
+        compose_ps(Some("netobs"), &here.join("docker-compose.yml"), &[])
     );
 }
 
