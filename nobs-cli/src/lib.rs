@@ -16,7 +16,7 @@ use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_tex
 use nobs_core::http;
 use nobs_core::infrahub::{
     annotation, host_address, read_schema, DeviceIntent, Error as InfrahubError, Infrahub,
-    IntentSession, Seed, DEFAULT_ADDRESS, KINDS,
+    IntentSession, Maintenance, Seed, DEFAULT_ADDRESS, KINDS,
 };
 use nobs_core::lab_vars;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
@@ -24,6 +24,7 @@ use nobs_core::loki::{self, Loki};
 use nobs_core::prefect::{self, FlowRun, Prefect};
 use nobs_core::preflight::{preflight, Check, Status};
 use nobs_core::prometheus::{self, Prometheus};
+use nobs_core::reset;
 use nobs_core::runner::Runner;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
@@ -71,6 +72,10 @@ const GROUPS_SHOWN: usize = 5;
 const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
 
 const KIND_WAIT: Duration = Duration::from_secs(30);
+
+const WEDGE_PAUSE: Duration = Duration::from_secs(5);
+
+const SRL1_DIRECT: &str = r#"{device="srl1", pipeline="direct"}"#;
 
 const HOSTS: [&str; 5] = [
     "ghcr.io",
@@ -287,6 +292,11 @@ pub enum WorkshopCommand {
         #[command(flatten)]
         flags: ScenariosFlags,
     },
+    #[command(about = "Return the lab to the workshop's known-good baseline")]
+    Reset {
+        #[command(flatten)]
+        flags: ResetFlags,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -434,6 +444,45 @@ pub struct ScenariosFlags {
         help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
     )]
     sonda_url: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResetFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Alertmanager; nobs looks at --alertmanager-url, then ALERTMANAGER_URL, then http://localhost:9093"
+    )]
+    alertmanager_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
+    )]
+    sonda_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
+    )]
+    loki_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
+    )]
+    infrahub_url: Option<String>,
+    #[arg(
+        long,
+        help = "Don't restart sonda-logs even if the loki sink looks wedged"
+    )]
+    skip_sonda_logs: bool,
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN"
+    )]
+    token: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1581,6 +1630,7 @@ fn run_workshop_command(
         WorkshopCommand::FlapInterface { flags } => run_flap_interface(flags, located),
         WorkshopCommand::Incident { flags } => run_incident(flags),
         WorkshopCommand::Scenarios { flags } => run_scenarios(flags),
+        WorkshopCommand::Reset { flags } => run_reset(flags, located, runner),
     }
 }
 
@@ -1865,39 +1915,89 @@ fn infrahub_failed(error: impl std::fmt::Display) -> i32 {
     1
 }
 
+fn not_found(file: &Path, label: &str) -> String {
+    format!("{label} file not found: {}", file.display())
+}
+
 fn is_missing(file: &Path, label: &str) -> bool {
     let missing = !file.is_file();
     if missing {
-        eprintln!("nobs: {label} file not found: {}", file.display());
+        eprintln!("nobs: {}", not_found(file, label));
     }
     missing
 }
 
-fn read_input<T>(file: &Path, label: &str, parse: fn(&str) -> Result<T, String>) -> Option<T> {
-    if is_missing(file, label) {
-        return None;
+fn read_text<T>(
+    file: &Path,
+    label: &str,
+    parse: fn(&str) -> Result<T, String>,
+) -> Result<T, String> {
+    if !file.is_file() {
+        return Err(not_found(file, label));
     }
-    let read = fs::read_to_string(file)
+    fs::read_to_string(file)
         .map_err(|error| error.to_string())
-        .and_then(|text| parse(&text));
-    match read {
+        .and_then(|text| parse(&text))
+        .map_err(|reason| format!("cannot read {}: {reason}", file.display()))
+}
+
+fn read_input<T>(file: &Path, label: &str, parse: fn(&str) -> Result<T, String>) -> Option<T> {
+    match read_text(file, label, parse) {
         Ok(value) => Some(value),
-        Err(reason) => {
-            eprintln!("nobs: cannot read {}: {reason}", file.display());
+        Err(text) => {
+            eprintln!("nobs: {text}");
             None
         }
     }
 }
 
-fn apply_schema(file: &Path, load: impl FnOnce() -> Result<bool, InfrahubError>) -> i32 {
-    println!("Applying schema {}", file.display());
-    match load() {
-        Ok(_) => {
-            println!("Schema applied");
-            0
-        }
-        Err(error) => infrahub_failed(error),
+fn apply_schema(
+    file: &Path,
+    load: impl FnOnce() -> Result<bool, InfrahubError>,
+    say: &mut dyn FnMut(String),
+) -> Result<(), String> {
+    say(format!("Applying schema {}", file.display()));
+    load().map_err(|error| error.to_string())?;
+    say("Schema applied".to_string());
+    Ok(())
+}
+
+fn load_into_infrahub(
+    infrahub: &Infrahub,
+    schema_file: &Path,
+    lab_file: &Path,
+    skip_schema: bool,
+    say: &mut dyn FnMut(String),
+) -> Result<Seed, String> {
+    let schema = if skip_schema {
+        None
+    } else {
+        Some(read_text(schema_file, "schema", read_schema)?)
+    };
+    let lab = read_text(lab_file, "lab_vars", lab_vars::read)?;
+    if let Some(schema) = &schema {
+        apply_schema(schema_file, || infrahub.load_schema(schema), say)?;
     }
+    say(format!(
+        "Loading {} into Infrahub at {}",
+        lab_file.display(),
+        infrahub.address()
+    ));
+    infrahub
+        .wait_for_kinds(&KINDS, KIND_WAIT)
+        .map_err(|error| error.to_string())?;
+    infrahub
+        .seed(&lab, &mut |name, created| {
+            let done = if created { "created" } else { "updated" };
+            say(format!("device {name} {done}"));
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn devices_seeded(seed: &Seed) -> u32 {
+    seed.rows
+        .first()
+        .map_or(0, |(_, created, updated)| created + updated)
 }
 
 fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
@@ -1918,35 +2018,13 @@ fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
             .lab_vars
             .unwrap_or_else(|| PathBuf::from("lab_vars.yml")),
     );
-    let schema = if flags.skip_schema {
-        None
-    } else {
-        let Some(schema) = read_input(&schema_file, "schema", read_schema) else {
-            return 1;
-        };
-        Some(schema)
-    };
-    let Some(lab) = read_input(&lab_file, "lab_vars", lab_vars::read) else {
-        return 1;
-    };
-    if let Some(schema) = &schema {
-        let code = apply_schema(&schema_file, || infrahub.load_schema(schema));
-        if code != 0 {
-            return code;
-        }
-    }
-    println!(
-        "Loading {} into Infrahub at {}",
-        lab_file.display(),
-        infrahub.address()
+    let seed = load_into_infrahub(
+        &infrahub,
+        &schema_file,
+        &lab_file,
+        flags.skip_schema,
+        &mut |line| println!("{line}"),
     );
-    if let Err(error) = infrahub.wait_for_kinds(&KINDS, KIND_WAIT) {
-        return infrahub_failed(error);
-    }
-    let seed = infrahub.seed(&lab, &mut |name, created| {
-        let done = if created { "created" } else { "updated" };
-        println!("device {name} {done}");
-    });
     let seed = match seed {
         Ok(seed) => seed,
         Err(error) => return infrahub_failed(error),
@@ -1962,7 +2040,7 @@ fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
         seed.rows.len(),
         infrahub.address()
     );
-    if lab.devices.is_empty() {
+    if devices_seeded(&seed) == 0 {
         eprintln!(
             "nobs: no devices found in {}: is --lab-vars the right file?",
             lab_file.display()
@@ -1998,13 +2076,45 @@ fn run_schema_load(file: &Path, flags: InfrahubFlags) -> i32 {
     let Some(schema) = read_input(file, "schema", read_schema) else {
         return 1;
     };
-    apply_schema(file, || infrahub.load_schema(&schema))
+    match apply_schema(file, || infrahub.load_schema(&schema), &mut |line| {
+        println!("{line}")
+    }) {
+        Ok(()) => 0,
+        Err(error) => infrahub_failed(error),
+    }
 }
 
 fn event_addresses(lookup: impl Fn(&str) -> Option<String>) -> (String, String) {
     let server = given(lookup("SONDA_SERVER_URL")).unwrap_or_else(|| Urls::defaults().sonda);
     let sink = given(lookup("SONDA_LOKI_SINK_URL")).unwrap_or_else(|| LOKI_SINK.to_string());
     (server, sink)
+}
+
+fn clear_or_set_maintenance(
+    infrahub: &Infrahub,
+    sonda: &Sonda,
+    sink: &str,
+    kind: &str,
+    device: &str,
+    state: bool,
+    say: &mut dyn FnMut(String),
+) -> Result<Maintenance, String> {
+    let saved = infrahub
+        .maintenance(kind, device, state)
+        .map_err(|error| error.to_string())?;
+    say(format!(
+        "{device}.maintenance: {} → {state}",
+        saved.previous
+    ));
+    let body = annotation(device, state, sink);
+    let posted = match sonda.event(body.as_bytes()) {
+        Ok(reply) if reply.status >= 400 => {
+            Err(format!("sonda answered {}: {}", reply.status, reply.body))
+        }
+        other => other.map(|_| ()),
+    };
+    posted.map_err(|error| format!("sonda /events post failed: {error}"))?;
+    Ok(saved)
 }
 
 fn run_maintenance(flags: MaintenanceFlags) -> i32 {
@@ -2015,22 +2125,19 @@ fn run_maintenance(flags: MaintenanceFlags) -> i32 {
         return 1;
     };
     let infrahub = Infrahub::new(&address, &token);
-    let saved = match infrahub.maintenance(&flags.kind, &flags.device, state) {
-        Ok(saved) => saved,
-        Err(error) => return infrahub_failed(error),
-    };
-    println!("{}.maintenance: {} → {state}", flags.device, saved.previous);
     let (server, sink) = event_addresses(|name| std::env::var(name).ok());
     let key = given(std::env::var("SONDA_API_KEY").ok());
-    let body = annotation(&flags.device, state, &sink);
-    let posted = match Sonda::new(server).api_key(key).event(body.as_bytes()) {
-        Ok(reply) if reply.status >= 400 => {
-            Err(format!("sonda answered {}: {}", reply.status, reply.body))
-        }
-        other => other.map(|_| ()),
-    };
-    if let Err(error) = posted {
-        eprintln!("nobs: sonda /events post failed: {error}");
+    let sonda = Sonda::new(server).api_key(key);
+    if let Err(error) = clear_or_set_maintenance(
+        &infrahub,
+        &sonda,
+        &sink,
+        &flags.kind,
+        &flags.device,
+        state,
+        &mut |line| println!("{line}"),
+    ) {
+        eprintln!("nobs: {error}");
         return 1;
     }
     if state {
@@ -3089,6 +3196,271 @@ fn print_scenarios(body: &str) -> i32 {
     code
 }
 
+#[derive(Default)]
+struct Warnings(u32);
+
+impl Warnings {
+    fn add(&mut self, text: impl std::fmt::Display) {
+        eprintln!("nobs: {text}");
+        self.0 += 1;
+    }
+}
+
+fn run_reset(flags: ResetFlags, located: &Located, runner: &dyn Runner) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let lookup = |name: &str| std::env::var(name).ok();
+    let alertmanager = Alertmanager::new(alertmanager_address(flags.alertmanager_url, lookup));
+    let loki = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, lookup));
+    let sonda = cascade_client(flags.sonda_url, None, lookup);
+    let (address, token) = infrahub_settings(
+        InfrahubFlags {
+            address: flags.infrahub_url,
+            token: flags.token,
+        },
+        lookup,
+    );
+    println!("Resetting lab to known-good state.");
+    announce_rewrite(&address);
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let infrahub = Infrahub::new(&address, &token);
+    let compose = compose_in(located, None);
+    let (_, sink) = event_addresses(lookup);
+    let mut warnings = Warnings::default();
+    reset_infrahub_data(
+        &infrahub,
+        &located.dir.join(&workshop.schema_file),
+        &located.dir.join("lab_vars.yml"),
+        &mut warnings,
+    );
+    clear_workshop_maintenance(&infrahub, &sonda, &sink, &mut warnings);
+    match run_sonda_setup(&compose, runner) {
+        Ok(()) => println!("  re-applied sonda-server baseline scenarios (idempotent)"),
+        Err(error) => warnings.add(error),
+    }
+    expire_workshop_silences(&alertmanager, &workshop.silence_hints, &mut warnings);
+    delete_cascade_scenarios(&sonda, &mut warnings);
+    restart_sonda_server_if_wedged(
+        &sonda,
+        &compose,
+        runner,
+        &workshop.cascade_prefix,
+        &mut warnings,
+    );
+    if !flags.skip_sonda_logs {
+        restart_sonda_logs_if_wedged(&loki, &compose, runner, &mut warnings);
+    }
+    println!("lab reset complete — both broken peers should be firing within ~60s");
+    i32::from(warnings.0 > 0)
+}
+
+fn reset_infrahub_data(
+    infrahub: &Infrahub,
+    schema_file: &Path,
+    lab_file: &Path,
+    warnings: &mut Warnings,
+) {
+    let names = match infrahub.device_names() {
+        Ok(names) => names,
+        Err(error) => {
+            warnings.add(format!(
+                "Infrahub probe failed: {error} — skipping load check"
+            ));
+            return;
+        }
+    };
+    if names.len() >= cascade::DEVICES.len() {
+        println!("  Infrahub already loaded ({} devices)", names.len());
+        return;
+    }
+    println!(
+        "Infrahub has {} {} record(s); re-loading schema + data",
+        names.len(),
+        KINDS[0]
+    );
+    match load_into_infrahub(infrahub, schema_file, lab_file, false, &mut |_| {}) {
+        Ok(seed) => println!(
+            "  re-loaded Infrahub schema + data ({} device(s) seeded)",
+            devices_seeded(&seed)
+        ),
+        Err(error) => warnings.add(format!("load-infrahub failed: {error}")),
+    }
+}
+
+fn clear_workshop_maintenance(
+    infrahub: &Infrahub,
+    sonda: &Sonda,
+    sink: &str,
+    warnings: &mut Warnings,
+) {
+    let mut cleared = Vec::new();
+    for device in cascade::DEVICES {
+        let result =
+            clear_or_set_maintenance(infrahub, sonda, sink, KINDS[0], device, false, &mut |_| {});
+        match result {
+            Ok(_) => cleared.push(device),
+            Err(error) => warnings.add(format!("maintenance --clear failed for {device}: {error}")),
+        }
+    }
+    if !cleared.is_empty() {
+        println!("  cleared maintenance on: {}", cleared.join(", "));
+    }
+}
+
+fn docker_step(
+    compose: &Compose,
+    runner: &dyn Runner,
+    args: &[OsString],
+    label: &str,
+) -> Result<(), String> {
+    if !compose.file().is_file() {
+        return Err(format!(
+            "compose file not found: {}",
+            compose.file().display()
+        ));
+    }
+    match runner.output(Compose::PROGRAM, args) {
+        Ok(output) if output.code == 0 => Ok(()),
+        Ok(output) => Err(format!("{label} failed: exited with code {}", output.code)),
+        Err(error) => Err(format!(
+            "{label} failed: cannot run {}: {error}",
+            Compose::PROGRAM
+        )),
+    }
+}
+
+fn run_sonda_setup(compose: &Compose, runner: &dyn Runner) -> Result<(), String> {
+    docker_step(
+        compose,
+        runner,
+        &compose.up_attached_args("sonda-setup"),
+        "sonda-setup up",
+    )
+}
+
+fn restart_service(compose: &Compose, runner: &dyn Runner, service: &str) -> Result<(), String> {
+    docker_step(
+        compose,
+        runner,
+        &compose.restart_args(&[service.to_string()]),
+        &format!("{service} restart"),
+    )
+}
+
+fn expire_workshop_silences(
+    alertmanager: &Alertmanager,
+    hints: &[String],
+    warnings: &mut Warnings,
+) {
+    let silences = match alertmanager.silences() {
+        Ok(silences) => silences,
+        Err(error) => {
+            warnings.add(format!(
+                "Alertmanager fetch failed: {error} — skipping silence cleanup"
+            ));
+            return;
+        }
+    };
+    let expired = reset::workshop_silences(&silences, hints)
+        .iter()
+        .filter(|id| alertmanager.delete_silence(id).is_ok())
+        .count();
+    if expired > 0 {
+        println!("  expired {expired} workshop-related Alertmanager silence(s)");
+    }
+}
+
+fn scenario_list(sonda: &Sonda) -> Result<Vec<ScenarioRow>, String> {
+    reply_body(sonda.list()).and_then(|body| {
+        scenario_rows(&body)
+            .map_err(|reason| format!("sonda answered a list nobs cannot read: {reason}"))
+    })
+}
+
+fn delete_cascade_scenarios(sonda: &Sonda, warnings: &mut Warnings) {
+    let rows = match scenario_list(sonda) {
+        Ok(rows) => rows,
+        Err(error) => {
+            warnings.add(format!(
+                "Sonda /scenarios fetch failed: {error} — skipping cascade cleanup"
+            ));
+            return;
+        }
+    };
+    let deleted = reset::cascade_ids(&rows)
+        .iter()
+        .filter(|id| sonda.delete(id).is_ok_and(|reply| reply.status == 200))
+        .count();
+    if deleted > 0 {
+        println!("  deleted {deleted} lingering cascade scenario(s)");
+    }
+}
+
+fn restart_sonda_server_if_wedged(
+    sonda: &Sonda,
+    compose: &Compose,
+    runner: &dyn Runner,
+    cascade_prefix: &str,
+    warnings: &mut Warnings,
+) {
+    let rows = match scenario_list(sonda) {
+        Ok(rows) => rows,
+        Err(error) => {
+            warnings.add(format!(
+                "Sonda /scenarios fetch failed: {error} — skipping wedge check"
+            ));
+            return;
+        }
+    };
+    let wedged = rows
+        .iter()
+        .filter(|row| row.state == "paused" && !row.id.is_empty() && row.id != "-")
+        .filter(|row| {
+            reply_body(sonda.show(&row.id))
+                .is_ok_and(|body| reset::is_wedged(&body, cascade_prefix))
+        })
+        .count();
+    if wedged == 0 {
+        return;
+    }
+    println!("detected {wedged} wedged baseline(s) after cascade delete; restarting sonda-server");
+    if let Err(error) = restart_service(compose, runner, "sonda-server") {
+        warnings.add(error);
+        return;
+    }
+    std::thread::sleep(WEDGE_PAUSE);
+    match run_sonda_setup(compose, runner) {
+        Ok(()) => println!("  restarted sonda-server and re-applied baselines"),
+        Err(error) => warnings.add(error),
+    }
+}
+
+fn restart_sonda_logs_if_wedged(
+    loki: &Loki,
+    compose: &Compose,
+    runner: &dyn Runner,
+    warnings: &mut Warnings,
+) {
+    match loki.query_range(SRL1_DIRECT, 1, 1, SystemTime::now()) {
+        Ok(lines) if !lines.is_empty() => return,
+        Ok(_) => {}
+        Err(error) => {
+            warnings.add(format!(
+                "Loki probe failed: {error} — skipping sonda-logs check"
+            ));
+            return;
+        }
+    }
+    println!("sonda-logs srl1 streams look wedged (no Loki activity in last 60s); restarting");
+    match restart_service(compose, runner, "sonda-logs") {
+        Ok(()) => println!("  restarted sonda-logs (loki sink reset)"),
+        Err(error) => warnings.add(error),
+    }
+}
+
 fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
     let urls = urls(flags, |name| std::env::var(name).ok());
     let probes = probe_all(&urls);
@@ -3796,6 +4168,7 @@ mod tests {
                 ("device".to_string(), "srl1".to_string()),
             ],
             created_by: "ü".repeat(15),
+            comment: String::new(),
         };
 
         assert_eq!(

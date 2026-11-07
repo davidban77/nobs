@@ -14,6 +14,7 @@ pub mod prefect;
 pub mod preflight;
 pub mod prometheus;
 pub mod provider;
+pub mod reset;
 pub mod runner;
 pub mod settings;
 pub mod sonda;
