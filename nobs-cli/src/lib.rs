@@ -269,13 +269,15 @@ pub enum WorkshopCommand {
         flags: TryItFlags,
     },
     #[command(
-        about = "Register a declarative inversion-pattern BGP cascade via `POST /scenarios`"
+        about = "Flap an interface in Sonda, and the BGP sessions of its healthy peers with it"
     )]
     FlapInterface {
         #[command(flatten)]
         flags: FlapInterfaceFlags,
     },
-    #[command(about = "Register a sonda-native cascade scenario via `POST /scenarios`")]
+    #[command(
+        about = "Start a link-failover incident in Sonda: a link flaps and its backup link fills up"
+    )]
     Incident {
         #[command(flatten)]
         flags: IncidentFlags,
@@ -323,19 +325,19 @@ pub struct FlapInterfaceFlags {
         long,
         value_name = "DURATION",
         default_value = "60s",
-        help = "Time the interface stays down per cycle. Long enough for BgpSessionNotUp (for: 30s) to fire by default"
+        help = "Time the interface stays down in each cycle; the default is long enough for the alert BgpSessionNotUp to fire"
     )]
     down_duration: String,
     #[arg(
         long,
         value_name = "DURATION",
         default_value = "10s",
-        help = "Hold-down between interface down and BGP collapse (BGP cascade is phase-shifted by this amount)"
+        help = "Wait between the interface going down and BGP going down"
     )]
     cascade_delay: String,
     #[arg(
         long,
-        help = "Skip the BGP cascade — emit only the interface flap and UPDOWN log stream. Use to trip PeerInterfaceFlapping without bringing BGP down"
+        help = "Flap the interface only and leave BGP up, to fire the alert PeerInterfaceFlapping alone"
     )]
     no_cascade: bool,
     #[arg(
@@ -347,7 +349,7 @@ pub struct FlapInterfaceFlags {
     #[arg(
         long,
         value_name = "URL",
-        help = "Address of Loki that the UPDOWN log entry publishes to; nobs looks at --loki-url, then SONDA_LOKI_SINK_URL, then http://loki:3001"
+        help = "Address of Loki that Sonda writes the UPDOWN log lines to; nobs looks at --loki-url, then SONDA_LOKI_SINK_URL, then http://loki:3001"
     )]
     loki_url: Option<String>,
     #[arg(
@@ -356,7 +358,10 @@ pub struct FlapInterfaceFlags {
         help = "Key for sonda-server; nobs looks at --sonda-api-key, then SONDA_API_KEY"
     )]
     sonda_api_key: Option<String>,
-    #[arg(long, help = "Poll the cascade scenarios until they all `finished`")]
+    #[arg(
+        long,
+        help = "Poll the cascade scenarios until each one is finished or stopped"
+    )]
     follow: bool,
 }
 
@@ -374,14 +379,14 @@ pub struct IncidentFlags {
         long,
         value_name = "INTERFACE",
         default_value = "ethernet-1/10",
-        help = "Interface that flaps in Phase 1 (link goes intermittent)"
+        help = "Interface that flaps first"
     )]
     primary_interface: String,
     #[arg(
         long,
         value_name = "INTERFACE",
         default_value = "ethernet-1/1",
-        help = "Interface that absorbs the failover in Phase 2 (utilisation rises)"
+        help = "Interface that takes the load while the primary is down"
     )]
     backup_interface: String,
     #[arg(
@@ -389,7 +394,7 @@ pub struct IncidentFlags {
         long,
         value_name = "KIND",
         default_value = "link-failover",
-        help = "Cascade story to run. `link-failover` mirrors sonda's canonical v2 example"
+        help = "Kind of incident; link-failover is the only one"
     )]
     kind: String,
     #[arg(
@@ -408,7 +413,7 @@ pub struct IncidentFlags {
     #[arg(
         long,
         value_name = "URL",
-        help = "Address of the Prometheus remote_write endpoint used as the metric sink; nobs looks at --prom-url, then SONDA_PROM_REMOTE_WRITE_URL, then http://prometheus:9090/api/v1/write"
+        help = "Address that Sonda sends the metrics to by Prometheus remote write; nobs looks at --prom-url, then SONDA_PROM_REMOTE_WRITE_URL, then http://prometheus:9090/api/v1/write"
     )]
     prom_url: Option<String>,
     #[arg(
@@ -2979,7 +2984,7 @@ fn run_flap_interface(flags: FlapInterfaceFlags, located: &Located) -> i32 {
     println!("{}", pad_lines(&lines));
     if follow {
         follow_scenarios(&sonda, &ids, &["finished", "stopped"]);
-        println!("all cascade scenarios finished; baselines back to running");
+        println!("all cascade scenarios finished or stopped; baselines back to running");
         return 0;
     }
     println!(
