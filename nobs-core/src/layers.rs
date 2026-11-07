@@ -599,6 +599,14 @@ pub fn report(
     parts.join("\n")
 }
 
+pub fn waits_json(waits: &[Wait]) -> String {
+    serde_json::to_string_pretty(waits).unwrap_or_default()
+}
+
+pub fn dashboards_json(dashboards: &[Dashboard]) -> String {
+    serde_json::to_string_pretty(dashboards).unwrap_or_default()
+}
+
 pub fn stamp(time: SystemTime) -> String {
     let seconds = time.duration_since(UNIX_EPOCH).map_or(0, |elapsed| {
         i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
@@ -1487,6 +1495,74 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&wait).unwrap(),
             r#"{"label":"l","ok":true,"elapsed_s":1.5,"detail":"d","expected":"e"}"#
+        );
+    }
+
+    #[test]
+    fn waits_json_is_a_list_indented_by_two_spaces_with_the_keys_in_order() {
+        let waits = [Wait {
+            label: "l".to_string(),
+            ok: false,
+            elapsed_s: 30.0,
+            detail: "d".to_string(),
+            expected: "e".to_string(),
+        }];
+
+        assert_eq!(
+            waits_json(&waits),
+            "[\n  {\n    \"label\": \"l\",\n    \"ok\": false,\n    \"elapsed_s\": 30.0,\n    \"detail\": \"d\",\n    \"expected\": \"e\"\n  }\n]"
+        );
+    }
+
+    #[test]
+    fn dashboards_json_is_a_list_indented_by_two_spaces_with_the_keys_in_order() {
+        let found = [Dashboard {
+            dashboard: "D".to_string(),
+            file: "d.json".to_string(),
+            panels: vec![PanelResult {
+                panel_id: json!(3),
+                panel_title: "T".to_string(),
+                panel_type: "stat".to_string(),
+                device: "srl1".to_string(),
+                status: "PASS".to_string(),
+                summary: "s".to_string(),
+                targets: vec![Target {
+                    ok: true,
+                    ds: "prometheus".to_string(),
+                    summary: "1 frames, 2 rows".to_string(),
+                    expr: "up".to_string(),
+                }],
+            }],
+        }];
+
+        assert_eq!(
+            dashboards_json(&found),
+            concat!(
+                "[\n",
+                "  {\n",
+                "    \"dashboard\": \"D\",\n",
+                "    \"file\": \"d.json\",\n",
+                "    \"panels\": [\n",
+                "      {\n",
+                "        \"panel_id\": 3,\n",
+                "        \"panel_title\": \"T\",\n",
+                "        \"panel_type\": \"stat\",\n",
+                "        \"device\": \"srl1\",\n",
+                "        \"status\": \"PASS\",\n",
+                "        \"summary\": \"s\",\n",
+                "        \"targets\": [\n",
+                "          {\n",
+                "            \"ok\": true,\n",
+                "            \"ds\": \"prometheus\",\n",
+                "            \"summary\": \"1 frames, 2 rows\",\n",
+                "            \"expr\": \"up\"\n",
+                "          }\n",
+                "        ]\n",
+                "      }\n",
+                "    ]\n",
+                "  }\n",
+                "]"
+            )
         );
     }
 }
