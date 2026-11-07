@@ -118,7 +118,7 @@ fn the_root_help_names_setup_and_preflight_with_their_descriptions() {
 }
 
 #[test]
-fn the_workshop_help_page_inside_a_workshop_names_exactly_the_twenty_commands_in_order() {
+fn the_workshop_help_page_inside_a_workshop_names_exactly_the_twenty_three_commands_in_order() {
     let help = workshop_help(&["nobs-t-one", "--help"]);
     assert_eq!(
         commands_block(&help),
@@ -142,7 +142,10 @@ fn the_workshop_help_page_inside_a_workshop_names_exactly_the_twenty_commands_in
             "evidence",
             "cycle",
             "page",
-            "try-it"
+            "try-it",
+            "flap-interface",
+            "incident",
+            "scenarios"
         ]
     );
 }
