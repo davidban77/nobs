@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are twenty-five, the full set of the workshop's own commands. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca`, `evidence`, `cycle`, `page`, `try-it`, `flap-interface`, `incident`, `scenarios` and `preflight` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are twenty-five, the full set of the workshop's own commands. Sixteen of them make no Docker call, and the second column below says so. Each of the others runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -131,7 +131,7 @@ known: nobs-t-two
 | `nobs <workshop> incident [OPTIONS]` | no Docker call | posts one `link-failover` cascade to `sonda-server`: a link flaps, the backup link fills up and its latency grows; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
 | `nobs <workshop> scenarios [OPTIONS]` | no Docker call | lists the scenarios registered with `sonda-server` as one table; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
 | `nobs <workshop> reset [OPTIONS]` | `up sonda-setup`; when a baseline scenario is stuck, `restart sonda-server` and then `up sonda-setup` again; when Loki has no recent log line of `srl1`, `restart sonda-logs` | returns the lab to the state every part of the workshop starts from; it also calls Infrahub, Alertmanager, Sonda and Loki, and goes on after a step that fails; the options are in [reset](#reset) |
-| `nobs <workshop> preflight [OPTIONS]` | no Docker call | runs the workshop's own check of the running stack: layer A waits for the data of the stack and makes events on purpose, layer B asks Grafana for every panel of every dashboard; writes three files; layer C is not built; the options are in [preflight](#preflight) |
+| `nobs <workshop> preflight [OPTIONS]` | no Docker call | runs the workshop's own check of the running stack: layer A waits for the data of the stack and makes events on purpose, layer B asks Grafana for every panel of every dashboard; writes three files; leaves `srl1` in maintenance, so run `reset` after it; layer C is not built; the options are in [preflight](#preflight) |
 
 The rules in this paragraph hold for every command except `reset`, which goes on after a step that fails; its warnings and exit codes are in [reset](#reset). When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
@@ -960,11 +960,11 @@ In these lines, `<error>` is the text of the failed call. For Infrahub it is `ca
 
 ### preflight
 
-`preflight` is the workshop's own check of the running stack. Run it before a session, after `up` and `load-infrahub`. It has three layers, A, B and C, and nobs runs A and B. Layer A checks the data shape: it waits until Prometheus and Loki hold the series and the log lines the workshop needs, makes events on purpose, and checks that Loki holds them. A series is one line of a metric with its own labels. Layer B asks Grafana for the data of every panel of every dashboard of the workshop. A panel is one chart or table of a dashboard. Layer C, a screenshot of every panel, is not built in nobs. `nobs preflight` is a different command: it checks the machine, not the stack (see [Setup and preflight](#setup-and-preflight)).
+`preflight` is the workshop's own check of the running stack. Run it before a session, after `up` and `load-infrahub`. It has three layers, A, B and C, and nobs runs A and B. Layer A checks the data shape: it waits until Prometheus and Loki hold the series and the log lines the workshop needs, makes events on purpose, and checks that Loki holds them. A series is one metric with one set of label values. Layer B asks Grafana for the data of every panel of every dashboard of the workshop. A panel is one chart or table of a dashboard. Layer C, a screenshot of every panel, is not built in nobs. `nobs preflight` is a different command: it checks the machine, not the stack (see [Setup and preflight](#setup-and-preflight)).
 
 `preflight` changes the lab, and it leaves `srl1` in maintenance. Its layer A starts scenarios in Sonda with `flap-interface` and sets the `maintenance` flag of `srl1` to true, with the same calls as `maintenance`, so Infrahub and Sonda both hear of it. While the flag is true, the policy skips the alerts of `srl1`. Run `nobs <workshop> reset` after it to clear the flag and to delete the scenarios it left.
 
-`preflight` goes through these steps in order. A failure in steps 1 to 4 ends the run before nobs sends any request. After step 4, only a file that cannot be written ends the run.
+`preflight` goes through these steps in order. A failure in steps 2 to 4 ends the run before nobs sends any request. After step 4, only a file that cannot be written ends the run.
 
 | Step | What nobs does |
 |---|---|
@@ -993,7 +993,19 @@ Layer A goes through these steps in order. A wait asks again every 4 seconds, un
 
 Layer A exits with 1 when a wait failed, or when step 4 or step 5 exited with a code other than 0, and the summary line then says `preflight failures`. Step 4 and step 5 print their own `nobs:` line when they fail, and nobs prints no other line for them.
 
-Layer B reads the dashboard files in the order of their names. It takes every panel that is not a `row`, also the panels inside a row, in the order of the file. When the targets of a panel hold `$device` or `${device}`, nobs asks for the panel twice, with the device `srl1` and then with `srl2`. Otherwise it asks once, and prints the device as `(no template)` and uses `srl1` in the query. For each target, nobs sends one `POST /api/ds/query` to Grafana, for the last 5 minutes, and waits at most 15 seconds for the answer. Grafana answers with frames: a frame is one block of data, and a row is one value in its first column. A target is good when its answer has at least one row. A panel passes when one of its targets is good, fails when none is, and is skipped when it has no target. Layer B exits with 1 when a panel failed, and with 0 otherwise.
+Layer B reads the dashboard files in the order of their names. It takes every panel that is not a `row`, also the panels inside a row, in the order of the file. The targets of a panel are its queries. When the targets of a panel hold `$device` or `${device}`, nobs asks for the panel twice, with the device `srl1` and then with `srl2`. Otherwise it asks once, and prints the device as `(no template)` and uses `srl1` in the query. For each target, nobs sends one `POST /api/ds/query` to Grafana, for the last 5 minutes, and waits at most 15 seconds for the answer. Grafana answers with frames: a frame is one block of data, and a row is one value in its first column. nobs turns each answer into one text. It checks the answer in the order of the table below, and the first row that fits gives the text.
+
+| Answer | When |
+|---|---|
+| the text of the error, for example `cannot reach <url>: <reason>` | nobs got no answer from Grafana |
+| `http <status>` | Grafana answered with a status other than 200 |
+| `no results` | the answer has no `results` |
+| `ds error: <error>` | the first result has a status of 400 or more, or an `error`; `<error>` is that error, else the status |
+| `0 frames` | the first result has no frames |
+| `<n> frames, 0 rows` | the frames hold no row; `<n>` is the number of frames that hold values |
+| `<n> frames, <m> rows` | the frames hold `<m>` rows; this is the only good answer |
+
+A target is good when its answer is the last one. A panel passes when one of its targets is good, fails when none is, and is skipped when it has no target. Layer B exits with 1 when a panel failed, and with 0 otherwise.
 
 | Flag | Variable | Default | What it does |
 |---|---|---|---|
@@ -1017,8 +1029,6 @@ Four more variables apply, and none has a flag. `GRAFANA_USER` and `GRAFANA_PASS
 | `layer_a.json` | a list with one entry for each wait of layer A: `label`, `ok`, `elapsed_s`, `detail` and `expected` |
 | `layer_b.json` | a list with one entry for each dashboard: its title, its file and its panels, each with its device, its status and the answer of each target |
 | `REPORT.md` | the title and the time (UTC), the exit code of each layer, one line for each wait and one table for each dashboard |
-
-When nobs cannot write a file, it prints `nobs: cannot write <path>: <error>`, prints no `wrote` line and no summary, and exits with 1.
 
 This is the output of a run where every check passed. The IDs, the counts and the times come from your stack; the values here are only an example.
 
@@ -1056,27 +1066,36 @@ Layer A — sleeping 130s for [2m] windows to fill
 Layer A — wrote /tmp/preflight-out/layer_a.json
 Layer B — per-panel /api/ds/query
 
-=== Workshop One (one.json) — 3 panels ===
+=== Workshop One (one.json) — 5 panels ===
   [OK  ] panel #1 timeseries     device=srl1         'BGP sessions'                           → prometheus:1 frames, 3 rows
   [OK  ] panel #1 timeseries     device=srl2         'BGP sessions'                           → prometheus:1 frames, 3 rows
-  [OK  ] panel #2 logs           device=(no template) 'Recent link events'                     → loki:1 frames, 7 rows
-  [SKIP] panel #3 text           device=(no template) 'Notes'                                  → no targets
+  [OK  ] panel #2 logs           device=(no template) 'Interface events'                       → loki:1 frames, 3 rows
+  [OK  ] panel #4 table          device=srl1         'Device record'                          → yesoreyeram-infinity-datasource:1 frames, 3 rows
+  [OK  ] panel #4 table          device=srl2         'Device record'                          → yesoreyeram-infinity-datasource:1 frames, 3 rows
+  [OK  ] panel #5 stat           device=(no template) 'Lab is up'                              → prometheus:1 frames, 3 rows; prometheus:1 frames, 0 rows
+  [SKIP] panel #6 text           device=(no template) 'Notes'                                  → no targets
 
-Layer B summary: PASS=3 FAIL=0 SKIP=1
+Layer B summary: PASS=6 FAIL=0 SKIP=1
 Layer B — wrote /tmp/preflight-out/layer_b.json
 Layer C — per-panel screenshots: not built in nobs, skipped
-preflight green (770.4s) — Layer A exit=0 | Layer B exit=0 | Layer C skipped
+preflight green (136.8s) — Layer A exit=0 | Layer B exit=0 | Layer C skipped
 report: /tmp/preflight-out/REPORT.md
 ```
 
-The `flap-interface` and `maintenance` lines are the lines of those commands, and their IDs and the first value in the `maintenance` line come from Sonda and Infrahub. A panel line is `[OK  ]`, `[FAIL]` or `[SKIP]`, the panel number, the type, the device, the title in quotes, an arrow, and what each target answered as `<datasource>:<answer>`, joined by `; `. An answer is `<n> frames, <m> rows`, `0 frames`, `<n> frames, 0 rows`, `http <status>`, `no results`, `ds error: <error>`, or the error text when the call failed. These are the lines of nobs itself:
+The `flap-interface` and `maintenance` lines are the lines of those commands, and their IDs and the first value in the `maintenance` line come from Sonda and Infrahub. A panel line is `[OK  ]`, `[FAIL]` or `[SKIP]`, the panel's ID in the dashboard file, the type of the panel, the device, the title in quotes, an arrow, and the answer of each target as `<type>:<answer>`, joined by `; `. A data source is the service that Grafana reads the data from. `<type>` is the type of that data source, for example `prometheus` or `loki`. `<answer>` is one of the answers in the table above. A panel with no target prints `no targets` after the arrow. nobs cuts the title to 38 characters and the text after the arrow to 140. These are the lines of nobs itself:
 
 | Line | When |
 |---|---|
 | `Layer A — data shape waits` | after the empty line, before layer A |
+| `Layer A — wait for data shape` | the first line of layer A, before the waits of steps 1 to 3 |
 | `  [<s>s] OK   <label> — <detail>` | a wait was right; `<s>` is the seconds it took, with one decimal |
 | `  [<s>s] FAIL <label> — <detail>` | a wait was not right in time; `<detail>` is the last answer, else the last error, else `no data` |
+| `Layer A — flap-interface (in-process, --no-cascade)` | before step 4; in-process means that nobs runs `flap-interface` itself, not as a second program |
+| `Layer A — maintenance toggle (in-process)` | before step 5 |
+| `Layer A — sleeping 130s for [2m] windows to fill` | before step 6 |
 | `Layer A — wrote <path>` | `layer_a.json` is written |
+| `Layer B — per-panel /api/ds/query` | the start of layer B |
+| `=== <title> (<file>) — <n> panels ===` | after an empty line, at the start of each dashboard; `<title>` is the `title` in the file, else the file name without `.json`; `<n>` counts panels, not lines, so a panel with `$device` gives two lines |
 | `Layer B summary: PASS=<p> FAIL=<f> SKIP=<s>` | the end of layer B |
 | `Layer B — wrote <path>` | `layer_b.json` is written |
 | `Layer C — per-panel screenshots: not built in nobs, skipped` | always, with or without `--skip-c` |
@@ -1084,16 +1103,16 @@ The `flap-interface` and `maintenance` lines are the lines of those commands, an
 | `preflight failures (<s>s) — Layer A exit=<a> \| Layer B exit=<b> \| Layer C skipped` | at least one exit code is not 0 |
 | `report: <path>` | the last line, after the summary line |
 
-These lines start with `nobs:` and go to standard error. Everything else goes to standard output.
+These lines start with `nobs:` and go to standard error, as do the `nobs:` lines of steps 4 and 5 of layer A. Everything else goes to standard output.
 
 | Line | When |
 |---|---|
 | `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` | there is no token; nothing is sent |
-| `nobs: cannot write <path>: <error>` | the folder or a file cannot be written |
+| `nobs: cannot write <path>: <error>` | the folder or a file cannot be written; nobs stops there, so it prints no `wrote` line for that file and no summary |
 | `nobs: cannot read <path>: <error>` | the dashboards folder, or a file in it, cannot be read, or the file is not JSON |
 | `nobs: no dashboard files in <path>` | the dashboards folder holds no `.json` file |
 
-The whole run takes up to about 13 minutes on a cold stack: three waits of up to 180 seconds, 130 seconds of sleep, three waits of up to 30 seconds, and then layer B. On a stack that is ready, the waits are right at once, and the run takes about 130 seconds plus the time of layer B.
+The whole run takes up to about 13 minutes on a stack that has just started: three waits of up to 180 seconds, 130 seconds of sleep, three waits of up to 30 seconds, and then layer B. On a stack that is ready, the waits are right at once, and the run takes about 130 seconds plus the time of layer B.
 
 | Exit code | When |
 |---|---|
