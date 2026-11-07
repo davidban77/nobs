@@ -336,7 +336,7 @@ fn follow_polls_after_a_sleep_until_every_scenario_is_done_and_does_not_print_th
     let text = stdout(&output);
     assert!(
         text.ends_with(
-            "  a1b2c3d4 state=stopped\n  e5f6a7b8 state=finished\nall cascade scenarios finished; baselines back to running\n"
+            "  a1b2c3d4 state=stopped\n  e5f6a7b8 state=finished\nall cascade scenarios finished or stopped; baselines back to running\n"
         ),
         "{text}"
     );
@@ -377,7 +377,7 @@ fn a_failed_poll_is_a_warning_and_a_reply_without_a_state_is_unknown_and_the_wai
     let text = stdout(&output);
     assert!(
         text.ends_with(
-            "  e5f6a7b8 state=unknown\n  a1b2c3d4 state=finished\n  e5f6a7b8 state=finished\nall cascade scenarios finished; baselines back to running\n"
+            "  e5f6a7b8 state=unknown\n  a1b2c3d4 state=finished\n  e5f6a7b8 state=finished\nall cascade scenarios finished or stopped; baselines back to running\n"
         ),
         "{text}"
     );
