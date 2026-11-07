@@ -39,6 +39,7 @@ pub struct Silence {
     pub ends_at: String,
     pub matchers: Vec<(String, String)>,
     pub created_by: String,
+    pub comment: String,
 }
 
 impl fmt::Display for Error {
@@ -78,6 +79,24 @@ impl Alertmanager {
     pub fn silences(&self) -> Result<Vec<Silence>, Error> {
         let body = self.get("/api/v2/silences")?;
         parse_silences(&body).map_err(|reason| self.body_error(reason))
+    }
+
+    pub fn delete_silence(&self, id: &str) -> Result<(), Error> {
+        let url = format!("{}/api/v2/silence/{id}", self.url);
+        let reply =
+            http::read(&url, http::agent(self.timeout).delete(&url).call()).map_err(|error| {
+                Error::Unreachable {
+                    url: self.url.clone(),
+                    reason: http::reason(error, &url),
+                }
+            })?;
+        if reply.status >= 400 {
+            return Err(Error::Status {
+                url: self.url.clone(),
+                status: reply.status,
+            });
+        }
+        Ok(())
     }
 
     fn get(&self, target: &str) -> Result<String, Error> {
@@ -148,6 +167,7 @@ pub fn parse_silences(body: &str) -> Result<Vec<Silence>, String> {
                 .map(|matcher| (text(&matcher["name"]), text(&matcher["value"])))
                 .collect(),
             created_by: text(&silence["createdBy"]),
+            comment: text(&silence["comment"]),
         })
         .collect())
 }
@@ -279,7 +299,7 @@ mod tests {
     #[test]
     fn parse_silences_reads_the_fields_and_gives_matchers_as_pairs() {
         let body = r#"[
-            {"id":"0a1b2c3d-4e5f","status":{"state":"active"},"startsAt":"2026-11-06T10:00:00.000Z","endsAt":"2026-11-06T12:00:00.000Z","matchers":[{"name":"alertname","value":"BgpSessionNotUp","isRegex":false},{"name":"device","value":"srl1"}],"createdBy":"alice"},
+            {"id":"0a1b2c3d-4e5f","status":{"state":"active"},"startsAt":"2026-11-06T10:00:00.000Z","endsAt":"2026-11-06T12:00:00.000Z","matchers":[{"name":"alertname","value":"BgpSessionNotUp","isRegex":false},{"name":"device","value":"srl1"}],"createdBy":"alice","comment":"Workshop test silence"},
             {}
         ]"#;
         assert_eq!(
@@ -292,6 +312,7 @@ mod tests {
                     ends_at: "2026-11-06T12:00:00.000Z".to_string(),
                     matchers: pairs(&[("alertname", "BgpSessionNotUp"), ("device", "srl1")]),
                     created_by: "alice".to_string(),
+                    comment: "Workshop test silence".to_string(),
                 },
                 Silence {
                     id: String::new(),
@@ -300,6 +321,7 @@ mod tests {
                     ends_at: String::new(),
                     matchers: Vec::new(),
                     created_by: String::new(),
+                    comment: String::new(),
                 },
             ]
         );
@@ -350,6 +372,31 @@ mod tests {
         let requests = stub.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, "/api/v2/silences");
+    }
+
+    #[test]
+    fn delete_silence_sends_one_delete_for_the_id() {
+        let stub = Stub::start(&[("DELETE", "/api/v2/silence/abc", 200, "")]);
+
+        assert_eq!(Alertmanager::new(stub.url()).delete_silence("abc"), Ok(()));
+
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "DELETE");
+        assert_eq!(requests[0].path, "/api/v2/silence/abc");
+    }
+
+    #[test]
+    fn delete_silence_with_a_status_of_400_or_more_is_a_status_error_with_the_base_url() {
+        let stub = Stub::start(&[("DELETE", "/api/v2/silence/abc", 500, "")]);
+
+        assert_eq!(
+            Alertmanager::new(stub.url()).delete_silence("abc"),
+            Err(Error::Status {
+                url: stub.url().to_string(),
+                status: 500
+            })
+        );
     }
 
     #[test]

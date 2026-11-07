@@ -71,6 +71,10 @@ impl Compose {
         self.compose_args(action, services)
     }
 
+    pub fn up_attached_args(&self, service: &str) -> Vec<OsString> {
+        self.compose_args(words(&["up"]), &[service.to_string()])
+    }
+
     pub fn stop_args(&self, services: &[String]) -> Vec<OsString> {
         self.compose_args(words(&["stop"]), services)
     }
@@ -514,6 +518,24 @@ mod tests {
         assert_eq!(
             compose().up_args(&services(&["s"]), false),
             ["compose", "-f", FILE, "up", "-d", "s"]
+        );
+    }
+
+    #[test]
+    fn up_attached_runs_one_service_in_the_foreground_with_the_project_name() {
+        assert_eq!(
+            compose()
+                .project("nobs-t-one")
+                .up_attached_args("sonda-setup"),
+            [
+                "compose",
+                "--project-name",
+                "nobs-t-one",
+                "-f",
+                FILE,
+                "up",
+                "sonda-setup"
+            ]
         );
     }
 
