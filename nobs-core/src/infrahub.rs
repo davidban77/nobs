@@ -224,6 +224,18 @@ impl Infrahub {
         }))
     }
 
+    pub fn device_names(&self) -> Result<Vec<String>, Error> {
+        let query = format!("{{ {DEVICE} {{ edges {{ node {{ name {{ value }} }} }} }} }}");
+        let reply = self.post(GRAPHQL_PATH, &json!({ "query": query }), TIMEOUT)?;
+        Ok(parse(&reply)?
+            .pointer(&format!("/data/{DEVICE}/edges"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|edge| attribute_text(&edge["node"], "name").unwrap_or_default())
+            .collect())
+    }
+
     fn upsert(&self, row: Upsert) -> Result<(String, bool), Error> {
         match self.find(row.kind, &row.filters, "")? {
             Some(node) => {
@@ -1338,6 +1350,59 @@ mod tests {
             Infrahub::new(&url, TOKEN).device_intent("srl1"),
             Err(Error::Reach { .. })
         ));
+    }
+
+    #[test]
+    fn device_names_sends_one_post_with_the_key_and_reads_the_names() {
+        let stub = graphql_stub(&[
+            r#"{"data":{"WorkshopDevice":{"edges":[{"node":{"name":{"value":"srl1"}}},{"node":{"name":{"value":"srl2"}}},{"node":{}}]}}}"#.to_string(),
+        ]);
+
+        let names = Infrahub::new(stub.url(), TOKEN).device_names();
+
+        assert_eq!(
+            names,
+            Ok(vec!["srl1".to_string(), "srl2".to_string(), String::new()])
+        );
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path, GRAPHQL_PATH);
+        assert_eq!(requests[0].header("X-INFRAHUB-KEY"), Some(TOKEN));
+        assert_eq!(
+            sent_bodies(&stub)[0]["query"],
+            "{ WorkshopDevice { edges { node { name { value } } } } }"
+        );
+    }
+
+    #[test]
+    fn device_names_gives_an_empty_list_for_a_200_that_has_no_edges_list() {
+        for reply in [
+            r#"{"data":null,"errors":[{"message":"x"}]}"#,
+            r#"{"data":{}}"#,
+        ] {
+            let stub = graphql_stub(&[reply.to_string()]);
+
+            assert_eq!(
+                Infrahub::new(stub.url(), TOKEN).device_names(),
+                Ok(Vec::new()),
+                "{reply}"
+            );
+        }
+    }
+
+    #[test]
+    fn device_names_with_a_status_that_is_not_200_is_a_status_error() {
+        let stub = Stub::start(&[("POST", GRAPHQL_PATH, 500, "down")]);
+
+        assert_eq!(
+            Infrahub::new(stub.url(), TOKEN).device_names(),
+            Err(Error::Status {
+                status: 500,
+                path: GRAPHQL_PATH.to_string(),
+                body: "down".to_string()
+            })
+        );
     }
 
     #[test]

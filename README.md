@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are twenty-three. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca`, `evidence`, `cycle`, `page`, `try-it`, `flap-interface`, `incident` and `scenarios` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are twenty-four. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca`, `evidence`, `cycle`, `page`, `try-it`, `flap-interface`, `incident` and `scenarios` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -130,6 +130,7 @@ known: nobs-t-two
 | `nobs <workshop> flap-interface [OPTIONS]` | no Docker call | posts one cascade for an interface and one for each healthy BGP peer on its link to `sonda-server`, so the interface and then BGP go down for a while; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
 | `nobs <workshop> incident [OPTIONS]` | no Docker call | posts one `link-failover` cascade to `sonda-server`: a link flaps, the backup link fills up and its latency grows; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
 | `nobs <workshop> scenarios [OPTIONS]` | no Docker call | lists the scenarios registered with `sonda-server` as one table; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
+| `nobs <workshop> reset [OPTIONS]` | `up sonda-setup`; then `restart sonda-server` and `restart sonda-logs` when they look stuck | returns the lab to the state every part of the workshop starts from; it also calls Infrahub, Alertmanager, Sonda and Loki, and goes on after a step that fails; the options are in [reset](#reset) |
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
@@ -180,7 +181,7 @@ schema_file = "infrahub/schema.yml"
 sonda = "ghcr.io/davidban77/sonda:1.22.2"
 ```
 
-Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file`, `evidence_query`, `workflow_label` and `cascade_prefix`; it checks the others but does not use them. `flap-interface` uses `cascade_prefix` as the start of each scenario name, and `title` as the first words of each description (see [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios)). `cycle` uses `workflow_label` as the value of the `workflow` label it looks for in Loki (see [cycle and page](#cycle-and-page)).
+Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file`, `evidence_query`, `workflow_label`, `cascade_prefix` and `silence_hints`; it checks the others but does not use them. `flap-interface` uses `cascade_prefix` as the start of each scenario name, and `title` as the first words of each description (see [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios)). `reset` uses `silence_hints` to find the silences to expire, and `cascade_prefix` to find the baselines that a cascade left stuck (see [reset](#reset)). `cycle` uses `workflow_label` as the value of the `workflow` label it looks for in Loki (see [cycle and page](#cycle-and-page)).
 
 The `evidence_query` setting is a Loki query. It may hold the placeholders `{device}` and `{peer}`. `nobs <workshop> evidence` replaces each one with the device and the peer you give it, and sends the result to Loki. For example, `evidence_query = "{device=\"{device}\"} != \"license\""` becomes `{device="srl1"} != "license"` for the device `srl1`. The braces around the placeholders belong to the query and stay.
 
@@ -849,6 +850,100 @@ In the post and poll lines, `<error>` is `cannot reach <url>: <reason>` or `sond
 |---|---|
 | 0 | the command did what it was asked; with `--follow`, every scenario is done |
 | 1 | any `nobs:` line in the table above except the warning and the poll error |
+| 2 | a flag nobs does not know |
+
+### reset
+
+`reset` returns the lab to the state every part of the workshop starts from: the two broken BGP peers fire within about a minute, no device is in maintenance, no scenario of `flap-interface` or `incident` is left in Sonda, no workshop silence is left in Alertmanager, Infrahub holds the two workshop devices, and the log sink of Sonda for `srl1` delivers to Loki. Run it at the start of a session and between parts. You can also run it on a lab that is already clean. It changes the lab: it can load Infrahub, change the `maintenance` flag, expire silences, delete scenarios and restart containers.
+
+`reset` goes through eight steps in this order. Each step stands alone. A command with two `docker` calls stops at the first one that fails, but `reset` does not stop at the first step that fails: it prints a warning and goes on with the next step.
+
+| Step | What nobs does |
+|---|---|
+| 1 | asks Infrahub for its devices of the kind `WorkshopDevice`; when there are fewer than two, it loads the schema file and `lab_vars.yml` as `load-infrahub` does |
+| 2 | clears the `maintenance` flag of `srl1`, then of `srl2`, as `maintenance --clear` does, and posts the event to Sonda |
+| 3 | runs `docker compose` with `up sonda-setup`, and waits until it has finished; `sonda-setup` is the container of the workshop's compose file that posts the baseline scenarios to `sonda-server` and then exits |
+| 4 | expires the active silences of Alertmanager whose comment or creator contains one of the `silence_hints` of the workshop |
+| 5 | deletes the Sonda scenarios named `cascade_active`, `incident_backup_link_utilization`, `incident_latency_ms` and `updown_logs_down`; these are the scenarios that `flap-interface` and `incident` start |
+| 6 | looks for baseline scenarios that are stuck, and when it finds one, restarts `sonda-server`, waits 5 seconds and runs `sonda-setup` again |
+| 7 | unless `--skip-sonda-logs` is given, asks Loki for one log line of `srl1` from the last minute, and restarts `sonda-logs` when there is none |
+| 8 | prints the last line |
+
+A baseline is stuck when its state is `paused` and the name in the `pending_ref` of its scenario starts with the `cascade_prefix` setting or with `incident-link-failover-`. `pending_ref` is the field of a scenario in `sonda-server` that names the scenario it waits for. After step 5, a baseline should run again by itself, and sometimes it does not. In step 7, the question to Loki is `{device="srl1", pipeline="direct"}`. No line in the last minute means that the log sink of Sonda does not deliver, and a restart of `sonda-logs` resets it.
+
+| Flag | Variable | Default | What it does |
+|---|---|---|---|
+| `--alertmanager-url URL` | `ALERTMANAGER_URL` | `http://localhost:9093` | gives the address of Alertmanager |
+| `--sonda-url URL` | `SONDA_SERVER_URL` | `http://localhost:8085` | gives the address of `sonda-server` |
+| `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` | gives the address of Loki |
+| `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` | gives the address of Infrahub |
+| `--token TOKEN` | `INFRAHUB_API_TOKEN` | none | gives the token for Infrahub |
+| `--skip-sonda-logs` | | off | leaves out step 7, so nobs does not ask Loki and does not restart `sonda-logs` |
+
+nobs finds each address and the token in this order: the flag, then the variable, then the default. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it, so keep the token in the `.env` file. When the address of Infrahub names `infrahub-server`, nobs uses `http://localhost:8000` and prints the rewrite line `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000` after the first line, as `load-infrahub` does.
+
+Two more variables apply. `SONDA_API_KEY` is the key that nobs sends to Sonda as `Authorization: Bearer <key>` in steps 2, 5 and 6; it has no flag and no default. `SONDA_LOKI_SINK_URL` is the address of Loki as Sonda sees it, and its default is `http://loki:3001`; step 2 puts it in the event it posts, as `maintenance` does. Both follow the same rule as the addresses. Each call to Infrahub, Alertmanager, Sonda and Loki waits at most 10 seconds, with three exceptions: the event of step 2 waits at most 35 seconds, the schema load of step 1 waits at most 120 seconds, and the load then waits up to 30 seconds until Infrahub shows the three kinds of node. The `docker` calls have no time limit. They run with the project name and the compose file of the workshop, like the other commands that call `docker`. nobs does not show the standard output of `docker`, and it shows the standard error. When the compose file is missing, every `docker` call gives a warning, and the steps that need no `docker` go on.
+
+`reset` checks the token first. When there is none, it prints the first line, then the rewrite line when there is one, then the error `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).`, and exits with 1: it sends nothing, runs no `docker` call and prints no last line.
+
+This is the output for a lab that needed every step. Your lab prints the lines of steps 1 to 7 that apply to it:
+
+```
+$ nobs nobs-t-one reset
+Resetting lab to known-good state.
+Infrahub has 0 WorkshopDevice record(s); re-loading schema + data
+  re-loaded Infrahub schema + data (2 device(s) seeded)
+  cleared maintenance on: srl1, srl2
+  re-applied sonda-server baseline scenarios (idempotent)
+  expired 1 workshop-related Alertmanager silence(s)
+  deleted 4 lingering cascade scenario(s)
+detected 1 wedged baseline(s) after cascade delete; restarting sonda-server
+  restarted sonda-server and re-applied baselines
+sonda-logs srl1 streams look wedged (no Loki activity in last 60s); restarting
+  restarted sonda-logs (loki sink reset)
+lab reset complete — both broken peers should be firing within ~60s
+```
+
+On a lab that is already clean, nobs prints only the first line, `  Infrahub already loaded (2 devices)`, the `cleared` line, the `re-applied` line and the last line. The lines have these meanings. Everything in the table goes to standard output.
+
+| Line | When |
+|---|---|
+| `Resetting lab to known-good state.` | always the first line |
+| `  Infrahub already loaded (<n> devices)` | step 1 found two or more devices |
+| `Infrahub has <n> WorkshopDevice record(s); re-loading schema + data` | step 1 found fewer than two; nothing of the load itself is printed |
+| `  re-loaded Infrahub schema + data (<n> device(s) seeded)` | the load worked; `<n>` is the number of devices nobs created or updated |
+| `  cleared maintenance on: <devices>` | step 2 cleared at least one device; `<devices>` are the names, separated by `, ` |
+| `  re-applied sonda-server baseline scenarios (idempotent)` | step 3 worked |
+| `  expired <n> workshop-related Alertmanager silence(s)` | step 4 expired at least one silence |
+| `  deleted <n> lingering cascade scenario(s)` | step 5 deleted at least one scenario |
+| `detected <n> wedged baseline(s) after cascade delete; restarting sonda-server` | step 6 found at least one stuck baseline |
+| `  restarted sonda-server and re-applied baselines` | the restart and the second `sonda-setup` of step 6 worked |
+| `sonda-logs srl1 streams look wedged (no Loki activity in last 60s); restarting` | step 7 found no log line |
+| `  restarted sonda-logs (loki sink reset)` | the restart of step 7 worked |
+| `lab reset complete — both broken peers should be firing within ~60s` | always the last line, with or without warnings, except when there is no token |
+
+When nobs cannot expire a silence or delete a scenario, it prints nothing and does not count it. The warnings go to standard error. Each one starts with `nobs: `.
+
+| Line | When |
+|---|---|
+| `nobs: Infrahub probe failed: <error> — skipping load check` | step 1 could not ask Infrahub, and ends |
+| `nobs: load-infrahub failed: <error>` | the load of step 1 failed; `<error>` is the text `load-infrahub` prints after `nobs: `, for example `lab_vars file not found: <path>` |
+| `nobs: maintenance --clear failed for <device>: <error>` | step 2 failed for that device; `<error>` is the text `maintenance` prints after `nobs: `, for example `<kind> <device> not found in Infrahub.` or `sonda /events post failed: <error>` |
+| `nobs: <call> failed: exited with code <n>` | `docker` ended with a code other than 0; `<call>` is `sonda-setup up`, `sonda-server restart` or `sonda-logs restart`; after a failed `sonda-server restart`, nobs does not run `sonda-setup` again |
+| `nobs: <call> failed: cannot run docker: <error>` | `docker` could not start |
+| `nobs: compose file not found: <path>` | the compose file is missing; nobs prints this line for each `docker` call it would make |
+| `nobs: Alertmanager fetch failed: <error> — skipping silence cleanup` | step 4 could not read the silences, and ends |
+| `nobs: Sonda /scenarios fetch failed: <error> — skipping cascade cleanup` | step 5 could not read the list of scenarios, and ends |
+| `nobs: Sonda /scenarios fetch failed: <error> — skipping wedge check` | step 6 could not read the list of scenarios, and ends |
+| `nobs: Loki probe failed: <error> — skipping sonda-logs check` | step 7 could not ask Loki, and ends |
+
+In these lines, `<error>` is the text of the failed call. For Infrahub it is `cannot reach <url>: <reason>` or `Infrahub answered <status> on <path>: <body>`. For Alertmanager it is `cannot reach Alertmanager at <url>: <reason>` or `Alertmanager at <url> answered <status>`. For Sonda it is `cannot reach <url>: <reason>`, `sonda answered <status>: <body>` or `sonda answered a list nobs cannot read: <reason>`. For Loki it is `cannot reach <url>: <reason>` or `Loki answered <status> on <path>: <body>`. `<reason>` is why nobs could not connect, and `<body>` is the answer as the server sent it.
+
+| Exit code | When |
+|---|---|
+| 0 | every step ran and nobs printed no warning |
+| 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
+| 1 | nobs printed at least one warning; the last line is printed all the same |
 | 2 | a flag nobs does not know |
 
 ## Setup and preflight
