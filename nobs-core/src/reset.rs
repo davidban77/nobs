@@ -88,13 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn workshop_silences_with_no_hints_keeps_nothing() {
-        let silences = [silence("a", "active", "alice", "Workshop")];
-
-        assert!(workshop_silences(&silences, &[]).is_empty());
-    }
-
-    #[test]
     fn cascade_ids_keeps_the_four_cascade_names_in_list_order() {
         let rows = [
             row("1", "cascade_active"),

@@ -3253,8 +3253,11 @@ fn run_reset(flags: ResetFlags, located: &Located, runner: &dyn Runner) -> i32 {
     if !flags.skip_sonda_logs {
         restart_sonda_logs_if_wedged(&loki, &compose, runner, &mut warnings);
     }
+    if warnings.0 > 0 {
+        return 1;
+    }
     println!("lab reset complete — both broken peers should be firing within ~60s");
-    i32::from(warnings.0 > 0)
+    0
 }
 
 fn reset_infrahub_data(
