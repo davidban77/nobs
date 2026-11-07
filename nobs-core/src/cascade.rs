@@ -399,6 +399,18 @@ fn entry(value: &Value) -> Created {
     }
 }
 
+pub fn state(body: &str) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("state")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 pub fn follow(
     ids: &[String],
     done: &[&str],
@@ -758,6 +770,15 @@ mod tests {
 
         assert_eq!(error.chars().count(), 300);
         assert!(body.starts_with(&error));
+    }
+
+    #[test]
+    fn state_is_the_text_of_the_state_field_and_unknown_for_anything_else() {
+        assert_eq!(state(r#"{"id":"a1","state":"running"}"#), "running");
+        assert_eq!(state(r#"{"state":"-"}"#), "-");
+        assert_eq!(state(r#"{"id":"a1"}"#), "unknown");
+        assert_eq!(state(r#"{"state":3}"#), "unknown");
+        assert_eq!(state("not json"), "unknown");
     }
 
     struct Round {

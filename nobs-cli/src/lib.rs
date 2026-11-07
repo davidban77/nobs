@@ -2839,20 +2839,11 @@ fn reply_body(result: Result<Reply, String>) -> Result<String, String> {
     }
 }
 
-fn scenario_state(body: &str) -> String {
-    scenario_rows(&format!(r#"{{"scenarios":[{body}]}}"#))
-        .ok()
-        .and_then(|rows| rows.into_iter().next())
-        .map(|row| row.state)
-        .filter(|state| state.as_str() != "-")
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 fn follow_scenarios(sonda: &Sonda, ids: &[String], done: &[&str]) {
     cascade::follow(
         ids,
         done,
-        |id| reply_body(sonda.show(id)).map(|body| scenario_state(&body)),
+        |id| reply_body(sonda.show(id)).map(|body| cascade::state(&body)),
         std::thread::sleep,
         |line| println!("{line}"),
         |warning| eprintln!("nobs: {warning}"),
