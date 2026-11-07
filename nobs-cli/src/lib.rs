@@ -3498,8 +3498,14 @@ fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
         return 1;
     }
     println!("Layer B — wrote {}", layer_b_file.display());
-    println!("Layer C — per-panel screenshots: not built in nobs, skipped");
     let report_file = out_dir.join("REPORT.md");
+    let tail = layers::tail(
+        code_a,
+        code_b,
+        started.elapsed().as_secs_f64(),
+        &report_file,
+    );
+    println!("{}", tail.layer_c);
     let report = layers::report(
         &workshop.title,
         &layers::stamp(SystemTime::now()),
@@ -3511,18 +3517,9 @@ fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
     if !write_output(&report_file, &report) {
         return 1;
     }
-    let code = code_a.max(code_b);
-    let verdict = if code == 0 {
-        "preflight green"
-    } else {
-        "preflight failures"
-    };
-    println!(
-        "{verdict} ({:.1}s) — Layer A exit={code_a} | Layer B exit={code_b} | Layer C skipped",
-        started.elapsed().as_secs_f64()
-    );
-    println!("report: {}", report_file.display());
-    code
+    println!("{}", tail.summary);
+    println!("{}", tail.report);
+    tail.code
 }
 
 fn docker_step(
