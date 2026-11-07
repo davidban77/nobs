@@ -3450,28 +3450,34 @@ fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
     let (waits, code_a) = layers::layer_a(
         &prometheus,
         &loki,
-        || {
-            run_flap_interface(
-                FlapInterfaceFlags {
-                    device: PREFLIGHT_DEVICE.to_string(),
-                    interface: "ethernet-1/1".to_string(),
-                    duration: "30s".to_string(),
-                    up_duration: "3s".to_string(),
-                    down_duration: "3s".to_string(),
-                    cascade_delay: "10s".to_string(),
-                    no_cascade: true,
-                    sonda_url: flags.sonda_url,
-                    loki_url: None,
-                    sonda_api_key: None,
-                    follow: false,
-                },
-                located,
-            )
+        layers::Steps {
+            flap: || {
+                run_flap_interface(
+                    FlapInterfaceFlags {
+                        device: PREFLIGHT_DEVICE.to_string(),
+                        interface: "ethernet-1/1".to_string(),
+                        duration: "30s".to_string(),
+                        up_duration: "3s".to_string(),
+                        down_duration: "3s".to_string(),
+                        cascade_delay: "10s".to_string(),
+                        no_cascade: true,
+                        sonda_url: flags.sonda_url,
+                        loki_url: None,
+                        sonda_api_key: None,
+                        follow: false,
+                    },
+                    located,
+                )
+            },
+            maintenance: || {
+                update_maintenance(&infrahub, &sonda, &sink, KINDS[0], PREFLIGHT_DEVICE, true)
+            },
         },
-        || update_maintenance(&infrahub, &sonda, &sink, KINDS[0], PREFLIGHT_DEVICE, true),
-        SystemTime::now,
-        std::thread::sleep,
-        Instant::now,
+        layers::Timing {
+            clock: SystemTime::now,
+            sleep: std::thread::sleep,
+            now: Instant::now,
+        },
         |line| println!("{line}"),
     );
     let layer_a_file = out_dir.join("layer_a.json");

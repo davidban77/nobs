@@ -167,17 +167,37 @@ fn event_count(
     Ok((count >= at_least, format!("{name} = {count}")))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn layer_a(
+pub struct Steps<F, M> {
+    pub flap: F,
+    pub maintenance: M,
+}
+
+pub struct Timing<C, S, N> {
+    pub clock: C,
+    pub sleep: S,
+    pub now: N,
+}
+
+pub fn layer_a<F, M, C, S, N>(
     prometheus: &Prometheus,
     loki: &Loki,
-    flap: impl FnOnce() -> i32,
-    maintenance: impl FnOnce() -> i32,
-    mut clock: impl FnMut() -> SystemTime,
-    mut sleep: impl FnMut(Duration),
-    mut now: impl FnMut() -> Instant,
+    steps: Steps<F, M>,
+    timing: Timing<C, S, N>,
     mut say: impl FnMut(String),
-) -> (Vec<Wait>, i32) {
+) -> (Vec<Wait>, i32)
+where
+    F: FnOnce() -> i32,
+    M: FnOnce() -> i32,
+    C: FnMut() -> SystemTime,
+    S: FnMut(Duration),
+    N: FnMut() -> Instant,
+{
+    let Steps { flap, maintenance } = steps;
+    let Timing {
+        mut clock,
+        mut sleep,
+        mut now,
+    } = timing;
     say("Layer A — wait for data shape".to_string());
     let mut waits = vec![
         wait(
@@ -810,20 +830,24 @@ mod tests {
         let (waits, code) = layer_a(
             &Prometheus::new(prometheus_stub.url()),
             &Loki::new(loki_stub.url()),
-            || {
-                lines.borrow_mut().push("<flap called>".to_string());
-                flap_code
+            Steps {
+                flap: || {
+                    lines.borrow_mut().push("<flap called>".to_string());
+                    flap_code
+                },
+                maintenance: || {
+                    lines.borrow_mut().push("<maintenance called>".to_string());
+                    maintenance_code
+                },
             },
-            || {
-                lines.borrow_mut().push("<maintenance called>".to_string());
-                maintenance_code
+            Timing {
+                clock: || UNIX_EPOCH + seconds(1_793_960_400),
+                sleep: |pause| {
+                    sleeps.borrow_mut().push(pause);
+                    clock.advance(pause);
+                },
+                now: || clock.now(),
             },
-            || UNIX_EPOCH + seconds(1_793_960_400),
-            |pause| {
-                sleeps.borrow_mut().push(pause);
-                clock.advance(pause);
-            },
-            || clock.now(),
             |line| lines.borrow_mut().push(line),
         );
 
