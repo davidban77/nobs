@@ -59,6 +59,14 @@ pub struct Peer {
     pub asn: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cycle<'a> {
+    pub duration: &'a str,
+    pub up: &'a str,
+    pub down: &'a str,
+    pub delay: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Created {
     pub id: String,
@@ -143,18 +151,20 @@ fn while_active() -> Value {
     json!({"ref": "cascade_active", "op": ">", "value": 0})
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn interface_cascade(
     prefix: &str,
     label: &str,
     device: &str,
     interface: &str,
-    duration: &str,
-    up: &str,
-    down: &str,
-    delay: &str,
+    cycle: &Cycle,
     loki_url: &str,
 ) -> Result<Value, String> {
+    let Cycle {
+        duration,
+        up,
+        down,
+        delay,
+    } = *cycle;
     let profile = profile(device)?;
     Ok(json!({
         "version": 2,
@@ -212,19 +222,20 @@ pub fn interface_cascade(
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn bgp_cascade(
     prefix: &str,
     label: &str,
     device: &str,
     peer: &Peer,
-    duration: &str,
-    up: &str,
-    down: &str,
-    delay: &str,
+    cycle: &Cycle,
 ) -> Result<Value, String> {
+    let duration = cycle.duration;
     let profile = profile(device)?;
-    let (up, down, delay) = (seconds(up)?, seconds(down)?, seconds(delay)?);
+    let (up, down, delay) = (
+        seconds(cycle.up)?,
+        seconds(cycle.down)?,
+        seconds(cycle.delay)?,
+    );
     let bgp_up = duration_text(up + delay);
     let bgp_down = duration_text((down - delay).max(0.0));
     let labels = json!({
@@ -470,16 +481,22 @@ mod tests {
         lab_vars::read(LAB).unwrap()
     }
 
+    fn cycle<'a>(up: &'a str, down: &'a str, delay: &'a str) -> Cycle<'a> {
+        Cycle {
+            duration: "4m",
+            up,
+            down,
+            delay,
+        }
+    }
+
     fn interface(device: &str) -> Result<Value, String> {
         interface_cascade(
             "packt-cascade-",
             "Packt",
             device,
             "ethernet-1/1",
-            "4m",
-            "30s",
-            "60s",
-            "10s",
+            &cycle("30s", "60s", "10s"),
             "http://loki:3001",
         )
     }
@@ -496,10 +513,7 @@ mod tests {
             "Packt",
             device,
             &peer(address, "65102"),
-            "4m",
-            up,
-            down,
-            delay,
+            &cycle(up, down, delay),
         )
     }
 
@@ -589,10 +603,7 @@ mod tests {
             "Packt",
             "srl2",
             &peer("10.1.2.1", "65101"),
-            "4m",
-            "30s",
-            "60s",
-            "10s",
+            &cycle("30s", "60s", "10s"),
         );
         assert_eq!(srl2.unwrap(), fixture(BGP_SRL2));
     }
@@ -618,10 +629,7 @@ mod tests {
             "Demo",
             "srl1",
             "e1",
-            "4m",
-            "30s",
-            "60s",
-            "10s",
+            &cycle("30s", "60s", "10s"),
             "http://loki:3001",
         )
         .unwrap();
@@ -630,10 +638,7 @@ mod tests {
             "Demo",
             "srl1",
             &peer("10.1.2.2", "65102"),
-            "4m",
-            "30s",
-            "60s",
-            "10s",
+            &cycle("30s", "60s", "10s"),
         )
         .unwrap();
 

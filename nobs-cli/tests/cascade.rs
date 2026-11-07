@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-use nobs_core::cascade::{self, Peer};
+use nobs_core::cascade::{self, Cycle, Peer};
 
 #[path = "../../tests/support/stub.rs"]
 mod stub;
@@ -21,6 +21,7 @@ const BGP_ANSWER: &str =
     r#"{"id":"e5f6a7b8-0002","name":"nobs-t-one-cascade-srl1-bgp-10-1-2-2","state":"running"}"#;
 const INCIDENT_ANSWER: &str = r#"{"id":"c0ffee00-0001","name":"incident-link-failover-srl1","state":"running","warnings":["sink is slow"]}"#;
 const FINISHED: &str = r#"{"state":"finished"}"#;
+const STOPPED: &str = r#"{"state":"stopped"}"#;
 const EMPTY_LIST: &str = r#"{"scenarios":[]}"#;
 
 struct Copy(PathBuf);
@@ -119,12 +120,17 @@ fn posted(stub: &Stub) -> Vec<String> {
         .collect()
 }
 
+const CYCLE: Cycle = Cycle {
+    duration: "4m",
+    up: "30s",
+    down: "60s",
+    delay: "10s",
+};
+
 fn interface_body(interface: &str, loki: &str) -> String {
-    cascade::interface_cascade(
-        PREFIX, TITLE, "srl1", interface, "4m", "30s", "60s", "10s", loki,
-    )
-    .unwrap()
-    .to_string()
+    cascade::interface_cascade(PREFIX, TITLE, "srl1", interface, &CYCLE, loki)
+        .unwrap()
+        .to_string()
 }
 
 fn bgp_body() -> String {
@@ -132,7 +138,7 @@ fn bgp_body() -> String {
         address: "10.1.2.2".to_string(),
         asn: "65102".to_string(),
     };
-    cascade::bgp_cascade(PREFIX, TITLE, "srl1", &peer, "4m", "30s", "60s", "10s")
+    cascade::bgp_cascade(PREFIX, TITLE, "srl1", &peer, &CYCLE)
         .unwrap()
         .to_string()
 }
@@ -316,8 +322,9 @@ fn follow_polls_after_a_sleep_until_every_scenario_is_done_and_does_not_print_th
     let stub = Stub::start(&[
         ("POST", "/scenarios", 201, INTERFACE_ANSWER),
         ("POST", "/scenarios", 201, BGP_ANSWER),
-        ("GET", "/scenarios/*", 200, FINISHED),
-        ("GET", "/scenarios/*", 200, r#"{"state":"stopped"}"#),
+        ("GET", "/scenarios/a1b2c3d4-0001", 200, STOPPED),
+        ("GET", "/scenarios/a1b2c3d4-0001", 200, FINISHED),
+        ("GET", "/scenarios/e5f6a7b8-0002", 200, FINISHED),
     ]);
     let copy = copy_for("flap-follow", &stub);
     let started = Instant::now();
@@ -329,7 +336,7 @@ fn follow_polls_after_a_sleep_until_every_scenario_is_done_and_does_not_print_th
     let text = stdout(&output);
     assert!(
         text.ends_with(
-            "  a1b2c3d4 state=finished\n  e5f6a7b8 state=stopped\nall cascade scenarios finished; baselines back to running\n"
+            "  a1b2c3d4 state=stopped\n  e5f6a7b8 state=finished\nall cascade scenarios finished; baselines back to running\n"
         ),
         "{text}"
     );
@@ -460,9 +467,10 @@ fn a_failed_incident_post_says_so_with_the_answer() {
 }
 
 #[test]
-fn incident_follow_waits_for_finished_and_does_not_print_the_summary() {
+fn incident_follow_waits_for_finished_only_and_does_not_print_the_summary() {
     let stub = Stub::start(&[
         ("POST", "/scenarios", 201, INCIDENT_ANSWER),
+        ("GET", "/scenarios/*", 200, STOPPED),
         ("GET", "/scenarios/*", 200, FINISHED),
     ]);
     let copy = copy_for("incident-follow", &stub);
@@ -470,14 +478,22 @@ fn incident_follow_waits_for_finished_and_does_not_print_the_summary() {
 
     let output = run(&copy, &["incident", "--follow"]);
 
-    assert!(started.elapsed() >= Duration::from_secs(5));
+    assert!(started.elapsed() >= Duration::from_secs(10));
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let text = stdout(&output);
     assert!(
-        text.ends_with("  c0ffee00 state=finished\nall scenarios completed\n"),
+        text.ends_with(
+            "  c0ffee00 state=stopped\n  c0ffee00 state=finished\nall scenarios completed\n"
+        ),
         "{text}"
     );
     assert!(!text.contains("registered"), "{text}");
+    let polled = stub
+        .requests()
+        .iter()
+        .filter(|request| request.method == "GET")
+        .count();
+    assert_eq!(polled, 2);
 }
 
 #[test]

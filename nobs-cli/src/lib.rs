@@ -2821,12 +2821,14 @@ fn run_try_it(flags: TryItFlags, located: &Located) -> i32 {
     0
 }
 
-fn cascade_client(url: Option<String>, key: Option<String>) -> Sonda {
+fn cascade_client(
+    url: Option<String>,
+    key: Option<String>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Sonda {
     let default = Urls::defaults().sonda;
-    let server = service_address(url, ("SONDA_SERVER_URL", &default), |name| {
-        std::env::var(name).ok()
-    });
-    let key = given(key).or_else(|| given(std::env::var("SONDA_API_KEY").ok()));
+    let server = service_address(url, ("SONDA_SERVER_URL", &default), &lookup);
+    let key = given(key).or_else(|| given(lookup("SONDA_API_KEY")));
     Sonda::new(server).api_key(key)
 }
 
@@ -2871,23 +2873,20 @@ fn run_flap_interface(flags: FlapInterfaceFlags, located: &Located) -> i32 {
         std::env::var(name).ok()
     });
     let (prefix, title) = (&workshop.cascade_prefix, &workshop.title);
-    let interface_body = match cascade::interface_cascade(
-        prefix,
-        title,
-        &device,
-        &interface,
-        &duration,
-        &up_duration,
-        &down_duration,
-        &cascade_delay,
-        &sink,
-    ) {
-        Ok(body) => body,
-        Err(reason) => {
-            eprintln!("nobs: {reason}");
-            return 1;
-        }
+    let cycle = cascade::Cycle {
+        duration: &duration,
+        up: &up_duration,
+        down: &down_duration,
+        delay: &cascade_delay,
     };
+    let interface_body =
+        match cascade::interface_cascade(prefix, title, &device, &interface, &cycle, &sink) {
+            Ok(body) => body,
+            Err(reason) => {
+                eprintln!("nobs: {reason}");
+                return 1;
+            }
+        };
     let peers = if no_cascade {
         Vec::new()
     } else {
@@ -2903,16 +2902,7 @@ fn run_flap_interface(flags: FlapInterfaceFlags, located: &Located) -> i32 {
         interface_body.to_string(),
     )];
     for peer in &peers {
-        let body = match cascade::bgp_cascade(
-            prefix,
-            title,
-            &device,
-            peer,
-            &duration,
-            &up_duration,
-            &down_duration,
-            &cascade_delay,
-        ) {
+        let body = match cascade::bgp_cascade(prefix, title, &device, peer, &cycle) {
             Ok(body) => body,
             Err(reason) => {
                 eprintln!("nobs: {reason}");
@@ -2941,7 +2931,7 @@ fn run_flap_interface(flags: FlapInterfaceFlags, located: &Located) -> i32 {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let sonda = cascade_client(sonda_url, sonda_api_key);
+    let sonda = cascade_client(sonda_url, sonda_api_key, |name| std::env::var(name).ok());
     let url = sonda.url();
     println!(
         "Posting inversion cascade for {device}:{interface} (peers: {summary}, duration {duration}, cycle {up_duration} up / {down_duration} down) to {url}/scenarios"
@@ -3023,7 +3013,9 @@ fn run_incident(flags: IncidentFlags) -> i32 {
         &duration,
         &prom,
     );
-    let sonda = cascade_client(flags.sonda_url, flags.sonda_api_key);
+    let sonda = cascade_client(flags.sonda_url, flags.sonda_api_key, |name| {
+        std::env::var(name).ok()
+    });
     let url = sonda.url();
     println!(
         "Posting {} cascade for {} ({} → {}, duration {duration}) to {url}/scenarios",
@@ -3079,7 +3071,7 @@ fn run_incident(flags: IncidentFlags) -> i32 {
 
 fn run_scenarios(flags: ScenariosFlags) -> i32 {
     answer(
-        cascade_client(flags.sonda_url, None).list(),
+        cascade_client(flags.sonda_url, None, |name| std::env::var(name).ok()).list(),
         print_scenarios,
     )
 }
@@ -3702,6 +3694,25 @@ mod tests {
                 "http://localhost:8085".to_string(),
                 "http://loki:3001".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn the_cascade_client_address_is_the_flag_then_the_variable_then_port_8085() {
+        let variable =
+            |name: &str| (name == "SONDA_SERVER_URL").then(|| "http://var-sonda".to_string());
+
+        assert_eq!(
+            cascade_client(None, None, |_| None).url(),
+            "http://localhost:8085"
+        );
+        assert_eq!(
+            cascade_client(None, None, variable).url(),
+            "http://var-sonda"
+        );
+        assert_eq!(
+            cascade_client(Some("http://flag-sonda".to_string()), None, variable).url(),
+            "http://flag-sonda"
         );
     }
 

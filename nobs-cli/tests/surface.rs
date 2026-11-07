@@ -177,6 +177,53 @@ fn the_workshop_status_help_shows_the_seven_address_flags() {
     }
 }
 
+#[test]
+fn the_cascade_command_help_pages_name_every_carried_flag_with_its_short_form() {
+    let pages: [(&str, &[&str]); 3] = [
+        (
+            "flap-interface",
+            &[
+                "-d, --device <DEVICE>",
+                "-i, --interface <INTERFACE>",
+                "--duration <DURATION>",
+                "--up-duration <DURATION>",
+                "--down-duration <DURATION>",
+                "--cascade-delay <DURATION>",
+                "--no-cascade",
+                "--sonda-url <URL>",
+                "--loki-url <URL>",
+                "--sonda-api-key <KEY>",
+                "--follow",
+            ],
+        ),
+        (
+            "incident",
+            &[
+                "-d, --device <DEVICE>",
+                "--primary-interface <INTERFACE>",
+                "--backup-interface <INTERFACE>",
+                "-k, --kind <KIND>",
+                "--duration <DURATION>",
+                "--sonda-url <URL>",
+                "--prom-url <URL>",
+                "--sonda-api-key <KEY>",
+                "--follow",
+            ],
+        ),
+        ("scenarios", &["--sonda-url <URL>"]),
+    ];
+
+    for (command, flags) in pages {
+        let help = workshop_help(&["nobs-t-one", command, "--help"]);
+        for flag in flags {
+            assert!(
+                help.lines().any(|line| line.trim_start().starts_with(flag)),
+                "{command} {flag}\n{help}"
+            );
+        }
+    }
+}
+
 fn workshop_help(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
         .args(args)
