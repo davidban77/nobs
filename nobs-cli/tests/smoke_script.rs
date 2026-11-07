@@ -51,11 +51,17 @@ impl Fixture {
         write_executable(
             &fixture.dir.join("bin/docker"),
             "#!/bin/sh\n\
-             case \"$1\" in\n\
-             ps) if [ -f containers ]; then cat containers; fi ;;\n\
-             volume) if [ -f volumes ]; then cat volumes; fi ;;\n\
-             network) if [ -f networks ]; then cat networks; fi ;;\n\
+             kind=\"$1\"\n\
+             case \"$*\" in *--filter*) ;; *) kind=\"all-$1\" ;; esac\n\
+             case \"$kind\" in\n\
+             ps) file=containers ;;\n\
+             volume) file=volumes ;;\n\
+             network) file=networks ;;\n\
+             all-ps) file=all-containers ;;\n\
+             all-network) file=all-networks ;;\n\
              esac\n\
+             if [ -f \"$file\" ]; then cat \"$file\"; fi\n\
+             if [ -f \"exit-docker-$kind\" ]; then exit \"$(cat \"exit-docker-$kind\")\"; fi\n\
              if [ -f exit-docker ]; then exit \"$(cat exit-docker)\"; fi\n\
              exit 0\n",
         );
@@ -91,7 +97,12 @@ impl Fixture {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("nobs.toml"),
-            format!("project = \"{project}\"\nname = \"{name}\"\n"),
+            format!("project = \"{project}\"\nname = \"{name}\"\nnetwork = \"{project}-net\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("docker-compose.yml"),
+            "services:\n  web:\n    container_name: fixed-web\n  db:\n    container_name: \"fixed-db\"\n  old:\n    # container_name: fixed-old\n",
         )
         .unwrap();
         std::fs::write(dir.join(".env"), "INFRAHUB_API_TOKEN=t\n").unwrap();
@@ -512,6 +523,134 @@ fn a_nobs_toml_without_a_key_refuses_the_start() {
     f.set("one", "nobs.toml", "project = \"nobs-t-smoke\"\n");
     let out = f.run(&["one"]);
     f.assert_refused(&out, "smoke: one: no name in nobs.toml; refusing to start");
+    f.set(
+        "one",
+        "nobs.toml",
+        "project = \"nobs-t-smoke\"\nname = \"one\"\n",
+    );
+    let out = f.run(&["one"]);
+    f.assert_refused(
+        &out,
+        "smoke: one: no network in nobs.toml; refusing to start",
+    );
+}
+
+#[test]
+fn containers_with_the_names_the_compose_file_fixes_refuse_the_start() {
+    let f = Fixture::new("fixed-names");
+    f.workshop("one", "nobs-t-smoke");
+    f.set(
+        "one",
+        "all-containers",
+        "other\nfixed-web\nfixed-web2\nfixed-db\n",
+    );
+    let out = f.run(&["one"]);
+    f.assert_refused(
+        &out,
+        "smoke: one: containers named by the compose file exist (fixed-web, fixed-db); refusing to start",
+    );
+}
+
+#[test]
+fn a_container_named_like_a_commented_out_name_does_not_refuse_the_start() {
+    let f = Fixture::new("commented-name");
+    f.workshop("one", "nobs-t-smoke");
+    f.set("one", "all-containers", "fixed-old\n");
+    let out = f.run(&["one"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(f.calls(), green_calls());
+}
+
+#[test]
+fn the_network_named_by_the_setting_refuses_the_start() {
+    let f = Fixture::new("network-exists");
+    f.workshop("one", "nobs-t-smoke");
+    f.set("one", "all-networks", "bridge\nnobs-t-smoke-net\n");
+    let out = f.run(&["one"]);
+    f.assert_refused(
+        &out,
+        "smoke: one: network nobs-t-smoke-net exists; refusing to start",
+    );
+}
+
+#[test]
+fn a_plain_docker_listing_that_fails_refuses_the_start() {
+    for (kind, line) in [
+        (
+            "all-ps",
+            "smoke: one: docker ps failed (exit 1); refusing to start",
+        ),
+        (
+            "all-network",
+            "smoke: one: docker network ls failed (exit 1); refusing to start",
+        ),
+    ] {
+        let f = Fixture::new(&format!("plain-listing-{kind}"));
+        f.workshop("one", "nobs-t-smoke");
+        f.set("one", &format!("exit-docker-{kind}"), "1");
+        let out = f.run(&["one"]);
+        f.assert_refused(&out, line);
+    }
+}
+
+#[test]
+fn a_relative_root_and_a_relative_nobs_work_over_two_workshops() {
+    let f = Fixture::new("relative");
+    f.workshop("one", "nobs-t-smoke");
+    f.workshop("two", "nobs-t-smoke-two");
+    let base = f.dir.parent().unwrap();
+    let folder = f.dir.file_name().unwrap();
+    let out = f
+        .command()
+        .current_dir(base)
+        .arg(folder)
+        .args(["one", "two"])
+        .env("NOBS", Path::new(folder).join("bin/nobs"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(
+        lines(&out).last().map(String::as_str),
+        Some("smoke: 2 of 2 workshops ok")
+    );
+    assert_eq!(f.calls().len(), 12);
+}
+
+#[test]
+fn a_failing_logs_call_does_not_stop_the_other_logs_or_destroy() {
+    let f = Fixture::new("logs-fail");
+    f.workshop("one", "nobs-t-smoke");
+    f.set("one", "exit-up", "1");
+    f.set("one", "exit-logs", "1");
+    let out = f.run(&["one"]);
+    assert_eq!(out.status.code(), Some(1));
+    let mut expected = calls_of(&["one setup", "one up"]);
+    expected.extend(logs_calls());
+    expected.push("one destroy".to_string());
+    assert_eq!(f.calls(), expected);
+}
+
+#[test]
+fn no_workshop_argument_runs_autocon5_then_packt() {
+    let f = Fixture::new("default-workshops");
+    f.workshop("autocon5", "nobs-t-smoke-a");
+    f.workshop("packt", "nobs-t-smoke-p");
+    let out = f.run(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(
+        lines(&out).last().map(String::as_str),
+        Some("smoke: 2 of 2 workshops ok")
+    );
+    let mut expected: Vec<String> = green_calls()
+        .iter()
+        .map(|call| call.replacen("one", "autocon5", 1))
+        .collect();
+    expected.extend(
+        green_calls()
+            .iter()
+            .map(|call| call.replacen("one", "packt", 1)),
+    );
+    assert_eq!(f.calls(), expected);
 }
 
 #[test]
