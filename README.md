@@ -991,7 +991,7 @@ Layer A goes through these steps in order. A wait asks again every 4 seconds, un
 | 8 | asks Loki for the lines of `srl1` with the process `UPDOWN` and a text that matches `Interface .* changed state`, in the last 5 minutes, until there are at least 4 | 30 seconds |
 | 9 | asks Loki for `{device="srl1", source="workshop-trigger", event="config-push"}` in the last 5 minutes until there is at least 1 line | 30 seconds |
 
-Layer A exits with 1 when a wait failed, or when step 4 or step 5 exited with a code other than 0. Step 4 and step 5 print their own `nobs:` line when they fail, and nobs prints no other line for them.
+Layer A exits with 1 when a wait failed, or when step 4 or step 5 exited with a code other than 0, and the summary line then says `preflight failures`. Step 4 and step 5 print their own `nobs:` line when they fail, and nobs prints no other line for them.
 
 Layer B reads the dashboard files in the order of their names. It takes every panel that is not a `row`, also the panels inside a row, in the order of the file. When the targets of a panel hold `$device` or `${device}`, nobs asks for the panel twice, with the device `srl1` and then with `srl2`. Otherwise it asks once, and prints the device as `(no template)` and uses `srl1` in the query. For each target, nobs sends one `POST /api/ds/query` to Grafana, for the last 5 minutes, and waits at most 15 seconds for the answer. Grafana answers with frames: a frame is one block of data, and a row is one value in its first column. A target is good when its answer has at least one row. A panel passes when one of its targets is good, fails when none is, and is skipped when it has no target. Layer B exits with 1 when a panel failed, and with 0 otherwise.
 
@@ -1100,8 +1100,6 @@ The whole run takes up to about 13 minutes on a cold stack: three waits of up to
 | 0 | both layers passed |
 | 1 | a wait failed, a panel failed, step 4 or step 5 of layer A failed, or one of the four `nobs:` lines above was printed |
 | 2 | a flag nobs does not know, `--with-c` included |
-
-A failed `flap-interface` step or a failed `maintenance` step of layer A makes the run fail, and the summary line then says `preflight failures`.
 
 ## Setup and preflight
 

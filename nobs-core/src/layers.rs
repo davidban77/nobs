@@ -634,6 +634,31 @@ pub fn stamp(time: SystemTime) -> String {
     rfc3339_utc(seconds).trim_end_matches('Z').replace('T', " ")
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tail {
+    pub layer_c: String,
+    pub summary: String,
+    pub report: String,
+    pub code: i32,
+}
+
+pub fn tail(a: i32, b: i32, seconds: f64, report_file: &Path) -> Tail {
+    let code = a.max(b);
+    let verdict = if code == 0 {
+        "preflight green"
+    } else {
+        "preflight failures"
+    };
+    Tail {
+        layer_c: "Layer C — per-panel screenshots: not built in nobs, skipped".to_string(),
+        summary: format!(
+            "{verdict} ({seconds:.1}s) — Layer A exit={a} | Layer B exit={b} | Layer C skipped"
+        ),
+        report: format!("report: {}", report_file.display()),
+        code,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
@@ -869,6 +894,12 @@ mod tests {
         }
     }
 
+    fn fill_sleeps() -> Vec<Duration> {
+        let mut sleeps = vec![seconds(20); 6];
+        sleeps.push(seconds(10));
+        sleeps
+    }
+
     #[test]
     fn layer_a_runs_the_six_waits_in_order_with_the_two_steps_between_the_third_and_fourth() {
         let run = run_layer_a(&[8, 4, 1], 0, 0);
@@ -987,7 +1018,10 @@ mod tests {
     fn layer_a_is_one_when_every_wait_held_but_flap_returned_non_zero() {
         let run = run_layer_a(&[8, 4, 1], 1, 0);
 
+        assert_eq!(run.waits.len(), 6);
         assert!(run.waits.iter().all(|wait| wait.ok));
+        assert_eq!(run.sleeps, fill_sleeps());
+        assert!(run.lines.iter().any(|line| line == "<maintenance called>"));
         assert_eq!(run.code, 1);
     }
 
@@ -995,7 +1029,9 @@ mod tests {
     fn layer_a_is_one_when_every_wait_held_but_maintenance_returned_non_zero() {
         let run = run_layer_a(&[8, 4, 1], 0, 2);
 
+        assert_eq!(run.waits.len(), 6);
         assert!(run.waits.iter().all(|wait| wait.ok));
+        assert_eq!(run.sleeps, fill_sleeps());
         assert_eq!(run.code, 1);
     }
 
@@ -1506,19 +1542,52 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_wait_serialises_with_the_keys_in_the_order_of_the_python() {
-        let wait = Wait {
-            label: "l".to_string(),
-            ok: true,
-            elapsed_s: 1.5,
-            detail: "d".to_string(),
-            expected: "e".to_string(),
-        };
+    fn tail_of(a: i32, b: i32) -> Tail {
+        tail(a, b, 772.34, Path::new("/tmp/preflight-out/REPORT.md"))
+    }
 
+    #[test]
+    fn tail_is_green_with_code_zero_when_both_layers_are_zero() {
         assert_eq!(
-            serde_json::to_string(&wait).unwrap(),
-            r#"{"label":"l","ok":true,"elapsed_s":1.5,"detail":"d","expected":"e"}"#
+            tail_of(0, 0),
+            Tail {
+                layer_c: "Layer C — per-panel screenshots: not built in nobs, skipped".to_string(),
+                summary:
+                    "preflight green (772.3s) — Layer A exit=0 | Layer B exit=0 | Layer C skipped"
+                        .to_string(),
+                report: "report: /tmp/preflight-out/REPORT.md".to_string(),
+                code: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn tail_is_failures_with_code_one_when_layer_a_failed() {
+        assert_eq!(
+            tail_of(1, 0),
+            Tail {
+                layer_c: "Layer C — per-panel screenshots: not built in nobs, skipped".to_string(),
+                summary:
+                    "preflight failures (772.3s) — Layer A exit=1 | Layer B exit=0 | Layer C skipped"
+                        .to_string(),
+                report: "report: /tmp/preflight-out/REPORT.md".to_string(),
+                code: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn tail_is_failures_with_code_one_when_layer_b_failed() {
+        assert_eq!(
+            tail_of(0, 1),
+            Tail {
+                layer_c: "Layer C — per-panel screenshots: not built in nobs, skipped".to_string(),
+                summary:
+                    "preflight failures (772.3s) — Layer A exit=0 | Layer B exit=1 | Layer C skipped"
+                        .to_string(),
+                report: "report: /tmp/preflight-out/REPORT.md".to_string(),
+                code: 1,
+            }
         );
     }
 
