@@ -19,16 +19,20 @@ join_lines() {
     printf '%s' "$out"
 }
 
+strip_quotes() {
+    sed -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
+}
+
 read_settings() {
     PROJECT=""
     NAME=""
-    NETWORK=""
     FIXED=""
+    NETWORKS=""
     if cd "$ROOT/workshops/$WS" 2>/dev/null; then
         PROJECT=$(grep -m 1 '^project = "' nobs.toml 2>/dev/null | sed 's/^project = "\([^"]*\)".*$/\1/')
         NAME=$(grep -m 1 '^name = "' nobs.toml 2>/dev/null | sed 's/^name = "\([^"]*\)".*$/\1/')
-        NETWORK=$(grep -m 1 '^network = "' nobs.toml 2>/dev/null | sed 's/^network = "\([^"]*\)".*$/\1/')
-        FIXED=$(sed -n 's/^[[:space:]]*container_name:[[:space:]]*//p' docker-compose.yml 2>/dev/null | sed -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")
+        FIXED=$(sed -n 's/^[[:space:]]*container_name:[[:space:]]*//p' docker-compose.yml 2>/dev/null | strip_quotes)
+        NETWORKS=$(sed -n '/^networks:/,/^[^[:space:]#]/s/^[[:space:]][[:space:]]*name:[[:space:]]*//p' docker-compose.yml 2>/dev/null | strip_quotes)
     fi
     if [ -z "$PROJECT" ]; then
         say "no project in nobs.toml; refusing to start"
@@ -36,10 +40,6 @@ read_settings() {
     fi
     if [ -z "$NAME" ]; then
         say "no name in nobs.toml; refusing to start"
-        return 1
-    fi
-    if [ -z "$NETWORK" ]; then
-        say "no network in nobs.toml; refusing to start"
         return 1
     fi
 }
@@ -65,14 +65,20 @@ guard() {
     fi
 }
 
-guard_fixed_names() {
-    local fixed found=""
-    listing ps docker ps -a --format '{{.Names}}' || return 1
-    for fixed in $FIXED; do
-        if printf '%s\n' "$LISTED" | grep -Fxq -- "$fixed"; then
-            found=${found:+$found, }$fixed
+listed_among() {
+    local wanted found=""
+    for wanted in $1; do
+        if printf '%s\n' "$LISTED" | grep -Fxq -- "$wanted"; then
+            found=${found:+$found, }$wanted
         fi
     done
+    printf '%s' "$found"
+}
+
+guard_fixed_names() {
+    local found
+    listing ps docker ps -a --format '{{.Names}}' || return 1
+    found=$(listed_among "$FIXED")
     if [ -n "$found" ]; then
         say "containers named by the compose file exist ($found); refusing to start"
         return 1
@@ -80,9 +86,11 @@ guard_fixed_names() {
 }
 
 guard_network() {
+    local found
     listing "network ls" docker network ls --format '{{.Name}}' || return 1
-    if printf '%s\n' "$LISTED" | grep -Fxq -- "$NETWORK"; then
-        say "network $NETWORK exists; refusing to start"
+    found=$(listed_among "$NETWORKS")
+    if [ -n "$found" ]; then
+        say "network $found exists; refusing to start"
         return 1
     fi
 }
