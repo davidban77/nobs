@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
+use nobs_core::cascade;
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::cycle::{self, decision_record, Group};
@@ -38,6 +39,8 @@ const SERVICES_HELP: &str = "Services to act on; all of them when none is given"
 const DASH: &str = "—";
 
 const LOKI_SINK: &str = "http://loki:3001";
+
+const PROM_REMOTE_WRITE: &str = "http://prometheus:9090/api/v1/write";
 
 const LOKI_ADDRESS: (&str, &str) = ("LOKI_URL", loki::DEFAULT_URL);
 
@@ -265,6 +268,172 @@ pub enum WorkshopCommand {
         #[command(flatten)]
         flags: TryItFlags,
     },
+    #[command(
+        about = "Flap an interface in Sonda, and the BGP sessions of its healthy peers with it"
+    )]
+    FlapInterface {
+        #[command(flatten)]
+        flags: FlapInterfaceFlags,
+    },
+    #[command(
+        about = "Start a link-failover incident in Sonda: a link flaps and its backup link fills up"
+    )]
+    Incident {
+        #[command(flatten)]
+        flags: IncidentFlags,
+    },
+    #[command(about = "List the scenarios registered with sonda-server as a table")]
+    Scenarios {
+        #[command(flatten)]
+        flags: ScenariosFlags,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct FlapInterfaceFlags {
+    #[arg(
+        short,
+        long,
+        value_name = "DEVICE",
+        default_value = "srl1",
+        help = "Device name (e.g. srl1)"
+    )]
+    device: String,
+    #[arg(
+        short,
+        long,
+        value_name = "INTERFACE",
+        default_value = "ethernet-1/1",
+        help = "Interface name (e.g. ethernet-1/1)"
+    )]
+    interface: String,
+    #[arg(
+        long,
+        value_name = "DURATION",
+        default_value = "4m",
+        help = "Bounded lifetime of the cascade (sonda duration string, e.g. 4m)"
+    )]
+    duration: String,
+    #[arg(
+        long,
+        value_name = "DURATION",
+        default_value = "30s",
+        help = "Time the interface stays up before each down phase (sonda duration string)"
+    )]
+    up_duration: String,
+    #[arg(
+        long,
+        value_name = "DURATION",
+        default_value = "60s",
+        help = "Time the interface stays down in each cycle; the default is long enough for the alert BgpSessionNotUp to fire"
+    )]
+    down_duration: String,
+    #[arg(
+        long,
+        value_name = "DURATION",
+        default_value = "10s",
+        help = "Wait between the interface going down and BGP going down"
+    )]
+    cascade_delay: String,
+    #[arg(
+        long,
+        help = "Flap the interface only and leave BGP up, to fire the alert PeerInterfaceFlapping alone"
+    )]
+    no_cascade: bool,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
+    )]
+    sonda_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Loki that Sonda writes the UPDOWN log lines to; nobs looks at --loki-url, then SONDA_LOKI_SINK_URL, then http://loki:3001"
+    )]
+    loki_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "KEY",
+        help = "Key for sonda-server; nobs looks at --sonda-api-key, then SONDA_API_KEY"
+    )]
+    sonda_api_key: Option<String>,
+    #[arg(
+        long,
+        help = "Poll the cascade scenarios until each one is finished or stopped"
+    )]
+    follow: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct IncidentFlags {
+    #[arg(
+        short,
+        long,
+        value_name = "DEVICE",
+        default_value = "srl1",
+        help = "Lab device label applied to every signal"
+    )]
+    device: String,
+    #[arg(
+        long,
+        value_name = "INTERFACE",
+        default_value = "ethernet-1/10",
+        help = "Interface that flaps first"
+    )]
+    primary_interface: String,
+    #[arg(
+        long,
+        value_name = "INTERFACE",
+        default_value = "ethernet-1/1",
+        help = "Interface that takes the load while the primary is down"
+    )]
+    backup_interface: String,
+    #[arg(
+        short,
+        long,
+        value_name = "KIND",
+        default_value = "link-failover",
+        help = "Kind of incident; link-failover is the only one"
+    )]
+    kind: String,
+    #[arg(
+        long,
+        value_name = "DURATION",
+        default_value = "3m",
+        help = "Scenario duration in sonda's format (e.g. `2m`, `5m`, `30s`). Bare integers are treated as seconds"
+    )]
+    duration: String,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
+    )]
+    sonda_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address that Sonda sends the metrics to by Prometheus remote write; nobs looks at --prom-url, then SONDA_PROM_REMOTE_WRITE_URL, then http://prometheus:9090/api/v1/write"
+    )]
+    prom_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "KEY",
+        help = "Key for sonda-server; nobs looks at --sonda-api-key, then SONDA_API_KEY"
+    )]
+    sonda_api_key: Option<String>,
+    #[arg(long, help = "Poll the running scenario(s) until completion")]
+    follow: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ScenariosFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
+    )]
+    sonda_url: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -941,6 +1110,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             "INFRAHUB_API_TOKEN",
             "SONDA_SERVER_URL",
             "SONDA_LOKI_SINK_URL",
+            "SONDA_PROM_REMOTE_WRITE_URL",
             "SONDA_API_KEY",
         ]);
     }
@@ -1408,6 +1578,9 @@ fn run_workshop_command(
         WorkshopCommand::Cycle { flags } => run_cycle(flags, located),
         WorkshopCommand::Page { flags } => run_page(flags, located),
         WorkshopCommand::TryIt { flags } => run_try_it(flags, located),
+        WorkshopCommand::FlapInterface { flags } => run_flap_interface(flags, located),
+        WorkshopCommand::Incident { flags } => run_incident(flags),
+        WorkshopCommand::Scenarios { flags } => run_scenarios(flags),
     }
 }
 
@@ -2653,6 +2826,269 @@ fn run_try_it(flags: TryItFlags, located: &Located) -> i32 {
     0
 }
 
+fn cascade_client(
+    url: Option<String>,
+    key: Option<String>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Sonda {
+    let default = Urls::defaults().sonda;
+    let server = service_address(url, ("SONDA_SERVER_URL", &default), &lookup);
+    let key = given(key).or_else(|| given(lookup("SONDA_API_KEY")));
+    Sonda::new(server).api_key(key)
+}
+
+fn reply_body(result: Result<Reply, String>) -> Result<String, String> {
+    match result {
+        Ok(reply) if reply.status >= 400 => {
+            Err(format!("sonda answered {}: {}", reply.status, reply.body))
+        }
+        other => other.map(|reply| reply.body),
+    }
+}
+
+fn follow_scenarios(sonda: &Sonda, ids: &[String], done: &[&str]) {
+    cascade::follow(
+        ids,
+        done,
+        |id| reply_body(sonda.show(id)).map(|body| cascade::state(&body)),
+        std::thread::sleep,
+        |line| println!("{line}"),
+        |warning| eprintln!("nobs: {warning}"),
+    );
+}
+
+fn run_flap_interface(flags: FlapInterfaceFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let FlapInterfaceFlags {
+        device,
+        interface,
+        duration,
+        up_duration,
+        down_duration,
+        cascade_delay,
+        no_cascade,
+        sonda_url,
+        loki_url,
+        sonda_api_key,
+        follow,
+    } = flags;
+    let sink = service_address(loki_url, ("SONDA_LOKI_SINK_URL", LOKI_SINK), |name| {
+        std::env::var(name).ok()
+    });
+    let (prefix, title) = (&workshop.cascade_prefix, &workshop.title);
+    let cycle = cascade::Cycle {
+        duration: &duration,
+        up: &up_duration,
+        down: &down_duration,
+        delay: &cascade_delay,
+    };
+    let interface_body =
+        match cascade::interface_cascade(prefix, title, &device, &interface, &cycle, &sink) {
+            Ok(body) => body,
+            Err(reason) => {
+                eprintln!("nobs: {reason}");
+                return 1;
+            }
+        };
+    let peers = if no_cascade {
+        Vec::new()
+    } else {
+        let lab_file = located.dir.join("lab_vars.yml");
+        let Some(lab) = read_input(&lab_file, "lab_vars", lab_vars::read) else {
+            return 1;
+        };
+        cascade::peers_on_link(&lab, &device, &interface)
+    };
+    let mut posts = vec![(
+        "interface".to_string(),
+        cascade::interface_name(prefix, &device, &interface),
+        interface_body.to_string(),
+    )];
+    for peer in &peers {
+        let body = match cascade::bgp_cascade(prefix, title, &device, peer, &cycle) {
+            Ok(body) => body,
+            Err(reason) => {
+                eprintln!("nobs: {reason}");
+                return 1;
+            }
+        };
+        posts.push((
+            format!("bgp {}", peer.address),
+            cascade::bgp_name(prefix, &device, &peer.address),
+            body.to_string(),
+        ));
+    }
+    if !no_cascade && peers.is_empty() {
+        eprintln!(
+            "nobs: no healthy BGP peers mapped to {device}:{interface}; running interface flap only."
+        );
+    }
+    let summary = if no_cascade {
+        "no-cascade".to_string()
+    } else if peers.is_empty() {
+        "interface only".to_string()
+    } else {
+        peers
+            .iter()
+            .map(|peer| peer.address.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let sonda = cascade_client(sonda_url, sonda_api_key, |name| std::env::var(name).ok());
+    let url = sonda.url();
+    println!(
+        "Posting inversion cascade for {device}:{interface} (peers: {summary}, duration {duration}, cycle {up_duration} up / {down_duration} down) to {url}/scenarios"
+    );
+    let mut lines = vec![["CASCADE", "SCENARIO_NAME", "ENTRIES"].map(String::from)];
+    let mut ids = Vec::new();
+    let mut total = 0;
+    for (kind, name, body) in &posts {
+        let answer = match reply_body(sonda.post_scenario(body.as_bytes())) {
+            Ok(answer) => answer,
+            Err(error) => {
+                eprintln!("nobs: POST {name} failed: {error}");
+                return 1;
+            }
+        };
+        let entries = match cascade::created(&answer) {
+            Ok((entries, _)) => entries,
+            Err(shape) => {
+                eprintln!("nobs: unexpected response shape: {shape}");
+                return 1;
+            }
+        };
+        let short = entries
+            .iter()
+            .map(|entry| entry.id.chars().take(8).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push([
+            kind.clone(),
+            name.clone(),
+            if short.is_empty() {
+                DASH.to_string()
+            } else {
+                short
+            },
+        ]);
+        total += entries.len();
+        ids.extend(
+            entries
+                .into_iter()
+                .map(|entry| entry.id)
+                .filter(|id| !id.is_empty()),
+        );
+    }
+    println!("{}", pad_lines(&lines));
+    if follow {
+        follow_scenarios(&sonda, &ids, &["finished", "stopped"]);
+        println!("all cascade scenarios finished or stopped; baselines back to running");
+        return 0;
+    }
+    println!(
+        "registered {total} scenario(s) across {} cascade body(s); duration {duration}",
+        posts.len()
+    );
+    println!("  Baselines auto-resume when cascade reaches `finished` (~{duration}).");
+    println!("  Inspect:  curl {url}/scenarios");
+    println!("  Stop early: curl -X DELETE {url}/scenarios/<id>");
+    0
+}
+
+fn run_incident(flags: IncidentFlags) -> i32 {
+    if flags.kind != "link-failover" {
+        eprintln!(
+            "nobs: unknown kind {}; supported: link-failover",
+            flags.kind
+        );
+        return 1;
+    }
+    let duration = cascade::with_unit(&flags.duration);
+    let prom = service_address(
+        flags.prom_url,
+        ("SONDA_PROM_REMOTE_WRITE_URL", PROM_REMOTE_WRITE),
+        |name| std::env::var(name).ok(),
+    );
+    let body = cascade::link_failover(
+        &flags.device,
+        &flags.primary_interface,
+        &flags.backup_interface,
+        &duration,
+        &prom,
+    );
+    let sonda = cascade_client(flags.sonda_url, flags.sonda_api_key, |name| {
+        std::env::var(name).ok()
+    });
+    let url = sonda.url();
+    println!(
+        "Posting {} cascade for {} ({} → {}, duration {duration}) to {url}/scenarios",
+        flags.kind, flags.device, flags.primary_interface, flags.backup_interface
+    );
+    let answer = match reply_body(sonda.post_scenario(body.to_string().as_bytes())) {
+        Ok(answer) => answer,
+        Err(error) => {
+            eprintln!("nobs: POST /scenarios failed: {error}");
+            return 1;
+        }
+    };
+    let read = cascade::created(&answer).and_then(|(entries, warnings)| {
+        if entries.is_empty() {
+            Err(answer.chars().take(300).collect())
+        } else {
+            Ok((entries, warnings))
+        }
+    });
+    let (entries, warnings) = match read {
+        Ok(read) => read,
+        Err(shape) => {
+            eprintln!("nobs: unexpected response shape: {shape}");
+            return 1;
+        }
+    };
+    let mut lines = vec![["ID", "NAME", "STATE"].map(String::from)];
+    lines.extend(
+        entries
+            .iter()
+            .map(|entry| [entry.id.clone(), entry.name.clone(), entry.state.clone()]),
+    );
+    println!("{}", pad_lines(&lines));
+    for warning in &warnings {
+        eprintln!("  warning: {warning}");
+    }
+    let count = entries.len();
+    let ids: Vec<String> = entries
+        .into_iter()
+        .map(|entry| entry.id)
+        .filter(|id| !id.is_empty())
+        .collect();
+    if flags.follow {
+        follow_scenarios(&sonda, &ids, &["finished"]);
+        println!("all scenarios completed");
+        return 0;
+    }
+    println!("registered {count} scenario(s): {}", ids.join(", "));
+    println!("  Inspect:  curl {url}/scenarios");
+    println!("  Stop:     curl -X DELETE {url}/scenarios/<id>");
+    0
+}
+
+fn run_scenarios(flags: ScenariosFlags) -> i32 {
+    answer(
+        cascade_client(flags.sonda_url, None, |name| std::env::var(name).ok()).list(),
+        print_scenarios,
+    )
+}
+
+fn print_scenarios(body: &str) -> i32 {
+    let code = print_table(body);
+    if scenario_rows(body).is_ok_and(|rows| rows.is_empty()) {
+        println!("No scenarios registered.");
+    }
+    code
+}
+
 fn run_status(flags: StatusFlags, workshop: &str) -> i32 {
     let urls = urls(flags, |name| std::env::var(name).ok());
     let probes = probe_all(&urls);
@@ -3263,6 +3699,25 @@ mod tests {
                 "http://localhost:8085".to_string(),
                 "http://loki:3001".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn the_cascade_client_address_is_the_flag_then_the_variable_then_port_8085() {
+        let variable =
+            |name: &str| (name == "SONDA_SERVER_URL").then(|| "http://var-sonda".to_string());
+
+        assert_eq!(
+            cascade_client(None, None, |_| None).url(),
+            "http://localhost:8085"
+        );
+        assert_eq!(
+            cascade_client(None, None, variable).url(),
+            "http://var-sonda"
+        );
+        assert_eq!(
+            cascade_client(Some("http://flag-sonda".to_string()), None, variable).url(),
+            "http://flag-sonda"
         );
     }
 

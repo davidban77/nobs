@@ -103,7 +103,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are twenty. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca`, `evidence`, `cycle`, `page` and `try-it` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are twenty-three. Every one except `setup`, `status`, `alerts`, `silences`, `load-infrahub`, `schema load`, `maintenance`, `rca`, `evidence`, `cycle`, `page`, `try-it`, `flap-interface`, `incident` and `scenarios` runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column below. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -127,6 +127,9 @@ known: nobs-t-two
 | `nobs <workshop> cycle DEVICE PEER [OPTIONS]` | no Docker call | prints four panels about one BGP session: its alert, its silences, the flow runs of the automation and the last decision; with `--trigger` it first starts a new cycle through the webhook; the options are in [cycle and page](#cycle-and-page) |
 | `nobs <workshop> page [OPTIONS]` | no Docker call | prints a fake on-call page for a firing alert; the options are in [cycle and page](#cycle-and-page) |
 | `nobs <workshop> try-it [OPTIONS]` | no Docker call | walks the four paths of the workshop's alert automation one after another and proves each with a Loki query; the options are in [try-it](#try-it) |
+| `nobs <workshop> flap-interface [OPTIONS]` | no Docker call | posts one cascade for an interface and one for each healthy BGP peer on its link to `sonda-server`, so the interface and then BGP go down for a while; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
+| `nobs <workshop> incident [OPTIONS]` | no Docker call | posts one `link-failover` cascade to `sonda-server`: a link flaps, the backup link fills up and its latency grows; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
+| `nobs <workshop> scenarios [OPTIONS]` | no Docker call | lists the scenarios registered with `sonda-server` as one table; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
 
 When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
 
@@ -177,7 +180,7 @@ schema_file = "infrahub/schema.yml"
 sonda = "ghcr.io/davidban77/sonda:1.22.2"
 ```
 
-Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file`, `evidence_query` and `workflow_label`; it checks the others but does not use them. `cycle` uses `workflow_label` as the value of the `workflow` label it looks for in Loki (see [cycle and page](#cycle-and-page)).
+Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file`, `evidence_query`, `workflow_label` and `cascade_prefix`; it checks the others but does not use them. `flap-interface` uses `cascade_prefix` as the start of each scenario name, and `title` as the first words of each description (see [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios)). `cycle` uses `workflow_label` as the value of the `workflow` label it looks for in Loki (see [cycle and page](#cycle-and-page)).
 
 The `evidence_query` setting is a Loki query. It may hold the placeholders `{device}` and `{peer}`. `nobs <workshop> evidence` replaces each one with the device and the peer you give it, and sends the result to Loki. For example, `evidence_query = "{device=\"{device}\"} != \"license\""` becomes `{device="srl1"} != "license"` for the device `srl1`. The braces around the placeholders belong to the query and stay.
 
@@ -739,6 +742,114 @@ The lines that start with `nobs:` go to standard error (the channel for error me
 | 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel; when the clear failed, `srl1` can stay in maintenance, and you clear it as described in the Ctrl-C paragraph |
 | 1 | a wait timed out: `nobs: <n> of 4 waits timed out`, printed after the `Done` panel |
 | 2 | a flag nobs does not know, or a value for `--timeout` that is not a whole number from 0 to 18446744073709551615, for example `-1` |
+
+### flap-interface, incident and scenarios
+
+`flap-interface` and `incident` make trouble in the lab on purpose, so the dashboards, the alerts and the flows have something to show. `scenarios` lists what is registered. All three talk to the `sonda-server` of the workshop, and none of them makes a Docker call. A scenario is a body of JSON that tells Sonda what to make, how fast and for how long. `POST /scenarios` starts it, and the server answers with an ID, a name and a state. A cascade is one scenario body with several signals that follow each other, for example an interface that goes down and a BGP session that goes down after it. `flap-interface` and `incident` change the lab, because they start scenarios. They never stop or delete one: a cascade ends by itself when its duration is over.
+
+`flap-interface` posts one cascade for an interface and one cascade for each healthy BGP peer on that link (defined below). The interface cascade flaps the interface: it is up for `--up-duration`, then down for `--down-duration`, again and again until `--duration` is over. While the interface is down, its operational state is held at `2` (down). From `--cascade-delay` after it goes down, a log line with the process `UPDOWN` goes to Loki every 2 seconds. A BGP cascade holds the six BGP metrics of one peer at their down values. It is shifted by `--cascade-delay`, so BGP goes down after the interface and comes back with it. The baseline scenarios of the workshop have a `while:` clause, a rule that lets a scenario run only while a condition on another signal holds. The clause names these cascades, so the baselines pause while a cascade runs and resume when it finishes.
+
+The name of the interface cascade is `<cascade_prefix><device>-intf-<interface>`, with each `/` of the interface written as `-`. The name of a BGP cascade is `<cascade_prefix><device>-bgp-<peer>`, with each `.` of the address written as `-`. `<cascade_prefix>` is the `cascade_prefix` setting of the workshop, and the description of each cascade starts with its `title` setting. For the workshop in the example of this page, the names are `nobs-t-one-cascade-srl1-intf-ethernet-1-1` and `nobs-t-one-cascade-srl1-bgp-10-1-2-2`. The device must be `srl1` or `srl2`: `srl1` uses the metric and label names of gNMI collection, and `srl2` those of SNMP. Sonda refuses a cascade whose name is the name of a scenario that is still active, so wait until the first one has finished before you run the command again.
+
+A healthy peer is an intended BGP peer of the device, in `lab_vars.yml` of the workshop folder, whose address lies inside the IPv4 network of the interface. That network is the address and the prefix length that `lab_vars.yml` gives the interface. A peer outside that network, for example one set up with a wrong address on purpose, never cascades. When no peer fits, nobs prints a warning and flaps the interface alone. With `--no-cascade`, nobs does not read the file and posts the interface cascade alone.
+
+`incident` posts one cascade named `incident-link-failover-<device>`. The primary interface flaps. Once it is down, the utilization of the backup link rises, and once that is above 70 percent, the latency of the backup link grows. The cascade sends its metrics through Prometheus remote write, not through Telegraf, so the label `source="incident-cascade"` stays on them. `link-failover` is the only kind there is. `incident` does not check the device name: it puts it on the signals as it is.
+
+`scenarios` prints the same table as `nobs sonda list`. When there are no scenarios, it prints the header and then `No scenarios registered.`.
+
+| Flag | Variable | Default | Command | What it does |
+|---|---|---|---|---|
+| `-d`, `--device DEVICE` | | `srl1` | `flap-interface`, `incident` | gives the device; `flap-interface` accepts `srl1` or `srl2` |
+| `-i`, `--interface INTERFACE` | | `ethernet-1/1` | `flap-interface` | gives the interface to flap |
+| `--primary-interface INTERFACE` | | `ethernet-1/10` | `incident` | gives the interface that flaps |
+| `--backup-interface INTERFACE` | | `ethernet-1/1` | `incident` | gives the interface that takes the load |
+| `-k`, `--kind KIND` | | `link-failover` | `incident` | gives the kind of cascade; only `link-failover` is accepted |
+| `--duration DURATION` | | `4m` for `flap-interface`, `3m` for `incident` | `flap-interface`, `incident` | gives how long the cascade lives; `incident` turns a bare number such as `90` into `90s` |
+| `--up-duration DURATION` | | `30s` | `flap-interface` | gives the time the interface stays up before each down phase |
+| `--down-duration DURATION` | | `60s` | `flap-interface` | gives the time the interface stays down in each cycle |
+| `--cascade-delay DURATION` | | `10s` | `flap-interface` | gives the wait between the interface going down and BGP going down |
+| `--no-cascade` | | off | `flap-interface` | posts the interface cascade only |
+| `--sonda-url URL` | `SONDA_SERVER_URL` | `http://localhost:8085` | all three | gives the address of `sonda-server` |
+| `--sonda-api-key KEY` | `SONDA_API_KEY` | none | `flap-interface`, `incident` | gives the key to send to `sonda-server`; `scenarios` has no flag for it and uses the variable |
+| `--loki-url URL` | `SONDA_LOKI_SINK_URL` | `http://loki:3001` | `flap-interface` | gives the address of Loki that Sonda writes the `UPDOWN` log lines to |
+| `--prom-url URL` | `SONDA_PROM_REMOTE_WRITE_URL` | `http://prometheus:9090/api/v1/write` | `incident` | gives the address that Sonda sends the metrics to by Prometheus remote write |
+| `--follow` | | off | `flap-interface`, `incident` | keeps polling until the scenarios are done |
+
+nobs finds each address and the key in this order: the flag, then the variable, then the default. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of `sonda-server` is dropped. The default is the port of the Sonda that `up` starts, not the `http://localhost:8080` of `nobs sonda`. The addresses of Loki and Prometheus are the ones Sonda uses from inside the Docker network, so they are not the ones you use from the host. With a key, every call sends it as `Authorization: Bearer <key>`: each post, each poll and `scenarios`. nobs sends each body as `application/json`, and each call waits at most 10 seconds.
+
+A duration is a number with a unit: `500ms`, `30s`, `5m` or `1h`. A bare number counts as seconds. `flap-interface` sends `--duration` as you gave it. It reads `--up-duration`, `--down-duration` and `--cascade-delay` to work out the shift of the BGP cascade: the BGP cascade is up for the up time plus the delay, and down for the down time minus the delay, and never less than 0. When one of them is not a duration and nobs builds a BGP cascade, nobs prints `nobs: <text> is not a duration`, exits with 1 and sends nothing. Without a BGP cascade (with `--no-cascade`, or when no peer fits), nobs does not read them and sends them to Sonda as you gave them.
+
+`flap-interface` goes through these steps in order. It stops at the first one that fails.
+
+| Step | What nobs does |
+|---|---|
+| 1 | checks that the device is `srl1` or `srl2` |
+| 2 | reads `lab_vars.yml` and finds the peers, unless `--no-cascade` is given |
+| 3 | builds every body; nothing is printed or sent before all of them are built |
+| 4 | prints the warning, when there is no healthy peer and `--no-cascade` is not given |
+| 5 | prints the line that starts with `Posting` |
+| 6 | posts the interface body, then the BGP body of each peer, one after the other |
+| 7 | prints the table, then the `registered` line and three hint lines, or follows the scenarios |
+
+`incident` checks the kind, posts its body, prints the table and then the `registered` line and two hint lines, or follows the scenarios. In both examples below, the IDs and the states come from Sonda's answer; the values here are only an example. This is `flap-interface`:
+
+```
+$ nobs nobs-t-one flap-interface
+Posting inversion cascade for srl1:ethernet-1/1 (peers: 10.1.2.2, duration 4m, cycle 30s up / 60s down) to http://localhost:8085/scenarios
+CASCADE       SCENARIO_NAME                              ENTRIES
+interface     nobs-t-one-cascade-srl1-intf-ethernet-1-1  5a1f0c2e, 7b3d9e41, 9c2e5a60
+bgp 10.1.2.2  nobs-t-one-cascade-srl1-bgp-10-1-2-2       1d4f7a90, 2e5a8b01, 3f6b9c12, 4a7cad23, 5b8dbe34, 6c9ecf45, 7daf0056
+registered 10 scenario(s) across 2 cascade body(s); duration 4m
+  Baselines auto-resume when cascade reaches `finished` (~4m).
+  Inspect:  curl http://localhost:8085/scenarios
+  Stop early: curl -X DELETE http://localhost:8085/scenarios/<id>
+```
+
+The output and the descriptions call these cascades "inversion" cascades: each one pauses a baseline and sends the down values in its place. The table has one row for each body that nobs posted. `ENTRIES` holds the first 8 characters of the ID of each scenario that Sonda started for that body, or `—` when it started none. The `registered` line counts the scenarios and the bodies. The hint lines hold the address of `sonda-server`; `<id>` is printed as it is, for you to fill in.
+
+And this is `incident`:
+
+```
+$ nobs nobs-t-one incident --duration 90
+Posting link-failover cascade for srl1 (ethernet-1/10 → ethernet-1/1, duration 90s) to http://localhost:8085/scenarios
+ID                                    NAME                              STATE
+5a1f0c2e-3b4d-4e6f-8a9b-0c1d2e3f4a5b  interface_oper_state              running
+7b3d9e41-5c6e-4f80-9bac-1d2e3f4a5b6c  incident_backup_link_utilization  running
+9c2e5a60-7d8f-4a02-8bce-2e3f4a5b6c7d  incident_latency_ms               running
+registered 3 scenario(s): 5a1f0c2e-3b4d-4e6f-8a9b-0c1d2e3f4a5b, 7b3d9e41-5c6e-4f80-9bac-1d2e3f4a5b6c, 9c2e5a60-7d8f-4a02-8bce-2e3f4a5b6c7d
+  Inspect:  curl http://localhost:8085/scenarios
+  Stop:     curl -X DELETE http://localhost:8085/scenarios/<id>
+```
+
+When the answer of Sonda has warnings, `incident` prints each one as `  warning: <warning>` after the table.
+
+With `--follow`, nobs prints no `registered` line and no hint lines. After the table it waits 5 seconds, then asks `sonda-server` for the state of each scenario that is not done yet, with `GET <url>/scenarios/<id>`, and prints `  <first 8 characters of the ID> state=<state>` for each one. It repeats this every 5 seconds. A reply with no state counts as `unknown`. A scenario is done at `finished` or `stopped` for `flap-interface`, and at `finished` for `incident`. For `incident`, `--follow` keeps polling until Ctrl-C when a scenario is stopped or deleted before it finishes. When a poll fails, nobs prints `nobs: poll error on <id>: <error>` and asks again in the next round. When every scenario is done, `flap-interface` prints `all cascade scenarios finished or stopped; baselines back to running`, `incident` prints `all scenarios completed`, and nobs exits with 0. Ctrl-C ends nobs at once. It stops the follow only: the scenarios keep running until their duration is over.
+
+The lines that start with `nobs:` and the lines that start with `  warning:` go to standard error. Everything else goes to standard output.
+
+| Line | When |
+|---|---|
+| `nobs: unknown device <device>; expected one of srl1, srl2` | `flap-interface` was given another device; nothing is read or sent |
+| `nobs: lab_vars file not found: <path>` | `flap-interface` could not find `lab_vars.yml` in the workshop folder |
+| `nobs: cannot read <path>: <reason>` | `flap-interface` could not read or parse `lab_vars.yml` |
+| `nobs: <text> is not a duration` | `flap-interface` was given a time it cannot read, see above |
+| `nobs: no healthy BGP peers mapped to <device>:<interface>; running interface flap only.` | a warning: no peer fits the link, and the command goes on with the interface cascade |
+| `nobs: unknown kind <kind>; supported: link-failover` | `incident` was given another kind; nothing is sent |
+| `nobs: POST <scenario name> failed: <error>` | `flap-interface` could not post a body; the cascades posted before stay |
+| `nobs: POST /scenarios failed: <error>` | `incident` could not post its body |
+| `nobs: unexpected response shape: <body>` | Sonda answered with a status below 400 but the answer is not a scenario or a list of scenarios, or, for `incident`, a list with none in it; `<body>` is the first 300 characters of the answer |
+| `nobs: poll error on <id>: <error>` | a poll of `--follow` failed; nobs tries again in the next round |
+| `nobs: cannot reach <url>: <reason>` | `scenarios` could not reach `sonda-server` |
+| `nobs: sonda answered <status>: <body>` | `scenarios` got a status of 400 or more |
+| `nobs: sonda answered a list nobs cannot read: <reason>` | `scenarios` got an answer that is not a list of scenarios |
+
+In the post and poll lines, `<error>` is `cannot reach <url>: <reason>` or `sonda answered <status>: <body>`, where `<reason>` is why nobs could not connect and `<body>` is the answer as Sonda sent it.
+
+| Exit code | When |
+|---|---|
+| 0 | the command did what it was asked; with `--follow`, every scenario is done |
+| 1 | any `nobs:` line in the table above except the warning and the poll error |
+| 2 | a flag nobs does not know |
 
 ## Setup and preflight
 
