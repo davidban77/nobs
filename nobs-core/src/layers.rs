@@ -988,9 +988,7 @@ mod tests {
     fn layer_a_fills_the_windows_with_six_twenty_second_sleeps_and_one_of_ten() {
         let run = run_layer_a(&[8, 4, 1], 0, 0);
 
-        let mut expected = vec![seconds(20); 6];
-        expected.push(seconds(10));
-        assert_eq!(run.sleeps, expected);
+        assert_eq!(run.sleeps, fill_sleeps());
         assert_eq!(run.sleeps.iter().sum::<Duration>(), seconds(130));
     }
 
@@ -1584,6 +1582,21 @@ mod tests {
                 layer_c: "Layer C — per-panel screenshots: not built in nobs, skipped".to_string(),
                 summary:
                     "preflight failures (772.3s) — Layer A exit=0 | Layer B exit=1 | Layer C skipped"
+                        .to_string(),
+                report: "report: /tmp/preflight-out/REPORT.md".to_string(),
+                code: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn tail_is_failures_with_code_one_when_both_layers_failed() {
+        assert_eq!(
+            tail_of(1, 1),
+            Tail {
+                layer_c: "Layer C — per-panel screenshots: not built in nobs, skipped".to_string(),
+                summary:
+                    "preflight failures (772.3s) — Layer A exit=1 | Layer B exit=1 | Layer C skipped"
                         .to_string(),
                 report: "report: /tmp/preflight-out/REPORT.md".to_string(),
                 code: 1,
