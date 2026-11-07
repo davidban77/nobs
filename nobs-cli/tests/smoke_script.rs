@@ -18,6 +18,31 @@ const ALERT_HEADER: &str = "Alertname  Severity  Device / target  State  Age";
 
 const SCHEMA_POST: &str = r#"-s -o /dev/null -w %{http_code} --max-time 5 -X POST -H Content-Type: application/json -H X-INFRAHUB-KEY: t -d {"schemas":[{"version":"1.0"}]} http://localhost:8000/api/schema/load?branch=main"#;
 
+const COMPOSE_FILE: &str = "services:
+  web:
+    container_name: fixed-web
+    networks:
+      - backend
+    environment:
+      name: nobs-t-service-name
+  db:
+    container_name: \"fixed-db\"
+  cache:
+    container_name: 'fixed-cache'
+  old:
+    # container_name: fixed-old
+networks:
+  default:
+    name: nobs-t-smoke-net
+  # name: nobs-t-commented-net
+  backend:
+    name: \"nobs-t-back-net\"
+volumes:
+  data:
+    name: nobs-t-volume-name
+name: nobs-t-compose-project
+";
+
 struct Fixture {
     dir: PathBuf,
     port: u16,
@@ -97,14 +122,10 @@ impl Fixture {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("nobs.toml"),
-            format!("project = \"{project}\"\nname = \"{name}\"\nnetwork = \"{project}-net\"\n"),
+            format!("project = \"{project}\"\nname = \"{name}\"\n"),
         )
         .unwrap();
-        std::fs::write(
-            dir.join("docker-compose.yml"),
-            "services:\n  web:\n    container_name: fixed-web\n  db:\n    container_name: \"fixed-db\"\n  old:\n    # container_name: fixed-old\n",
-        )
-        .unwrap();
+        std::fs::write(dir.join("docker-compose.yml"), COMPOSE_FILE).unwrap();
         std::fs::write(dir.join(".env"), "INFRAHUB_API_TOKEN=t\n").unwrap();
         std::fs::write(
             dir.join("print-alerts"),
@@ -523,16 +544,6 @@ fn a_nobs_toml_without_a_key_refuses_the_start() {
     f.set("one", "nobs.toml", "project = \"nobs-t-smoke\"\n");
     let out = f.run(&["one"]);
     f.assert_refused(&out, "smoke: one: no name in nobs.toml; refusing to start");
-    f.set(
-        "one",
-        "nobs.toml",
-        "project = \"nobs-t-smoke\"\nname = \"one\"\n",
-    );
-    let out = f.run(&["one"]);
-    f.assert_refused(
-        &out,
-        "smoke: one: no network in nobs.toml; refusing to start",
-    );
 }
 
 #[test]
@@ -542,35 +553,53 @@ fn containers_with_the_names_the_compose_file_fixes_refuse_the_start() {
     f.set(
         "one",
         "all-containers",
-        "other\nfixed-web\nfixed-web2\nfixed-db\n",
+        "other\nfixed-web\nfixed-web2\nfixed-db\nfixed-cache\n",
     );
     let out = f.run(&["one"]);
     f.assert_refused(
         &out,
-        "smoke: one: containers named by the compose file exist (fixed-web, fixed-db); refusing to start",
+        "smoke: one: containers named by the compose file exist (fixed-web, fixed-db, fixed-cache); refusing to start",
     );
 }
 
 #[test]
-fn a_container_named_like_a_commented_out_name_does_not_refuse_the_start() {
+fn containers_named_like_a_commented_out_name_or_a_near_miss_do_not_refuse_the_start() {
     let f = Fixture::new("commented-name");
     f.workshop("one", "nobs-t-smoke");
-    f.set("one", "all-containers", "fixed-old\n");
+    f.set("one", "all-containers", "fixed-old\nfixed-web2\n");
     let out = f.run(&["one"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(f.calls(), green_calls());
 }
 
 #[test]
-fn the_network_named_by_the_setting_refuses_the_start() {
+fn networks_named_in_the_top_level_networks_block_refuse_the_start() {
     let f = Fixture::new("network-exists");
     f.workshop("one", "nobs-t-smoke");
-    f.set("one", "all-networks", "bridge\nnobs-t-smoke-net\n");
+    f.set(
+        "one",
+        "all-networks",
+        "bridge\nnobs-t-smoke-net\nnobs-t-back-net\n",
+    );
     let out = f.run(&["one"]);
     f.assert_refused(
         &out,
-        "smoke: one: network nobs-t-smoke-net exists; refusing to start",
+        "smoke: one: network nobs-t-smoke-net, nobs-t-back-net exists; refusing to start",
     );
+}
+
+#[test]
+fn networks_that_the_compose_file_does_not_fix_do_not_refuse_the_start() {
+    let f = Fixture::new("network-near-miss");
+    f.workshop("one", "nobs-t-smoke");
+    f.set(
+        "one",
+        "all-networks",
+        "bridge\nbackend\nnobs-t-smoke-net2\nnobs-t-service-name\nnobs-t-commented-net\nnobs-t-volume-name\nnobs-t-compose-project\n",
+    );
+    let out = f.run(&["one"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(f.calls(), green_calls());
 }
 
 #[test]
