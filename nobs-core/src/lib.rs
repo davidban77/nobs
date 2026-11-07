@@ -8,6 +8,7 @@ pub mod evidence;
 pub mod grafana;
 pub mod http;
 pub mod infrahub;
+pub mod lab;
 pub mod lab_vars;
 pub mod layers;
 pub mod locate;

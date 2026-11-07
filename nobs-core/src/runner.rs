@@ -53,8 +53,10 @@ pub struct FakeRunner {
     exit_code: Option<i32>,
     answers: Vec<(String, String)>,
     default_answer: String,
+    script: Option<Vec<(i32, String)>>,
     calls: RefCell<Vec<Call>>,
     outputs: RefCell<Vec<Call>>,
+    log: RefCell<Vec<Call>>,
 }
 
 impl FakeRunner {
@@ -63,8 +65,10 @@ impl FakeRunner {
             exit_code: Some(exit_code),
             answers: Vec::new(),
             default_answer: String::new(),
+            script: None,
             calls: RefCell::new(Vec::new()),
             outputs: RefCell::new(Vec::new()),
+            log: RefCell::new(Vec::new()),
         }
     }
 
@@ -92,6 +96,18 @@ impl FakeRunner {
         }
     }
 
+    pub fn scripted(steps: &[(i32, &str)]) -> Self {
+        Self {
+            script: Some(
+                steps
+                    .iter()
+                    .map(|(code, stdout)| (*code, stdout.to_string()))
+                    .collect(),
+            ),
+            ..Self::returning(0)
+        }
+    }
+
     pub fn calls(&self) -> Vec<Call> {
         self.calls.borrow().clone()
     }
@@ -99,23 +115,51 @@ impl FakeRunner {
     pub fn outputs(&self) -> Vec<Call> {
         self.outputs.borrow().clone()
     }
+
+    pub fn all_calls(&self) -> Vec<Call> {
+        self.log.borrow().clone()
+    }
+
+    fn record(&self, list: &RefCell<Vec<Call>>, program: &str, args: &[OsString]) -> usize {
+        let call = Call {
+            program: program.to_string(),
+            args: args.to_vec(),
+        };
+        let mut log = self.log.borrow_mut();
+        let index = log.len();
+        log.push(call.clone());
+        list.borrow_mut().push(call);
+        index
+    }
+
+    fn step(&self, index: usize) -> Option<(i32, &str)> {
+        let script = self.script.as_ref()?;
+        Some(
+            script
+                .get(index)
+                .map_or((0, ""), |(code, stdout)| (*code, stdout.as_str())),
+        )
+    }
 }
 
 impl Runner for FakeRunner {
     fn run(&self, program: &str, args: &[OsString]) -> io::Result<i32> {
-        self.calls.borrow_mut().push(Call {
-            program: program.to_string(),
-            args: args.to_vec(),
-        });
+        let index = self.record(&self.calls, program, args);
+        if let Some((code, _)) = self.step(index) {
+            return Ok(code);
+        }
         self.exit_code
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "fake runner failure"))
     }
 
     fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
-        self.outputs.borrow_mut().push(Call {
-            program: program.to_string(),
-            args: args.to_vec(),
-        });
+        let index = self.record(&self.outputs, program, args);
+        if let Some((code, stdout)) = self.step(index) {
+            return Ok(Output {
+                code,
+                stdout: stdout.to_string(),
+            });
+        }
         let code = self
             .exit_code
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "fake runner failure"))?;
@@ -260,6 +304,50 @@ mod tests {
             }
         );
         assert_eq!(runner.run("df", &[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_scripted_fake_answers_the_nth_call_of_either_kind_with_the_nth_step() {
+        let runner = FakeRunner::scripted(&[(3, "a"), (0, "b"), (5, "c")]);
+        assert_eq!(runner.run("docker", &[]).unwrap(), 3);
+        assert_eq!(
+            runner.output("docker", &[]).unwrap(),
+            Output {
+                code: 0,
+                stdout: "b".to_string()
+            }
+        );
+        assert_eq!(
+            runner.output("docker", &[]).unwrap(),
+            Output {
+                code: 5,
+                stdout: "c".to_string()
+            }
+        );
+        assert_eq!(runner.run("docker", &[]).unwrap(), 0);
+        assert_eq!(
+            runner.output("docker", &[]).unwrap(),
+            Output {
+                code: 0,
+                stdout: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn all_calls_keeps_the_order_across_run_and_output() {
+        let runner = FakeRunner::returning(0);
+        runner.run("a", &args(&["1"])).unwrap();
+        runner.output("b", &args(&["2"])).unwrap();
+        runner.run("c", &args(&["3"])).unwrap();
+        let programs: Vec<String> = runner
+            .all_calls()
+            .into_iter()
+            .map(|call| call.program)
+            .collect();
+        assert_eq!(programs, ["a", "b", "c"]);
+        assert_eq!(runner.calls().len(), 2);
+        assert_eq!(runner.outputs().len(), 1);
     }
 
     #[test]
