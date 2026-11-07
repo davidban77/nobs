@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,7 +12,9 @@ pub const DEFAULT_URL: &str = "http://localhost:3001";
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const PATH: &str = "/loki/api/v1/query_range";
+const SERIES_PATH: &str = "/loki/api/v1/series";
 const BODY_CUT: usize = 200;
+const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
 const NANOSECONDS_PER_MINUTE: u128 = 60_000_000_000;
 
 pub struct Loki {
@@ -102,6 +105,37 @@ impl Loki {
         lines.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         Ok(lines)
     }
+
+    pub fn series(
+        &self,
+        matcher: &str,
+        seconds: u64,
+        now: SystemTime,
+    ) -> Result<Vec<BTreeMap<String, String>>, Error> {
+        let end = nanoseconds_since_1970(now);
+        let window =
+            i64::try_from(u128::from(seconds) * NANOSECONDS_PER_SECOND).unwrap_or(i64::MAX);
+        let start = end.saturating_sub(window).max(0);
+        let sent = self
+            .agent
+            .get(format!("{}{SERIES_PATH}", self.url))
+            .query("match[]", matcher)
+            .query("start", start.to_string())
+            .query("end", end.to_string())
+            .call();
+        let reply = http::read(&self.url, sent).map_err(|error| Error::Reach {
+            url: self.url.clone(),
+            reason: http::reason(error, &self.url),
+        })?;
+        if reply.status >= 400 {
+            return Err(Error::Status {
+                status: reply.status,
+                path: SERIES_PATH.to_string(),
+                body: reply.body,
+            });
+        }
+        parse_series(&reply.body).map_err(Error::Body)
+    }
 }
 
 fn nanoseconds_since_1970(time: SystemTime) -> i64 {
@@ -136,6 +170,17 @@ fn parse(body: &str) -> Result<Vec<Line>, String> {
     Ok(lines)
 }
 
+fn parse_series(body: &str) -> Result<Vec<BTreeMap<String, String>>, String> {
+    let answer: Value =
+        serde_json::from_str(body).map_err(|_| "the reply is not JSON".to_string())?;
+    let data = answer
+        .get("data")
+        .filter(|data| data.is_array())
+        .ok_or("the reply has no data list")?;
+    serde_json::from_value(data.clone())
+        .map_err(|_| "an entry of the data list is not a map of labels".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
@@ -144,6 +189,7 @@ mod tests {
     use crate::http::stub::Stub;
 
     const ROUTE: &str = "/loki/api/v1/query_range*";
+    const SERIES_ROUTE: &str = "/loki/api/v1/series*";
     const NOW_SECONDS: u64 = 1_793_960_400;
     const TWO_STREAMS: &str = r#"{"status":"success","data":{"resultType":"streams","result":[
         {"stream":{"device":"srl1"},"values":[["1793960390000000000","a-new"],["1793960300000000000","a-old"]]},
@@ -343,6 +389,77 @@ mod tests {
         assert_eq!(
             Error::Body("the reply is not JSON".to_string()).to_string(),
             "Loki answered with text nobs cannot read: the reply is not JSON"
+        );
+    }
+
+    #[test]
+    fn series_sends_the_matcher_and_the_window_and_reads_the_label_maps() {
+        let stub = Stub::start(&[(
+            "GET",
+            SERIES_ROUTE,
+            200,
+            r#"{"status":"success","data":[{"pipeline":"direct","device":"srl1"},{"pipeline":"vector"}]}"#,
+        )]);
+
+        let series = Loki::new(stub.url())
+            .series(r#"{vendor_facility_process="UPDOWN"}"#, 300, now())
+            .unwrap();
+
+        assert_eq!(
+            series,
+            [
+                BTreeMap::from([
+                    ("device".to_string(), "srl1".to_string()),
+                    ("pipeline".to_string(), "direct".to_string())
+                ]),
+                BTreeMap::from([("pipeline".to_string(), "vector".to_string())]),
+            ]
+        );
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "GET");
+        let (path, parameters) = requests[0].path.split_once('?').unwrap();
+        assert_eq!(path, "/loki/api/v1/series");
+        assert_eq!(
+            parameters.split('&').collect::<Vec<_>>(),
+            [
+                "match%5B%5D=%7Bvendor_facility_process%3D%22UPDOWN%22%7D",
+                "start=1793960100000000000",
+                "end=1793960400000000000",
+            ]
+        );
+    }
+
+    #[test]
+    fn series_with_an_empty_data_list_is_empty() {
+        let stub = Stub::start(&[("GET", SERIES_ROUTE, 200, r#"{"data": []}"#)]);
+
+        assert_eq!(
+            Loki::new(stub.url()).series("{a=\"b\"}", 300, now()),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn series_with_a_reply_that_has_no_data_list_is_a_body_error() {
+        let stub = Stub::start(&[("GET", SERIES_ROUTE, 200, "{}")]);
+
+        let result = Loki::new(stub.url()).series("{a=\"b\"}", 300, now());
+
+        assert!(matches!(result, Err(Error::Body(_))), "{result:?}");
+    }
+
+    #[test]
+    fn series_with_a_status_of_400_or_more_is_a_status_error_with_the_series_path() {
+        let stub = Stub::start(&[("GET", SERIES_ROUTE, 400, "bad matcher")]);
+
+        assert_eq!(
+            Loki::new(stub.url()).series("{a=\"b\"}", 300, now()),
+            Err(Error::Status {
+                status: 400,
+                path: "/loki/api/v1/series".to_string(),
+                body: "bad matcher".to_string()
+            })
         );
     }
 
