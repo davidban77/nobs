@@ -728,7 +728,7 @@ Clearing srl1 maintenance back to false.
 srl1.maintenance = false
 ```
 
-The lines that start with `nobs:` go to standard error (the channel for error messages), and so does the line `<label> - no Loki match after <timeout>s`, where `<timeout>` is the value of `--timeout`, which replaces the match line when a wait times out. Everything else goes to standard output. Two problems do not stop the run, and each prints one line to standard error:
+The lines that start with `nobs:` go to standard error (the channel for error messages), and so does the line `<label> - no Loki match after <timeout>s`, which replaces the match line when a wait times out; `<timeout>` is the value of `--timeout`. Everything else goes to standard output. Two problems do not stop the run, and each prints one line to standard error:
 
 | Line | When |
 |---|---|
@@ -1153,9 +1153,9 @@ Each line is the check name padded to 7 characters, the status padded to 4, and 
 
 ## Smoke
 
-`scripts/smoke.sh` runs the smoke check of the workshops with the Rust nobs. A smoke check is a short run that starts a whole stack, tests that its main parts work, and removes the stack again. The script follows the daily `smoke` job of the workshops, step by step. It passes only when the whole sequence passes on every workshop you ask for. Unlike that job, it also fails when the alert wait or `try-it` fails, and it has guards that protect stacks already on the machine.
+`scripts/smoke.sh` runs the smoke check of the workshops with nobs. A smoke check is a short run that starts a whole stack, tests that its main parts work, and removes the stack again. The script runs the same steps as the `smoke` job, the automated check that the workshops repository runs every day. It passes only when every step passes on every workshop you ask for, the alert wait and `try-it` included. It also has guards that protect stacks already on the machine.
 
-Run it from the nobs repository: `scripts/smoke.sh ROOT [WORKSHOP ...]`. `ROOT` is the folder that holds `workshops/<name>/`, for example a copy of the workshops repository. With no `WORKSHOP`, the script checks `autocon5`, then `packt`. It checks the workshops one after another. A `ROOT` that is not an absolute path counts from the folder you run the script in. For example:
+Run it from the nobs repository: `scripts/smoke.sh ROOT [WORKSHOP ...]`. `ROOT` is the folder that holds the `workshops/` folder, for example a copy of the workshops repository. Each `WORKSHOP` is the name of a folder in `ROOT/workshops/`, not the `name` setting. With no `WORKSHOP`, the script checks `autocon5`, then `packt`. It checks the workshops one after another. A `ROOT` that is not an absolute path counts from the folder you run the script in. For example:
 
 ```
 $ scripts/smoke.sh ../workshops packt
@@ -1163,9 +1163,9 @@ $ scripts/smoke.sh ../workshops packt
 
 The script takes the program from `NOBS`, which is `nobs` on the path unless you set it. A `NOBS` that holds a slash but does not start with one also counts from the folder you run the script in.
 
-Each workshop folder needs a `nobs.toml` with a line `project = "..."` and a line `name = "..."`, each written with one space on both sides of `=`. The `project` is the compose project of the stack. A compose project is the group of containers, networks and volumes that Docker Compose makes for one stack. The `name` is the workshop name that nobs knows, and it can differ from the folder name. The script runs every nobs command by that name, from the workshop folder: `nobs <name> setup`, `nobs <name> up`, and so on. When `ROOT` or the workshop folder does not exist, the script treats the `project` as missing and refuses the workshop.
+Each workshop folder needs a `nobs.toml` with a line `project = "..."` and a line `name = "..."`, each at the start of the line, with one space on both sides of `=` and the value in double quotes. The `project` is the compose project of the stack. A compose project is the group of containers, networks and volumes that Docker Compose makes for one stack. The `name` is the workshop name that nobs knows, and it can differ from the folder name. The script runs every nobs command by that name, from the workshop folder: `nobs <name> setup`, `nobs <name> up`, and so on. When `ROOT` or the workshop folder does not exist, the script treats the `project` as missing and refuses the workshop.
 
-The script also reads the fixed container names and the fixed network names of the stack from the `docker-compose.yml` in the workshop folder. It takes the value of every `container_name:` line, with or without quotes around it. For the networks, it takes the value of every `name:` line inside the top-level `networks:` block, which starts at the line `networks:` with no indent and ends at the next line with no indent; a `networks:` key inside a service is not read. A line that starts with `#` is not a name. A workshop folder without that file has no fixed names.
+The script also reads the fixed container names and the fixed network names of the stack from the `docker-compose.yml` in the workshop folder. It takes the value of every `container_name:` line, with or without quotes around it. For the networks, it takes the value of every `name:` line inside the top-level `networks:` block, which starts at the line `networks:` with no indent and ends at the next line that starts with a character other than a space, a tab or `#`, so a blank line or a comment line does not end it; a `networks:` key inside a service is not read. A line that starts with `#` is not a name. A workshop folder without that file has no fixed names.
 
 For each workshop, the script runs these steps in order. The first step that fails stops the steps. A failed workshop does not stop the next one.
 
@@ -1173,8 +1173,8 @@ For each workshop, the script runs these steps in order. The first step that fai
 |---|---|---|
 | `setup` | runs `nobs <name> setup` | none of its own |
 | `up` | runs `nobs <name> up` | none of its own |
-| three readiness waits | asks `http://localhost:9090/-/ready`, then `http://localhost:3001/ready`, then `http://localhost:9093/-/ready` with `curl`, and passes when the address answers | up to 60 tries, `SMOKE_SLEEP` seconds apart, then one last check; each `curl` waits up to 3 seconds |
-| the Infrahub HTTP listener | asks `http://localhost:8000/health`, and when that fails `http://localhost:8000/api/healthcheck`; passes when either answers | the same tries |
+| three readiness waits | asks `http://localhost:9090/-/ready`, then `http://localhost:3001/ready`, then `http://localhost:9093/-/ready` with `curl`, and passes when the address answers with a status below 400 | up to 60 tries, `SMOKE_SLEEP` seconds apart, then one last check; each `curl` waits up to 3 seconds |
+| the Infrahub HTTP listener | asks `http://localhost:8000/health`, and when that fails `http://localhost:8000/api/healthcheck`; passes when either answers with a status below 400 | the same tries |
 | the Infrahub schema write | sends a POST to `http://localhost:8000/api/schema/load?branch=main` with the workshop's token and a body that holds only the schema version; passes on HTTP 200 | up to 60 tries, `SMOKE_SLEEP` seconds apart; each `curl` waits up to 5 seconds |
 | `load-infrahub` | runs `nobs <name> load-infrahub` | none of its own |
 | the alert wait | runs `nobs <name> alerts -l alertname=<alert>` and passes when at least one line of the answer holds the word `firing`; `<alert>` is `SMOKE_ALERT` | up to 24 tries, `SMOKE_SLEEP` seconds apart; with the default of 5 seconds that is 120 seconds |
@@ -1184,17 +1184,18 @@ For each workshop, the script runs these steps in order. The first step that fai
 
 A workshop that runs for more than 25 minutes (1500 seconds) also counts as failed. The script checks this when the workshop ends. It does not stop a workshop that runs long.
 
-Before a workshop starts, the script runs its guards. A guard is a check that must pass before the script does anything. The script refuses the workshop in these cases:
+Before a workshop starts, the script runs its guards. A guard is a check that must pass before the script does anything. The script checks the cases below in this order, stops at the first one that fails, and refuses the workshop:
 
-- containers, volumes or networks of its compose project already exist (the script lists them with `docker ps -a`, `docker volume ls` and `docker network ls`, filtered by the Docker label `com.docker.compose.project=<project>`);
+- the `nobs.toml` has no `project` line or no `name` line;
+- containers, volumes or networks of its compose project already exist (the script lists them with `docker ps -a`, `docker volume ls` and `docker network ls`, filtered by the label `com.docker.compose.project=<project>`, a tag that Docker Compose puts on everything it makes for a project);
 - a container has one of the fixed names of the compose file, whatever its project (the script lists all containers with `docker ps -a` and compares the names exactly, so `webhook2` is not `webhook`);
 - a Docker network has one of the fixed network names of the compose file, whatever its project (the script lists all networks with `docker network ls` and compares the names exactly);
-- one of these `docker` listings fails;
-- one of the host ports in `SMOKE_PORTS` is in use (a connection to `127.0.0.1` on that port works).
+- one of the host ports in `SMOKE_PORTS` is in use (a connection to `127.0.0.1` on that port works);
+- a `docker` listing fails (the script checks this each time it runs a listing, so it can stop at any `docker` case above).
 
-The two name guards look at every container and network on the machine, not only at those of the project. The reason is that a container or a network that already has one of these fixed names stops the stack from starting, whoever owns it, and the script would have created other parts of the stack before it failed. A stack with no fixed network name needs no such check, because the network that Docker Compose then creates carries the project label, and the project guard already covers it.
+The two name guards look at every container and network on the machine, not only at those of the project. A fixed name does not depend on the project, so a container or a network of another stack can already have it. Two containers cannot have the same name, so the stack would fail after it had created some of its other parts. The script does not start next to a network with a fixed name either, because it cannot tell whether the stack would fail on it or use it. A network without a fixed name is checked only by the project guard, through the project label.
 
-Only when all the guards pass does the script arm its clean-up. The reason is that `destroy` runs `down --volumes --remove-orphans`, which removes the containers, the networks and the volumes of the project. Without the guards, the script could delete a stack, and its data, that it did not create. A refused workshop touches nothing, runs no nobs command, and counts as failed.
+Only when all the guards pass does the script set up its clean-up: the `destroy` that runs when the workshop ends or the script is stopped. The reason is that `destroy` runs `down --volumes --remove-orphans`, which removes the containers, the networks and the volumes of the project. Without the guards, the script could delete a stack, and its data, that it did not create. A refused workshop touches nothing, runs no nobs command, and counts as failed.
 
 The script has four settings, all environment variables, and no others:
 
@@ -1205,7 +1206,7 @@ The script has four settings, all environment variables, and no others:
 | `SMOKE_SLEEP` | `5` | seconds between two tries of a wait |
 | `SMOKE_ALERT` | `BgpSessionNotUp` | the `alertname` the alert wait looks for |
 
-The schema write needs a token. The script reads `INFRAHUB_API_TOKEN` from the `.env` file of the workshop folder. When the file has the key on more than one line, the last line wins. A pair of double quotes or single quotes around the value is removed. A shell variable of the same name is not used. The token goes only into the header of the schema-write request, as part of the `curl` command line. The script does not set it as an environment variable, so `nobs` and `docker` never receive it, and the script does not print it.
+The schema write needs a token. The script reads it from the line of the workshop's `.env` file that starts with `INFRAHUB_API_TOKEN=`, with no space and no `export`. When more than one line has the key, the last line wins. A pair of double quotes or single quotes around the value is removed. The script puts the token only in the header of the schema-write request, as part of the `curl` command line. It does not pass the token to `nobs` or `docker`, and does not print it. `nobs` reads the token from the same `.env` file by itself. A token you exported in your shell reaches every program the script runs, because the script does not remove it.
 
 The table below lists every line the script prints itself. `<ws>` is the workshop name as you gave it, which is the folder name. The output of the programs it runs (nobs and Docker) appears as they print it. The `alerts` table is read by the script and not shown.
 
@@ -1222,11 +1223,11 @@ The table below lists every line the script prints itself. `<ws>` is the worksho
 | `smoke: <ws>: <command>` | before each nobs command; `<command>` is `setup`, `up`, `load-infrahub`, `try-it --auto` or `destroy` |
 | `smoke: <ws>: <command> failed (exit <code>)` | that nobs command exited with a non-zero code |
 | `smoke: <ws>: wait <url>` | before a readiness wait |
-| `smoke: <ws>: <url> is ready` | the address answered |
-| `smoke: <ws>: <url> never ready` | the address did not answer in time |
+| `smoke: <ws>: <url> is ready` | the address answered with a status below 400 |
+| `smoke: <ws>: <url> never ready` | the address did not answer with a status below 400 in time |
 | `smoke: <ws>: wait Infrahub HTTP listener` | before the listener wait |
-| `smoke: <ws>: Infrahub listener is up` | the listener answered |
-| `smoke: <ws>: Infrahub HTTP listener never came up` | the listener did not answer in time |
+| `smoke: <ws>: Infrahub listener is up` | the listener answered with a status below 400 |
+| `smoke: <ws>: Infrahub HTTP listener never came up` | the listener did not answer with a status below 400 in time |
 | `smoke: <ws>: wait Infrahub schema writes` | before the schema-write wait |
 | `smoke: <ws>: Infrahub schema-write path is ready` | the schema write returned HTTP 200 |
 | `smoke: <ws>: Infrahub never ready for schema writes (last code: <code>)` | no try returned HTTP 200; `<code>` is the HTTP code of the last try, or `000000` when `curl` could not connect or timed out |
@@ -1241,19 +1242,24 @@ The table below lists every line the script prints itself. `<ws>` is the worksho
 | `smoke: <ws>: failed in <seconds>s` | the workshop failed or was refused |
 | `smoke: <passed> of <total> workshops ok` | the last line, after all workshops |
 
-When you press Ctrl-C or the script gets a TERM signal during a workshop, the script runs `destroy` for that workshop and ends at once with exit 1. It prints no `failed in` line and no last line, and it does not check the next workshops. A signal during `destroy` does not start `destroy` a second time.
+After the guards of a workshop pass, Ctrl-C or a TERM signal makes the script run `destroy` for that workshop and then end with exit 1. It prints no `failed in` line and no last line, and it does not check the next workshops. Ctrl-C also reaches the program the script is running, so that program stops first. A TERM signal reaches only the script, so the script waits until the running program ends; during `up` or `try-it`, that can take minutes. A signal during `destroy` does not start `destroy` a second time. Ctrl-C during `destroy` stops `destroy`, and the stack can stay on the machine; then run `nobs <name> destroy` yourself. During the guards or between two workshops, the script ends at once with no `destroy`: the shell shows exit code 130 after Ctrl-C and 143 after TERM.
 
 | Exit code | Meaning |
 |---|---|
 | 0 | every workshop is ok |
-| 1 | a workshop failed or was refused, or the script got Ctrl-C or a TERM signal |
+| 1 | a workshop failed or was refused, or the script got Ctrl-C or a TERM signal after the guards of a workshop passed |
 | 2 | no `ROOT` was given |
+| 130 or 143 | Ctrl-C (130) or a TERM signal (143) during the guards or between two workshops |
 
-For example, the last lines of a run where both workshops pass (the seconds are examples):
+For example, a run where both workshops pass. The `...` marks the lines left out, and the seconds are examples:
 
 ```
-smoke: autocon5: ok in 412s
-smoke: packt: ok in 389s
+...
+smoke: autocon5: ok in 198s
+...
+smoke: packt: destroy
+...
+smoke: packt: ok in 146s
 smoke: 2 of 2 workshops ok
 ```
 
