@@ -467,6 +467,70 @@ fn skip_sonda_logs_neither_asks_loki_nor_restarts_sonda_logs() {
 }
 
 #[test]
+fn only_the_silences_and_scenarios_that_were_really_removed_are_counted() {
+    let silences = r#"[{"id":"sil-a","status":{"state":"active"},"createdBy":"x","comment":"Workshop a"},{"id":"sil-b","status":{"state":"active"},"createdBy":"x","comment":"Workshop b"},{"id":"sil-c","status":{"state":"active"},"createdBy":"x","comment":"Workshop c"}]"#;
+    let cascades = r#"{"scenarios":[{"id":"id-1","name":"cascade_active","state":"running"},{"id":"id-2","name":"updown_logs_down","state":"running"},{"id":"id-3","name":"incident_latency_ms","state":"running"}]}"#;
+    let no_id = r#"{"scenarios":[{"name":"bgpPeerState","state":"paused"}]}"#;
+    let stubs = Stubs {
+        alertmanager: Stub::start(&[
+            ("GET", "/api/v2/silences", 200, silences),
+            ("DELETE", "/api/v2/silence/*", 200, ""),
+            ("DELETE", "/api/v2/silence/*", 500, "boom"),
+            ("DELETE", "/api/v2/silence/*", 200, ""),
+        ]),
+        sonda: Stub::start(&[
+            ("GET", "/scenarios", 200, cascades),
+            ("GET", "/scenarios", 200, no_id),
+            ("GET", "/scenarios/*", 200, WEDGED),
+            ("DELETE", "/scenarios/*", 200, DELETED),
+            ("DELETE", "/scenarios/*", 404, "scenario not found: id-2"),
+            ("DELETE", "/scenarios/*", 200, DELETED),
+            ("POST", "/events", 200, "{}"),
+        ]),
+        ..Stubs::clean()
+    };
+    let copy = Copy::new("counts", &stubs.env());
+
+    let output = run(&copy, &[], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        stdout(&output),
+        lines(&[
+            FIRST,
+            LOADED,
+            CLEARED,
+            REAPPLIED,
+            "  expired 2 workshop-related Alertmanager silence(s)",
+            "  deleted 2 lingering cascade scenario(s)",
+            LAST,
+        ])
+    );
+    assert_eq!(
+        requests(&stubs.alertmanager),
+        [
+            "GET /api/v2/silences",
+            "DELETE /api/v2/silence/sil-a",
+            "DELETE /api/v2/silence/sil-b",
+            "DELETE /api/v2/silence/sil-c",
+        ]
+    );
+    assert_eq!(
+        requests(&stubs.sonda),
+        [
+            "POST /events",
+            "POST /events",
+            "GET /scenarios",
+            "DELETE /scenarios/id-1",
+            "DELETE /scenarios/id-2",
+            "DELETE /scenarios/id-3",
+            "GET /scenarios",
+        ]
+    );
+}
+
+#[test]
 fn an_infrahub_that_is_down_warns_three_times_and_the_other_steps_still_run() {
     let stubs = Stubs::clean();
     let closed = closed_port_url();
@@ -475,7 +539,7 @@ fn an_infrahub_that_is_down_warns_three_times_and_the_other_steps_still_run() {
     let output = run(&copy, &[], &[]);
 
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stdout(&output), lines(&[FIRST, REAPPLIED, LAST]));
+    assert_eq!(stdout(&output), lines(&[FIRST, REAPPLIED]));
     let errors = stderr(&output);
     let errors: Vec<&str> = errors.lines().collect();
     assert_eq!(errors.len(), 3, "{errors:?}");
@@ -644,7 +708,6 @@ fn a_failed_load_warns_with_the_load_error_and_prints_no_reloaded_line() {
             "Infrahub has 0 WorkshopDevice record(s); re-loading schema + data",
             CLEARED,
             REAPPLIED,
-            LAST,
         ])
     );
 }
@@ -664,10 +727,7 @@ fn a_loki_that_fails_warns_and_sonda_logs_is_not_restarted() {
         stderr(&output),
         "nobs: Loki probe failed: Loki answered 500 on /loki/api/v1/query_range: boom — skipping sonda-logs check\n"
     );
-    assert_eq!(
-        stdout(&output),
-        lines(&[FIRST, LOADED, CLEARED, REAPPLIED, LAST])
-    );
+    assert_eq!(stdout(&output), lines(&[FIRST, LOADED, CLEARED, REAPPLIED]));
     assert_eq!(docker_calls(&copy), [compose_call(&copy, "up sonda-setup")]);
 }
 
@@ -679,7 +739,7 @@ fn a_failing_sonda_setup_warns_with_its_exit_code_and_exits_1() {
     let output = run(&copy, &[], &[("FAKE_DOCKER_EXIT", "1")]);
 
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stdout(&output), lines(&[FIRST, LOADED, CLEARED, LAST]));
+    assert_eq!(stdout(&output), lines(&[FIRST, LOADED, CLEARED]));
     assert_eq!(
         stderr(&output),
         "nobs: sonda-setup up failed: exited with code 1\n"
@@ -704,10 +764,7 @@ fn an_alertmanager_answering_500_warns_and_the_sonda_steps_still_run() {
             stubs.alertmanager.url()
         )
     );
-    assert_eq!(
-        stdout(&output),
-        lines(&[FIRST, LOADED, CLEARED, REAPPLIED, LAST])
-    );
+    assert_eq!(stdout(&output), lines(&[FIRST, LOADED, CLEARED, REAPPLIED]));
     assert_eq!(
         requests(&stubs.sonda),
         [
@@ -734,7 +791,7 @@ fn a_failed_sonda_server_restart_ends_the_wedge_step_without_a_success_line() {
     );
     assert_eq!(
         stdout(&output),
-        lines(&[FIRST, LOADED, CLEARED, REAPPLIED, DETECTED, LAST])
+        lines(&[FIRST, LOADED, CLEARED, REAPPLIED, DETECTED])
     );
     assert_eq!(
         docker_calls(&copy),
@@ -760,6 +817,7 @@ fn a_scenario_list_nobs_cannot_read_warns_for_both_fetches_and_deletes_nothing()
         stderr(&output),
         "nobs: Sonda /scenarios fetch failed: sonda answered a list nobs cannot read: the reply has no \"scenarios\" list — skipping cascade cleanup\nnobs: Sonda /scenarios fetch failed: sonda answered a list nobs cannot read: the reply has no \"scenarios\" list — skipping wedge check\n"
     );
+    assert_eq!(stdout(&output), lines(&[FIRST, LOADED, CLEARED, REAPPLIED]));
     assert_eq!(
         requests(&stubs.sonda),
         [
@@ -790,7 +848,7 @@ fn a_missing_compose_file_warns_for_every_docker_step_and_the_http_steps_still_r
     assert_eq!(stderr(&output), missing.repeat(3));
     assert_eq!(
         stdout(&output),
-        lines(&[FIRST, LOADED, CLEARED, DETECTED, LOGS_WEDGED, LAST])
+        lines(&[FIRST, LOADED, CLEARED, DETECTED, LOGS_WEDGED])
     );
     assert_eq!(docker_calls(&copy), Vec::<String>::new());
     assert_eq!(

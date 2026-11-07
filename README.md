@@ -130,9 +130,9 @@ known: nobs-t-two
 | `nobs <workshop> flap-interface [OPTIONS]` | no Docker call | posts one cascade for an interface and one for each healthy BGP peer on its link to `sonda-server`, so the interface and then BGP go down for a while; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
 | `nobs <workshop> incident [OPTIONS]` | no Docker call | posts one `link-failover` cascade to `sonda-server`: a link flaps, the backup link fills up and its latency grows; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
 | `nobs <workshop> scenarios [OPTIONS]` | no Docker call | lists the scenarios registered with `sonda-server` as one table; the options are in [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios) |
-| `nobs <workshop> reset [OPTIONS]` | `up sonda-setup`; then `restart sonda-server` and `restart sonda-logs` when they look stuck | returns the lab to the state every part of the workshop starts from; it also calls Infrahub, Alertmanager, Sonda and Loki, and goes on after a step that fails; the options are in [reset](#reset) |
+| `nobs <workshop> reset [OPTIONS]` | `up sonda-setup`; then, when they look stuck, `restart sonda-server` followed by `up sonda-setup` again, and `restart sonda-logs` | returns the lab to the state every part of the workshop starts from; it also calls Infrahub, Alertmanager, Sonda and Loki, and goes on after a step that fails; the options are in [reset](#reset) |
 
-When a command makes two calls, nobs stops at the first one that fails. A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1.
+When a command makes two calls, nobs stops at the first one that fails; `reset` is the exception, because it goes on after a step that fails, prints a warning and exits with 1 (see [reset](#reset)). A failed `docker` call makes nobs exit with the code of that call, and `up` and `restart` print no addresses then. When `docker` cannot start, nobs prints `nobs: cannot run docker: <error>` and exits with 1. When the compose file does not exist, nobs prints `nobs: compose file not found: <path>` and exits with 1; `reset` prints this line for each `docker` call it would make, goes on with the steps that need no `docker`, and exits with 1.
 
 `setup` and `up` create the `.env` file of the workshop from `.env.example` when `.env` is missing, and print `created <folder>/.env from .env.example`. They never change a `.env` that exists: then `setup` prints `kept <folder>/.env` and `up` says nothing. When there is neither a `.env` nor a `.env.example`, both print `no .env.example in <folder>`, and `up` goes on. When the copy fails, both print `nobs: <folder>/.env: <error>` and exit with 1.
 
@@ -867,7 +867,7 @@ In the post and poll lines, `<error>` is `cannot reach <url>: <reason>` or `sond
 | 5 | deletes the Sonda scenarios named `cascade_active`, `incident_backup_link_utilization`, `incident_latency_ms` and `updown_logs_down`; these are the scenarios that `flap-interface` and `incident` start |
 | 6 | looks for baseline scenarios that are stuck, and when it finds one, restarts `sonda-server`, waits 5 seconds and runs `sonda-setup` again |
 | 7 | unless `--skip-sonda-logs` is given, asks Loki for one log line of `srl1` from the last minute, and restarts `sonda-logs` when there is none |
-| 8 | prints the last line |
+| 8 | prints the last line, but only when no step printed a warning |
 
 A baseline is stuck when its state is `paused` and the name in the `pending_ref` of its scenario starts with the `cascade_prefix` setting or with `incident-link-failover-`. `pending_ref` is the field of a scenario in `sonda-server` that names the scenario it waits for. After step 5, a baseline should run again by itself, and sometimes it does not. In step 7, the question to Loki is `{device="srl1", pipeline="direct"}`. No line in the last minute means that the log sink of Sonda does not deliver, and a restart of `sonda-logs` resets it.
 
@@ -920,7 +920,7 @@ On a lab that is already clean, nobs prints only the first line, `  Infrahub alr
 | `  restarted sonda-server and re-applied baselines` | the restart and the second `sonda-setup` of step 6 worked |
 | `sonda-logs srl1 streams look wedged (no Loki activity in last 60s); restarting` | step 7 found no log line |
 | `  restarted sonda-logs (loki sink reset)` | the restart of step 7 worked |
-| `lab reset complete — both broken peers should be firing within ~60s` | always the last line, with or without warnings, except when there is no token |
+| `lab reset complete — both broken peers should be firing within ~60s` | the last line, printed only when no warning was printed |
 
 When nobs cannot expire a silence or delete a scenario, it prints nothing and does not count it. The warnings go to standard error. Each one starts with `nobs: `.
 
@@ -941,9 +941,9 @@ In these lines, `<error>` is the text of the failed call. For Infrahub it is `ca
 
 | Exit code | When |
 |---|---|
-| 0 | every step ran and nobs printed no warning |
+| 0 | every step ran and nobs printed no warning; the last line is printed |
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
-| 1 | nobs printed at least one warning; the last line is printed all the same |
+| 1 | nobs printed at least one warning; the last line is not printed |
 | 2 | a flag nobs does not know |
 
 ## Setup and preflight
