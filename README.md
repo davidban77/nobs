@@ -1151,6 +1151,120 @@ Each line is the check name padded to 7 characters, the status padded to 4, and 
 
 `nobs setup` runs `nobs preflight` first. When a check fails, it stops with exit 1 and changes nothing. Otherwise it does what `nobs <workshop> setup` does, for every workshop that `nobs workshops` would list. It prints one line per workshop: `<name>: created <folder>/.env from .env.example`, `<name>: kept <folder>/.env` or `<name>: no .env.example in <folder>`. It skips and stops on a `nobs.toml` it cannot read in the same way as `nobs workshops`; when it stops, it creates no `.env` and exits with 1. When a copy fails, nobs prints the problem, stops there and exits with 1; the workshops before it keep their new `.env`. `nobs setup` and `nobs preflight` read the `.env` file of the current folder.
 
+## Smoke
+
+`scripts/smoke.sh` runs the smoke check of the workshops with the Rust nobs. A smoke check is a short run that starts a whole stack, tests that its main parts work, and removes the stack again. The script follows the daily `smoke` job of the workshops, step by step. It passes only when the whole sequence passes on every workshop you ask for. Unlike that job, it also fails when the alert wait or `try-it` fails, and it has guards that protect stacks already on the machine.
+
+Run it from the nobs repository: `scripts/smoke.sh ROOT [WORKSHOP ...]`. `ROOT` is the folder that holds `workshops/<name>/`, for example a copy of the workshops repository. With no `WORKSHOP`, the script checks `autocon5`, then `packt`. It checks the workshops one after another. A `ROOT` that is not an absolute path counts from the folder you run the script in. For example:
+
+```
+$ scripts/smoke.sh ../workshops packt
+```
+
+The script takes the program from `NOBS`, which is `nobs` on the path unless you set it. A `NOBS` that holds a slash but does not start with one also counts from the folder you run the script in.
+
+Each workshop folder needs a `nobs.toml` with a line `project = "..."` and a line `name = "..."`, each written with one space on both sides of `=`. The `project` is the compose project of the stack. A compose project is the group of containers, networks and volumes that Docker Compose makes for one stack. The `name` is the workshop name that nobs knows, and it can differ from the folder name. The script runs every nobs command by that name, from the workshop folder: `nobs <name> setup`, `nobs <name> up`, and so on. When `ROOT` or the workshop folder does not exist, the script treats the `project` as missing and refuses the workshop.
+
+For each workshop, the script runs these steps in order. The first step that fails stops the steps. A failed workshop does not stop the next one.
+
+| Step | What the script does | Limit |
+|---|---|---|
+| `setup` | runs `nobs <name> setup` | none of its own |
+| `up` | runs `nobs <name> up` | none of its own |
+| three readiness waits | asks `http://localhost:9090/-/ready`, then `http://localhost:3001/ready`, then `http://localhost:9093/-/ready` with `curl`, and passes when the address answers | up to 60 tries, `SMOKE_SLEEP` seconds apart, then one last check; each `curl` waits up to 3 seconds |
+| the Infrahub HTTP listener | asks `http://localhost:8000/health`, and when that fails `http://localhost:8000/api/healthcheck`; passes when either answers | the same tries |
+| the Infrahub schema write | sends a POST to `http://localhost:8000/api/schema/load?branch=main` with the workshop's token and a body that holds only the schema version; passes on HTTP 200 | up to 60 tries, `SMOKE_SLEEP` seconds apart; each `curl` waits up to 5 seconds |
+| `load-infrahub` | runs `nobs <name> load-infrahub` | none of its own |
+| the alert wait | runs `nobs <name> alerts -l alertname=<alert>` and passes when at least one line of the answer holds the word `firing`; `<alert>` is `SMOKE_ALERT` | up to 24 tries, `SMOKE_SLEEP` seconds apart; with the default of 5 seconds that is 120 seconds |
+| `try-it --auto` | runs `nobs <name> try-it --auto` | none of its own |
+| the logs, after a failed step only | runs `nobs <name> logs --no-follow --tail 100 <service>` for `prefect-flows`, `webhook`, `alertmanager`, `prometheus`, `loki` and `infrahub-server`, one after another | none of its own |
+| `destroy` | runs `nobs <name> destroy`, always, once the guards have passed; when it fails, the workshop fails | none of its own |
+
+A workshop that runs for more than 25 minutes (1500 seconds) also counts as failed. The script checks this when the workshop ends. It does not stop a workshop that runs long.
+
+Before a workshop starts, the script runs its guards. A guard is a check that must pass before the script does anything. The script refuses the workshop in these cases:
+
+- containers, volumes or networks of its compose project already exist (the script lists them with `docker ps -a`, `docker volume ls` and `docker network ls`, filtered by the Docker label `com.docker.compose.project=<project>`);
+- one of these `docker` listings fails;
+- one of the host ports in `SMOKE_PORTS` is in use (a connection to `127.0.0.1` on that port works).
+
+Only when all the guards pass does the script arm its clean-up. The reason is that `destroy` runs `down --volumes --remove-orphans`, which removes the containers, the networks and the volumes of the project. Without the guards, the script could delete a stack, and its data, that it did not create. A refused workshop touches nothing, runs no nobs command, and counts as failed.
+
+The script has four settings, all environment variables, and no others:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `NOBS` | `nobs` | the nobs program to run |
+| `SMOKE_PORTS` | `8085 9005 9006 8686 3001 9090 9093 3000 8000 9997 4200` | the host ports the guards check, separated by spaces |
+| `SMOKE_SLEEP` | `5` | seconds between two tries of a wait |
+| `SMOKE_ALERT` | `BgpSessionNotUp` | the `alertname` the alert wait looks for |
+
+The schema write needs a token. The script reads `INFRAHUB_API_TOKEN` from the `.env` file of the workshop folder. When the file has the key on more than one line, the last line wins. A pair of double quotes or single quotes around the value is removed. A shell variable of the same name is not used. The token goes only into the header of the schema-write request, as part of the `curl` command line. The script does not set it as an environment variable, so `nobs` and `docker` never receive it, and the script does not print it.
+
+The table below lists every line the script prints itself. `<ws>` is the workshop name as you gave it, which is the folder name. The output of the programs it runs (nobs and Docker) appears as they print it. The `alerts` table is read by the script and not shown.
+
+| Line | When it appears |
+|---|---|
+| `smoke: usage: scripts/smoke.sh ROOT [WORKSHOP ...]` | you gave no `ROOT`; the script exits with 2 |
+| `smoke: <ws>: no project in nobs.toml; refusing to start` | the `project` line is missing, or the workshop folder or its `nobs.toml` cannot be read |
+| `smoke: <ws>: no name in nobs.toml; refusing to start` | the `name` line is missing |
+| `smoke: <ws>: docker <listing> failed (exit <code>); refusing to start` | a `docker` listing exits with a non-zero code; `<listing>` is `ps`, `volume ls` or `network ls` |
+| `smoke: <ws>: <things> of project <project> exist (<list>); refusing to start` | the compose project already has parts; `<things>` is `containers`, `volumes` or `networks`, and `<list>` holds their names, separated by `, ` |
+| `smoke: <ws>: ports in use (<ports>); refusing to start` | one or more ports of `SMOKE_PORTS` are in use; `<ports>` holds them, separated by `, ` |
+| `smoke: <ws>: <command>` | before each nobs command; `<command>` is `setup`, `up`, `load-infrahub`, `try-it --auto` or `destroy` |
+| `smoke: <ws>: <command> failed (exit <code>)` | that nobs command exited with a non-zero code |
+| `smoke: <ws>: wait <url>` | before a readiness wait |
+| `smoke: <ws>: <url> is ready` | the address answered |
+| `smoke: <ws>: <url> never ready` | the address did not answer in time |
+| `smoke: <ws>: wait Infrahub HTTP listener` | before the listener wait |
+| `smoke: <ws>: Infrahub listener is up` | the listener answered |
+| `smoke: <ws>: Infrahub HTTP listener never came up` | the listener did not answer in time |
+| `smoke: <ws>: wait Infrahub schema writes` | before the schema-write wait |
+| `smoke: <ws>: Infrahub schema-write path is ready` | the schema write returned HTTP 200 |
+| `smoke: <ws>: Infrahub never ready for schema writes (last code: <code>)` | no try returned HTTP 200; `<code>` is the HTTP code of the last try, or `000` when `curl` failed |
+| `smoke: <ws>: wait <alert> alert` | before the alert wait |
+| `smoke: <ws>: <alert> is firing (<count> alert(s))` | the alert wait passed; `<count>` is the number of lines with `firing` |
+| `smoke: <ws>: alerts failed (exit <code>)` | the alert wait timed out and the last `alerts` call exited with a non-zero code; printed just before the line below |
+| `smoke: <ws>: no firing <alert> alert after 120s` | the alert wait timed out; the text says 120s even when `SMOKE_SLEEP` is not 5 |
+| `smoke: <ws>: logs` | a step failed, before the logs |
+| `===== <service> =====` | before the logs of each of the six services |
+| `smoke: <ws>: over the 25-minute limit` | the workshop took more than 1500 seconds |
+| `smoke: <ws>: ok in <seconds>s` | the workshop passed |
+| `smoke: <ws>: failed in <seconds>s` | the workshop failed or was refused |
+| `smoke: <passed> of <total> workshops ok` | the last line, after all workshops |
+
+When you press Ctrl-C or the script gets a TERM signal during a workshop, the script runs `destroy` for that workshop and ends at once with exit 1. It prints no `failed in` line and no last line, and it does not check the next workshops. A signal during `destroy` does not start `destroy` a second time.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | every workshop is ok |
+| 1 | a workshop failed or was refused, or the script got Ctrl-C or a TERM signal |
+| 2 | no `ROOT` was given |
+
+For example, the last lines of a run where both workshops pass (the seconds are examples):
+
+```
+smoke: autocon5: ok in 412s
+smoke: packt: ok in 389s
+smoke: 2 of 2 workshops ok
+```
+
+And the last lines of a run where `packt` fails at the alert wait. The `...` marks the output of nobs and Docker, and the logs of the four other services are left out:
+
+```
+smoke: packt: wait BgpSessionNotUp alert
+smoke: packt: no firing BgpSessionNotUp alert after 120s
+smoke: packt: logs
+===== prefect-flows =====
+...
+===== infrahub-server =====
+...
+smoke: packt: destroy
+...
+smoke: packt: failed in 655s
+smoke: 1 of 2 workshops ok
+```
+
 ## Sonda
 
 Sonda makes test metrics and logs, and `sonda-server` is its HTTP server. The `nobs sonda` commands talk to a running `sonda-server`. Each command is one HTTP call, and nobs prints what the server answers.
