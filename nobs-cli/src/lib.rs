@@ -13,12 +13,14 @@ use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::env::load_env;
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
+use nobs_core::grafana::Grafana;
 use nobs_core::http;
 use nobs_core::infrahub::{
     annotation, host_address, read_schema, DeviceIntent, Error as InfrahubError, Infrahub,
     IntentSession, Maintenance, Seed, DEFAULT_ADDRESS, KINDS,
 };
 use nobs_core::lab_vars;
+use nobs_core::layers;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
 use nobs_core::loki::{self, Loki};
 use nobs_core::prefect::{self, FlowRun, Prefect};
@@ -72,6 +74,12 @@ const GROUPS_SHOWN: usize = 5;
 const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
 
 const KIND_WAIT: Duration = Duration::from_secs(30);
+
+const PREFLIGHT_DEVICE: &str = "srl1";
+
+const PREFLIGHT_OUT_DIR: &str = "/tmp/preflight-out";
+
+const GRAFANA_LOGIN: &str = "admin";
 
 const WEDGE_PAUSE: Duration = Duration::from_secs(5);
 
@@ -297,6 +305,11 @@ pub enum WorkshopCommand {
         #[command(flatten)]
         flags: ResetFlags,
     },
+    #[command(about = "Run layers A and B of the workshop's check against the live stack")]
+    Preflight {
+        #[command(flatten)]
+        flags: PreflightFlags,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -477,6 +490,57 @@ pub struct ResetFlags {
         help = "Don't restart sonda-logs even if the loki sink looks wedged"
     )]
     skip_sonda_logs: bool,
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN"
+    )]
+    token: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PreflightFlags {
+    #[arg(
+        long,
+        help = "Accepted so the Python's command line still works; layer C is not built in nobs, so this changes nothing"
+    )]
+    skip_c: bool,
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "Where to write layer_a.json, layer_b.json and REPORT.md; nobs looks at --out-dir, then PREFLIGHT_OUT_DIR, then /tmp/preflight-out"
+    )]
+    out_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090"
+    )]
+    prom_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
+    )]
+    loki_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Grafana; nobs looks at --grafana-url, then GRAFANA_URL, then http://localhost:3000"
+    )]
+    grafana_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
+    )]
+    sonda_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
+    )]
+    infrahub_url: Option<String>,
     #[arg(
         long,
         value_name = "TOKEN",
@@ -1152,6 +1216,10 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         remove_blank_variables(&[
             "PROMETHEUS_URL",
             "LOKI_URL",
+            "GRAFANA_URL",
+            "GRAFANA_USER",
+            "GRAFANA_PASSWORD",
+            "PREFLIGHT_OUT_DIR",
             "ALERTMANAGER_URL",
             "PREFECT_API_URL",
             "WEBHOOK_URL",
@@ -1631,6 +1699,7 @@ fn run_workshop_command(
         WorkshopCommand::Incident { flags } => run_incident(flags),
         WorkshopCommand::Scenarios { flags } => run_scenarios(flags),
         WorkshopCommand::Reset { flags } => run_reset(flags, located, runner),
+        WorkshopCommand::Preflight { flags } => run_workshop_preflight(flags, located),
     }
 }
 
@@ -2128,15 +2197,22 @@ fn run_maintenance(flags: MaintenanceFlags) -> i32 {
     let (server, sink) = event_addresses(|name| std::env::var(name).ok());
     let key = given(std::env::var("SONDA_API_KEY").ok());
     let sonda = Sonda::new(server).api_key(key);
-    if let Err(error) = clear_or_set_maintenance(
-        &infrahub,
-        &sonda,
-        &sink,
-        &flags.kind,
-        &flags.device,
-        state,
-        &mut |line| println!("{line}"),
-    ) {
+    update_maintenance(&infrahub, &sonda, &sink, &flags.kind, &flags.device, state)
+}
+
+fn update_maintenance(
+    infrahub: &Infrahub,
+    sonda: &Sonda,
+    sink: &str,
+    kind: &str,
+    device: &str,
+    state: bool,
+) -> i32 {
+    if let Err(error) =
+        clear_or_set_maintenance(infrahub, sonda, sink, kind, device, state, &mut |line| {
+            println!("{line}")
+        })
+    {
         eprintln!("nobs: {error}");
         return 1;
     }
@@ -3311,6 +3387,136 @@ fn clear_workshop_maintenance(
     if !cleared.is_empty() {
         println!("  cleared maintenance on: {}", cleared.join(", "));
     }
+}
+
+fn report_unwritable(path: &Path, error: &std::io::Error) {
+    eprintln!("nobs: cannot write {}: {error}", path.display());
+}
+
+fn write_output(path: &Path, text: &str) -> bool {
+    let written = fs::write(path, text);
+    if let Err(error) = &written {
+        report_unwritable(path, error);
+    }
+    written.is_ok()
+}
+
+fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let lookup = |name: &str| std::env::var(name).ok();
+    let prometheus = Prometheus::new(service_address(flags.prom_url, PROMETHEUS_ADDRESS, lookup));
+    let loki = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, lookup));
+    let grafana_default = Urls::defaults().grafana;
+    let grafana = Grafana::new(
+        service_address(flags.grafana_url, ("GRAFANA_URL", &grafana_default), lookup),
+        &given(lookup("GRAFANA_USER")).unwrap_or_else(|| GRAFANA_LOGIN.to_string()),
+        &given(lookup("GRAFANA_PASSWORD")).unwrap_or_else(|| GRAFANA_LOGIN.to_string()),
+    );
+    let out_dir = flags
+        .out_dir
+        .filter(|dir| !dir.to_string_lossy().trim().is_empty())
+        .or_else(|| given(lookup("PREFLIGHT_OUT_DIR")).map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(PREFLIGHT_OUT_DIR));
+    let sonda = cascade_client(flags.sonda_url.clone(), None, lookup);
+    let (_, sink) = event_addresses(lookup);
+    let (address, token) = infrahub_settings(
+        InfrahubFlags {
+            address: flags.infrahub_url,
+            token: flags.token,
+        },
+        lookup,
+    );
+    announce_rewrite(&address);
+    let Some(token) = require_token(token) else {
+        return 1;
+    };
+    let infrahub = Infrahub::new(&address, &token);
+    if let Err(error) = fs::create_dir_all(&out_dir) {
+        report_unwritable(&out_dir, &error);
+        return 1;
+    }
+    let dashboards = match layers::dashboards(&located.dir.join("grafana").join("dashboards")) {
+        Ok(found) => found,
+        Err(error) => {
+            eprintln!("nobs: {error}");
+            return 1;
+        }
+    };
+    let started = Instant::now();
+    println!();
+    println!("Layer A — data shape waits");
+    let (waits, code_a) = layers::layer_a(
+        &prometheus,
+        &loki,
+        || {
+            run_flap_interface(
+                FlapInterfaceFlags {
+                    device: PREFLIGHT_DEVICE.to_string(),
+                    interface: "ethernet-1/1".to_string(),
+                    duration: "30s".to_string(),
+                    up_duration: "3s".to_string(),
+                    down_duration: "3s".to_string(),
+                    cascade_delay: "10s".to_string(),
+                    no_cascade: true,
+                    sonda_url: flags.sonda_url,
+                    loki_url: None,
+                    sonda_api_key: None,
+                    follow: false,
+                },
+                located,
+            )
+        },
+        || update_maintenance(&infrahub, &sonda, &sink, KINDS[0], PREFLIGHT_DEVICE, true),
+        SystemTime::now,
+        std::thread::sleep,
+        Instant::now,
+        |line| println!("{line}"),
+    );
+    let layer_a_file = out_dir.join("layer_a.json");
+    if !write_output(&layer_a_file, &layers::waits_json(&waits)) {
+        return 1;
+    }
+    println!();
+    println!("Layer A — wrote {}", layer_a_file.display());
+    println!("Layer B — per-panel /api/ds/query");
+    let (results, code_b) = layers::layer_b(
+        &dashboards,
+        |body| grafana.ds_query(body),
+        SystemTime::now,
+        |line| println!("{line}"),
+    );
+    let layer_b_file = out_dir.join("layer_b.json");
+    if !write_output(&layer_b_file, &layers::dashboards_json(&results)) {
+        return 1;
+    }
+    println!("Layer B — wrote {}", layer_b_file.display());
+    println!("Layer C — per-panel screenshots: not built in nobs, skipped");
+    let report_file = out_dir.join("REPORT.md");
+    let report = layers::report(
+        &workshop.title,
+        &layers::stamp(SystemTime::now()),
+        &waits,
+        &results,
+        code_a,
+        code_b,
+    );
+    if !write_output(&report_file, &report) {
+        return 1;
+    }
+    let code = code_a.max(code_b);
+    let verdict = if code == 0 {
+        "preflight green"
+    } else {
+        "preflight failures"
+    };
+    println!(
+        "{verdict} ({:.1}s) — Layer A exit={code_a} | Layer B exit={code_b} | Layer C skipped",
+        started.elapsed().as_secs_f64()
+    );
+    println!("report: {}", report_file.display());
+    code
 }
 
 fn docker_step(
