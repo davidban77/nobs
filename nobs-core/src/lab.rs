@@ -3,12 +3,12 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use serde::de::IgnoredAny;
 use serde::Deserialize;
 
 pub const PROJECT: &str = "netobs";
 pub const NETWORK: &str = "network-observability";
 pub const SUBNET: &str = "198.51.100.0/24";
+pub const CEOS_KINDS: [&str; 2] = ["ceos", "arista_ceos"];
 
 const POLL: Duration = Duration::from_secs(5);
 
@@ -34,7 +34,15 @@ struct Topology {
 
 #[derive(Deserialize)]
 struct Nodes {
-    nodes: BTreeMap<String, IgnoredAny>,
+    nodes: BTreeMap<String, Option<Settings>>,
+    defaults: Option<Settings>,
+    kinds: Option<BTreeMap<String, Option<Settings>>>,
+}
+
+#[derive(Deserialize)]
+struct Settings {
+    kind: Option<String>,
+    image: Option<String>,
 }
 
 pub fn node_containers(topology_text: &str) -> Result<Vec<String>, String> {
@@ -54,6 +62,138 @@ pub fn node_containers(topology_text: &str) -> Result<Vec<String>, String> {
         .collect();
     names.sort();
     Ok(names)
+}
+
+#[derive(Debug, PartialEq)]
+pub struct NodeImage {
+    pub nodes: Vec<String>,
+    pub kind: String,
+    pub image: String,
+    pub variable: Option<String>,
+}
+
+enum ExpandError {
+    Unset(String),
+    Unsupported(String),
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn expand_value(
+    value: &str,
+    variable: &impl Fn(&str) -> Option<String>,
+) -> Result<(String, Option<String>), ExpandError> {
+    let mut out = String::new();
+    let mut first = None;
+    let mut rest = value;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if let Some(after) = rest.strip_prefix("$$") {
+            out.push('$');
+            rest = after;
+            continue;
+        }
+        let Some(body) = rest.strip_prefix("${") else {
+            let end = rest[1..]
+                .find(|c: char| !is_name_char(c))
+                .map_or(rest.len(), |n| n + 1);
+            return Err(ExpandError::Unsupported(rest[..end].to_string()));
+        };
+        let Some(close) = body.find('}') else {
+            return Err(ExpandError::Unsupported(rest.to_string()));
+        };
+        let text = &rest[..close + 3];
+        let inner = &body[..close];
+        let name_end = inner
+            .find(|c: char| !is_name_char(c))
+            .unwrap_or(inner.len());
+        let (name, tail) = inner.split_at(name_end);
+        if !name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+            return Err(ExpandError::Unsupported(text.to_string()));
+        }
+        let (default, empty_is_unset) = if tail.is_empty() {
+            (None, false)
+        } else if let Some(default) = tail.strip_prefix(":-").or_else(|| tail.strip_prefix(":=")) {
+            (Some(default), true)
+        } else if let Some(default) = tail.strip_prefix('-').or_else(|| tail.strip_prefix('=')) {
+            (Some(default), false)
+        } else {
+            return Err(ExpandError::Unsupported(text.to_string()));
+        };
+        if default.is_some_and(|default| default.contains('$')) {
+            return Err(ExpandError::Unsupported(text.to_string()));
+        }
+        first.get_or_insert_with(|| name.to_string());
+        match (variable(name), default) {
+            (Some(found), _) if !(empty_is_unset && found.is_empty()) => out.push_str(&found),
+            (_, Some(default)) => out.push_str(default),
+            (_, None) => return Err(ExpandError::Unset(name.to_string())),
+        }
+        rest = &rest[close + 3..];
+    }
+    out.push_str(rest);
+    Ok((out, first))
+}
+
+pub fn expand(value: &str, variable: impl Fn(&str) -> Option<String>) -> Result<String, String> {
+    expand_value(value, &variable)
+        .map(|(text, _)| text)
+        .map_err(|error| match error {
+            ExpandError::Unset(name) => format!("variable {name} is not set"),
+            ExpandError::Unsupported(text) => format!("unsupported variable form: {text}"),
+        })
+}
+
+pub fn node_images(
+    topology_text: &str,
+    variable: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<NodeImage>, String> {
+    let topology: Topology =
+        serde_saphyr::from_str(topology_text).map_err(|error| error.to_string())?;
+    let section = &topology.topology;
+    let mut images: BTreeMap<String, NodeImage> = BTreeMap::new();
+    for (node, settings) in &section.nodes {
+        let kind = settings
+            .as_ref()
+            .and_then(|own| own.kind.as_deref())
+            .or_else(|| section.defaults.as_ref().and_then(|d| d.kind.as_deref()))
+            .unwrap_or_default();
+        let raw = settings
+            .as_ref()
+            .and_then(|own| own.image.as_deref())
+            .or_else(|| {
+                section
+                    .kinds
+                    .as_ref()
+                    .and_then(|kinds| kinds.get(kind))
+                    .and_then(Option::as_ref)
+                    .and_then(|of_kind| of_kind.image.as_deref())
+            })
+            .or_else(|| section.defaults.as_ref().and_then(|d| d.image.as_deref()))
+            .ok_or_else(|| format!("node {node} has no image"))?;
+        let (image, name) = expand_value(raw, &variable).map_err(|error| match error {
+            ExpandError::Unset(name) => {
+                format!("variable {name} is not set (image of node {node})")
+            }
+            ExpandError::Unsupported(text) => {
+                format!("unsupported variable form in the image of node {node}: {text}")
+            }
+        })?;
+        images
+            .entry(image.clone())
+            .or_insert_with(|| NodeImage {
+                nodes: Vec::new(),
+                kind: kind.to_string(),
+                image,
+                variable: name,
+            })
+            .nodes
+            .push(node.clone());
+    }
+    Ok(images.into_values().collect())
 }
 
 pub fn truth(value: &str) -> Result<bool, String> {
@@ -285,6 +425,251 @@ mod tests {
         assert!(node_containers("a: [b").is_err());
         assert!(node_containers("name: lab\n").is_err());
         assert!(node_containers("topology:\n  nodes:\n    a: {}\n").is_err());
+    }
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    #[test]
+    fn expand_gives_the_value_of_a_set_variable() {
+        assert_eq!(expand("${A}", env(&[("A", "x")])), Ok("x".to_string()));
+        assert_eq!(expand("${A}", env(&[("A", "")])), Ok(String::new()));
+    }
+
+    #[test]
+    fn expand_colon_dash_and_colon_equals_give_the_default_for_an_unset_or_empty_variable() {
+        for form in ["${A:-d}", "${A:=d}"] {
+            assert_eq!(expand(form, env(&[])), Ok("d".to_string()), "{form}");
+            assert_eq!(
+                expand(form, env(&[("A", "")])),
+                Ok("d".to_string()),
+                "{form}"
+            );
+            assert_eq!(
+                expand(form, env(&[("A", "x")])),
+                Ok("x".to_string()),
+                "{form}"
+            );
+        }
+    }
+
+    #[test]
+    fn expand_dash_and_equals_give_the_default_only_for_an_unset_variable() {
+        for form in ["${A-d}", "${A=d}"] {
+            assert_eq!(expand(form, env(&[])), Ok("d".to_string()), "{form}");
+            assert_eq!(expand(form, env(&[("A", "")])), Ok(String::new()), "{form}");
+            assert_eq!(
+                expand(form, env(&[("A", "x")])),
+                Ok("x".to_string()),
+                "{form}"
+            );
+        }
+    }
+
+    #[test]
+    fn expand_turns_two_dollars_into_one() {
+        assert_eq!(expand("a$$b$$", env(&[])), Ok("a$b$".to_string()));
+        assert_eq!(expand("$${A}", env(&[])), Ok("${A}".to_string()));
+    }
+
+    #[test]
+    fn expand_of_an_unset_variable_without_a_default_names_the_variable() {
+        assert_eq!(
+            expand("x${A}", env(&[])),
+            Err("variable A is not set".to_string())
+        );
+    }
+
+    #[test]
+    fn expand_refuses_every_other_dollar_form_and_names_it() {
+        for (value, form) in [
+            ("${A:+x}", "${A:+x}"),
+            ("${A+x}", "${A+x}"),
+            ("${A:?x}", "${A:?x}"),
+            ("$A", "$A"),
+            ("a $A b", "$A"),
+            ("a$", "$"),
+            ("${A", "${A"),
+            ("${1A}", "${1A}"),
+            ("${}", "${}"),
+            ("${A:-${B}}", "${A:-${B}"),
+        ] {
+            assert_eq!(
+                expand(value, env(&[("A", "x")])),
+                Err(format!("unsupported variable form: {form}")),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn expand_expands_every_form_in_a_value_and_copies_the_rest() {
+        assert_eq!(
+            expand("r/${A}:${B:-b}-$$-end", env(&[("A", "x")])),
+            Ok("r/x:b-$-end".to_string())
+        );
+    }
+
+    fn book_lab(image: &str) -> String {
+        format!(
+            "name: book\ntopology:\n  kinds:\n    ceos:\n      image: {image}\n  nodes:\n    ceos-01:\n      kind: ceos\n    ceos-02:\n      kind: ceos\n"
+        )
+    }
+
+    #[test]
+    fn node_images_of_the_fixture_is_one_image_with_both_nodes() {
+        let fixture = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures/book-lab/containerlab/lab.yml"),
+        )
+        .unwrap();
+        assert_eq!(
+            node_images(&fixture, env(&[])),
+            Ok(vec![NodeImage {
+                nodes: strings(&["nobs-t-srl1", "nobs-t-srl2"]),
+                kind: "nokia_srlinux".to_string(),
+                image: "ghcr.io/nokia/srlinux:latest".to_string(),
+                variable: None,
+            }])
+        );
+    }
+
+    #[test]
+    fn node_images_of_the_book_lab_uses_the_default_and_names_the_variable() {
+        assert_eq!(
+            node_images(&book_lab("${CEOS_IMAGE:-ceos:image}"), env(&[])),
+            Ok(vec![NodeImage {
+                nodes: strings(&["ceos-01", "ceos-02"]),
+                kind: "ceos".to_string(),
+                image: "ceos:image".to_string(),
+                variable: Some("CEOS_IMAGE".to_string()),
+            }])
+        );
+    }
+
+    #[test]
+    fn node_images_of_the_book_lab_uses_the_value_of_the_variable() {
+        assert_eq!(
+            node_images(
+                &book_lab("${CEOS_IMAGE:-ceos:image}"),
+                env(&[("CEOS_IMAGE", "ceos:4.32.0F")])
+            ),
+            Ok(vec![NodeImage {
+                nodes: strings(&["ceos-01", "ceos-02"]),
+                kind: "ceos".to_string(),
+                image: "ceos:4.32.0F".to_string(),
+                variable: Some("CEOS_IMAGE".to_string()),
+            }])
+        );
+    }
+
+    #[test]
+    fn node_images_prefers_the_image_of_the_node_over_the_image_of_its_kind() {
+        let text = "name: t\ntopology:\n  kinds:\n    ceos:\n      image: kind:1\n  nodes:\n    a:\n      kind: ceos\n      image: own:1\n    b:\n      kind: ceos\n";
+        assert_eq!(
+            node_images(text, env(&[])),
+            Ok(vec![
+                NodeImage {
+                    nodes: strings(&["b"]),
+                    kind: "ceos".to_string(),
+                    image: "kind:1".to_string(),
+                    variable: None,
+                },
+                NodeImage {
+                    nodes: strings(&["a"]),
+                    kind: "ceos".to_string(),
+                    image: "own:1".to_string(),
+                    variable: None,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn node_images_uses_the_image_and_kind_of_defaults_last() {
+        let text = "name: t\ntopology:\n  defaults:\n    kind: ceos\n    image: default:1\n  kinds:\n    ceos:\n      image: kind:1\n    linux:\n  nodes:\n    a:\n      kind: linux\n    b: {}\n    c:\n";
+        assert_eq!(
+            node_images(text, env(&[])),
+            Ok(vec![
+                NodeImage {
+                    nodes: strings(&["a"]),
+                    kind: "linux".to_string(),
+                    image: "default:1".to_string(),
+                    variable: None,
+                },
+                NodeImage {
+                    nodes: strings(&["b", "c"]),
+                    kind: "ceos".to_string(),
+                    image: "kind:1".to_string(),
+                    variable: None,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn node_images_groups_nodes_by_expanded_image_and_takes_the_first_node_for_kind_and_variable() {
+        let text = "name: t\ntopology:\n  nodes:\n    c:\n      kind: k3\n      image: i:1\n    b:\n      kind: k2\n      image: ${V:-i:1}\n    a:\n      kind: k1\n      image: h:1\n";
+        assert_eq!(
+            node_images(text, env(&[])),
+            Ok(vec![
+                NodeImage {
+                    nodes: strings(&["a"]),
+                    kind: "k1".to_string(),
+                    image: "h:1".to_string(),
+                    variable: None,
+                },
+                NodeImage {
+                    nodes: strings(&["b", "c"]),
+                    kind: "k2".to_string(),
+                    image: "i:1".to_string(),
+                    variable: Some("V".to_string()),
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn node_images_does_not_count_two_dollars_as_a_variable() {
+        let text = "name: t\ntopology:\n  nodes:\n    a:\n      image: i$$1\n";
+        let images = node_images(text, env(&[])).unwrap();
+        assert_eq!(images[0].image, "i$1");
+        assert_eq!(images[0].variable, None);
+    }
+
+    #[test]
+    fn node_images_of_a_node_with_no_image_names_the_node() {
+        let text = "name: t\ntopology:\n  kinds:\n    ceos:\n      image: kind:1\n  nodes:\n    a:\n      kind: ceos\n    b:\n      kind: linux\n";
+        assert_eq!(
+            node_images(text, env(&[])),
+            Err("node b has no image".to_string())
+        );
+    }
+
+    #[test]
+    fn node_images_names_the_node_when_the_image_cannot_be_expanded() {
+        let unset = "name: t\ntopology:\n  nodes:\n    a:\n      image: ${V}\n";
+        assert_eq!(
+            node_images(unset, env(&[])),
+            Err("variable V is not set (image of node a)".to_string())
+        );
+        let unsupported = "name: t\ntopology:\n  nodes:\n    a:\n      image: $V\n";
+        assert_eq!(
+            node_images(unsupported, env(&[])),
+            Err("unsupported variable form in the image of node a: $V".to_string())
+        );
+    }
+
+    #[test]
+    fn node_images_rejects_text_that_is_not_a_topology() {
+        assert!(node_images("a: [b", env(&[])).is_err());
+        assert!(node_images("name: lab\n", env(&[])).is_err());
     }
 
     #[test]
