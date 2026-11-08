@@ -36,10 +36,12 @@ fn the_help_pages_name_the_containerlab_group_and_exactly_its_three_commands() {
     assert_eq!(commands, CONTAINERLAB_COMMANDS);
 }
 
-const LAB_COMMANDS: [&str; 4] = ["deploy", "destroy", "purge", "show"];
+const LAB_COMMANDS: [&str; 7] = [
+    "deploy", "destroy", "purge", "show", "prepare", "update", "rebuild",
+];
 
 #[test]
-fn the_help_pages_name_the_lab_group_and_exactly_its_four_commands() {
+fn the_help_pages_name_the_lab_group_and_exactly_its_seven_commands() {
     let commands = commands_block(&help(&[]));
     assert!(commands.iter().any(|word| word == "lab"), "{commands:?}");
 

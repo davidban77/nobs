@@ -1,0 +1,8 @@
+services:
+  builder:
+    build: ./builder
+    command: sleep 3600
+networks:
+  default:
+    name: nobs-t-net
+    external: true

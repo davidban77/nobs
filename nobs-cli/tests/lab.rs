@@ -33,8 +33,14 @@ const SERVICE_EXITED: &str = r#"{"Service":"sleeper","State":"exited","Health":"
 const NODES_UP: &str = r#"{"nobs-t-book":[{"name":"clab-nobs-t-book-nobs-t-srl1","state":"running"},{"name":"clab-nobs-t-book-nobs-t-srl2","state":"running"}]}"#;
 const NODE_ONE_UP: &str =
     r#"{"nobs-t-book":[{"name":"clab-nobs-t-book-nobs-t-srl1","state":"running"}]}"#;
-const OTHER_TOPOLOGY: &str =
-    "name: other\ntopology:\n  nodes:\n    n1:\n      kind: nokia_srlinux\n";
+const OTHER_TOPOLOGY: &str = "name: other\ntopology:\n  nodes:\n    n1:\n      kind: nokia_srlinux\n      image: ghcr.io/nokia/srlinux:latest\n";
+const BUILDER_UP: &str = r#"{"Service":"builder","State":"running","Health":""}"#;
+const SERVICES_MIXED: &str = concat!(
+    r#"{"Service":"sleeper","State":"running","Health":""}"#,
+    "\n",
+    r#"{"Service":"other","State":"exited","Health":""}"#
+);
+const SRLINUX: &str = "ghcr.io/nokia/srlinux:latest";
 
 const START: char = '\u{1e}';
 const END: &str = "\u{1f}";
@@ -50,6 +56,10 @@ const PROJECT_CONTAINERS: &[&str] = &[
     "{{.Names}}",
 ];
 const NETWORKS: &[&str] = &["docker", "network", "ls", "--format", "{{.Name}}"];
+
+fn inspect(image: &str) -> Call {
+    call(&["docker", "image", "inspect", "--format", "{{.Id}}", image])
+}
 const CREATE: &[&str] = &[
     "docker",
     "network",
@@ -104,7 +114,7 @@ type Flags<'a> = &'a [&'a str];
 type Env<'a> = &'a [(&'a str, &'a str)];
 
 fn ready(changes: &[(usize, i32, &'static str)]) -> Vec<Step> {
-    let mut steps = vec![(0, ""); 6];
+    let mut steps = vec![(0, ""); 7];
     steps.push((0, SERVICE_UP));
     steps.push((0, NODES_UP));
     for (index, code, text) in changes {
@@ -244,6 +254,7 @@ fn deploy_checks_then_creates_deploys_starts_and_waits_and_says_so() {
         [
             call(CONTAINERS),
             call(PROJECT_CONTAINERS),
+            inspect(SRLINUX),
             call(NETWORKS),
             call(CREATE),
             containerlab(&topology, "deploy", &[]),
@@ -290,13 +301,13 @@ fn sudo_comes_from_the_last_flag_then_lab_sudo_and_is_off_by_default() {
         let run = lab.run(&args, env);
 
         assert_eq!(run.code, 0, "{flags:?} {env:?}: {}", run.stderr);
-        assert_eq!(&lab.calls()[4], expected, "{flags:?} {env:?}");
+        assert_eq!(&lab.calls()[5], expected, "{flags:?} {env:?}");
     }
 
     lab.script(&ready(&[]));
     lab.run(&["lab", "deploy", "-s", "ch1", "--sudo"], &[]);
     assert_eq!(
-        lab.calls()[7],
+        lab.calls()[8],
         sudo_containerlab(&topology, "inspect", &["--format", "json"])
     );
 }
@@ -407,7 +418,7 @@ fn network_and_subnet_come_from_the_flag_then_the_variable_then_the_setting_then
         let run = lab.run(&args, env);
 
         assert_eq!(run.code, 0, "{flags:?} {env:?}: {}", run.stderr);
-        assert_eq!(lab.calls()[3], expected, "{flags:?} {env:?}");
+        assert_eq!(lab.calls()[4], expected, "{flags:?} {env:?}");
     }
 }
 
@@ -431,7 +442,7 @@ fn the_scenario_comes_from_the_flag_then_lab_scenario_and_a_blank_one_counts_as_
         let run = lab.run(&args, env);
 
         assert_eq!(run.code, 0, "{flags:?} {env:?}: {}", run.stderr);
-        assert_eq!(lab.calls()[5], up, "{flags:?} {env:?}");
+        assert_eq!(lab.calls()[6], up, "{flags:?} {env:?}");
     }
 }
 
@@ -464,11 +475,11 @@ fn the_project_and_topology_settings_apply_and_the_topology_flag_starts_at_the_l
         ])
     );
     assert_eq!(
-        calls[4],
+        calls[5],
         containerlab(&lab.dir().join("t/set.yml"), "deploy", &[])
     );
     assert_eq!(
-        calls[5],
+        calls[6],
         docker_compose("p", &lab.compose("ch1"), &["up", "-d", "--remove-orphans"])
     );
 
@@ -489,7 +500,7 @@ fn the_project_and_topology_settings_apply_and_the_topology_flag_starts_at_the_l
 
         assert_eq!(run.code, 0, "{given}: {}", run.stderr);
         assert_eq!(
-            lab.calls()[4],
+            lab.calls()[5],
             containerlab(&flagged, "deploy", &[]),
             "{given}"
         );
@@ -539,7 +550,12 @@ fn a_container_of_the_project_refuses_the_deploy_after_two_listings() {
 #[test]
 fn an_existing_network_is_kept_and_not_created() {
     let lab = Lab::new("network-kept");
-    lab.script(&[(0, ""), (0, ""), (0, "bridge\nnetwork-observability\n")]);
+    lab.script(&[
+        (0, ""),
+        (0, ""),
+        (0, ""),
+        (0, "bridge\nnetwork-observability\n"),
+    ]);
 
     let run = lab.run(&["lab", "deploy", "-s", "ch1", "--wait", "0"], &[]);
 
@@ -549,6 +565,7 @@ fn an_existing_network_is_kept_and_not_created() {
         [
             call(CONTAINERS),
             call(PROJECT_CONTAINERS),
+            inspect(SRLINUX),
             call(NETWORKS),
             containerlab(&lab.topology(), "deploy", &[]),
             docker_compose(
@@ -573,9 +590,13 @@ fn an_existing_network_is_kept_and_not_created() {
 #[test]
 fn a_listing_that_fails_stops_the_deploy_at_once() {
     let lab = Lab::new("listing-fails");
-    let whats = ["containers", "containers of project netobs", "networks"];
+    let whats = [
+        (0, "containers"),
+        (1, "containers of project netobs"),
+        (3, "networks"),
+    ];
 
-    for (index, what) in whats.into_iter().enumerate() {
+    for (index, what) in whats {
         let mut steps = vec![(0, ""); index];
         steps.push((4, ""));
         lab.script(&steps);
@@ -615,7 +636,7 @@ fn a_program_that_cannot_start_stops_the_deploy_with_exit_1() {
         "{}",
         run.stderr
     );
-    assert_eq!(lab.calls().len(), 4);
+    assert_eq!(lab.calls().len(), 5);
     assert!(!run.stdout.contains("lab deployed"), "{}", run.stdout);
 }
 
@@ -624,9 +645,9 @@ fn a_step_that_fails_stops_the_deploy_with_its_name_and_its_code() {
     let lab = Lab::new("step-fails");
 
     for (index, step) in [
-        (3, "network create"),
-        (4, "containerlab deploy"),
-        (5, "compose up"),
+        (4, "network create"),
+        (5, "containerlab deploy"),
+        (6, "compose up"),
     ] {
         lab.script(&ready(&[(index, 3, "")]));
 
@@ -649,7 +670,7 @@ fn a_step_that_fails_stops_the_deploy_with_its_name_and_its_code() {
 #[test]
 fn a_service_that_exited_keeps_the_wait_polling_until_the_limit() {
     let lab = Lab::new("wait-limit");
-    let mut steps = ready(&[(6, 0, SERVICE_EXITED), (7, 0, NODE_ONE_UP)]);
+    let mut steps = ready(&[(7, 0, SERVICE_EXITED), (8, 0, NODE_ONE_UP)]);
     steps.extend([(0, SERVICE_EXITED), (0, NODE_ONE_UP)]);
     lab.script(&steps);
 
@@ -660,7 +681,7 @@ fn a_service_that_exited_keeps_the_wait_polling_until_the_limit() {
         run.stderr,
         "nobs: lab deploy: not ready after 1s: sleeper (exited/), clab-nobs-t-book-nobs-t-srl2 (missing)\n"
     );
-    assert_eq!(lab.calls().len(), 10);
+    assert_eq!(lab.calls().len(), 11);
     assert!(run
         .stdout
         .contains("lab deploy: waiting for 1 services and 2 nodes (up to 1s)\n"));
@@ -673,21 +694,21 @@ fn a_poll_that_fails_or_cannot_be_read_stops_the_wait_at_once() {
     let lab = Lab::new("poll-fails");
     let cases: [(usize, i32, &str, &str, i32); 3] = [
         (
-            6,
+            7,
             4,
             "",
             "nobs: lab deploy: compose ps failed (exit 4)\n",
             4,
         ),
         (
-            7,
+            8,
             5,
             "",
             "nobs: lab deploy: containerlab inspect failed (exit 5)\n",
             5,
         ),
         (
-            6,
+            7,
             0,
             "not json",
             "nobs: lab deploy: cannot read compose ps output: ",
@@ -723,7 +744,7 @@ fn wait_0_makes_no_poll_and_still_says_deployed() {
     let run = lab.run(&["lab", "deploy", "-s", "ch1", "--wait", "0"], &[]);
 
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(lab.calls().len(), 6);
+    assert_eq!(lab.calls().len(), 7);
     assert!(!run.stdout.contains("waiting for"), "{}", run.stdout);
     assert!(
         run.stdout.ends_with("lab deployed: scenario ch1\n"),
@@ -909,7 +930,7 @@ fn no_scenario_at_all_exits_2_and_names_the_known_ones() {
     let lab = Lab::new("no-scenario");
     lab.file("chapters/ch2/docker-compose.yml", "services: {}\n");
 
-    for command in ["deploy", "destroy", "show"] {
+    for command in ["deploy", "destroy", "show", "prepare", "update", "rebuild"] {
         let run = lab.run(&["lab", command], &[]);
 
         assert_eq!(run.code, 2, "{command}");
@@ -981,11 +1002,12 @@ fn a_workshop_and_a_labcli_lab_are_refused_with_exit_1_and_nothing_runs() {
 fn a_missing_topology_stops_every_command_before_anything_runs() {
     let lab = Lab::new("missing-topology");
     let missing = lab.dir().join("t/missing.yml");
-    let commands: [&[&str]; 4] = [
+    let commands: [&[&str]; 5] = [
         &["deploy", "-s", "ch1"],
         &["destroy", "-s", "ch1"],
         &["show", "-s", "ch1"],
         &["purge"],
+        &["prepare", "-s", "ch1"],
     ];
 
     for command in commands {
@@ -1042,6 +1064,660 @@ fn the_deploy_help_names_every_flag_and_the_default_wait() {
     let lab = Lab::new("help");
 
     let run = lab.run(&["lab", "deploy", "--help"], &[]);
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    for flag in [
+        "--scenario",
+        "--topology",
+        "--network-name",
+        "--subnet",
+        "--sudo",
+        "--no-sudo",
+        "--wait",
+        "[default: 300]",
+    ] {
+        assert!(run.stdout.contains(flag), "{flag}\n{}", run.stdout);
+    }
+}
+
+fn ch2_lab(name: &str) -> Lab {
+    let lab = Lab::new(name);
+    let book = fixture("book-lab");
+    for file in [
+        "chapters/ch2/docker-compose.yml",
+        "chapters/ch2/builder/Dockerfile",
+    ] {
+        lab.file(file, &fs::read_to_string(book.join(file)).unwrap());
+    }
+    lab
+}
+
+fn ceos_topology(kind: &str, image: &str) -> String {
+    format!(
+        "name: nobs-t-ceos\ntopology:\n  nodes:\n    ceos1:\n      kind: {kind}\n      image: {image}\n"
+    )
+}
+
+const CEOS_IMPORT: &str = "  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz";
+
+#[test]
+fn a_missing_image_stops_the_deploy_after_the_two_listings_and_says_how_to_get_it() {
+    let lab = Lab::new("image-missing");
+    lab.script(&[(0, ""), (0, ""), (1, "")]);
+
+    let run = lab.run(&["lab", "deploy", "-s", "ch1", "--wait", "0"], &[]);
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab deploy: image ghcr.io/nokia/srlinux:latest of nodes nobs-t-srl1, nobs-t-srl2 is not present\n  pull it with: docker pull ghcr.io/nokia/srlinux:latest\n"
+    );
+    assert_eq!(run.stdout, "");
+    assert_eq!(
+        lab.calls(),
+        [call(CONTAINERS), call(PROJECT_CONTAINERS), inspect(SRLINUX)]
+    );
+}
+
+#[test]
+fn a_missing_ceos_image_gets_the_import_line_and_the_variable_to_set() {
+    let lab = Lab::new("image-ceos");
+    lab.file(
+        "t/ceos.yml",
+        &ceos_topology("ceos", "\"${NOBS_T_CEOS:-ceos:image}\""),
+    );
+    lab.script(&[(0, ""), (0, ""), (1, "")]);
+
+    let run = lab.run(
+        &[
+            "lab",
+            "deploy",
+            "-s",
+            "ch1",
+            "--wait",
+            "0",
+            "--topology",
+            "t/ceos.yml",
+        ],
+        &[],
+    );
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "nobs: lab deploy: image ceos:image of node ceos1 is not present\n{CEOS_IMPORT} ceos:<version>\n  then set NOBS_T_CEOS=ceos:<version>\n"
+        )
+    );
+    assert_eq!(lab.calls()[2], inspect("ceos:image"));
+}
+
+#[test]
+fn a_ceos_image_without_a_variable_gets_the_import_line_for_that_image_only() {
+    let lab = Lab::new("image-ceos-fixed");
+    lab.file("t/ceos.yml", &ceos_topology("arista_ceos", "ceos:fixed"));
+    lab.script(&[(0, ""), (0, ""), (1, "")]);
+
+    let run = lab.run(
+        &[
+            "lab",
+            "deploy",
+            "-s",
+            "ch1",
+            "--wait",
+            "0",
+            "--topology",
+            "t/ceos.yml",
+        ],
+        &[],
+    );
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "nobs: lab deploy: image ceos:fixed of node ceos1 is not present\n{CEOS_IMPORT} ceos:fixed\n"
+        )
+    );
+}
+
+#[test]
+fn a_set_variable_gives_the_image_that_is_inspected_and_a_present_image_lets_the_deploy_go_on() {
+    let lab = Lab::new("image-variable");
+    lab.file(
+        "t/ceos.yml",
+        &ceos_topology("ceos", "\"${NOBS_T_CEOS:-ceos:image}\""),
+    );
+
+    let run = lab.run(
+        &[
+            "lab",
+            "deploy",
+            "-s",
+            "ch1",
+            "--wait",
+            "0",
+            "--topology",
+            "t/ceos.yml",
+        ],
+        &[("NOBS_T_CEOS", "ceos:4.32.0F")],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(lab.calls().len(), 7);
+    assert_eq!(lab.calls()[2], inspect("ceos:4.32.0F"));
+}
+
+#[test]
+fn a_node_without_an_image_stops_the_deploy_before_any_image_call() {
+    let lab = Lab::new("image-none");
+    lab.file(
+        "t/none.yml",
+        "name: other\ntopology:\n  nodes:\n    n1:\n      kind: nokia_srlinux\n",
+    );
+
+    let run = lab.run(
+        &["lab", "deploy", "-s", "ch1", "--topology", "t/none.yml"],
+        &[],
+    );
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "nobs: cannot read topology file: {}: node n1 has no image\n",
+            lab.dir().join("t/none.yml").display()
+        )
+    );
+    assert_eq!(lab.calls(), [call(CONTAINERS), call(PROJECT_CONTAINERS)]);
+}
+
+#[test]
+fn update_removes_the_named_service_with_its_volumes_starts_it_and_waits_for_it_alone() {
+    let lab = Lab::new("update");
+    lab.script(&[(0, ""), (0, ""), (0, SERVICES_MIXED)]);
+    let ch1 = lab.compose("ch1");
+
+    let run = lab.run(&["lab", "update", "sleeper", "-s", "ch1"], &[]);
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            docker_compose(
+                "netobs",
+                &ch1,
+                &["rm", "--stop", "--force", "--volumes", "sleeper"]
+            ),
+            docker_compose("netobs", &ch1, &["up", "-d", "--remove-orphans", "sleeper"]),
+            docker_compose("netobs", &ch1, &["ps", "--all", "--format", "json"]),
+        ]
+    );
+    assert_eq!(
+        run.stdout,
+        "lab update: removing sleeper (project netobs)\n\
+         lab update: starting sleeper\n\
+         lab update: waiting for 1 services (up to 300s)\n\
+         lab update: ready after 0s\n\
+         lab updated: scenario ch1\n"
+    );
+    assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn update_without_a_service_acts_on_all_services_and_waits_for_the_whole_list() {
+    let lab = Lab::new("update-all");
+    lab.script(&[(0, ""), (0, ""), (0, SERVICE_UP)]);
+    let ch1 = lab.compose("ch1");
+
+    let run = lab.run(&["lab", "update", "-s", "ch1"], &[]);
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            docker_compose("netobs", &ch1, &["rm", "--stop", "--force", "--volumes"]),
+            docker_compose("netobs", &ch1, &["up", "-d", "--remove-orphans"]),
+            docker_compose("netobs", &ch1, &["ps", "--all", "--format", "json"]),
+        ]
+    );
+    assert_eq!(
+        run.stdout,
+        "lab update: removing all services (project netobs)\n\
+         lab update: starting all services\n\
+         lab update: waiting for 1 services (up to 300s)\n\
+         lab update: ready after 0s\n\
+         lab updated: scenario ch1\n"
+    );
+}
+
+#[test]
+fn update_keeps_the_order_of_the_services_and_wait_0_makes_no_poll() {
+    let lab = Lab::new("update-order");
+    let ch1 = lab.compose("ch1");
+
+    let run = lab.run(
+        &["lab", "update", "zeta", "alpha", "-s", "ch1", "--wait", "0"],
+        &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            docker_compose(
+                "netobs",
+                &ch1,
+                &["rm", "--stop", "--force", "--volumes", "zeta", "alpha"]
+            ),
+            docker_compose(
+                "netobs",
+                &ch1,
+                &["up", "-d", "--remove-orphans", "zeta", "alpha"]
+            ),
+        ]
+    );
+    assert_eq!(
+        run.stdout,
+        "lab update: removing zeta, alpha (project netobs)\n\
+         lab update: starting zeta, alpha\n\
+         lab updated: scenario ch1\n"
+    );
+}
+
+#[test]
+fn a_failing_rm_stops_the_update_with_its_code_and_no_success_line() {
+    let lab = Lab::new("update-fails");
+    lab.script(&[(2, "")]);
+
+    let run = lab.run(
+        &["lab", "update", "sleeper", "-s", "ch1", "--wait", "0"],
+        &[],
+    );
+
+    assert_eq!(run.code, 2);
+    assert_eq!(run.stderr, "nobs: lab update: compose rm failed (exit 2)\n");
+    assert_eq!(lab.calls().len(), 1);
+    assert_eq!(
+        run.stdout,
+        "lab update: removing sleeper (project netobs)\n"
+    );
+}
+
+#[test]
+fn update_and_rebuild_do_not_read_the_topology_file_but_deploy_does() {
+    let lab = Lab::new("no-topology-read");
+    lab.file(
+        "nobs.toml",
+        "kind = \"lab\"\ntopology = \"t/missing.yml\"\n",
+    );
+
+    for command in ["update", "rebuild"] {
+        let run = lab.run(
+            &["lab", command, "sleeper", "-s", "ch1", "--wait", "0"],
+            &[],
+        );
+
+        assert_eq!(run.code, 0, "{command}: {}", run.stderr);
+    }
+
+    let run = lab.run(&["lab", "deploy", "-s", "ch1"], &[]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "nobs: topology file not found: {}\n",
+            lab.dir().join("t/missing.yml").display()
+        )
+    );
+}
+
+#[test]
+fn rebuild_stops_builds_and_starts_the_service_then_waits_for_it() {
+    let lab = ch2_lab("rebuild");
+    lab.script(&[(0, ""), (0, ""), (0, ""), (0, BUILDER_UP)]);
+    let ch2 = lab.compose("ch2");
+
+    let run = lab.run(
+        &["lab", "rebuild", "builder", "-s", "ch2", "--wait", "1"],
+        &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            docker_compose("netobs", &ch2, &["stop", "builder"]),
+            docker_compose("netobs", &ch2, &["build", "builder"]),
+            docker_compose("netobs", &ch2, &["up", "-d", "--remove-orphans", "builder"]),
+            docker_compose("netobs", &ch2, &["ps", "--all", "--format", "json"]),
+        ]
+    );
+    assert_eq!(
+        run.stdout,
+        "lab rebuild: stopping builder\n\
+         lab rebuild: building builder\n\
+         lab rebuild: starting builder\n\
+         lab rebuild: waiting for 1 services (up to 1s)\n\
+         lab rebuild: ready after 0s\n\
+         lab rebuilt: scenario ch2\n"
+    );
+    assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn a_failing_build_stops_the_rebuild_with_its_code_and_no_success_line() {
+    let lab = ch2_lab("rebuild-fails");
+    lab.script(&[(0, ""), (3, "")]);
+
+    let run = lab.run(
+        &["lab", "rebuild", "builder", "-s", "ch2", "--wait", "0"],
+        &[],
+    );
+
+    assert_eq!(run.code, 3);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab rebuild: compose build failed (exit 3)\n"
+    );
+    assert_eq!(lab.calls().len(), 2);
+    assert!(!run.stdout.contains("lab rebuilt"), "{}", run.stdout);
+}
+
+#[test]
+fn a_service_that_stays_exited_keeps_the_services_wait_polling_until_the_limit() {
+    let lab = Lab::new("services-limit");
+    lab.script(&[
+        (0, ""),
+        (0, ""),
+        (0, SERVICE_EXITED),
+        (0, SERVICE_EXITED),
+        (0, SERVICE_EXITED),
+    ]);
+
+    let run = lab.run(&["lab", "update", "-s", "ch1", "--wait", "1"], &[]);
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab update: not ready after 1s: sleeper (exited/)\n"
+    );
+    assert_eq!(lab.calls().len(), 4);
+    assert!(run
+        .stdout
+        .contains("lab update: waiting for 1 services (up to 1s)\n"));
+    assert!(!run.stdout.contains("ready after"), "{}", run.stdout);
+    assert!(!run.stdout.contains("lab updated"), "{}", run.stdout);
+}
+
+#[test]
+fn a_named_service_the_list_does_not_hold_is_missing_and_never_ready() {
+    let lab = Lab::new("services-missing");
+    lab.script(&[
+        (0, ""),
+        (0, ""),
+        (0, SERVICE_UP),
+        (0, SERVICE_UP),
+        (0, SERVICE_UP),
+    ]);
+
+    let run = lab.run(
+        &[
+            "lab", "update", "sleeper", "ghost", "-s", "ch1", "--wait", "1",
+        ],
+        &[],
+    );
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab update: not ready after 1s: ghost (missing)\n"
+    );
+    assert!(run
+        .stdout
+        .contains("lab update: waiting for 2 services (up to 1s)\n"));
+    assert!(!run.stdout.contains("lab updated"), "{}", run.stdout);
+}
+
+#[test]
+fn a_poll_that_fails_stops_the_services_wait_at_once() {
+    let lab = Lab::new("services-poll-fails");
+    lab.script(&[(0, ""), (0, ""), (0, ""), (4, "")]);
+
+    let run = lab.run(&["lab", "rebuild", "-s", "ch1"], &[]);
+
+    assert_eq!(run.code, 4);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab rebuild: compose ps failed (exit 4)\n"
+    );
+    assert_eq!(lab.calls().len(), 4);
+    assert!(!run.stdout.contains("lab rebuilt"), "{}", run.stdout);
+}
+
+#[test]
+fn prepare_checks_the_image_purges_every_scenario_then_deploys_and_says_so() {
+    let lab = ch2_lab("prepare");
+    let node = "clab-nobs-t-book-nobs-t-srl1\n";
+    let mut steps = vec![(0, ""); 14];
+    steps[0] = (0, node);
+    steps[4] = (0, node);
+    steps[12] = (0, BUILDER_UP);
+    steps[13] = (0, NODES_UP);
+    lab.script(&steps);
+    let (topology, ch2) = (lab.topology(), lab.compose("ch2"));
+    let down = |scenario: &str| {
+        docker_compose(
+            "netobs",
+            &lab.compose(scenario),
+            &["down", "--volumes", "--remove-orphans"],
+        )
+    };
+
+    let run = lab.run(&["lab", "prepare", "-s", "ch2", "--wait", "1"], &[]);
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            call(CONTAINERS),
+            inspect(SRLINUX),
+            down("ch1"),
+            down("ch2"),
+            call(CONTAINERS),
+            containerlab(&topology, "destroy", &["--cleanup"]),
+            call(CONTAINERS),
+            call(PROJECT_CONTAINERS),
+            call(NETWORKS),
+            call(CREATE),
+            containerlab(&topology, "deploy", &[]),
+            docker_compose("netobs", &ch2, &["up", "-d", "--remove-orphans"]),
+            docker_compose("netobs", &ch2, &["ps", "--all", "--format", "json"]),
+            containerlab(&topology, "inspect", &["--format", "json"]),
+        ]
+    );
+    assert_eq!(
+        run.stdout,
+        format!(
+            "lab prepare: scenario ch2\n\
+             lab purge: ch1\n\
+             lab purge: ch2\n\
+             lab purge: destroying topology {0}\n\
+             lab purged: 2 scenarios\n\
+             lab deploy: creating network network-observability (198.51.100.0/24)\n\
+             lab deploy: deploying topology {0}\n\
+             lab deploy: starting ch2 (project netobs)\n\
+             lab deploy: waiting for 1 services and 2 nodes (up to 1s)\n\
+             lab deploy: ready after 0s\n\
+             lab deployed: scenario ch2\n\
+             lab prepared: scenario ch2\n",
+            topology.display()
+        )
+    );
+    assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn prepare_with_a_missing_image_refuses_before_any_down() {
+    let lab = Lab::new("prepare-image");
+    lab.script(&[(0, ""), (1, "")]);
+
+    let run = lab.run(&["lab", "prepare", "-s", "ch1", "--wait", "0"], &[]);
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab prepare: image ghcr.io/nokia/srlinux:latest of nodes nobs-t-srl1, nobs-t-srl2 is not present\n  pull it with: docker pull ghcr.io/nokia/srlinux:latest\n"
+    );
+    assert_eq!(run.stdout, "");
+    assert_eq!(lab.calls(), [call(CONTAINERS), inspect(SRLINUX)]);
+}
+
+#[test]
+fn prepare_goes_on_after_a_failed_down_then_stops_with_its_code_and_does_not_deploy() {
+    let lab = ch2_lab("prepare-purge-fails");
+    lab.script(&[(0, ""), (0, ""), (1, "")]);
+    let down = |scenario: &str| {
+        docker_compose(
+            "netobs",
+            &lab.compose(scenario),
+            &["down", "--volumes", "--remove-orphans"],
+        )
+    };
+
+    let run = lab.run(&["lab", "prepare", "-s", "ch2", "--wait", "0"], &[]);
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        lab.calls(),
+        [
+            call(CONTAINERS),
+            inspect(SRLINUX),
+            down("ch1"),
+            down("ch2"),
+            call(CONTAINERS)
+        ]
+    );
+    assert_eq!(
+        run.stderr,
+        "nobs: lab purge: compose down failed (exit 1)\n"
+    );
+    assert_eq!(
+        run.stdout,
+        "lab prepare: scenario ch2\nlab purge: ch1\nlab purge: ch2\nlab purge: no lab nodes to destroy\n"
+    );
+}
+
+#[test]
+fn prepare_with_a_failing_first_listing_exits_1_and_checks_no_image() {
+    let lab = Lab::new("prepare-listing");
+    lab.script(&[(5, "")]);
+
+    let run = lab.run(&["lab", "prepare", "-s", "ch1", "--wait", "0"], &[]);
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab prepare: cannot list containers: exit 5\n"
+    );
+    assert_eq!(run.stdout, "");
+    assert_eq!(lab.calls(), [call(CONTAINERS)]);
+}
+
+#[test]
+fn a_failing_deploy_step_in_prepare_is_named_deploy_and_there_is_no_prepared_line() {
+    let lab = Lab::new("prepare-deploy-fails");
+    let mut steps = vec![(0, ""); 9];
+    steps[8] = (3, "");
+    lab.script(&steps);
+
+    let run = lab.run(&["lab", "prepare", "-s", "ch1", "--wait", "0"], &[]);
+
+    assert_eq!(run.code, 3);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab deploy: containerlab deploy failed (exit 3)\n"
+    );
+    assert_eq!(lab.calls().len(), 9);
+    assert!(!run.stdout.contains("lab prepared"), "{}", run.stdout);
+}
+
+#[test]
+fn rebuild_passes_the_names_to_compose_unchecked_and_names_the_failing_step() {
+    let lab = Lab::new("rebuild-nosuch");
+    lab.script(&[(1, "")]);
+
+    let run = lab.run(
+        &["lab", "rebuild", "nosuch", "-s", "ch1", "--wait", "0"],
+        &[],
+    );
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        lab.calls(),
+        [docker_compose(
+            "netobs",
+            &lab.compose("ch1"),
+            &["stop", "nosuch"]
+        )]
+    );
+    assert_eq!(
+        run.stderr,
+        "nobs: lab rebuild: compose stop failed (exit 1)\n"
+    );
+}
+
+#[test]
+fn prepare_update_and_rebuild_are_refused_in_a_workshop_folder() {
+    let lab = Lab::new("new-commands-workshop");
+    let dir = fixture("workshop-one");
+
+    for command in ["prepare", "update", "rebuild"] {
+        let run = lab.run_from(&dir, &["lab", command, "-s", "ch1"], &[]);
+
+        assert_eq!(run.code, 1, "{command}");
+        assert_eq!(
+            run.stderr,
+            format!(
+                "nobs: lab commands need the book lab (chapters/ and containerlab/lab.yml); {} is a workshop\n",
+                dir.display()
+            ),
+            "{command}"
+        );
+    }
+    assert!(lab.calls().is_empty());
+}
+
+#[test]
+fn the_update_and_rebuild_help_name_the_service_the_scenario_and_the_wait_but_no_topology() {
+    let lab = Lab::new("help-service");
+
+    for command in ["update", "rebuild"] {
+        let run = lab.run(&["lab", command, "--help"], &[]);
+
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        for word in ["SERVICE", "--scenario", "--wait", "[default: 300]"] {
+            assert!(
+                run.stdout.contains(word),
+                "{command} {word}\n{}",
+                run.stdout
+            );
+        }
+        for word in ["--topology", "--sudo"] {
+            assert!(
+                !run.stdout.contains(word),
+                "{command} {word}\n{}",
+                run.stdout
+            );
+        }
+    }
+}
+
+#[test]
+fn the_prepare_help_names_every_flag_of_a_deploy_and_a_purge() {
+    let lab = Lab::new("help-prepare");
+
+    let run = lab.run(&["lab", "prepare", "--help"], &[]);
 
     assert_eq!(run.code, 0, "{}", run.stderr);
     for flag in [
