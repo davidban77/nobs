@@ -1165,7 +1165,7 @@ pub enum LabCommand {
         deploy: DeployFlags,
     },
     #[command(
-        about = "Remove services and their volumes, start them again, then wait until they run"
+        about = "Remove services and their anonymous volumes, start them again, then wait until they run"
     )]
     Update {
         #[arg(

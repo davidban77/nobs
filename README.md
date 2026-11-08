@@ -1291,7 +1291,7 @@ smoke: 1 of 2 workshops ok
 
 ## Book lab
 
-The book lab is the lab of the book "Modern Network Observability". Seven `nobs lab` commands work on it. `deploy` brings it up, `destroy` takes it down, `purge` takes the whole lab down whatever chapter runs, and `show` lists what runs. `prepare` starts over: it takes the whole lab down and brings one scenario up. `update` and `rebuild` work on the services of a scenario, where a service is one container that the compose file of the scenario describes. Use `update` after you change the config files of a service, and `rebuild` after you change its Dockerfile, the file that says how to build its image. They replace the netobs commands with the same names.
+The book lab is the lab of the book "Modern Network Observability". Seven `nobs lab` commands work on it. `deploy` brings it up, `destroy` takes it down, `purge` takes the whole lab down whatever chapter runs, and `show` lists what runs. `prepare` starts over: it takes the whole lab down and brings one scenario up. `update` and `rebuild` work on the services of a scenario, where a service is one container that the compose file of the scenario describes. Use `update` after you change the config files of a service, and `rebuild` after you change its Dockerfile, the file that says how to build its image. The seven commands replace the netobs commands with the same names.
 
 The lab has two parts. The first part is a containerlab topology, the file `containerlab/lab.yml`. A topology lists the network devices of the lab and how they connect. Each device is a node, and each node runs as one container. The second part is one Docker Compose stack for each chapter, in `chapters/<scenario>/docker-compose.yml`. A scenario is a folder under `chapters/` that holds a `docker-compose.yml` file. nobs lists the scenarios from the folder, so a new chapter folder is a new scenario. A stack is the set of containers that one compose file starts. Docker Compose groups the containers of one stack under a project name, and by default nobs gives every scenario the project name `netobs`. Every chapter's stack joins one Docker network that the whole lab shares, `network-observability` by default. How nobs knows that a folder is the book lab is in [Where nobs runs from](#where-nobs-runs-from).
 
@@ -1302,7 +1302,7 @@ Each command runs its steps one after another. nobs builds the path of each file
 `nobs lab deploy -s <scenario>` runs these steps:
 
 1. It checks for clashes (see [The clash check](#the-clash-check)).
-2. It checks that Docker has the image of every node that names an image (see [The image check](#the-image-check)).
+2. It checks that Docker has the image of each node. The topology names that image on the node, on the node's kind or in its defaults (see [The image check](#the-image-check)).
 3. It lists the Docker networks. When a network with that name exists, nobs uses it as it is. nobs does not check its subnet. An earlier run or another tool may have made it, and that is not a clash. Otherwise nobs creates a bridge network with the subnet.
 4. It runs `containerlab deploy -t <topology>`.
 5. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml up -d --remove-orphans`.
@@ -1328,13 +1328,13 @@ Each command runs its steps one after another. nobs builds the path of each file
 `nobs lab prepare -s <scenario>` runs these steps:
 
 1. It lists the containers with `docker ps -a`. When the listing fails, the command stops and nothing has changed.
-2. It checks that Docker has the image of every node that names an image (see [The image check](#the-image-check)).
+2. It checks that Docker has the image of each node. The topology names that image on the node, on the node's kind or in its defaults (see [The image check](#the-image-check)).
 3. It runs the steps of `nobs lab purge`, with the same topology file: it takes the stack of every scenario down and removes its volumes, then destroys the topology once, and only when a node container exists.
 4. It runs the steps of `nobs lab deploy` that follow the image check, with the same topology file: the clash check, the network, `containerlab deploy`, `compose up` and the wait.
 
 `nobs lab update [SERVICE...] -s <scenario>` runs these steps. `SERVICE...` is zero or more service names; with none, the command works on all services of the scenario, and `[SERVICE...]` is left out of the commands below.
 
-1. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml rm --stop --force --volumes [SERVICE...]`. This stops the containers and removes them with their anonymous volumes. An anonymous volume is a volume that Docker made for a container without a name. A volume with a name stays.
+1. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml rm --stop --force --volumes [SERVICE...]`. This stops the containers and removes them with their anonymous volumes. An anonymous volume is a volume without a name, which Docker made for one container. A volume with a name stays.
 2. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml up -d --remove-orphans [SERVICE...]`.
 3. It waits until the services run (see [The wait](#the-wait)), unless you give `--wait 0`.
 
@@ -1393,7 +1393,7 @@ The check does not look at the fixed container names (`container_name`) or the p
 
 ### The image check
 
-Before `deploy` or `prepare` changes anything, nobs checks that Docker has the image of every node that names an image. An image is the packaged program that a container runs. A registry is a server that stores images. When an image is missing, the command stops with exit 1 and nothing has changed.
+Before `deploy` or `prepare` changes anything, nobs checks that Docker has the image of each node of the topology. An image is the packaged program that a container runs. A registry is a server that stores images. When an image is missing, the command stops with exit 1 and nothing has changed.
 
 nobs finds the image of a node in the topology file: the `image` of the node itself, else the `image` of its kind under `topology.kinds`, else the `image` under `topology.defaults`. It replaces the `${NAME}` forms in the image with the values that containerlab would get: the value in the shell first, then the value in the `.env` file of the lab folder. Then it asks Docker for each image with `docker image inspect`. When that fails for an image, nobs counts the image as missing. nobs asks once for each different image, and names every node that uses it.
 
@@ -1419,7 +1419,7 @@ nobs: lab deploy: image ghcr.io/nokia/srlinux:24.10.1 of node srl1 is not presen
   pull it with: docker pull ghcr.io/nokia/srlinux:24.10.1
 ```
 
-Here is a node of kind `ceos` or `arista_ceos` with a variable in the topology (the book lab reads `${CEOS_IMAGE:-ceos:image}`), then the same node when the variable is set (`CEOS_IMAGE=ceos:4.32.0F`) and that image is not imported, and then one without a variable (`image: ceos:4.32.0F`). When the variable is set and not empty, the import line ends with the image itself and there is no `then set` line.
+For a node of kind `ceos` or `arista_ceos`, nobs prints the import instruction instead. The book lab reads the image from `${CEOS_IMAGE:-ceos:image}`. Below are three cases. In the first, `CEOS_IMAGE` is not set. In the second, `CEOS_IMAGE=ceos:4.32.0F` is set, but that image is not imported. In the third, the topology has no variable (`image: ceos:4.32.0F`). When the variable is set and not empty, the import line ends with the image itself, and there is no `then set` line.
 
 ```
 nobs: lab deploy: image ceos:image of nodes ceos1, ceos2 is not present
@@ -1437,14 +1437,16 @@ nobs: lab deploy: image ceos:4.32.0F of node ceos1 is not present
   Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:4.32.0F
 ```
 
+The import line is written for a shell inside `clab`. From the Mac, put `orb -m clab` before it, as in [Before the first deploy with cEOS](#before-the-first-deploy-with-ceos).
+
 nobs shows the error output of Docker as it is. So Docker's own text, for example `Error response from daemon: No such image: ceos:image`, appears above the lines of nobs, once for each image that is missing. When nobs cannot start `docker`, it prints `nobs: lab <command>: cannot run docker: <error>` and exits with 1.
 
 #### Before the first deploy with cEOS
 
 Arista cEOS is the container image of the Arista switch. It is not on a registry, so import it once. The Docker engine that nobs asks is the one inside the Linux machine `clab`, so run the commands inside `clab` too (see [Commands](#commands)).
 
-1. Download `cEOS64-lab-<version>.tar.xz` from arista.com. You need an Arista account. `<version>` is the version you chose, for example `4.32.0F`.
-2. Import the file into Docker, where `<folder>` is the folder that holds the file: `orb -m clab docker import <folder>/cEOS64-lab-<version>.tar.xz ceos:<version>`.
+1. Download `cEOS64-lab-<version>.tar.xz` from arista.com. You need an Arista account. `<version>` is the version you chose, for example `4.32.0F`. On an arm64 machine such as `clab`, Arista offers only an engineering build of the arm64 cEOS-lab file, and its file name is not the one above. Download that file and use its name in step 2.
+2. Import the file into Docker, where `<folder>` is the full path of the folder that holds the file: `orb -m clab docker import <folder>/cEOS64-lab-<version>.tar.xz ceos:<version>`. A folder on the Mac works, because `clab` sees the Mac files at the same path.
 3. Give nobs the name of the image with the variable `CEOS_IMAGE`, because the topology of the book lab reads `${CEOS_IMAGE:-ceos:image}`. Without the variable, nobs looks for the image `ceos:image`. Set it in the `.env` file of the lab folder, as the line `CEOS_IMAGE=ceos:<version>`, or in the command, as in `orb -m clab env CEOS_IMAGE=ceos:<version> <path> lab deploy -s <scenario>`. A variable set in the Mac shell does not reach a command run inside `clab`.
 4. Run `deploy` or `prepare`. nobs finds the image and goes on.
 
@@ -1535,7 +1537,6 @@ Other cases, for `prepare`, `update`, `rebuild` and the image check:
 - A failed step in `update` or `rebuild` stops the command and exits with the code of that step. nobs prints no `lab updated` or `lab rebuilt` line.
 - In `prepare`, a failed purge step is named `lab purge`, and a failed deploy step is named `lab deploy`. The purge part goes on after a failed stack as `purge` does, and then `prepare` stops. nobs prints no `lab prepared` line.
 - When Docker cannot be reached, the listing fails and nobs prints `nobs: lab <command>: cannot list containers: exit <code>`, or `cannot list containers: cannot run docker: <error>` when it cannot start `docker`. The command exits with 1. In `prepare`, this is the first step, so nothing has changed.
-- When nobs cannot start `docker` for the image check, it prints `nobs: lab <command>: cannot run docker: <error>` and exits with 1.
 
 ### Differences from netobs
 
@@ -1552,7 +1553,7 @@ Other cases, for `prepare`, `update`, `rebuild` and the image check:
 - `update` and `rebuild` accept no service, which means all services of the scenario. netobs needs at least one.
 - `update` and `rebuild` wait until the services run. netobs did not wait.
 - In `prepare`, `update` and `rebuild`, nobs stops at the first failed step. netobs prints "prepared", "updated" or "rebuilt" whatever happened.
-- nobs checks the images of the nodes before `deploy` and `prepare` change anything. netobs and containerlab pull a missing registry image slowly and without a word, and a missing cEOS image fails late, after the network is made.
+- nobs checks the images of the nodes before `deploy` and `prepare` change anything. With netobs, containerlab pulls a missing registry image during the deploy, and a missing cEOS image fails late, after the network is made.
 - `nobs lab update` is not `nobs docker update`. `nobs lab update` removes the containers with their anonymous volumes and starts them again. `nobs docker update`, the `docker update` of labcli, pulls the images and then recreates the containers with `up --force-recreate`. Use `nobs lab update` after you change the config files of a service.
 
 ### Example
