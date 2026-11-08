@@ -1404,7 +1404,7 @@ nobs supports these forms in an image:
 - `${NAME-default}` and `${NAME=default}` give the value, or the default only when `NAME` is not set.
 - `$$` gives one `$`.
 
-Any other `$` form, such as `$NAME`, stops the command, and so does a variable that is not set and has no default, and a node that has no image. In each case nobs prints `nobs: cannot read topology file: <path>: <reason>`, and the reason names the node, and the variable or the form when there is one.
+Any other `$` form, such as `$NAME`, stops the command, and so does a variable that is not set and has no default. In each case nobs prints `nobs: cannot read topology file: <path>: <reason>`, and the reason names the node, and the variable or the form. A node that names no image in any of these places is not checked, and containerlab decides about it.
 
 For each missing image, nobs prints a line to standard error, then one or more lines that start with two spaces. The line says `lab deploy` or `lab prepare`, as the command you ran. When several nodes use the image, it says `nodes` and lists them separated by `, `. Here is a registry image with a variable in the topology (`image: ${SRL_IMAGE:-ghcr.io/nokia/srlinux:24.10.1}`), and then the same image without a variable:
 
@@ -1419,12 +1419,17 @@ nobs: lab deploy: image ghcr.io/nokia/srlinux:24.10.1 of node srl1 is not presen
   pull it with: docker pull ghcr.io/nokia/srlinux:24.10.1
 ```
 
-Here is a node of kind `ceos` or `arista_ceos` with a variable in the topology (the book lab reads `${CEOS_IMAGE:-ceos:image}`), and then one without a variable (`image: ceos:4.32.0F`):
+Here is a node of kind `ceos` or `arista_ceos` with a variable in the topology (the book lab reads `${CEOS_IMAGE:-ceos:image}`), then the same node when the variable is set (`CEOS_IMAGE=ceos:4.32.0F`) and that image is not imported, and then one without a variable (`image: ceos:4.32.0F`). When the variable is set and not empty, the import line ends with the image itself and there is no `then set` line.
 
 ```
 nobs: lab deploy: image ceos:image of nodes ceos1, ceos2 is not present
   Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:<version>
   then set CEOS_IMAGE=ceos:<version>
+```
+
+```
+nobs: lab deploy: image ceos:4.32.0F of nodes ceos1, ceos2 is not present
+  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:4.32.0F
 ```
 
 ```
@@ -1500,7 +1505,7 @@ The lines below go to standard error. `<command>` is the command you ran. Inside
 | `nobs: lab <command>: cannot list scenarios: <error>` | 1 | nobs cannot read the `chapters/` folder |
 | `nobs: LAB_SUDO must be true or false, not <value>` | 2 | `LAB_SUDO` holds another word |
 | `nobs: topology file not found: <path>` | 1 | the topology file does not exist |
-| `nobs: cannot read topology file: <path>: <error>` | 1 | the file cannot be read; for `deploy`, `prepare` and `purge`, also when it has no `name` or no `topology` with `nodes` (`destroy` and `show` give such a file to containerlab, which reports it); for `deploy` and `prepare`, also when the image check finds a node with no image, an unset variable with no default, or an unsupported `$` form |
+| `nobs: cannot read topology file: <path>: <error>` | 1 | the file cannot be read; for `deploy`, `prepare` and `purge`, also when it has no `name` or no `topology` with `nodes` (`destroy` and `show` give such a file to containerlab, which reports it); for `deploy` and `prepare`, also when the image check finds an unset variable with no default, or an unsupported `$` form |
 | `nobs: lab deploy: node containers already exist (<names>); run nobs lab destroy first` | 1 | the clash check found node containers |
 | `nobs: lab deploy: project <project> already has containers (<names>); run nobs lab destroy -s <scenario> first, or nobs lab purge` | 1 | the clash check found containers of the project |
 | `nobs: lab <command>: image <image> of node <node> is not present` | 1 | the image check found a missing image; `nodes <nodes>` stands for `node <node>` when several nodes use the image, and indented lines follow (see [The image check](#the-image-check)) |

@@ -161,7 +161,7 @@ pub fn node_images(
             .and_then(|own| own.kind.as_deref())
             .or_else(|| section.defaults.as_ref().and_then(|d| d.kind.as_deref()))
             .unwrap_or_default();
-        let raw = settings
+        let Some(raw) = settings
             .as_ref()
             .and_then(|own| own.image.as_deref())
             .or_else(|| {
@@ -173,7 +173,9 @@ pub fn node_images(
                     .and_then(|of_kind| of_kind.image.as_deref())
             })
             .or_else(|| section.defaults.as_ref().and_then(|d| d.image.as_deref()))
-            .ok_or_else(|| format!("node {node} has no image"))?;
+        else {
+            continue;
+        };
         let (image, name) = expand_value(raw, &variable).map_err(|error| match error {
             ExpandError::Unset(name) => {
                 format!("variable {name} is not set (image of node {node})")
@@ -644,11 +646,16 @@ mod tests {
     }
 
     #[test]
-    fn node_images_of_a_node_with_no_image_names_the_node() {
+    fn node_images_skips_a_node_that_has_no_image_from_any_source() {
         let text = "name: t\ntopology:\n  kinds:\n    ceos:\n      image: kind:1\n  nodes:\n    a:\n      kind: ceos\n    b:\n      kind: linux\n";
         assert_eq!(
             node_images(text, env(&[])),
-            Err("node b has no image".to_string())
+            Ok(vec![NodeImage {
+                nodes: strings(&["a"]),
+                kind: "ceos".to_string(),
+                image: "kind:1".to_string(),
+                variable: None,
+            }])
         );
     }
 

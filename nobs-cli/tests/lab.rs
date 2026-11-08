@@ -33,7 +33,8 @@ const SERVICE_EXITED: &str = r#"{"Service":"sleeper","State":"exited","Health":"
 const NODES_UP: &str = r#"{"nobs-t-book":[{"name":"clab-nobs-t-book-nobs-t-srl1","state":"running"},{"name":"clab-nobs-t-book-nobs-t-srl2","state":"running"}]}"#;
 const NODE_ONE_UP: &str =
     r#"{"nobs-t-book":[{"name":"clab-nobs-t-book-nobs-t-srl1","state":"running"}]}"#;
-const OTHER_TOPOLOGY: &str = "name: other\ntopology:\n  nodes:\n    n1:\n      kind: nokia_srlinux\n      image: ghcr.io/nokia/srlinux:latest\n";
+const OTHER_TOPOLOGY: &str =
+    "name: other\ntopology:\n  nodes:\n    n1:\n      kind: nokia_srlinux\n";
 const BUILDER_UP: &str = r#"{"Service":"builder","State":"running","Health":""}"#;
 const SERVICES_MIXED: &str = concat!(
     r#"{"Service":"sleeper","State":"running","Health":""}"#,
@@ -475,11 +476,11 @@ fn the_project_and_topology_settings_apply_and_the_topology_flag_starts_at_the_l
         ])
     );
     assert_eq!(
-        calls[5],
+        calls[4],
         containerlab(&lab.dir().join("t/set.yml"), "deploy", &[])
     );
     assert_eq!(
-        calls[6],
+        calls[5],
         docker_compose("p", &lab.compose("ch1"), &["up", "-d", "--remove-orphans"])
     );
 
@@ -500,7 +501,7 @@ fn the_project_and_topology_settings_apply_and_the_topology_flag_starts_at_the_l
 
         assert_eq!(run.code, 0, "{given}: {}", run.stderr);
         assert_eq!(
-            lab.calls()[5],
+            lab.calls()[4],
             containerlab(&flagged, "deploy", &[]),
             "{given}"
         );
@@ -1209,27 +1210,74 @@ fn a_set_variable_gives_the_image_that_is_inspected_and_a_present_image_lets_the
 }
 
 #[test]
-fn a_node_without_an_image_stops_the_deploy_before_any_image_call() {
+fn a_node_without_an_image_is_not_checked_and_the_deploy_goes_on_to_the_network_step() {
     let lab = Lab::new("image-none");
-    lab.file(
-        "t/none.yml",
-        "name: other\ntopology:\n  nodes:\n    n1:\n      kind: nokia_srlinux\n",
-    );
+    lab.file("t/none.yml", OTHER_TOPOLOGY);
 
     let run = lab.run(
-        &["lab", "deploy", "-s", "ch1", "--topology", "t/none.yml"],
+        &[
+            "lab",
+            "deploy",
+            "-s",
+            "ch1",
+            "--wait",
+            "0",
+            "--topology",
+            "t/none.yml",
+        ],
         &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            call(CONTAINERS),
+            call(PROJECT_CONTAINERS),
+            call(NETWORKS),
+            call(CREATE),
+            containerlab(&lab.dir().join("t/none.yml"), "deploy", &[]),
+            docker_compose(
+                "netobs",
+                &lab.compose("ch1"),
+                &["up", "-d", "--remove-orphans"]
+            ),
+        ]
+    );
+    assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn a_ceos_image_from_a_set_variable_gets_the_import_line_for_that_image_and_no_set_line() {
+    let lab = Lab::new("image-ceos-set");
+    lab.file(
+        "t/ceos.yml",
+        &ceos_topology("ceos", "\"${NOBS_T_CEOS:-ceos:image}\""),
+    );
+    lab.script(&[(0, ""), (0, ""), (1, "")]);
+
+    let run = lab.run(
+        &[
+            "lab",
+            "deploy",
+            "-s",
+            "ch1",
+            "--wait",
+            "0",
+            "--topology",
+            "t/ceos.yml",
+        ],
+        &[("NOBS_T_CEOS", "ceos:4.32.0F")],
     );
 
     assert_eq!(run.code, 1);
     assert_eq!(
         run.stderr,
         format!(
-            "nobs: cannot read topology file: {}: node n1 has no image\n",
-            lab.dir().join("t/none.yml").display()
+            "nobs: lab deploy: image ceos:4.32.0F of node ceos1 is not present\n{CEOS_IMPORT} ceos:4.32.0F\n"
         )
     );
-    assert_eq!(lab.calls(), [call(CONTAINERS), call(PROJECT_CONTAINERS)]);
+    assert_eq!(lab.calls()[2], inspect("ceos:4.32.0F"));
 }
 
 #[test]
