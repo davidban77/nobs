@@ -230,25 +230,27 @@ Run the `containerlab` commands inside the Linux machine `clab`, with the Linux 
 
 Most commands work on one lab or one workshop. Its folder is called the lab folder here. You do not have to be inside the lab folder: nobs looks for it, starting from the folder you are in.
 
-nobs knows three kinds of lab folder:
+nobs knows four kinds of lab folder:
 
 | Kind | How nobs knows it |
 |---|---|
 | A workshop, or a lab with its own settings | the folder holds a `nobs.toml` file |
 | The book lab | the folder holds a `chapters/` folder and the file `containerlab/lab.yml` |
+| A project | the folder holds a `nobs_project.yml` file |
 | A labcli lab | the folder holds a `docker-compose.yml` file |
 
 nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
 
 A folder that holds a `nobs_project.yml` file is a lab folder too, and `nobs project` works there (see [Project](#project)); nobs takes it after the book lab and before a folder with a `docker-compose.yml`.
 
-To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab` and `nobs lab` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
+To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab`, `nobs lab` and `nobs project` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
 
 These commands need a lab folder:
 
 - a `nobs docker` command without `--compose`, with or without `--scenario`, except `nobs docker network`;
 - a `nobs containerlab` command without a `TOPOLOGY` file;
 - `nobs lab ...`, which needs the book lab, not any lab folder (see [Book lab](#book-lab));
+- `nobs project ...` (see [Project](#project));
 - `nobs <workshop> ...` (see [Workshops](#workshops)).
 
 These commands do not need a lab folder. They work from any folder and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)). `nobs tui` and plain `nobs` do the same: they use `--dir` and `NOBS_DIR` when they are set (see [The screen](#the-screen)).
@@ -259,7 +261,7 @@ A labcli lab may also hold a `nobs.toml` with `kind = "lab"`. In it, `compose` a
 
 A `nobs.toml` with `kind = "lab"` in the book lab folder, next to `chapters/` and `containerlab/lab.yml`, keeps the folder a book lab and overrides its defaults: `topology`, `project` and `network` (the network `nobs lab deploy` and `nobs lab prepare` create). The `lab` commands do not use `compose`, because each scenario has its own `docker-compose.yml`. Which folder nobs takes is still decided by the walk above, so a `nobs.toml` in a parent folder wins over a book lab lower down.
 
-When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the three kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
+When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the four kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
 
 A command that needs a lab folder reads the `.env` file (and the `.setup.env` file, when there is one) of the lab folder. A command that does not need one reads them from the current folder. This is a change from labcli and netobs, which always read the current folder.
 
@@ -2052,14 +2054,14 @@ The project file has four parts.
 
 Write each link once, under one of its two nodes. An entry gives one link in the topology: one `endpoints` pair, `<node>:<port>` and `<node_b>:<port_b>`. Both nodes must be in `nodes`.
 
-A key that is not in the table, under `main`, `mgmt`, a node group or a link entry, is an error, so nobs catches a misspelt key. `vars` is free: nobs copies it as you wrote it.
+A key that is not in the table is an error under `main`, `mgmt`, a node group and a link entry. It is also an error at the top of the file, where only `main`, `nodes`, `links` and `vars` are allowed. So nobs catches a misspelt key, for example `link:` in place of `links:`. `vars` is free: nobs does not check its keys. nobs reads `vars` as YAML values and writes them back in your order, so a plain value that YAML reads as a number or a boolean can change its spelling: `24.10` is written `24.1`, `yes` is written `true` and `0x1F` is written `31`. Put quotes around a value that must stay text, for example a version: `"24.10"`.
 
 This is the project file of `tests/fixtures/project-two-node`, whole:
 
 ```yaml
 main:
   name: nobs-t-project
-  description: Two SR Linux nodes with one link, for the tests of nobs build
+  description: Two SR Linux nodes with one link, for the tests of nobs project
   mgmt:
     network: nobs-t-net
     subnet: 203.0.113.0/24
