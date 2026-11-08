@@ -94,6 +94,18 @@ impl Compose {
         self.compose_args(action, services)
     }
 
+    pub fn logs_poll_args(&self, service: &str, since: Option<&str>) -> Vec<OsString> {
+        let mut action = words(&["logs", "--no-log-prefix", "--timestamps"]);
+        action.push(
+            match since {
+                Some(time) => format!("--since={time}"),
+                None => "--tail=200".to_string(),
+            }
+            .into(),
+        );
+        self.compose_args(action, &[service.to_string()])
+    }
+
     pub fn destroy_args(&self, services: &[String], volumes: bool) -> Vec<OsString> {
         let mut action = words(&["down"]);
         if volumes {
@@ -306,6 +318,48 @@ mod tests {
                 "-f",
                 "--tail=10",
                 "telegraf-01"
+            ]
+        );
+    }
+
+    #[test]
+    fn logs_poll_without_a_time_asks_for_the_last_200_lines_of_one_service() {
+        assert_eq!(
+            Compose::new("x.yml")
+                .project("p")
+                .logs_poll_args("loki", None),
+            [
+                "compose",
+                "--project-name",
+                "p",
+                "-f",
+                "x.yml",
+                "logs",
+                "--no-log-prefix",
+                "--timestamps",
+                "--tail=200",
+                "loki"
+            ]
+        );
+    }
+
+    #[test]
+    fn logs_poll_with_a_time_asks_for_the_lines_since_that_time() {
+        assert_eq!(
+            Compose::new("x.yml")
+                .project("p")
+                .logs_poll_args("loki", Some("2026-11-08T13:42:01.123456789Z")),
+            [
+                "compose",
+                "--project-name",
+                "p",
+                "-f",
+                "x.yml",
+                "logs",
+                "--no-log-prefix",
+                "--timestamps",
+                "--since=2026-11-08T13:42:01.123456789Z",
+                "loki"
             ]
         );
     }
