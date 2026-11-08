@@ -2407,10 +2407,13 @@ impl<'a> LabRun<'a, Topology> {
                 lab::CEOS_KINDS.contains(&entry.kind.as_str()),
                 &entry.variable,
             ) {
-                (true, Some(name)) => {
-                    import("ceos:<version>");
-                    eprintln!("  then set {name}=ceos:<version>");
-                }
+                (true, Some(name)) => match std::env::var(name) {
+                    Ok(value) if !value.is_empty() => import(&entry.image),
+                    _ => {
+                        import("ceos:<version>");
+                        eprintln!("  then set {name}=ceos:<version>");
+                    }
+                },
                 (true, None) => import(&entry.image),
                 (false, variable) => {
                     eprintln!("  pull it with: docker pull {}", entry.image);
