@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
+ 1 devices  [2 services]  3 lab                                                           ? keys  q
+┌ stacks 3 ────────────────────┐┌ autocon5  7 services  refreshed 2s ago ──────────────────────────┐
+│>autocon5  up 7/7             ││overview  logs  SONDA                                             │
+│ packt     down               ││http://localhost:8085  refreshed 2s ago                           │
+│ demo      down 0/3           ││┌──────────────────────────────────┐┌────────────────────────────┐│
+│                              │││  ID   NAME STATE   ELAPSE DEGRADE││state  "running"            ││
+│                              │││> a1b2 cpu  running 12     false  ││{                           ││
+│                              │││                                  ││  "name": "cpu"             ││
+│                              │││                                  ││}                           ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              │││                                  ││                            ││
+│                              ││└──────────────────────────────────┘└────────────────────────────┘│
+│                              ││q quit  j/k select  r refresh  l load  d delete                   │
+└──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
+ run  none                                                                                   o open
+ Tab focus  [ ] tab  Esc back

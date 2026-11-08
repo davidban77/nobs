@@ -1,0 +1,15 @@
+ nobs  no lab here                                 13:42:07
+ choose a lab, or q to quit
+┌ labs found ──────────────────────────────────────────────┐
+│>autocon5    workshop  /home/me/ws/autocon5  up 7/7       │
+│ packt       workshop  /home/me/ws/packt     down         │
+│ demo        workshop  /home/me/ws/demo      down 0/3     │
+│ sonda only  http://localhost:8080                        │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ run  none                                           o open
+ j/k select  Enter open  q quit

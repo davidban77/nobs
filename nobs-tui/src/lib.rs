@@ -17,9 +17,11 @@ use ratatui::Terminal;
 use data::{Model, Note, Poller};
 
 pub mod data;
+pub mod screen;
 pub mod shell;
 pub mod view;
 
+pub use screen::draw;
 pub use shell::{
     handle, Command, Focus, Model as Shell, Service, SondaTarget, Stack, StackKind, StackState,
     Start, Tab, Update, Workbench,

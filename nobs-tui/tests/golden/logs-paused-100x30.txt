@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
+ 1 devices  [2 services]  3 lab                                                           ? keys  q
+┌ stacks 3 ────────────────────┐┌ autocon5  7 services  refreshed 2s ago ──────────────────────────┐
+│>autocon5  up 7/7             ││overview  LOGS  sonda                                 loki  paused│
+│ packt     down               ││level=warn ts=13:41:58 msg="ingester not ready"                   │
+│ demo      down 0/3           ││level=info ts=13:41:59 msg="ring state JOINING"                   │
+│                              ││level=info ts=13:42:01 msg="ring state ACTIVE"                    │
+│                              ││level=info ts=13:42:01 msg="Loki started"                         │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+└──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
+ run  none                                                                                   o open
+ f follow  / filter  j/k scroll  [ ] tab  Esc back to list

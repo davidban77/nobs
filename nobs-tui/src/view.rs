@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use nobs_core::sonda::pretty;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
@@ -12,12 +12,16 @@ use crate::data::{Model, Prompt};
 const KEYS: &str = "q quit  j/k select  r refresh  l load  d delete";
 
 pub fn draw(frame: &mut Frame, model: &Model, now: Instant) {
+    draw_in(frame, frame.area(), model, now);
+}
+
+pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     let [top, middle, bottom] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
-    .areas(frame.area());
+    .areas(area);
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
     frame.render_widget(Paragraph::new(top_line(model, now)), top);

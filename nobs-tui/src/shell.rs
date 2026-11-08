@@ -376,6 +376,16 @@ impl Model {
         self.filter.typing || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
     }
 
+    pub fn typed_filter(&self) -> Option<&str> {
+        if self.filter.typing {
+            return self.filter.text.as_deref();
+        }
+        self.logs
+            .as_ref()
+            .filter(|logs| logs.filter.typing)
+            .and_then(|logs| logs.filter.text.as_deref())
+    }
+
     pub fn services(&self) -> &[Service] {
         &self.services
     }
@@ -845,7 +855,7 @@ fn located_name(lab: &Located) -> (String, &'static str) {
     }
 }
 
-fn kind_text(kind: StackKind) -> &'static str {
+pub fn kind_text(kind: StackKind) -> &'static str {
     match kind {
         StackKind::Workshop => "workshop",
         StackKind::BookLab => "book lab",
