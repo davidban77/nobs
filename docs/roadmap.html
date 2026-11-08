@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nobs roadmap</title>
+<meta name="description" content="What comes next for nobs.">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+<a class="brand" href="index.html">nobs</a>
+<nav><a href="index.html">Home</a><a href="commands.html">Commands</a><a href="roadmap.html" aria-current="page">Roadmap</a><a href="how.html">How</a><a href="https://github.com/davidban77/nobs">GitHub</a><button id="theme" type="button" aria-label="Change the theme">Theme</button></nav>
+</div></header>
+<main><div class="wrap">
+<h1>Roadmap</h1>
+<p>The work is cut into slices. A slice is one step of the plan, and it lands as one pull request. Slices 1 to 18 and slice 22 (the first terminal screen) are merged. These come next, in this order.</p>
+<div class="card"><h3>Slice 19: Nautobot helpers</h3><p>Nautobot is the source of truth of the book lab: the database that holds what the network should look like. Two new commands, <code>nobs utils load-nautobot</code> and <code>nobs utils delete-nautobot</code>, fill it from the lab files and empty it again. A second load changes nothing, and every device gets the right device type. This step also names the arm64 cEOS file in the error line and the README.</p></div><div class="card"><h3>Slice 20: The project file</h3><p>A file <code>nobs_project.yml</code> describes a lab in the shape labby uses: the main settings, the nodes, the links and the variables. Templates turn it into a containerlab topology and the start configs of the devices, and nobs then builds the lab.</p></div><div class="card"><h3>Slice 21: A replaceable source of truth</h3><p>The code that talks to Infrahub moves behind one shared interface, so another source of truth can take its place without a change to any command or screen. The first command that uses it is <code>nobs &lt;workshop&gt; devices</code>.</p></div><div class="card"><h3>Slice 23: Screens for Docker Compose and containerlab</h3><p>New views in the terminal screen for the stacks and the containerlab labs.</p></div><div class="card"><h3>Slice 24: Screens for the book lab, the workshops and the source of truth</h3><p>More views: the book lab, a workshop, and the devices with their maintenance state.</p></div><div class="card"><h3>Slice 25: Config push over SSH</h3><p>nobs sends configuration to the network devices over SSH. Arista EOS and Cisco IOS wait for the Linux host.</p></div><div class="card"><h3>Slice 26: Interface flap helper</h3><p>A command that makes an interface of a device go down and up again over SSH, to test the alerts.</p></div><div class="card"><h3>Slice 27: Release builds</h3><p>Ready-made programs for macOS arm64, Linux x86_64 and Linux arm64. The x86_64 run waits for the Linux host.</p></div><div class="card"><h3>Slice 28: A last full check</h3><p>A test of every command, every flag and every exit code against the full list, and a check that the guides match the code.</p></div>
+
+<h2>The terminal interface</h2>
+<p>The first screen, <code>nobs tui</code>, works today: it shows the Sonda scenarios and lets you load and delete them with keys. It is a starting point. Before the next screen is built, a look-and-feel direction with three options is being written. It will appear here, with screenshots, once David has chosen.</p>
+
+<h2>The Linux host</h2>
+<p>Some work needs a Linux computer that runs no other lab. The real book lab with Arista cEOS routers waits for that Linux host, because cEOS does not run well on the Mac. The Linux half of the first milestone, SSH to Arista EOS and Cisco IOS, and the Linux x86_64 build wait for it too.</p>
+
+</div></main>
+<footer class="site"><div class="wrap">nobs, by David Flores. Built in the open. 8 November 2026.</div></footer>
+<script>
+document.getElementById("theme").addEventListener("click",function(){var r=document.documentElement,d=r.dataset.theme||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"),n=d==="dark"?"light":"dark";r.dataset.theme=n;try{localStorage.setItem("theme",n);}catch(e){}});
+</script>
+</body>
+</html>
