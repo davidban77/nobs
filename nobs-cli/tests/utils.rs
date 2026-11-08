@@ -204,7 +204,7 @@ fn nautobot_with_a_bad_device() -> Stub {
     ])
 }
 
-fn nautobot_with_objects() -> Stub {
+fn nautobot_with_objects(refused: &[(&str, &str, u16, &str)]) -> Stub {
     let page = |ids: &[&str]| {
         let items: Vec<String> = ids.iter().map(|id| format!(r#"{{"id":"{id}"}}"#)).collect();
         format!(r#"{{"next":null,"results":[{}]}}"#, items.join(","))
@@ -212,21 +212,32 @@ fn nautobot_with_objects() -> Stub {
     let devices = page(&["dev-1"]);
     let interfaces = page(&["if-1"]);
     let prefixes = page(&["pre-1", "pre-2"]);
-    let statuses = page(&["st-1"]);
+    let addresses = page(&["ip-1"]);
+    let active = page(&["st-1"]);
+    let alerted = page(&["st-2"]);
     let locations = page(&["loc-1"]);
     let namespaces = page(&["ns-1"]);
     let mappings = r#"{"next":null,"results":[{"id":"map-1","ip_address":{"id":"ip-1"}}]}"#;
-    Stub::start(&[
+    let mut routes: Vec<(&str, &str, u16, &str)> = vec![
         ("GET", "/api/dcim/devices/*", 200, &devices),
         ("GET", "/api/dcim/interfaces/*", 200, &interfaces),
         ("GET", "/api/ipam/ip-address-to-interface/*", 200, mappings),
         ("GET", "/api/ipam/prefixes/*", 200, &prefixes),
-        ("GET", "/api/extras/statuses/*", 200, &statuses),
+        ("GET", "/api/ipam/ip-addresses/*", 200, &addresses),
+        (
+            "GET",
+            "/api/extras/statuses/?name=lab-active*",
+            200,
+            &active,
+        ),
+        ("GET", "/api/extras/statuses/?name=Alerted*", 200, &alerted),
         ("GET", "/api/dcim/locations/*", 200, &locations),
         ("GET", "/api/ipam/namespaces/*", 200, &namespaces),
         ("GET", "/api/*", 200, r#"{"next":null,"results":[]}"#),
-        ("DELETE", "/api/*", 204, ""),
-    ])
+    ];
+    routes.extend_from_slice(refused);
+    routes.push(("DELETE", "/api/*", 204, ""));
+    Stub::start(&routes)
 }
 
 fn device_posts(stub: &Stub) -> Vec<String> {
@@ -371,7 +382,7 @@ fn a_blank_token_in_the_shell_lets_the_dot_env_token_through() {
 
 #[test]
 fn delete_nautobot_prints_each_kind_and_the_total() {
-    let stub = nautobot_with_objects();
+    let stub = nautobot_with_objects(&[]);
     let copy = Copy::new("delete");
 
     let output = nobs(
@@ -384,6 +395,32 @@ fn delete_nautobot_prints_each_kind_and_the_total() {
     assert_eq!(
         stdout(&output),
         format!("{DELETED}Done: 9 objects deleted.\n")
+    );
+}
+
+#[test]
+fn a_refused_delete_exits_1_with_the_request_and_prints_no_done() {
+    let stub = nautobot_with_objects(&[(
+        "DELETE",
+        "/api/dcim/devices/",
+        500,
+        "cannot delete\nsecond line",
+    )]);
+    let copy = Copy::new("refused-delete");
+
+    let output = nobs(
+        &copy.dir(),
+        &["utils", "delete-nautobot", "--nautobot-url", stub.url()],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "nobs: utils delete-nautobot: DELETE /api/dcim/devices/ failed: 500 cannot delete\n"
+    );
+    assert_eq!(
+        stdout(&output),
+        "ip address to interface: 1 deleted\nip address: 1 deleted\n"
     );
 }
 

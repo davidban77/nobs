@@ -318,37 +318,24 @@ impl Nautobot {
         let namespaces = self.find_all(Kind::Namespace, &[("name", NAMESPACE)])?;
         let devices = self.find_in(Kind::Device, "location", &locations)?;
         let prefixes = self.find_in(Kind::Prefix, "namespace", &namespaces)?;
+        let addresses = self.find_in(Kind::IpAddress, "namespace", &namespaces)?;
         let mut mappings = Vec::new();
         for device in &devices {
             for interface in self.find_all(Kind::Interface, &[("device", id(device))])? {
                 mappings.extend(self.find_all(Kind::Mapping, &[("interface", id(&interface))])?);
             }
         }
-        let mut addresses: Vec<String> = Vec::new();
-        for mapping in &mappings {
-            let address = field(&mapping["ip_address"], "id", Kind::Mapping.path())?;
-            if !addresses.iter().any(|known| known == address) {
-                addresses.push(address.to_string());
-            }
-        }
         let mut found = vec![
             (Kind::Mapping, ids(&mappings)),
-            (Kind::IpAddress, addresses),
+            (Kind::IpAddress, ids(&addresses)),
             (Kind::Device, ids(&devices)),
             (Kind::Prefix, ids(&prefixes)),
             (Kind::Namespace, ids(&namespaces)),
             (Kind::Location, ids(&locations)),
         ];
-        for (kind, filters) in removed() {
-            let mut kind_ids = Vec::new();
-            if matches!(kind, Kind::CustomField) {
-                kind_ids = ids(&self.find_custom_fields()?);
-            }
-            for filter in filters {
-                kind_ids.extend(ids(&self.find_all(kind, &filter)?));
-            }
-            found.push((kind, kind_ids));
-        }
+        found.extend(self.find_removed(removed_before_field())?);
+        found.push((Kind::CustomField, ids(&self.find_custom_fields()?)));
+        found.extend(self.find_removed(removed_after_field())?);
         let mut rows = Vec::new();
         for (kind, kind_ids) in found {
             if !kind_ids.is_empty() {
@@ -385,6 +372,21 @@ impl Nautobot {
             items.extend(self.find_all(kind, &[(parent, id(found))])?);
         }
         Ok(items)
+    }
+
+    fn find_removed(
+        &self,
+        removed: Vec<(Kind, Vec<Filter>)>,
+    ) -> Result<Vec<(Kind, Vec<String>)>, Error> {
+        let mut found = Vec::new();
+        for (kind, filters) in removed {
+            let mut kind_ids = Vec::new();
+            for filter in filters {
+                kind_ids.extend(ids(&self.find_all(kind, &filter)?));
+            }
+            found.push((kind, kind_ids));
+        }
+        Ok(found)
     }
 
     fn find_custom_fields(&self) -> Result<Vec<Value>, Error> {
@@ -862,14 +864,18 @@ fn is_ipv4(text: &str, needs_length: bool) -> bool {
 
 type Filter = Vec<(&'static str, &'static str)>;
 
-fn removed() -> Vec<(Kind, Vec<Filter>)> {
+fn removed_before_field() -> Vec<(Kind, Vec<Filter>)> {
     vec![
         (Kind::LocationType, vec![vec![("name", SITE)]]),
         (
             Kind::Status,
             vec![vec![("name", ACTIVE)], vec![("name", ALERTED)]],
         ),
-        (Kind::CustomField, vec![]),
+    ]
+}
+
+fn removed_after_field() -> Vec<(Kind, Vec<Filter>)> {
+    vec![
         (
             Kind::DeviceType,
             TYPES
@@ -1479,6 +1485,10 @@ mod tests {
                 page(&["pre-1"]),
             ),
             (
+                "/api/ipam/ip-addresses/?namespace=ns-1&limit=200",
+                page(&["ip-1"]),
+            ),
+            (
                 "/api/extras/statuses/?name=lab-active&limit=200",
                 page(&["st-1"]),
             ),
@@ -1674,5 +1684,84 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    fn lab_found(deletes: &[(&str, &str, u16, &str)]) -> Stub {
+        let page = |items: &str| format!(r#"{{"next":null,"results":[{items}]}}"#);
+        let locations = page(r#"{"id":"loc-1"}"#);
+        let namespaces = page(r#"{"id":"ns-1"}"#);
+        let devices = page(r#"{"id":"dev-1"}"#);
+        let interfaces = page(r#"{"id":"if-1"}"#);
+        let mappings = page(r#"{"id":"map-1","ip_address":{"id":"ip-1"}}"#);
+        let addresses = page(r#"{"id":"ip-1"},{"id":"ip-2"}"#);
+        let empty = page("");
+        let mut routes: Vec<(&str, &str, u16, &str)> = vec![
+            ("GET", "/api/dcim/locations/*", 200, &locations),
+            ("GET", "/api/ipam/namespaces/*", 200, &namespaces),
+            ("GET", "/api/dcim/devices/*", 200, &devices),
+            ("GET", "/api/dcim/interfaces/*", 200, &interfaces),
+            ("GET", "/api/ipam/ip-address-to-interface/*", 200, &mappings),
+            ("GET", "/api/ipam/ip-addresses/*", 200, &addresses),
+            ("GET", "/api/*", 200, &empty),
+        ];
+        routes.extend_from_slice(deletes);
+        routes.push(("DELETE", "/api/*", 204, ""));
+        Stub::start(&routes)
+    }
+
+    fn deletes(stub: &Stub) -> Vec<(String, Value)> {
+        calls(stub)
+            .into_iter()
+            .filter(|(method, _, _)| method == "DELETE")
+            .map(|(_, path, body)| (path, body))
+            .collect()
+    }
+
+    #[test]
+    fn delete_removes_every_address_in_the_namespace_even_one_no_mapping_names() {
+        let stub = lab_found(&[]);
+
+        Nautobot::new(stub.url(), TOKEN)
+            .delete(&mut |_, _| {})
+            .unwrap();
+
+        let sent = deletes(&stub);
+        let addresses = sent
+            .iter()
+            .find(|(path, _)| path == "/api/ipam/ip-addresses/")
+            .unwrap();
+        assert_eq!(addresses.1, json!([{"id": "ip-1"}, {"id": "ip-2"}]));
+    }
+
+    #[test]
+    fn a_delete_that_is_refused_stops_the_delete_with_the_method_path_status_and_first_line() {
+        let stub = lab_found(&[(
+            "DELETE",
+            "/api/ipam/ip-addresses/",
+            500,
+            "cannot delete\nsecond line",
+        )]);
+
+        let error = Nautobot::new(stub.url(), TOKEN)
+            .delete(&mut |_, _| {})
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, Error::Http { method, path, status: 500, .. }
+                if method == "DELETE" && path == "/api/ipam/ip-addresses/"),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "DELETE /api/ipam/ip-addresses/ failed: 500 cannot delete"
+        );
+        let paths: Vec<String> = deletes(&stub).into_iter().map(|(path, _)| path).collect();
+        assert_eq!(
+            paths,
+            [
+                "/api/ipam/ip-address-to-interface/",
+                "/api/ipam/ip-addresses/"
+            ]
+        );
     }
 }

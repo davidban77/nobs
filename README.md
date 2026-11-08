@@ -1593,7 +1593,7 @@ Nautobot is a source of truth: a web service that stores the devices, interfaces
 | Command | What it does |
 |---|---|
 | `nobs utils load-nautobot` | reads the topology file and the lab variables file, then creates the objects that are missing in Nautobot and updates the ones that exist, so you can run it again |
-| `nobs utils delete-nautobot` | removes from Nautobot the objects that `load-nautobot` writes |
+| `nobs utils delete-nautobot` | empties what `load-nautobot` creates in Nautobot: every device in the location `lab`, every prefix and address in the namespace `lab-default`, and the objects that hold them (see [What delete-nautobot removes](#what-delete-nautobot-removes)) |
 
 Both commands run in the book lab folder. nobs finds the folder as it does for `nobs lab` (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. In a workshop folder or a labcli lab, the commands stop with the refusal line shown under [Errors](#errors-of-utils).
 
@@ -1686,7 +1686,7 @@ The table has one line for each object type, and `Total` is `Created` plus `Upda
 
 ### What delete-nautobot removes
 
-`delete-nautobot` removes only the objects that `load-nautobot` writes, and never an object that Nautobot has of its own. It finds them by the same names, for example the devices by the location `lab` and the prefixes by the namespace `lab-default`, and it reads every page of each list.
+`delete-nautobot` empties what `load-nautobot` creates in Nautobot: every device in the location `lab`, every prefix and every address in the namespace `lab-default`, and then the namespace, the location, the location type, the two statuses, the custom field, the two device types, the two manufacturers and the role. A device that you add to the location `lab`, or an address that you add to the namespace `lab-default`, is removed too. It does not touch the statuses, roles or namespaces that Nautobot has of its own: it removes a status, a role or a namespace only by the names that the load writes. It reads every page of each list.
 
 It removes the objects of each type in this order, and prints one line for each type as soon as it has removed them: `<kind>: <n> deleted`. The types are `ip address to interface`, `ip address`, `device`, `prefix`, `namespace`, `location`, `location type`, `status`, `custom field`, `device type`, `manufacturer` and `role`. It prints no line for interfaces. Nautobot removes the interfaces together with their device, so none is left after the delete. The last line is `Done: <n> objects deleted.`, where `<n>` is the sum of the lines above.
 
@@ -1711,7 +1711,7 @@ nobs checks the folder first, then the token, then the address, then the two fil
 - A second `load-nautobot` updates the objects. In netobs, a second load fails.
 - nobs gives each device the type of its own kind. netobs gave every device the SR Linux type.
 - nobs checks both files before it sends anything.
-- `delete-nautobot` reads every page and removes the `maintenance` custom field too, but it removes only what the load writes. netobs deletes every object of each kind, the ones Nautobot has of its own included, and reads the first page only.
+- `delete-nautobot` reads every page and removes the `maintenance` custom field too. It empties what the load creates, so it removes every device in the location `lab` and every prefix and address in the namespace `lab-default`, but no object outside that scope. netobs deletes every object of each kind, the ones Nautobot has of its own included, and reads the first page only.
 - nobs tries each request once. netobs retries.
 - An update keeps the `maintenance` value of a device.
 - A missing token or a missing file exits with 1. netobs exits with 2.
