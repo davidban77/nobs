@@ -1447,7 +1447,7 @@ nobs shows the error output of Docker as it is. So Docker's own text, for exampl
 
 Arista cEOS is the container image of the Arista switch. It is not on a registry, so import it once. The Docker engine that nobs asks is the one inside the Linux machine `clab`, so run the commands inside `clab` too (see [Commands](#commands)).
 
-1. Download the cEOS file from arista.com. You need an Arista account. Arista has two files: `cEOS64-lab-<version>.tar.xz` for x86_64 and `cEOSarm-lab-<version>.tar.xz` for arm64. arm64, also called aarch64, is the processor type of `clab`; it is why the Linux binary is built for `aarch64`. So `clab` needs the arm64 file, `cEOSarm-lab-<version>.tar.xz`. In step 2, use the version of the file you downloaded as `<version>`.
+1. Download the cEOS file from arista.com. You need an Arista account. Arista has two files: `cEOS64-lab-<version>.tar.xz` for x86_64 and `cEOSarm-lab-<version>.tar.xz` for arm64. arm64, also called aarch64, is the processor type of `clab`. So `clab` needs the arm64 file, `cEOSarm-lab-<version>.tar.xz`. In step 2, use the version of the file you downloaded as `<version>`.
 2. Import the file into Docker, where `<folder>` is the full path of the folder that holds the file: `orb -m clab docker import <folder>/cEOSarm-lab-<version>.tar.xz ceos:<version>`. A folder on the Mac works, because `clab` sees the Mac files at the same path.
 3. Give nobs the name of the image with the variable `CEOS_IMAGE`, because the topology of the book lab reads `${CEOS_IMAGE:-ceos:image}`. Without the variable, nobs looks for the image `ceos:image`. Set it in the `.env` file of the lab folder, as the line `CEOS_IMAGE=ceos:<version>`, or in the command, as in `orb -m clab env CEOS_IMAGE=ceos:<version> <path> lab deploy -s <scenario>`. A variable set in the Mac shell does not reach a command run inside `clab`.
 4. Run `deploy` or `prepare`. nobs finds the image and goes on.
@@ -1588,12 +1588,12 @@ lab destroyed: scenario ch1
 
 ## Utils
 
-Nautobot is a source of truth: a web service that stores the devices, interfaces and addresses of a network. The `nobs utils` group has two commands that work on it. `load-nautobot` writes the devices, interfaces, addresses and prefixes of the book lab into Nautobot. `delete-nautobot` removes what `load-nautobot` wrote. nobs sends its requests to Nautobot itself, over plain HTTP: an `http://` address, with no encryption.
+Nautobot is a source of truth: a web service that stores the devices, interfaces and addresses of a network. The `nobs utils` group has two commands that work on it. `load-nautobot` writes the devices, interfaces, addresses and prefixes of the book lab into Nautobot. `delete-nautobot` empties the part of Nautobot that `load-nautobot` fills, and objects that you added to that part are removed too (see [What delete-nautobot removes](#what-delete-nautobot-removes)). nobs speaks plain HTTP to Nautobot: an `http://` address, with no encryption.
 
 | Command | What it does |
 |---|---|
 | `nobs utils load-nautobot` | reads the topology file and the lab variables file, then creates the objects that are missing in Nautobot and updates the ones that exist, so you can run it again |
-| `nobs utils delete-nautobot` | empties what `load-nautobot` creates in Nautobot: every device in the location `lab`, every prefix and address in the namespace `lab-default`, and the objects that hold them (see [What delete-nautobot removes](#what-delete-nautobot-removes)) |
+| `nobs utils delete-nautobot` | empties what `load-nautobot` creates in Nautobot: every device in the location `lab`, every prefix and address in the namespace `lab-default`, then the other objects that the load writes, such as the location, the role and the statuses (see [What delete-nautobot removes](#what-delete-nautobot-removes)) |
 
 Both commands run in the book lab folder. nobs finds the folder as it does for `nobs lab` (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. In a workshop folder or a labcli lab, the commands stop with the refusal line shown under [Errors](#errors-of-utils).
 
@@ -1650,7 +1650,7 @@ nobs checks both files before it sends anything to Nautobot: that they are valid
 
 ### What load-nautobot writes
 
-`load-nautobot` writes these objects. It writes them in this order, and the table of its output lists them in the same order. From the devices on, it writes one device at a time, with its interfaces, addresses and links.
+`load-nautobot` writes these objects. It writes them in this order, and the table of its output lists them in the same order. From the devices on, it writes one device at a time, with its interfaces, its addresses and the assignment of each address to its interface.
 
 | Object type | What it holds |
 |---|---|
@@ -1666,7 +1666,7 @@ nobs checks both files before it sends anything to Nautobot: that they are valid
 | `device` | one device for each node of the topology, with its role, device type, location, status, and its `observability_intent.bgp` as local config context data |
 | `interface` | each interface of the node, and `Management0` for the management address |
 | `ip address` | each `ipv4` address of an interface, and the `mgmt-ipv4` address of the node |
-| `ip address to interface` | the link of each address to its interface; the management address of a node is also the primary IPv4 address of its device |
+| `ip address to interface` | the assignment of each address to its interface; the management address of a node is also the primary IPv4 address of its device |
 
 nobs finds each object by its name or key, for example a device by its name, an interface by its device and its name, and an address by the address and its namespace. When the object exists, nobs updates it. Otherwise nobs creates it. So a second load creates nothing and updates every object. When more than one object matches, the load stops.
 
@@ -1682,7 +1682,7 @@ Object type  Created  Updated  Total
 Done: <n> objects across <k> types. Open Nautobot at <url>.
 ```
 
-The table has one line for each object type, and `Total` is `Created` plus `Updated`. In the last line, `<n>` is the sum of the `Total` column, `<k>` is the number of lines of the table (13), and `<url>` is the address of Nautobot.
+The table has one line for each object type, and `Total` is `Created` plus `Updated`. In the last line, `<n>` is the sum of the `Total` column, `<k>` is the number of object types in the table, always 13, and `<url>` is the address of Nautobot.
 
 ### What delete-nautobot removes
 
@@ -1711,7 +1711,7 @@ nobs checks the folder first, then the token, then the address, then the two fil
 - A second `load-nautobot` updates the objects. In netobs, a second load fails.
 - nobs gives each device the type of its own kind. netobs gave every device the SR Linux type.
 - nobs checks both files before it sends anything.
-- `delete-nautobot` reads every page and removes the `maintenance` custom field too. It empties what the load creates, so it removes every device in the location `lab` and every prefix and address in the namespace `lab-default`, but no object outside that scope. netobs deletes every object of each kind, the ones Nautobot has of its own included, and reads the first page only.
+- `delete-nautobot` reads every page and removes the `maintenance` custom field too. It empties what the load creates: every device in the location `lab`, every prefix and address in the namespace `lab-default`, and the other objects by the names the load writes. It leaves the objects that Nautobot has of its own. netobs deletes every object of each kind, the ones Nautobot has of its own included, and reads the first page only.
 - nobs tries each request once. netobs retries.
 - An update keeps the `maintenance` value of a device.
 - A missing token or a missing file exits with 1. netobs exits with 2.
@@ -1725,7 +1725,15 @@ This example loads the lab of `tests/fixtures/book-lab` into the test Nautobot o
 $ docker compose -f tests/fixtures/nautobot/docker-compose.yml --env-file tests/fixtures/nautobot/.env.example -p nobs-t-nautobot up -d
 ```
 
-`<lab>` is the full path of a copy of the test lab. The token comes from `NAUTOBOT_SUPERUSER_API_TOKEN` in the `.env` file of that folder, so the commands have no token flag. The topology file `containerlab/lab-nautobot.yml` of the copy is the `lab.yml` of the test lab with `ipv4-subnet: 203.0.113.0/24` added under `mgmt`. The `...` marks progress lines that this page leaves out.
+Nautobot needs a minute or two to start. Wait until http://localhost:18080 opens in a browser before the first load.
+
+Then prepare a copy of the test lab. `<lab>` is the full path of that copy.
+
+1. Copy the folder `tests/fixtures/book-lab` to `<lab>`.
+2. Copy `tests/fixtures/nautobot/.env.example` to `<lab>/.env`. It holds `NAUTOBOT_SUPERUSER_API_TOKEN`, the token of the test Nautobot, so the commands below need no token flag.
+3. Copy `<lab>/containerlab/lab.yml` to `<lab>/containerlab/lab-nautobot.yml`, and add `ipv4-subnet: 203.0.113.0/24` under `mgmt`. `load-nautobot` needs a management subnet, and the test topology has none.
+
+The `...` marks progress lines that this page leaves out.
 
 The first load creates every object:
 
@@ -1782,7 +1790,7 @@ ip address to interface  0        4        4
 Done: 27 objects across 13 types. Open Nautobot at http://localhost:18080.
 ```
 
-Then `delete-nautobot` removes the 23 objects that it finds by name. The 4 interfaces are not in this count, because they go with their devices:
+Then `delete-nautobot` removes 23 objects. The 4 interfaces are not in this count, because Nautobot removes them with their devices:
 
 ```
 $ nobs --dir <lab> utils delete-nautobot --nautobot-url http://localhost:18080
@@ -1799,6 +1807,12 @@ device type: 2 deleted
 manufacturer: 2 deleted
 role: 1 deleted
 Done: 23 objects deleted.
+```
+
+Remove the test stack when you are done:
+
+```
+$ docker compose -f tests/fixtures/nautobot/docker-compose.yml --env-file tests/fixtures/nautobot/.env.example -p nobs-t-nautobot down --volumes
 ```
 
 ## Sonda

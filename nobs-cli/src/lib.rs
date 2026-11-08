@@ -1236,7 +1236,9 @@ pub enum UtilsCommand {
         )]
         extra_topology_vars: Option<PathBuf>,
     },
-    #[command(about = "Delete from Nautobot what load-nautobot wrote")]
+    #[command(
+        about = "Delete the lab from Nautobot: every device in location lab, every prefix and address in namespace lab-default, and the objects load-nautobot writes"
+    )]
     DeleteNautobot {
         #[command(flatten)]
         nautobot: NautobotFlags,
