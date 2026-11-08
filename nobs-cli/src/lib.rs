@@ -1094,7 +1094,7 @@ pub struct LabFlags {
 #[derive(Debug, Subcommand)]
 pub enum LabCommand {
     #[command(
-        about = "Create the network, deploy the topology, start a scenario, then wait until its services and nodes run"
+        about = "Create the network, deploy the topology, start a scenario, then wait until the services and nodes run"
     )]
     Deploy {
         #[command(flatten)]
