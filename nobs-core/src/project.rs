@@ -169,6 +169,7 @@ where
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct File {
     main: Main,
     nodes: Vec<Spanned<RawGroup>>,
@@ -584,6 +585,13 @@ mod tests {
     fn a_node_the_project_does_not_name_is_an_error() {
         let result = fixture().startup_config("nobs-t-srl9", &fixture_renderer());
         assert_eq!(result.unwrap_err(), "unknown node nobs-t-srl9");
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_is_an_error() {
+        let text = "main:\n  name: nobs-t-p\n  mgmt:\n    network: nobs-t-net\nnodes:\n  - kind: nokia_srlinux\n    image: nobs-t-image\n    nodes: [nobs-t-srl1, nobs-t-srl2]\nlink:\n  nobs-t-srl1:\n    - {port: e1-1, node_b: nobs-t-srl2, port_b: e1-1}\nvars: {}\n";
+        let error = read(text).unwrap_err();
+        assert!(error.contains("link"), "{error}");
     }
 
     #[test]

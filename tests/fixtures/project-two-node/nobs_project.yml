@@ -1,6 +1,6 @@
 main:
   name: nobs-t-project
-  description: Two SR Linux nodes with one link, for the tests of nobs build
+  description: Two SR Linux nodes with one link, for the tests of nobs project
   mgmt:
     network: nobs-t-net
     subnet: 203.0.113.0/24
