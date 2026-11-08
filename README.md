@@ -2,11 +2,11 @@
 
 A terminal program (a text user interface) for network labs and observability workshops. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (4 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## Commands
 
-Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The four `lab` commands of nobs have the same names as in netobs. netobs also has `lab prepare`, `lab update` and `lab rebuild`; nobs does not have them. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows.
+Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The seven `lab` commands of nobs have the same names as in netobs. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows.
 
 | labcli X | netobs X | nobs X |
 |---|---|---|
@@ -30,6 +30,9 @@ Each `docker` command of labcli and netobs has the same name in nobs, and so doe
 | | `netobs lab destroy` | `nobs lab destroy` |
 | | `netobs lab purge` | `nobs lab purge` |
 | | `netobs lab show` | `nobs lab show` |
+| | `netobs lab prepare` | `nobs lab prepare` |
+| | `netobs lab update` | `nobs lab update` |
+| | `netobs lab rebuild` | `nobs lab rebuild` |
 
 In `nobs docker exec`, the words after the service are passed to the container as separate arguments, and a flag meant for the command inside the container goes after `--`.
 
@@ -66,7 +69,7 @@ In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario
 
 A labcli lab may also hold a `nobs.toml` with `kind = "lab"`. In it, `compose` and `topology` name other files to use, relative to the lab folder, and `project` sets the project name. nobs also accepts `network`, but a labcli lab does not use it. Each of these is optional.
 
-A `nobs.toml` with `kind = "lab"` in the book lab folder, next to `chapters/` and `containerlab/lab.yml`, keeps the folder a book lab and overrides its defaults: `topology`, `project` and `network` (the network `nobs lab deploy` creates). The `lab` commands do not use `compose`, because each scenario has its own `docker-compose.yml`. Which folder nobs takes is still decided by the walk above, so a `nobs.toml` in a parent folder wins over a book lab lower down.
+A `nobs.toml` with `kind = "lab"` in the book lab folder, next to `chapters/` and `containerlab/lab.yml`, keeps the folder a book lab and overrides its defaults: `topology`, `project` and `network` (the network `nobs lab deploy` and `nobs lab prepare` create). The `lab` commands do not use `compose`, because each scenario has its own `docker-compose.yml`. Which folder nobs takes is still decided by the walk above, so a `nobs.toml` in a parent folder wins over a book lab lower down.
 
 When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the three kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
 
@@ -1288,7 +1291,7 @@ smoke: 1 of 2 workshops ok
 
 ## Book lab
 
-The book lab is the lab of the book "Modern Network Observability". Four `nobs lab` commands work on it: `deploy` brings it up, `destroy` takes it down, `purge` takes the whole lab down whatever chapter runs, and `show` lists what runs. They replace the netobs commands with the same names. netobs also has `lab prepare`, `lab update` and `lab rebuild`; nobs does not have them.
+The book lab is the lab of the book "Modern Network Observability". Seven `nobs lab` commands work on it. `deploy` brings it up, `destroy` takes it down, `purge` takes the whole lab down whatever chapter runs, and `show` lists what runs. `prepare` starts over: it takes the whole lab down and brings one scenario up. `update` and `rebuild` work on the services of a scenario, where a service is one container that the compose file of the scenario describes. Use `update` after you change the config files of a service, and `rebuild` after you change its Dockerfile, the file that says how to build its image. The seven commands replace the netobs commands with the same names.
 
 The lab has two parts. The first part is a containerlab topology, the file `containerlab/lab.yml`. A topology lists the network devices of the lab and how they connect. Each device is a node, and each node runs as one container. The second part is one Docker Compose stack for each chapter, in `chapters/<scenario>/docker-compose.yml`. A scenario is a folder under `chapters/` that holds a `docker-compose.yml` file. nobs lists the scenarios from the folder, so a new chapter folder is a new scenario. A stack is the set of containers that one compose file starts. Docker Compose groups the containers of one stack under a project name, and by default nobs gives every scenario the project name `netobs`. Every chapter's stack joins one Docker network that the whole lab shares, `network-observability` by default. How nobs knows that a folder is the book lab is in [Where nobs runs from](#where-nobs-runs-from).
 
@@ -1299,10 +1302,11 @@ Each command runs its steps one after another. nobs builds the path of each file
 `nobs lab deploy -s <scenario>` runs these steps:
 
 1. It checks for clashes (see [The clash check](#the-clash-check)).
-2. It lists the Docker networks. When a network with that name exists, nobs uses it as it is. nobs does not check its subnet. An earlier run or another tool may have made it, and that is not a clash. Otherwise nobs creates a bridge network with the subnet.
-3. It runs `containerlab deploy -t <topology>`.
-4. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml up -d --remove-orphans`.
-5. It waits until everything runs (see [The wait](#the-wait)), unless you give `--wait 0`.
+2. It checks that Docker has the image of each node. The topology names that image on the node, on the node's kind or in its defaults (see [The image check](#the-image-check)).
+3. It lists the Docker networks. When a network with that name exists, nobs uses it as it is. nobs does not check its subnet. An earlier run or another tool may have made it, and that is not a clash. Otherwise nobs creates a bridge network with the subnet.
+4. It runs `containerlab deploy -t <topology>`.
+5. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml up -d --remove-orphans`.
+6. It waits until everything runs (see [The wait](#the-wait)), unless you give `--wait 0`.
 
 `nobs lab destroy -s <scenario>` runs these steps:
 
@@ -1321,27 +1325,51 @@ Each command runs its steps one after another. nobs builds the path of each file
 
 `show` prints no line of its own. You see the output of Docker Compose and containerlab.
 
+`nobs lab prepare -s <scenario>` runs these steps:
+
+1. It lists the containers with `docker ps -a`. When the listing fails, the command stops and nothing has changed.
+2. It checks that Docker has the image of each node. The topology names that image on the node, on the node's kind or in its defaults (see [The image check](#the-image-check)).
+3. It runs the steps of `nobs lab purge`, with the same topology file: it takes the stack of every scenario down and removes its volumes, then destroys the topology once, and only when a node container exists.
+4. It runs the steps of `nobs lab deploy` that follow the image check, with the same topology file: the clash check, the network, `containerlab deploy`, `compose up` and the wait.
+
+`nobs lab update [SERVICE...] -s <scenario>` runs these steps. `SERVICE...` is zero or more service names; with none, the command works on all services of the scenario, and `[SERVICE...]` is left out of the commands below.
+
+1. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml rm --stop --force --volumes [SERVICE...]`. This stops the containers and removes them with their anonymous volumes. An anonymous volume is a volume without a name, which Docker made for one container. A volume with a name stays.
+2. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml up -d --remove-orphans [SERVICE...]`.
+3. It waits until the services run (see [The wait](#the-wait)), unless you give `--wait 0`.
+
+`nobs lab rebuild [SERVICE...] -s <scenario>` runs these steps, with `SERVICE...` as for `update`:
+
+1. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml stop [SERVICE...]`.
+2. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml build [SERVICE...]`.
+3. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml up -d --remove-orphans [SERVICE...]`.
+4. It waits until the services run (see [The wait](#the-wait)), unless you give `--wait 0`.
+
+`update` and `rebuild` do not read the topology file and do not run containerlab, so they take no `--topology`, `--sudo` or `--no-sudo`.
+
 ### Flags and variables
 
 nobs takes each setting from the first source that has it: the flag, then the variable, then the `nobs.toml` setting, then the default.
 
 | Flag | Variable | `nobs.toml` setting | Default | Commands |
 |---|---|---|---|---|
-| `-s`, `--scenario NAME` | `LAB_SCENARIO` | none | none: nobs stops with exit 2 | `deploy`, `destroy`, `show` |
-| `--topology FILE` | none | `topology` | `containerlab/lab.yml` | all four |
-| `--sudo`, `--no-sudo` | `LAB_SUDO` | none | no `sudo` | all four |
-| `--network-name NAME` | `LAB_NETWORK_NAME` | `network` | `network-observability` | `deploy` |
-| `--subnet CIDR` | `LAB_SUBNET` | none | `198.51.100.0/24` | `deploy` |
-| `--wait SECONDS` | none | none | `300` | `deploy` |
-| none | none | `project` | `netobs` | all four (the project name) |
+| `-s`, `--scenario NAME` | `LAB_SCENARIO` | none | none: nobs stops with exit 2 | `deploy`, `destroy`, `show`, `prepare`, `update`, `rebuild` |
+| `SERVICE...` (zero or more names, not a flag) | none | none | none: all services of the scenario | `update`, `rebuild` |
+| `--topology FILE` | none | `topology` | `containerlab/lab.yml` | `deploy`, `destroy`, `purge`, `show`, `prepare` |
+| `--sudo`, `--no-sudo` | `LAB_SUDO` | none | no `sudo` | `deploy`, `destroy`, `purge`, `show`, `prepare` |
+| `--network-name NAME` | `LAB_NETWORK_NAME` | `network` | `network-observability` | `deploy`, `prepare` |
+| `--subnet CIDR` | `LAB_SUBNET` | none | `198.51.100.0/24` | `deploy`, `prepare` |
+| `--wait SECONDS` | none | none | `300` | `deploy`, `prepare`, `update`, `rebuild` |
+| none | none | `project` | `netobs` | all seven (the project name) |
 
 A blank flag or variable, one that is empty or holds only spaces, counts as not set. nobs reads the variables from the shell and from the `.env` file of the lab folder. The shell wins over `.env`. `--dir` and `NOBS_DIR` work as in [Where nobs runs from](#where-nobs-runs-from).
 
 - `purge` takes only `--sudo`, `--no-sudo` and `--topology`.
+- `update` and `rebuild` take only `-s`, `--scenario`, `--wait` and the service names.
 - When you give both `--sudo` and `--no-sudo`, the last one wins.
 - `LAB_SUDO` accepts `1`, `true`, `yes` and `on`, and `0`, `false`, `no` and `off`, in capital or small letters, with spaces around them allowed. Any other value stops nobs with exit 2.
 - A relative `--topology` path starts at the lab folder. This differs from `nobs containerlab`, whose `TOPOLOGY` starts at the current folder.
-- `--wait SECONDS` is the time `deploy` waits for the lab to be ready. `0` means no wait.
+- `--wait SECONDS` is the time `deploy` and `prepare` wait for the lab to be ready. For `update` and `rebuild`, it is the time they wait for the services only. `0` means no wait.
 
 ### The clash check
 
@@ -1363,15 +1391,78 @@ containerlab names the container of a node from the `name` of the topology, the 
 
 The check does not look at the fixed container names (`container_name`) or the published ports in the compose file of a chapter. When one of them clashes, Docker fails at `compose up`, and nobs stops there with that step named.
 
+### The image check
+
+Before `deploy` or `prepare` changes anything, nobs checks that Docker has the image of each node of the topology. An image is the packaged program that a container runs. A registry is a server that stores images. When an image is missing, the command stops with exit 1 and nothing has changed.
+
+nobs finds the image of a node in the topology file: the `image` of the node itself, else the `image` of its kind under `topology.kinds`, else the `image` under `topology.defaults`. It replaces the `${NAME}` forms in the image with the values that containerlab would get: the value in the shell first, then the value in the `.env` file of the lab folder. Then it asks Docker for each image with `docker image inspect`. When that fails for an image, nobs counts the image as missing. nobs asks once for each different image, and names every node that uses it.
+
+nobs supports these forms in an image:
+
+- `${NAME}` gives the value of `NAME`.
+- `${NAME:-default}` and `${NAME:=default}` give the value, or the default when `NAME` is not set or is empty.
+- `${NAME-default}` and `${NAME=default}` give the value, or the default only when `NAME` is not set.
+- `$$` gives one `$`.
+
+Any other `$` form, such as `$NAME`, stops the command, and so does a variable that is not set and has no default. In each case nobs prints `nobs: cannot read topology file: <path>: <reason>`, and the reason names the node, and the variable or the form. A node that names no image in any of these places is not checked, and containerlab decides about it.
+
+For each missing image, nobs prints a line to standard error, then one or more lines that start with two spaces. The line says `lab deploy` or `lab prepare`, as the command you ran. When several nodes use the image, it says `nodes` and lists them separated by `, `. Here is a registry image with a variable in the topology (`image: ${SRL_IMAGE:-ghcr.io/nokia/srlinux:24.10.1}`), and then the same image without a variable:
+
+```
+nobs: lab deploy: image ghcr.io/nokia/srlinux:24.10.1 of node srl1 is not present
+  pull it with: docker pull ghcr.io/nokia/srlinux:24.10.1
+  or set SRL_IMAGE to an image that is present
+```
+
+```
+nobs: lab deploy: image ghcr.io/nokia/srlinux:24.10.1 of node srl1 is not present
+  pull it with: docker pull ghcr.io/nokia/srlinux:24.10.1
+```
+
+For a node of kind `ceos` or `arista_ceos`, nobs prints an import line instead of the `pull it with` line. The book lab reads the image from `${CEOS_IMAGE:-ceos:image}`. Below are three cases. In the first, `CEOS_IMAGE` is not set. In the second, `CEOS_IMAGE=ceos:4.32.0F` is set, but that image is not imported. In the third, the topology has no variable (`image: ceos:4.32.0F`). When the variable is set and not empty, the import line ends with the image itself, and there is no `then set` line.
+
+```
+nobs: lab deploy: image ceos:image of nodes ceos1, ceos2 is not present
+  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:<version>
+  then set CEOS_IMAGE=ceos:<version>
+```
+
+```
+nobs: lab deploy: image ceos:4.32.0F of nodes ceos1, ceos2 is not present
+  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:4.32.0F
+```
+
+```
+nobs: lab deploy: image ceos:4.32.0F of node ceos1 is not present
+  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:4.32.0F
+```
+
+The import line is written for a shell inside `clab`. From the Mac, put `orb -m clab` before it, as in [Before the first deploy with cEOS](#before-the-first-deploy-with-ceos).
+
+nobs shows the error output of Docker as it is. So Docker's own text, for example `Error response from daemon: No such image: ceos:image`, appears above the lines of nobs, once for each image that is missing. When nobs cannot start `docker`, it prints `nobs: lab <command>: cannot run docker: <error>` and exits with 1.
+
+#### Before the first deploy with cEOS
+
+Arista cEOS is the container image of the Arista switch. It is not on a registry, so import it once. The Docker engine that nobs asks is the one inside the Linux machine `clab`, so run the commands inside `clab` too (see [Commands](#commands)).
+
+1. Download the cEOS file for arm64 from arista.com. You need an Arista account. arm64, also called aarch64, is the processor type of `clab`; it is why the Linux binary is built for `aarch64`. For arm64, Arista offers the cEOS file only as an engineering build, which is not a regular release. Its file name is not `cEOS64-lab-<version>.tar.xz`, the name in the message of nobs and in step 2. In step 2, use the name of the file you downloaded instead, and use its version as `<version>`.
+2. Import the file into Docker, where `<folder>` is the full path of the folder that holds the file: `orb -m clab docker import <folder>/cEOS64-lab-<version>.tar.xz ceos:<version>`. A folder on the Mac works, because `clab` sees the Mac files at the same path.
+3. Give nobs the name of the image with the variable `CEOS_IMAGE`, because the topology of the book lab reads `${CEOS_IMAGE:-ceos:image}`. Without the variable, nobs looks for the image `ceos:image`. Set it in the `.env` file of the lab folder, as the line `CEOS_IMAGE=ceos:<version>`, or in the command, as in `orb -m clab env CEOS_IMAGE=ceos:<version> <path> lab deploy -s <scenario>`. A variable set in the Mac shell does not reach a command run inside `clab`.
+4. Run `deploy` or `prepare`. nobs finds the image and goes on.
+
+With `--sudo`, nobs passes `CEOS_IMAGE` on to containerlab: it names the variable in `--preserve-env`, so sudo keeps it.
+
 ### The wait
 
-After `compose up`, `deploy` waits until the lab is ready. The lab is ready when all of these are true:
+After `compose up`, `deploy` and `prepare` wait until the lab is ready. The lab is ready when all of these are true:
 
 - the stack lists at least one service;
 - each service is `running`, and `healthy` when it has a health check;
 - each node of the topology is `running`. A node that does not exist is not ready.
 
-nobs checks at once and then every 5 seconds, until `--wait` seconds have passed. When the lab is still not ready then, nobs prints the `not ready after` line below and exits with 1. A chapter whose services stop on their own never becomes ready, so use `--wait 0` for it.
+`update` and `rebuild` wait after their `compose up` for the services they touched: the ones you named, else all services of the scenario. They check no node. A service is ready when it is `running`, and `healthy` when it has a health check. A name that `compose ps` does not list shows as `<name> (missing)` and never becomes ready. With no name given, the stack must list at least one service.
+
+nobs checks at once and then every 5 seconds, until `--wait` seconds have passed. When the lab is still not ready then, nobs prints the `not ready after` line below and exits with 1. A chapter whose services stop on their own never becomes ready, so use `--wait 0` for it. This holds for `update` and `rebuild` too, and `--wait 0` skips their wait.
 
 ### The lines nobs prints
 
@@ -1384,7 +1475,8 @@ The lines below go to standard output. `<topology>` is the path nobs gave to con
 | `lab deploy: deploying topology <topology>` | before `containerlab deploy` | no |
 | `lab deploy: starting <scenario> (project <project>)` | before `compose up` | no |
 | `lab deploy: waiting for <services> services and <nodes> nodes (up to <seconds>s)` | after the first check of the wait; not with `--wait 0` | no |
-| `lab deploy: ready after <seconds>s` | the lab is ready | no |
+| `lab <command>: waiting for <count> services (up to <seconds>s)` | `update` and `rebuild`, after the first check of the wait; not with `--wait 0`; `<count>` is the number of names you gave, else the number of services that `compose ps` lists | no |
+| `lab <command>: ready after <seconds>s` | the lab or the services are ready; `<command>` is `deploy` (also inside `prepare`), `update` or `rebuild` | no |
 | `lab deployed: scenario <scenario>` | the last line of `deploy` | yes |
 | `lab destroy: stopping <scenario> (project <project>)` | before the stack goes down | no |
 | `lab destroy: destroying topology <topology>` | before `containerlab destroy` | no |
@@ -1393,8 +1485,19 @@ The lines below go to standard output. `<topology>` is the path nobs gave to con
 | `lab purge: no lab nodes to destroy` | no node container of the topology exists | no |
 | `lab purge: destroying topology <topology>` | before `containerlab destroy` | no |
 | `lab purged: <count> scenarios` | the last line of `purge`; `<count>` is the number of scenarios, also when it is 1 | yes |
+| `lab prepare: scenario <scenario>` | after the image check, before the purge part of `prepare` | no |
+| `lab prepared: scenario <scenario>` | the last line of `prepare` | yes |
+| `lab update: removing <services> (project <project>)` | before `compose rm`; `<services>` is the names you gave, separated by `, `, or `all services` | no |
+| `lab update: starting <services>` | before `compose up` | no |
+| `lab updated: scenario <scenario>` | the last line of `update` | yes |
+| `lab rebuild: stopping <services>` | before `compose stop` | no |
+| `lab rebuild: building <services>` | before `compose build` | no |
+| `lab rebuild: starting <services>` | before `compose up` | no |
+| `lab rebuilt: scenario <scenario>` | the last line of `rebuild` | yes |
 
-The lines below go to standard error.
+`prepare` prints `lab prepare: scenario <scenario>`, then the lines of `purge` and of `deploy` as the tables show them (including `lab purged` and `lab deployed`), then `lab prepared: scenario <scenario>`. Only the `lab prepared` line shows that the whole `prepare` passed.
+
+The lines below go to standard error. `<command>` is the command you ran. Inside `prepare` it changes along the way: it is `prepare` for the container listing and the image check, `purge` for the purge part, and `deploy` from the clash check to the end.
 
 | Line | Exit code | When it appears |
 |---|---|---|
@@ -1404,16 +1507,18 @@ The lines below go to standard error.
 | `nobs: lab <command>: cannot list scenarios: <error>` | 1 | nobs cannot read the `chapters/` folder |
 | `nobs: LAB_SUDO must be true or false, not <value>` | 2 | `LAB_SUDO` holds another word |
 | `nobs: topology file not found: <path>` | 1 | the topology file does not exist |
-| `nobs: cannot read topology file: <path>: <error>` | 1 | the file cannot be read; for `deploy` and `purge`, also when it has no `name` or no `topology` with `nodes` (`destroy` and `show` give such a file to containerlab, which reports it) |
+| `nobs: cannot read topology file: <path>: <error>` | 1 | the file cannot be read; for `deploy`, `prepare` and `purge`, also when it has no `name` or no `topology` with `nodes` (`destroy` and `show` give such a file to containerlab, which reports it); for `deploy` and `prepare`, also when the image check finds an unset variable with no default, or an unsupported `$` form |
 | `nobs: lab deploy: node containers already exist (<names>); run nobs lab destroy first` | 1 | the clash check found node containers |
 | `nobs: lab deploy: project <project> already has containers (<names>); run nobs lab destroy -s <scenario> first, or nobs lab purge` | 1 | the clash check found containers of the project |
+| `nobs: lab <command>: image <image> of node <node> is not present` | 1 | the image check found a missing image; `nodes <nodes>` stands for `node <node>` when several nodes use the image, and indented lines follow (see [The image check](#the-image-check)) |
+| `nobs: lab <command>: cannot run docker: <error>` | 1 | during the image check, nobs could not start `docker` |
 | `nobs: lab <command>: cannot list <what>: <reason>` | 1 | a listing failed; `<what>` is `containers`, `networks` or `containers of project <project>`, and `<reason>` is `exit <code>` or `cannot run docker: <error>` |
 | `nobs: lab <command>: <step> failed (exit <code>)` | `<code>` | a step ran and exited with a code that is not 0 |
 | `nobs: lab <command>: <step> failed: cannot run <program>: <error>` | 1 | nobs could not start the program of a step |
-| `nobs: lab deploy: cannot read <step> output: <error>` | 1 | during the wait, the answer of `compose ps` or `containerlab inspect` is not readable |
-| `nobs: lab deploy: not ready after <seconds>s: <waiting>` | 1 | the lab was not ready in time; `<waiting>` lists, separated by `, `, `no services listed`, `<service> (<state>/<health>)`, `<node> (<state>)` and `<node> (missing)` |
+| `nobs: lab <command>: cannot read <step> output: <error>` | 1 | during the wait, the answer of `compose ps` or `containerlab inspect` is not readable |
+| `nobs: lab <command>: not ready after <seconds>s: <waiting>` | 1 | the lab or the services were not ready in time; `<waiting>` lists, separated by `, `, `no services listed`, `<service> (<state>/<health>)`, `<service> (missing)`, `<node> (<state>)` and `<node> (missing)`; the nodes appear only for `deploy` and `prepare` |
 
-`<step>` is one of `network create`, `containerlab deploy`, `compose up`, `compose ps`, `containerlab inspect`, `compose down` and `containerlab destroy`. A missing lab folder, or a `nobs.toml` nobs cannot read, stops the command as described in [Where nobs runs from](#where-nobs-runs-from).
+`<step>` is one of `network create`, `containerlab deploy`, `compose up`, `compose ps`, `containerlab inspect`, `compose down`, `containerlab destroy`, `compose rm`, `compose stop` and `compose build`. A missing lab folder, or a `nobs.toml` nobs cannot read, stops the command as described in [Where nobs runs from](#where-nobs-runs-from).
 
 ### Failures and exit codes
 
@@ -1421,10 +1526,17 @@ The lines below go to standard error.
 |---|---|
 | 0 | every step passed |
 | the code of the step | a step failed: nobs prints `nobs: lab <command>: <step> failed (exit <code>)` and exits with the code of that step |
-| 1 | an error of nobs itself: no book lab, unknown scenario, a topology file that is missing or unreadable, a clash, a listing that failed, a program that could not start, or a lab not ready in time |
+| 1 | an error of nobs itself: no book lab, unknown scenario, a topology file that is missing or unreadable, a clash, a node image that is not present, a listing that failed, a program that could not start, or a lab or services not ready in time |
 | 2 | a usage error: no scenario, or a bad `LAB_SUDO` |
 
 After a failed step, nothing after it runs, and nothing is undone. So after a failed `deploy`, run `nobs lab destroy -s <scenario>`. `purge` is the exception: it goes on after a failed stack, prints each failure, and exits with the code of the first step that failed.
+
+Other cases, for `prepare`, `update`, `rebuild` and the image check:
+
+- A missing node image stops `deploy` and `prepare` with exit 1 before any step runs. Nothing has changed.
+- A failed step in `update` or `rebuild` stops the command and exits with the code of that step. nobs prints no `lab updated` or `lab rebuilt` line.
+- In `prepare`, a failed purge step is named `lab purge`, and a failed deploy step is named `lab deploy`. The purge part goes on after a failed stack as `purge` does, and then `prepare` stops. nobs prints no `lab prepared` line.
+- When Docker cannot be reached, the listing fails and nobs prints `nobs: lab <command>: cannot list containers: exit <code>`, or `cannot list containers: cannot run docker: <error>` when it cannot start `docker`. The command exits with 1. In `prepare`, this is the first step, so nothing has changed.
 
 ### Differences from netobs
 
@@ -1436,6 +1548,13 @@ After a failed step, nothing after it runs, and nothing is undone. So after a fa
 - `purge` destroys the topology once, not once for each scenario. It goes on after a failed stack and reports it.
 - `purge` takes `--topology`.
 - nobs lists the scenarios from the folder, not from a fixed list.
+- `prepare` creates the network when it is missing, where the `prepare` of netobs does not, and `prepare` destroys the topology once.
+- `prepare` uses the same `--topology` for the purge and the deploy. The purge of netobs always uses the default topology.
+- `update` and `rebuild` accept no service, which means all services of the scenario. netobs needs at least one.
+- `update` and `rebuild` wait until the services run. netobs did not wait.
+- In `prepare`, `update` and `rebuild`, nobs stops at the first failed step. netobs prints "prepared", "updated" or "rebuilt" whatever happened.
+- nobs checks the images of the nodes before `deploy` and `prepare` change anything. With netobs, containerlab pulls a missing registry image during the deploy, and a missing cEOS image fails late, after the network is made.
+- `nobs lab update` is not `nobs docker update`. `nobs lab update` removes the containers with their anonymous volumes and starts them again. `nobs docker update`, the `docker update` of labcli, pulls the images and then recreates the containers with `up --force-recreate`. Use `nobs lab update` after you change the config files of a service.
 
 ### Example
 
