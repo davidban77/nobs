@@ -2583,7 +2583,7 @@ impl<'a> LabRun<'a, Topology> {
             );
             let import = |target: &str| {
                 eprintln!(
-                    "  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz {target}"
+                    "  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz (x86_64) or cEOSarm-lab-<version>.tar.xz (arm64, the file for clab) from arista.com (an account is needed), then run: docker import <file> {target}"
                 )
             };
             match (

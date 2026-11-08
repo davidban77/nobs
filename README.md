@@ -2,11 +2,11 @@
 
 A terminal program (a text user interface) for network labs and observability workshops. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## Commands
 
-Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The seven `lab` commands of nobs have the same names as in netobs. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows.
+Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The seven `lab` commands of nobs have the same names as in netobs. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows. The two `utils` commands of nobs have the same names as in netobs, and labcli has no `utils` commands.
 
 | labcli X | netobs X | nobs X |
 |---|---|---|
@@ -33,6 +33,8 @@ Each `docker` command of labcli and netobs has the same name in nobs, and so doe
 | | `netobs lab prepare` | `nobs lab prepare` |
 | | `netobs lab update` | `nobs lab update` |
 | | `netobs lab rebuild` | `nobs lab rebuild` |
+| | `netobs utils load-nautobot` | `nobs utils load-nautobot` |
+| | `netobs utils delete-nautobot` | `nobs utils delete-nautobot` |
 
 In `nobs docker exec`, the words after the service are passed to the container as separate arguments, and a flag meant for the command inside the container goes after `--`.
 
@@ -1423,18 +1425,18 @@ For a node of kind `ceos` or `arista_ceos`, nobs prints an import line instead o
 
 ```
 nobs: lab deploy: image ceos:image of nodes ceos1, ceos2 is not present
-  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:<version>
+  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz (x86_64) or cEOSarm-lab-<version>.tar.xz (arm64, the file for clab) from arista.com (an account is needed), then run: docker import <file> ceos:<version>
   then set CEOS_IMAGE=ceos:<version>
 ```
 
 ```
 nobs: lab deploy: image ceos:4.32.0F of nodes ceos1, ceos2 is not present
-  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:4.32.0F
+  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz (x86_64) or cEOSarm-lab-<version>.tar.xz (arm64, the file for clab) from arista.com (an account is needed), then run: docker import <file> ceos:4.32.0F
 ```
 
 ```
 nobs: lab deploy: image ceos:4.32.0F of node ceos1 is not present
-  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz ceos:4.32.0F
+  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz (x86_64) or cEOSarm-lab-<version>.tar.xz (arm64, the file for clab) from arista.com (an account is needed), then run: docker import <file> ceos:4.32.0F
 ```
 
 The import line is written for a shell inside `clab`. From the Mac, put `orb -m clab` before it, as in [Before the first deploy with cEOS](#before-the-first-deploy-with-ceos).
@@ -1445,8 +1447,8 @@ nobs shows the error output of Docker as it is. So Docker's own text, for exampl
 
 Arista cEOS is the container image of the Arista switch. It is not on a registry, so import it once. The Docker engine that nobs asks is the one inside the Linux machine `clab`, so run the commands inside `clab` too (see [Commands](#commands)).
 
-1. Download the cEOS file for arm64 from arista.com. You need an Arista account. arm64, also called aarch64, is the processor type of `clab`; it is why the Linux binary is built for `aarch64`. For arm64, Arista offers the cEOS file only as an engineering build, which is not a regular release. Its file name is not `cEOS64-lab-<version>.tar.xz`, the name in the message of nobs and in step 2. In step 2, use the name of the file you downloaded instead, and use its version as `<version>`.
-2. Import the file into Docker, where `<folder>` is the full path of the folder that holds the file: `orb -m clab docker import <folder>/cEOS64-lab-<version>.tar.xz ceos:<version>`. A folder on the Mac works, because `clab` sees the Mac files at the same path.
+1. Download the cEOS file from arista.com. You need an Arista account. Arista has two files: `cEOS64-lab-<version>.tar.xz` for x86_64 and `cEOSarm-lab-<version>.tar.xz` for arm64. arm64, also called aarch64, is the processor type of `clab`; it is why the Linux binary is built for `aarch64`. So `clab` needs the arm64 file, `cEOSarm-lab-<version>.tar.xz`. In step 2, use the version of the file you downloaded as `<version>`.
+2. Import the file into Docker, where `<folder>` is the full path of the folder that holds the file: `orb -m clab docker import <folder>/cEOSarm-lab-<version>.tar.xz ceos:<version>`. A folder on the Mac works, because `clab` sees the Mac files at the same path.
 3. Give nobs the name of the image with the variable `CEOS_IMAGE`, because the topology of the book lab reads `${CEOS_IMAGE:-ceos:image}`. Without the variable, nobs looks for the image `ceos:image`. Set it in the `.env` file of the lab folder, as the line `CEOS_IMAGE=ceos:<version>`, or in the command, as in `orb -m clab env CEOS_IMAGE=ceos:<version> <path> lab deploy -s <scenario>`. A variable set in the Mac shell does not reach a command run inside `clab`.
 4. Run `deploy` or `prepare`. nobs finds the image and goes on.
 
@@ -1583,6 +1585,141 @@ lab destroy: destroying topology <lab>/containerlab/lab.yml
 ...
 lab destroyed: scenario ch1
 ```
+
+## Utils
+
+Nautobot is a source of truth: a web service that stores the devices, interfaces and addresses of a network. The `nobs utils` group has two commands that work on it. `load-nautobot` writes the devices, interfaces, addresses and prefixes of the book lab into Nautobot. `delete-nautobot` removes what `load-nautobot` wrote. nobs sends its requests to Nautobot itself, over plain HTTP: an `http://` address, with no encryption.
+
+| Command | What it does |
+|---|---|
+| `nobs utils load-nautobot` | reads the topology file and the lab variables file, then creates the objects that are missing in Nautobot and updates the ones that exist, so you can run it again |
+| `nobs utils delete-nautobot` | removes from Nautobot the objects that `load-nautobot` writes |
+
+Both commands run in the book lab folder. nobs finds the folder as it does for `nobs lab` (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. In a workshop folder or a labcli lab, the commands stop with the refusal line shown under [Errors](#errors-of-utils).
+
+| Command | Flag | What it does |
+|---|---|---|
+| both | `--dir PATH` | gives the lab folder to use instead of the one nobs finds |
+| both | `--nautobot-url URL` | gives the address of Nautobot |
+| both | `--nautobot-token TOKEN` | gives the token: the secret key that lets nobs use Nautobot |
+| `load-nautobot` | `--topology FILE` | gives the topology file; the default is the `topology` setting of `nobs.toml`, else `containerlab/lab.yml` |
+| `load-nautobot` | `--extra-topology-vars FILE` | gives the lab variables file; the default is `containerlab/lab_vars.yml` |
+
+nobs finds the address and the token in this order: the flag, then the variable, then the default.
+
+| Value | Flag | Variable | Default |
+|---|---|---|---|
+| the address of Nautobot | `--nautobot-url URL` | `NAUTOBOT_URL` | `http://localhost:8080` |
+| the token | `--nautobot-token TOKEN` | `NAUTOBOT_SUPERUSER_API_TOKEN` | none |
+
+A variable can be set in the shell or in the `.env` file of the lab folder; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A token you give with `--nautobot-token` is on the command line of nobs itself, and a list of processes shows it. So keep the token in the `.env` file. A trailing `/` of the address is dropped.
+
+### The two files
+
+A relative path starts at the lab folder, as for `nobs lab --topology`. An absolute path is used as it is.
+
+The topology file is a containerlab topology. It must have `topology.nodes` and `mgmt.ipv4-subnet`, the subnet of the management network. The kind of a node is its `kind` in the topology or in the lab variables file, else `topology.defaults.kind`.
+
+The lab variables file has a list `prefixes`, a map `nodes`, and optionally the top-level key `observability_intent` with `bgp` under it. Each node of the topology needs an entry under `nodes`, and each entry under `nodes` needs a node in the topology. This is a small file of that shape:
+
+```yaml
+prefixes:
+  - prefix: 10.0.0.0/24
+    name: lab-links
+nodes:
+  srl1:
+    mgmt-ipv4: 172.20.20.11
+    interfaces:
+      - name: ethernet-1/1
+        role: p2p
+        ipv4: 10.0.0.1/31
+      - name: ethernet-1/2
+        role: access
+observability_intent:
+  bgp:
+    afi_safi:
+      - ipv4-unicast
+    intended_peers:
+      srl1:
+        - 10.0.0.0
+```
+
+Each prefix has a `prefix` and a `name`. Each interface has a `name` and a `role`, and optionally `ipv4`, one address or a list of addresses. nobs copies `afi_safi` and the peers of each device from `bgp` as they are. Without `bgp`, the devices get no peers.
+
+nobs checks both files before it sends anything to Nautobot: that they are valid YAML, that the values it needs are there, that each prefix and address is IPv4, that the nodes of the two files match, and that each kind has a device type.
+
+### What load-nautobot writes
+
+`load-nautobot` writes these objects. It writes them in this order, and the table of its output lists them in the same order. From the devices on, it writes one device at a time, with its interfaces, addresses and links.
+
+| Object type | What it holds |
+|---|---|
+| `role` | `network_device`, the role of the devices |
+| `manufacturer` | `Arista` and `Nokia` |
+| `device type` | `cEOS` of Arista and `SRLinux` of Nokia |
+| `location type` | `site` |
+| `status` | `lab-active` and `Alerted` |
+| `custom field` | `maintenance`, a true or false field of devices; a new device has `false` |
+| `location` | `lab`, of the type `site` |
+| `namespace` | `lab-default`, the namespace of the prefixes and addresses |
+| `prefix` | each prefix of the lab variables file, and the management subnet of the topology with the name `lab-mgmt-prefix` |
+| `device` | one device for each node of the topology, with its role, device type, location, status, and its `observability_intent.bgp` as local config context data |
+| `interface` | each interface of the node, and `Management0` for the management address |
+| `ip address` | each `ipv4` address of an interface, and the `mgmt-ipv4` address of the node |
+| `ip address to interface` | the link of each address to its interface; the management address of a node is also the primary IPv4 address of its device |
+
+nobs finds each object by its name or key, for example a device by its name, an interface by its device and its name, and an address by the address and its namespace. When the object exists, nobs updates it. Otherwise nobs creates it. So a second load creates nothing and updates every object. When more than one object matches, the load stops.
+
+Each device gets the device type of its own kind. The kinds `ceos` and `arista_ceos` give the type `cEOS` of Arista, and the kinds `nokia_srlinux` and `srl` give the type `SRLinux` of Nokia. Any other kind stops the load.
+
+An update leaves the `maintenance` field of a device as it is. nobs sets the field to `false` only when it creates the device.
+
+`load-nautobot` prints one line for each object, as soon as nobs has created or updated it: `<kind> <display> created` or `<kind> <display> updated`, where `<kind>` is the object type of the table above and `<display>` is the name that Nautobot shows for the object. Then it prints one table and one last line:
+
+```
+Object type  Created  Updated  Total
+...
+Done: <n> objects across <k> types. Open Nautobot at <url>.
+```
+
+The table has one line for each object type, and `Total` is `Created` plus `Updated`. In the last line, `<n>` is the sum of the `Total` column, `<k>` is the number of lines of the table (13), and `<url>` is the address of Nautobot.
+
+### What delete-nautobot removes
+
+`delete-nautobot` removes only the objects that `load-nautobot` writes, and never an object that Nautobot has of its own. It finds them by the same names, for example the devices by the location `lab` and the prefixes by the namespace `lab-default`, and it reads every page of each list.
+
+It removes the objects of each type in this order, and prints one line for each type as soon as it has removed them: `<kind>: <n> deleted`. The types are `ip address to interface`, `ip address`, `device`, `prefix`, `namespace`, `location`, `location type`, `status`, `custom field`, `device type`, `manufacturer` and `role`. It prints no line for interfaces. The last line is `Done: <n> objects deleted.`, where `<n>` is the sum of the lines above.
+
+### Errors of utils
+
+Each error ends the command with exit 1. nobs prints the line on standard error, the output a program uses for errors and warnings. `<command>` is `load-nautobot` or `delete-nautobot`.
+
+| Line | When |
+|---|---|
+| `nobs: utils <command>: NAUTOBOT_SUPERUSER_API_TOKEN is required (set it in .env or pass --nautobot-token)` | no token is given |
+| `nobs: utils <command>: <url>: this build of nobs has no TLS; use an http:// URL` | the address starts with `https://` |
+| `nobs: utils load-nautobot: cannot read <path>: <reason>` | the topology file or the lab variables file cannot be read |
+| `nobs: utils load-nautobot: <reason>` | the files do not have the shape nobs needs, or more than one object in Nautobot matches; for example `topology has no mgmt.ipv4-subnet` |
+| `nobs: utils <command>: <METHOD> <path> failed: <status> <first line of the answer>` | Nautobot answers with a status outside 200 to 299 |
+| `nobs: utils <command>: cannot reach <url>: <reason>` | nobs gets no answer from Nautobot |
+| `nobs: utils <command> needs the book lab (chapters/ and containerlab/lab.yml); <dir> is a workshop` | the folder is a workshop; for a labcli lab, the line ends with `is a labcli lab` |
+
+nobs checks the folder first, then the token, then the address, then the two files, and only then sends requests. After an error, nobs prints no table and no `Done` line. The lines it printed before the error stay. nobs tries each request once.
+
+### Differences from netobs
+
+- A second `load-nautobot` updates the objects. In netobs, a second load fails.
+- nobs gives each device the type of its own kind. netobs gave every device the SR Linux type.
+- nobs checks both files before it sends anything.
+- `delete-nautobot` reads every page and removes the `maintenance` custom field too, but it removes only what the load writes. netobs deletes every object of each kind, the ones Nautobot has of its own included, and reads the first page only.
+- nobs tries each request once. netobs retries.
+- An update keeps the `maintenance` value of a device.
+- A missing token or a missing file exits with 1. netobs exits with 2.
+- nobs speaks `http://` only.
+
+### Example
+
+The example output is added after the run against the test stack.
 
 ## Sonda
 
