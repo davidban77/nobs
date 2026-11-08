@@ -211,6 +211,14 @@ pub struct Service {
     pub name: String,
     pub state: String,
     pub health: String,
+    pub port: Option<String>,
+    pub age: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Publisher {
+    published_port: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -219,6 +227,8 @@ struct ServiceRow {
     service: String,
     state: String,
     health: Option<String>,
+    publishers: Option<Vec<Publisher>>,
+    running_for: Option<String>,
 }
 
 pub fn services(ps_json: &str) -> Result<Vec<Service>, String> {
@@ -238,6 +248,15 @@ pub fn services(ps_json: &str) -> Result<Vec<Service>, String> {
             name: row.service,
             state: row.state,
             health: row.health.unwrap_or_default(),
+            port: row
+                .publishers
+                .unwrap_or_default()
+                .iter()
+                .find_map(|publisher| publisher.published_port.filter(|port| *port != 0))
+                .map(|port| port.to_string()),
+            age: row
+                .running_for
+                .map(|text| text.strip_suffix(" ago").unwrap_or(&text).to_string()),
         })
         .collect())
 }
@@ -359,6 +378,8 @@ mod tests {
             name: name.to_string(),
             state: state.to_string(),
             health: health.to_string(),
+            port: None,
+            age: None,
         }
     }
 
@@ -701,6 +722,27 @@ mod tests {
         ];
         assert_eq!(services(LINES), Ok(expected.clone()));
         assert_eq!(services(LIST), Ok(expected));
+    }
+
+    #[test]
+    fn services_reads_the_published_port_and_the_age_without_ago() {
+        let text = "{\"Service\":\"a\",\"State\":\"running\",\"Publishers\":[{\"URL\":\"0.0.0.0\",\"TargetPort\":3000,\"PublishedPort\":3000,\"Protocol\":\"tcp\"}],\"RunningFor\":\"41 seconds ago\"}\n";
+        let found = services(text).unwrap();
+        assert_eq!(found[0].port, Some("3000".to_string()));
+        assert_eq!(found[0].age, Some("41 seconds".to_string()));
+    }
+
+    #[test]
+    fn services_takes_the_first_publisher_with_a_port_that_is_not_zero() {
+        let text = "{\"Service\":\"a\",\"State\":\"running\",\"Publishers\":[{\"TargetPort\":80,\"PublishedPort\":0},{\"TargetPort\":9090,\"PublishedPort\":9090}]}";
+        assert_eq!(services(text).unwrap()[0].port, Some("9090".to_string()));
+    }
+
+    #[test]
+    fn services_without_publishers_and_running_for_has_no_port_and_no_age() {
+        let found = services(LINES).unwrap();
+        assert_eq!(found[1].port, None);
+        assert_eq!(found[1].age, None);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::cascade;
 use nobs_core::compose::{network_args, Compose, NetworkAction};
@@ -101,7 +101,11 @@ const HOSTS: [&str; 5] = [
 ];
 
 #[derive(Debug, Parser)]
-#[command(name = "nobs", version)]
+#[command(
+    name = "nobs",
+    version,
+    about = "Plain nobs opens the screen on the lab found from here, or a list of labs to choose from; without a terminal it prints this help and exits with 2. The commands below run one step without the screen"
+)]
 pub struct Cli {
     #[arg(
         long,
@@ -111,7 +115,7 @@ pub struct Cli {
     )]
     pub dir: Option<PathBuf>,
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -144,7 +148,9 @@ pub enum Command {
         command: SondaCommand,
     },
     #[command(
-        about = "Open a screen with the scenarios of a running sonda-server, refreshed every second"
+        about = "Open the screen on the lab found from here; with no lab, a screen with the scenarios of a running sonda-server",
+        mut_arg("server", |arg| arg.help("Address of Sonda for every stack; nobs looks at --server, then SONDA_SERVER_URL, then the .env file of the stack, then http://localhost:8085 (http://localhost:8080 for sonda only)")),
+        mut_arg("api_key", |arg|arg.help("Key to send to Sonda with each call except health and ready; nobs looks at --api-key, then SONDA_API_KEY, then the .env file of the stack"))
     )]
     Tui {
         #[command(flatten)]
@@ -1398,13 +1404,16 @@ pub enum DockerCommand {
 }
 
 pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
-    if matches!(cli.command, Command::Sonda { .. } | Command::Tui { .. }) {
+    if matches!(
+        cli.command,
+        None | Some(Command::Sonda { .. } | Command::Tui { .. })
+    ) {
         remove_blank_variables(&["SONDA_SERVER_URL", "SONDA_API_KEY"]);
     }
-    if matches!(cli.command, Command::Utils { .. }) {
+    if matches!(cli.command, Some(Command::Utils { .. })) {
         remove_blank_variables(&["NAUTOBOT_URL", "NAUTOBOT_SUPERUSER_API_TOKEN"]);
     }
-    if matches!(cli.command, Command::External(_)) {
+    if matches!(cli.command, Some(Command::External(_))) {
         remove_blank_variables(&[
             "PROMETHEUS_URL",
             "LOKI_URL",
@@ -1429,7 +1438,18 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             .map(PathBuf::from)
     });
     let given = given.as_deref();
-    let command = match cli.command {
+    let Some(command) = cli.command else {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            eprintln!("{}", Cli::command().render_help());
+            return 2;
+        }
+        let flags = SondaFlags {
+            server: None,
+            api_key: None,
+        };
+        return open_screen(given, flags, true);
+    };
+    let command = match command {
         Command::Docker { command } => command,
         Command::Containerlab { command } => {
             return run_containerlab_command(command, given, runner)
@@ -1439,7 +1459,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         Command::Sonda { flags, command } => {
             return with_env(Path::new("."), || run_sonda(flags, command))
         }
-        Command::Tui { flags } => return with_env(Path::new("."), || run_tui(flags)),
+        Command::Tui { flags } => return open_screen(given, flags, false),
         Command::Workshops => return with_env(Path::new("."), || list_workshops(given)),
         Command::Setup => {
             return with_env(Path::new("."), || {
@@ -4713,14 +4733,77 @@ fn sonda_client(flags: SondaFlags) -> Sonda {
     Sonda::new(server).api_key(key)
 }
 
-fn run_tui(flags: SondaFlags) -> i32 {
-    match nobs_tui::run(sonda_client(flags)) {
-        Ok(()) => 0,
-        Err(error) => {
-            eprintln!("nobs: {error}");
-            1
+fn screen_start(
+    here: &Path,
+    given_dir: Option<&Path>,
+    flags: SondaFlags,
+    chooser: bool,
+) -> Result<nobs_tui::Start, String> {
+    let sonda = nobs_tui::SondaTarget {
+        server: given(flags.server).or_else(|| given(std::env::var("SONDA_SERVER_URL").ok())),
+        api_key: given(flags.api_key).or_else(|| given(std::env::var("SONDA_API_KEY").ok())),
+    };
+    let home = nobs_tui::Workbench::Services;
+    match locate(here, given_dir) {
+        Ok(located) => {
+            let located = Located {
+                dir: here.join(&located.dir),
+                ..located
+            };
+            let workshops = workshop_list(here, given_dir)?;
+            Ok(nobs_tui::Start {
+                stacks: nobs_tui::shell::stacks(Some(&located), workshops)?,
+                lab: Some(located),
+                sonda,
+                home,
+                chooser: false,
+            })
         }
+        Err(LocateError::NotFound) if chooser => {
+            let workshops = workshop_list(here, given_dir)?;
+            let mut stacks = nobs_tui::shell::stacks(None, workshops)?;
+            stacks.push(nobs_tui::shell::sonda_only(here)?);
+            Ok(nobs_tui::Start {
+                lab: None,
+                stacks,
+                sonda,
+                home,
+                chooser: true,
+            })
+        }
+        Err(LocateError::NotFound) => Ok(nobs_tui::Start {
+            lab: None,
+            stacks: vec![nobs_tui::shell::sonda_only(here)?],
+            sonda,
+            home,
+            chooser: false,
+        }),
+        Err(error) => Err(error.to_string()),
     }
+}
+
+fn open_screen(given_dir: Option<&Path>, flags: SondaFlags, chooser: bool) -> i32 {
+    in_current_folder(|here| {
+        let start = match screen_start(here, given_dir, flags, chooser) {
+            Ok(start) => start,
+            Err(message) => {
+                eprintln!("nobs: {message}");
+                return 1;
+            }
+        };
+        let runner = std::sync::Arc::new(nobs_core::runner::CapturedRunner);
+        match nobs_tui::run(start, runner) {
+            Ok(1) => {
+                eprintln!("nobs: {}", LocateError::NotFound);
+                1
+            }
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("nobs: {error}");
+                1
+            }
+        }
+    })
 }
 
 fn run_sonda(flags: SondaFlags, command: SondaCommand) -> i32 {
@@ -5481,6 +5564,112 @@ mod tests {
         for folder in ["one", "two"] {
             let env = scratch.0.join("workshops").join(folder).join(".env");
             assert!(!env.exists(), "{folder}");
+        }
+    }
+
+    fn flags(server: Option<&str>) -> SondaFlags {
+        SondaFlags {
+            server: server.map(str::to_string),
+            api_key: None,
+        }
+    }
+
+    #[test]
+    fn a_workshop_folder_starts_the_screen_on_that_workshop() {
+        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/workshop-one");
+
+        let start = screen_start(&here, None, flags(None), false).unwrap();
+
+        let lab = start.lab.expect("a located lab");
+        assert!(!start.chooser);
+        assert!(start
+            .stacks
+            .iter()
+            .any(|stack| stack.kind == nobs_tui::StackKind::Workshop && stack.path == lab.dir));
+    }
+
+    #[test]
+    fn an_empty_folder_starts_the_chooser_with_the_sonda_row_last() {
+        let here = Scratch::new("screen-chooser");
+
+        let start = screen_start(&here.0, None, flags(None), true).unwrap();
+
+        assert!(start.lab.is_none());
+        assert!(start.chooser);
+        let last = start.stacks.last().expect("a last stack");
+        assert_eq!(last.kind, nobs_tui::StackKind::Sonda);
+        assert_eq!(last.path, here.0);
+    }
+
+    #[test]
+    fn an_empty_folder_without_the_chooser_starts_on_the_sonda_stack_alone() {
+        let here = Scratch::new("screen-sonda-alone");
+
+        let start = screen_start(&here.0, None, flags(None), false).unwrap();
+
+        assert!(start.lab.is_none());
+        assert!(!start.chooser);
+        let kinds: Vec<_> = start.stacks.iter().map(|stack| stack.kind).collect();
+        assert_eq!(kinds, [nobs_tui::StackKind::Sonda]);
+    }
+
+    #[test]
+    fn the_server_flag_goes_to_the_sonda_target() {
+        let here = Scratch::new("screen-flag");
+
+        let start = screen_start(&here.0, None, flags(Some("http://flag:1")), false).unwrap();
+
+        assert_eq!(start.sonda.server.as_deref(), Some("http://flag:1"));
+    }
+
+    struct Cwd(PathBuf);
+
+    impl Cwd {
+        fn enter(dir: &Path) -> Self {
+            let before = std::env::current_dir().unwrap();
+            std::env::set_current_dir(dir).unwrap();
+            Self(before)
+        }
+    }
+
+    impl Drop for Cwd {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_relative_dir_naming_the_second_workshop_selects_that_workshop() {
+        let scratch = two_workshops("screen-relative");
+        fs::write(
+            scratch.0.join("workshops/two/.env"),
+            "INFRAHUB_ADDRESS=http://x\n",
+        )
+        .unwrap();
+        let _cwd = Cwd::enter(&scratch.0);
+        let here = std::env::current_dir().unwrap();
+
+        let start =
+            screen_start(&here, Some(Path::new("workshops/two")), flags(None), false).unwrap();
+
+        let model = nobs_tui::Shell::new(start);
+        assert_eq!(model.selected_stack(), 1);
+        assert_eq!(model.stacks()[1].name, "nobs-t-two");
+        assert!(
+            model.header().ends_with("sot infrahub"),
+            "{}",
+            model.header()
+        );
+    }
+
+    #[test]
+    fn an_unreadable_env_in_the_start_folder_is_an_error() {
+        let here = Scratch::new("screen-bad-env");
+        fs::write(here.0.join(".env"), "=x\n").unwrap();
+
+        for chooser in [true, false] {
+            let error = screen_start(&here.0, None, flags(None), chooser).unwrap_err();
+            assert!(error.ends_with("line 1: empty key"), "{error}");
         }
     }
 }

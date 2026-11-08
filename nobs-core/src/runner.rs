@@ -8,6 +8,7 @@ use std::process::{Command, ExitStatus, Stdio};
 pub struct Output {
     pub code: i32,
     pub stdout: String,
+    pub stderr: String,
 }
 
 pub trait Runner {
@@ -39,6 +40,27 @@ impl Runner for RealRunner {
         Ok(Output {
             code: exit_code(output.status),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::new(),
+        })
+    }
+}
+
+pub struct CapturedRunner;
+
+impl Runner for CapturedRunner {
+    fn run(&self, program: &str, args: &[OsString]) -> io::Result<i32> {
+        RealRunner.run(program, args)
+    }
+
+    fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
+        let output = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()?;
+        Ok(Output {
+            code: exit_code(output.status),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
 }
@@ -127,6 +149,7 @@ impl Runner for FakeRunner {
         Ok(Output {
             code,
             stdout: stdout.clone(),
+            stderr: String::new(),
         })
     }
 }
@@ -204,7 +227,23 @@ mod tests {
             output,
             Output {
                 code: 3,
-                stdout: "hi".to_string()
+                stdout: "hi".to_string(),
+                stderr: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn captured_runner_output_captures_stdout_stderr_and_the_exit_code() {
+        let output = CapturedRunner
+            .output("sh", &args(&["-c", "printf out; printf err >&2; exit 3"]))
+            .unwrap();
+        assert_eq!(
+            output,
+            Output {
+                code: 3,
+                stdout: "out".to_string(),
+                stderr: "err".to_string()
             }
         );
     }
@@ -225,7 +264,8 @@ mod tests {
             output,
             Output {
                 code: 0,
-                stdout: "a\nb\n".to_string()
+                stdout: "a\nb\n".to_string(),
+                stderr: String::new()
             }
         );
         let asked = Call {
@@ -256,7 +296,8 @@ mod tests {
             other,
             Output {
                 code: 0,
-                stdout: String::new()
+                stdout: String::new(),
+                stderr: String::new()
             }
         );
         assert_eq!(runner.run("df", &[]).unwrap(), 0);
@@ -269,7 +310,8 @@ mod tests {
             FakeRunner::returning(3).output("docker", &[]).unwrap(),
             Output {
                 code: 3,
-                stdout: String::new()
+                stdout: String::new(),
+                stderr: String::new()
             }
         );
     }

@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
+ [1 devices]  2 services  3 lab                                                      ? keys  q quit
+ the device workbench comes with slice 24
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ run  none                                                                                   o open
+ 1 2 3 switch  ? keys  q quit

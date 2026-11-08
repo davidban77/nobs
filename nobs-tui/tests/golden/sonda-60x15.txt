@@ -1,0 +1,15 @@
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ 1 devices  [2 services]  3 lab              ? keys  q quit
+┌ stacks 3 ───────────┐┌ autocon5  refreshed 2s ago ───────┐
+│>autocon5  up 7/7    ││overview  logs  SONDA              │
+│ packt     down      ││http://localhost:8085  refreshed 2s│
+│ demo      down 0/3  ││┌─────────────────┐┌──────────────┐│
+│                     │││  ID   NAME S E D││state  "runnin││
+│                     │││> a1b2 cpu  r 1 f││{             ││
+│                     │││                 ││  "name": "cpu││
+│                     │││                 ││}             ││
+│                     ││└─────────────────┘└──────────────┘│
+│                     ││q quit  j/k select  r refresh  l lo│
+└─────────────────────┘└───────────────────────────────────┘
+ run  none                                           o open
+ Tab focus  [ ] tab  Esc back

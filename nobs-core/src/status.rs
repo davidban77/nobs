@@ -50,6 +50,22 @@ impl Urls {
             sonda: default_url("Sonda"),
         }
     }
+
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let defaults = Self::defaults();
+        let pick = |name: &str, default: String| {
+            lookup(name)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(default)
+        };
+        Self {
+            prometheus: pick("PROMETHEUS_URL", defaults.prometheus),
+            loki: pick("LOKI_URL", defaults.loki),
+            alertmanager: pick("ALERTMANAGER_URL", defaults.alertmanager),
+            infrahub: pick("INFRAHUB_ADDRESS", defaults.infrahub),
+            ..defaults
+        }
+    }
 }
 
 fn default_url(name: &str) -> String {
@@ -157,6 +173,17 @@ mod tests {
                 sonda: "http://localhost:8085".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn from_lookup_takes_a_set_address_and_falls_back_to_the_default_for_a_blank_one() {
+        let urls = Urls::from_lookup(|name| match name {
+            "LOKI_URL" => Some("http://loki:3100".to_string()),
+            "INFRAHUB_ADDRESS" => Some("  ".to_string()),
+            _ => None,
+        });
+        assert_eq!(urls.loki, "http://loki:3100");
+        assert_eq!(urls.infrahub, Urls::defaults().infrahub);
     }
 
     #[test]

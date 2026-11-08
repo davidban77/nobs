@@ -3,6 +3,16 @@ use std::fs;
 use std::path::Path;
 
 pub fn load_env(dir: &Path) -> Result<(), String> {
+    for (key, value) in read_env(dir)? {
+        if env::var_os(&key).is_none() {
+            env::set_var(key, value);
+        }
+    }
+    Ok(())
+}
+
+pub fn read_env(dir: &Path) -> Result<Vec<(String, String)>, String> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
     for name in [".env", ".setup.env"] {
         let path = dir.join(name);
         let Ok(text) = fs::read_to_string(&path) else {
@@ -16,13 +26,13 @@ pub fn load_env(dir: &Path) -> Result<(), String> {
                 if key.contains('\0') || value.contains('\0') {
                     return Err(format!("{}: line {}: NUL byte", path.display(), index + 1));
                 }
-                if env::var_os(key).is_none() {
-                    env::set_var(key, value);
+                if !pairs.iter().any(|(seen, _)| seen == key) {
+                    pairs.push((key.to_string(), value.to_string()));
                 }
             }
         }
     }
-    Ok(())
+    Ok(pairs)
 }
 
 fn parse_line(line: &str) -> Option<(&str, &str)> {
@@ -50,6 +60,42 @@ fn unquote(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn folder(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("nobs-env-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for (file, text) in files {
+            fs::write(dir.join(file), text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn read_env_gives_dot_env_then_setup_env_and_keeps_the_first_value_of_a_key() {
+        let dir = folder(
+            "order",
+            &[(".env", "A=1\nB=2\n"), (".setup.env", "A=9\nC=3\n")],
+        );
+        let pairs = read_env(&dir);
+        let _ = fs::remove_dir_all(&dir);
+        let pair = |key: &str, value: &str| (key.to_string(), value.to_string());
+        assert_eq!(
+            pairs,
+            Ok(vec![pair("A", "1"), pair("B", "2"), pair("C", "3")])
+        );
+    }
+
+    #[test]
+    fn read_env_names_an_empty_key_with_its_file_and_line() {
+        let dir = folder("empty-key", &[(".env", "A=1\n=x\n")]);
+        let error = read_env(&dir).unwrap_err();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            error,
+            format!("{}: line 2: empty key", dir.join(".env").display())
+        );
+    }
 
     #[test]
     fn a_comment_and_a_blank_line_give_nothing() {
