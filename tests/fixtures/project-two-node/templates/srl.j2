@@ -1,0 +1,8 @@
+set / system name host-name {{ name }}
+{% for interface in interfaces %}
+set / interface {{ interface.name }} admin-state enable
+set / interface {{ interface.name }} subinterface 0 admin-state enable
+set / interface {{ interface.name }} subinterface 0 ipv4 admin-state enable
+set / interface {{ interface.name }} subinterface 0 ipv4 address {{ interface.ipv4 }}
+set / network-instance default interface {{ interface.name }}.0
+{% endfor %}

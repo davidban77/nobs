@@ -1,0 +1,24 @@
+name: nobs-t-project
+mgmt:
+  network: nobs-t-net
+  ipv4-subnet: 203.0.113.0/24
+topology:
+  nodes:
+    nobs-t-srl1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: "203.0.113.11"
+      startup-config: configs/nobs-t-srl1.cfg
+      labels:
+        nobs-t-label: ${NOBS_T_LABEL:-unset}
+    nobs-t-srl2:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: "203.0.113.12"
+      startup-config: configs/nobs-t-srl2.cfg
+      labels:
+        nobs-t-label: ${NOBS_T_LABEL:-unset}
+  links:
+  - endpoints:
+    - nobs-t-srl1:e1-1
+    - nobs-t-srl2:e1-1
