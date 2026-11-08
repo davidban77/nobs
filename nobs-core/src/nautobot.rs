@@ -220,20 +220,14 @@ impl Nautobot {
         )?;
         let active = run.status(ACTIVE, "aaf0d1")?;
         run.status(ALERTED, "ff5a36")?;
-        run.upsert(
-            Kind::CustomField,
-            &[("key", FIELD_KEY)],
-            FIELD_KEY,
-            json!({
-                "label": "Maintenance",
-                "key": FIELD_KEY,
-                "type": "boolean",
-                "default": false,
-                "required": false,
-                "content_types": ["dcim.device"],
-            }),
-            None,
-        )?;
+        run.custom_field(json!({
+            "label": "Maintenance",
+            "key": FIELD_KEY,
+            "type": "boolean",
+            "default": false,
+            "required": false,
+            "content_types": ["dcim.device"],
+        }))?;
         let location = run.upsert(
             Kind::Location,
             &[("name", LAB)],
@@ -320,7 +314,10 @@ impl Nautobot {
     }
 
     pub fn delete(&self, progress: &mut dyn FnMut(&str, usize)) -> Result<Deleted, Error> {
-        let devices = self.find_all(Kind::Device, &[("location", LAB)])?;
+        let locations = self.find_all(Kind::Location, &[("name", LAB)])?;
+        let namespaces = self.find_all(Kind::Namespace, &[("name", NAMESPACE)])?;
+        let devices = self.find_in(Kind::Device, "location", &locations)?;
+        let prefixes = self.find_in(Kind::Prefix, "namespace", &namespaces)?;
         let mut mappings = Vec::new();
         for device in &devices {
             for interface in self.find_all(Kind::Interface, &[("device", id(device))])? {
@@ -338,9 +335,15 @@ impl Nautobot {
             (Kind::Mapping, ids(&mappings)),
             (Kind::IpAddress, addresses),
             (Kind::Device, ids(&devices)),
+            (Kind::Prefix, ids(&prefixes)),
+            (Kind::Namespace, ids(&namespaces)),
+            (Kind::Location, ids(&locations)),
         ];
         for (kind, filters) in removed() {
             let mut kind_ids = Vec::new();
+            if matches!(kind, Kind::CustomField) {
+                kind_ids = ids(&self.find_custom_fields()?);
+            }
             for filter in filters {
                 kind_ids.extend(ids(&self.find_all(kind, &filter)?));
             }
@@ -358,7 +361,10 @@ impl Nautobot {
     }
 
     fn find_all(&self, kind: Kind, filter: &[(&str, &str)]) -> Result<Vec<Value>, Error> {
-        let mut path = format!("{}{}&limit={PAGE}", kind.path(), query(filter));
+        let page = PAGE.to_string();
+        let mut filter = filter.to_vec();
+        filter.push(("limit", &page));
+        let mut path = format!("{}{}", kind.path(), query(&filter));
         let mut items = Vec::new();
         loop {
             let reply = self.get(&path)?;
@@ -371,6 +377,22 @@ impl Nautobot {
                 None => return Ok(items),
             }
         }
+    }
+
+    fn find_in(&self, kind: Kind, parent: &str, parents: &[Value]) -> Result<Vec<Value>, Error> {
+        let mut items = Vec::new();
+        for found in parents {
+            items.extend(self.find_all(kind, &[(parent, id(found))])?);
+        }
+        Ok(items)
+    }
+
+    fn find_custom_fields(&self) -> Result<Vec<Value>, Error> {
+        Ok(self
+            .find_all(Kind::CustomField, &[])?
+            .into_iter()
+            .filter(|item| item["key"] == FIELD_KEY)
+            .collect())
     }
 
     fn get(&self, path: &str) -> Result<Value, Error> {
@@ -461,12 +483,31 @@ impl Run<'_> {
         kind: Kind,
         filter: &[(&str, &str)],
         key: &str,
-        mut body: Value,
+        body: Value,
         on_create: Option<(&str, Value)>,
     ) -> Result<String, Error> {
         let path = format!("{}{}", kind.path(), query(filter));
         let found = self.nautobot.get(&path)?;
-        let (written, outcome) = match results(&found, &path)? {
+        self.write(kind, key, results(&found, &path)?, &path, body, on_create)
+    }
+
+    fn custom_field(&mut self, body: Value) -> Result<(), Error> {
+        let found = self.nautobot.find_custom_fields()?;
+        let path = Kind::CustomField.path();
+        self.write(Kind::CustomField, FIELD_KEY, &found, path, body, None)
+            .map(|_| ())
+    }
+
+    fn write(
+        &mut self,
+        kind: Kind,
+        key: &str,
+        found: &[Value],
+        path: &str,
+        mut body: Value,
+        on_create: Option<(&str, Value)>,
+    ) -> Result<String, Error> {
+        let (written, outcome) = match found {
             [] => {
                 if let Some((name, value)) = on_create {
                     body[name] = value;
@@ -474,7 +515,7 @@ impl Run<'_> {
                 (self.nautobot.post(kind.path(), &body)?, Outcome::Created)
             }
             [one] => {
-                let found_id = field(one, "id", &path)?;
+                let found_id = field(one, "id", path)?;
                 let update = format!("{}{found_id}/", kind.path());
                 (self.nautobot.patch(&update, &body)?, Outcome::Updated)
             }
@@ -823,15 +864,12 @@ type Filter = Vec<(&'static str, &'static str)>;
 
 fn removed() -> Vec<(Kind, Vec<Filter>)> {
     vec![
-        (Kind::Prefix, vec![vec![("namespace", NAMESPACE)]]),
-        (Kind::Namespace, vec![vec![("name", NAMESPACE)]]),
-        (Kind::Location, vec![vec![("name", LAB)]]),
         (Kind::LocationType, vec![vec![("name", SITE)]]),
         (
             Kind::Status,
             vec![vec![("name", ACTIVE)], vec![("name", ALERTED)]],
         ),
-        (Kind::CustomField, vec![vec![("key", FIELD_KEY)]]),
+        (Kind::CustomField, vec![]),
         (
             Kind::DeviceType,
             TYPES
@@ -1149,7 +1187,7 @@ mod tests {
         ));
         all.extend(step(
             "/api/extras/custom-fields/",
-            "key=maintenance",
+            "limit=200",
             json!({
                 "label": "Maintenance",
                 "key": "maintenance",
@@ -1312,7 +1350,9 @@ mod tests {
         }
 
         let found = r#"{"count":1,"next":null,"results":[{"id":"found","display":"found"}]}"#;
+        let found_field = r#"{"count":1,"next":null,"results":[{"id":"found","display":"found","key":"maintenance"}]}"#;
         let again = Stub::start(&[
+            ("GET", "/api/extras/custom-fields/*", 200, found_field),
             ("GET", "/api/*", 200, found),
             (
                 "PATCH",
@@ -1402,14 +1442,20 @@ mod tests {
         let mapping = |id: &str| {
             format!(r#"{{"next":null,"results":[{{"id":"{id}","ip_address":{{"id":"ip-1"}}}}]}}"#)
         };
-        let first_devices = r#"{"next":"http://nautobot.internal:8080/api/dcim/devices/?location=lab&limit=200&offset=1","results":[{"id":"dev-1"}]}"#;
+        let first_devices = r#"{"next":"http://nautobot.internal:8080/api/dcim/devices/?location=loc-1&limit=200&offset=1","results":[{"id":"dev-1"}]}"#;
+        let fields = r#"{"next":null,"results":[{"id":"cf-0","key":"other"},{"id":"cf-1","key":"maintenance"}]}"#;
         let gets = [
+            ("/api/dcim/locations/?name=lab&limit=200", page(&["loc-1"])),
             (
-                "/api/dcim/devices/?location=lab&limit=200",
+                "/api/ipam/namespaces/?name=lab-default&limit=200",
+                page(&["ns-1"]),
+            ),
+            (
+                "/api/dcim/devices/?location=loc-1&limit=200",
                 first_devices.to_string(),
             ),
             (
-                "/api/dcim/devices/?location=lab&limit=200&offset=1",
+                "/api/dcim/devices/?location=loc-1&limit=200&offset=1",
                 page(&["dev-2"]),
             ),
             (
@@ -1429,14 +1475,9 @@ mod tests {
                 mapping("map-2"),
             ),
             (
-                "/api/ipam/prefixes/?namespace=lab-default&limit=200",
+                "/api/ipam/prefixes/?namespace=ns-1&limit=200",
                 page(&["pre-1"]),
             ),
-            (
-                "/api/ipam/namespaces/?name=lab-default&limit=200",
-                page(&["ns-1"]),
-            ),
-            ("/api/dcim/locations/?name=lab&limit=200", page(&["loc-1"])),
             (
                 "/api/extras/statuses/?name=lab-active&limit=200",
                 page(&["st-1"]),
@@ -1445,10 +1486,7 @@ mod tests {
                 "/api/extras/statuses/?name=Alerted&limit=200",
                 page(&["st-2"]),
             ),
-            (
-                "/api/extras/custom-fields/?key=maintenance&limit=200",
-                page(&["cf-1"]),
-            ),
+            ("/api/extras/custom-fields/?limit=200", fields.to_string()),
             (
                 "/api/dcim/device-types/?manufacturer=Arista&model=cEOS&limit=200",
                 page(&["dt-1"]),
@@ -1566,5 +1604,75 @@ mod tests {
             "{result:?}"
         );
         assert_eq!(stub.requests().len(), 1);
+    }
+
+    #[test]
+    fn the_custom_field_is_found_by_its_key_among_the_other_custom_fields() {
+        let fields = r#"{"next":null,"results":[{"id":"cf-other","key":"other"},{"id":"cf-main","key":"maintenance"}]}"#;
+        let stub = Stub::start(&[
+            ("GET", "/api/extras/custom-fields/?limit=200", 200, fields),
+            ("GET", "/api/*", 200, NO_RESULTS),
+            ("POST", "/api/*", 200, r#"{"id":"made","display":"made"}"#),
+            (
+                "PATCH",
+                "/api/*",
+                200,
+                r#"{"id":"cf-main","display":"cf-main"}"#,
+            ),
+        ]);
+        let (topology, vars) = texts(&[("nobs-t-a", "nokia_srlinux")]);
+
+        let loaded = load(&stub, &topology, &vars).unwrap();
+
+        let made = calls(&stub);
+        let field_writes: Vec<(&str, &str)> = made
+            .iter()
+            .filter(|(method, path, _)| method != "GET" && path.starts_with("/api/extras/custom-"))
+            .map(|(method, path, _)| (method.as_str(), path.as_str()))
+            .collect();
+        assert_eq!(
+            field_writes,
+            [("PATCH", "/api/extras/custom-fields/cf-main/")]
+        );
+        assert_eq!(loaded.rows[5], ("custom field".to_string(), 0, 1));
+    }
+
+    #[test]
+    fn delete_on_an_empty_nautobot_sends_no_filter_on_a_parent_and_no_delete() {
+        let refused = r#"{"location":["Select a valid choice."]}"#;
+        let stub = Stub::start(&[
+            ("GET", "/api/dcim/devices/?location=*", 400, refused),
+            ("GET", "/api/ipam/prefixes/?namespace=*", 400, refused),
+            ("GET", "/api/*", 200, r#"{"next":null,"results":[]}"#),
+            ("DELETE", "/api/*", 204, ""),
+        ]);
+
+        let deleted = Nautobot::new(stub.url(), TOKEN)
+            .delete(&mut |_, _| {})
+            .unwrap();
+
+        let words = [
+            "ip address to interface",
+            "ip address",
+            "device",
+            "prefix",
+            "namespace",
+            "location",
+            "location type",
+            "status",
+            "custom field",
+            "device type",
+            "manufacturer",
+            "role",
+        ];
+        let rows: Vec<(String, usize)> = words.iter().map(|word| (word.to_string(), 0)).collect();
+        assert_eq!(deleted.rows, rows);
+        for (method, path, _) in calls(&stub) {
+            assert_eq!(method, "GET", "{path}");
+            assert!(
+                !path.contains("location=") && !path.contains("namespace="),
+                "{path}"
+            );
+        }
     }
 }

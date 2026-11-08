@@ -64,8 +64,8 @@ const DELETED: &str = "ip address to interface: 1 deleted
 ip address: 1 deleted
 device: 1 deleted
 prefix: 2 deleted
-namespace: 0 deleted
-location: 0 deleted
+namespace: 1 deleted
+location: 1 deleted
 location type: 0 deleted
 status: 2 deleted
 custom field: 0 deleted
@@ -213,6 +213,8 @@ fn nautobot_with_objects() -> Stub {
     let interfaces = page(&["if-1"]);
     let prefixes = page(&["pre-1", "pre-2"]);
     let statuses = page(&["st-1"]);
+    let locations = page(&["loc-1"]);
+    let namespaces = page(&["ns-1"]);
     let mappings = r#"{"next":null,"results":[{"id":"map-1","ip_address":{"id":"ip-1"}}]}"#;
     Stub::start(&[
         ("GET", "/api/dcim/devices/*", 200, &devices),
@@ -220,6 +222,8 @@ fn nautobot_with_objects() -> Stub {
         ("GET", "/api/ipam/ip-address-to-interface/*", 200, mappings),
         ("GET", "/api/ipam/prefixes/*", 200, &prefixes),
         ("GET", "/api/extras/statuses/*", 200, &statuses),
+        ("GET", "/api/dcim/locations/*", 200, &locations),
+        ("GET", "/api/ipam/namespaces/*", 200, &namespaces),
         ("GET", "/api/*", 200, r#"{"next":null,"results":[]}"#),
         ("DELETE", "/api/*", 204, ""),
     ])
@@ -379,7 +383,7 @@ fn delete_nautobot_prints_each_kind_and_the_total() {
     assert_eq!(stderr(&output), "");
     assert_eq!(
         stdout(&output),
-        format!("{DELETED}Done: 7 objects deleted.\n")
+        format!("{DELETED}Done: 9 objects deleted.\n")
     );
 }
 
