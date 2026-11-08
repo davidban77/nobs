@@ -2,6 +2,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::lab;
 use crate::settings::{read_settings, read_settings_file, Lab, Settings, Workshop};
 
 pub const FILE: &str = "nobs.toml";
@@ -26,7 +27,7 @@ impl fmt::Display for LocateError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     Workshop(Workshop),
-    BookLab,
+    BookLab(Option<Lab>),
     LabcliLab(Option<Lab>),
 }
 
@@ -56,7 +57,7 @@ impl Located {
             return self.dir.join(file);
         }
         let folder = self.dir.join("containerlab");
-        if matches!(self.kind, Kind::BookLab) {
+        if matches!(self.kind, Kind::BookLab(_)) {
             return folder.join("lab.yml");
         }
         let yaml = folder.join("lab.clab.yaml");
@@ -68,18 +69,27 @@ impl Located {
     }
 
     pub fn project(&self) -> Option<&str> {
-        match &self.kind {
-            Kind::Workshop(workshop) => Some(&workshop.project),
-            Kind::LabcliLab(Some(lab)) => lab.project.as_deref(),
-            _ => None,
+        if let Kind::Workshop(workshop) = &self.kind {
+            return Some(&workshop.project);
         }
+        let setting = self.lab().and_then(|lab| lab.project.as_deref());
+        setting.or(self.book_default(lab::PROJECT))
+    }
+
+    pub fn network(&self) -> Option<&str> {
+        let setting = self.lab().and_then(|lab| lab.network.as_deref());
+        setting.or(self.book_default(lab::NETWORK))
     }
 
     fn lab(&self) -> Option<&Lab> {
         match &self.kind {
-            Kind::LabcliLab(lab) => lab.as_ref(),
-            _ => None,
+            Kind::BookLab(lab) | Kind::LabcliLab(lab) => lab.as_ref(),
+            Kind::Workshop(_) => None,
         }
+    }
+
+    fn book_default(&self, name: &'static str) -> Option<&'static str> {
+        matches!(self.kind, Kind::BookLab(_)).then_some(name)
     }
 }
 
@@ -101,13 +111,17 @@ fn settings_file(dir: &Path) -> Result<Option<Kind>, LocateError> {
         })?;
     Ok(Some(match settings {
         Settings::Workshop(workshop) => Kind::Workshop(workshop),
+        Settings::Lab(lab) if has_book_layout(dir) => Kind::BookLab(Some(lab)),
         Settings::Lab(lab) => Kind::LabcliLab(Some(lab)),
     }))
 }
 
+fn has_book_layout(dir: &Path) -> bool {
+    dir.join("chapters").is_dir() && dir.join("containerlab/lab.yml").is_file()
+}
+
 fn book_lab_layout(dir: &Path) -> Result<Option<Kind>, LocateError> {
-    let found = dir.join("chapters").is_dir() && dir.join("containerlab/lab.yml").is_file();
-    Ok(found.then_some(Kind::BookLab))
+    Ok(has_book_layout(dir).then_some(Kind::BookLab(None)))
 }
 
 fn labcli_lab_layout(dir: &Path) -> Result<Option<Kind>, LocateError> {
@@ -231,7 +245,7 @@ mod tests {
         let scratch = Scratch::new("book");
         let book = scratch.book_lab("book");
         let located = locate(&book, None).unwrap();
-        assert_eq!(located.kind, Kind::BookLab);
+        assert_eq!(located.kind, Kind::BookLab(None));
         assert_eq!(
             located.compose(Some("ch1")),
             book.join("chapters/ch1/docker-compose.yml")
@@ -288,7 +302,7 @@ mod tests {
         let book = scratch.book_lab("book");
         let located = locate(&book.join("chapters/ch1"), None).unwrap();
         assert_eq!(located.dir, book);
-        assert_eq!(located.kind, Kind::BookLab);
+        assert_eq!(located.kind, Kind::BookLab(None));
     }
 
     #[test]
@@ -346,16 +360,59 @@ mod tests {
     }
 
     #[test]
-    fn project_is_the_workshop_project_and_none_for_a_plain_lab() {
+    fn project_is_the_workshop_project_netobs_for_a_book_lab_and_none_for_a_plain_lab() {
         let scratch = Scratch::new("project");
         let ws = scratch.dir("ws");
         scratch.file("ws/nobs.toml", &workshop_text());
         assert_eq!(locate(&ws, None).unwrap().project(), Some("nobs-t-one"));
         let book = scratch.book_lab("book");
-        assert_eq!(locate(&book, None).unwrap().project(), None);
+        assert_eq!(locate(&book, None).unwrap().project(), Some("netobs"));
         let lab = scratch.dir("lab");
         scratch.file("lab/docker-compose.yml", "");
         assert_eq!(locate(&lab, None).unwrap().project(), None);
+    }
+
+    #[test]
+    fn a_settings_file_next_to_the_book_layout_makes_a_book_lab_with_overrides() {
+        let scratch = Scratch::new("book-overrides");
+        let book = scratch.book_lab("book");
+        scratch.file(
+            "book/nobs.toml",
+            "kind = \"lab\"\ntopology = \"t/x.yml\"\nproject = \"p\"\nnetwork = \"n\"\n",
+        );
+        let located = locate(&book, None).unwrap();
+        assert!(
+            matches!(located.kind, Kind::BookLab(Some(_))),
+            "{located:?}"
+        );
+        assert_eq!(located.project(), Some("p"));
+        assert_eq!(located.network(), Some("n"));
+        assert_eq!(located.topology(), book.join("t/x.yml"));
+        assert_eq!(
+            located.compose(Some("ch1")),
+            book.join("chapters/ch1/docker-compose.yml")
+        );
+    }
+
+    #[test]
+    fn a_book_lab_without_a_settings_file_is_named_netobs_on_network_observability() {
+        let scratch = Scratch::new("book-defaults");
+        let book = scratch.book_lab("book");
+        let located = locate(&book, None).unwrap();
+        assert_eq!(located.project(), Some("netobs"));
+        assert_eq!(located.network(), Some("network-observability"));
+    }
+
+    #[test]
+    fn a_labcli_lab_has_a_network_only_when_its_settings_name_one() {
+        let scratch = Scratch::new("network");
+        let lab = scratch.dir("lab");
+        scratch.file("lab/docker-compose.yml", "");
+        assert_eq!(locate(&lab, None).unwrap().network(), None);
+        scratch.file("lab/nobs.toml", "kind = \"lab\"\n");
+        assert_eq!(locate(&lab, None).unwrap().network(), None);
+        scratch.file("lab/nobs.toml", "kind = \"lab\"\nnetwork = \"n\"\n");
+        assert_eq!(locate(&lab, None).unwrap().network(), Some("n"));
     }
 
     #[test]

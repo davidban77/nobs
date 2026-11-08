@@ -159,7 +159,35 @@ fn a_scenario_in_a_book_lab_uses_the_chapter_compose_file() {
     assert_eq!(code, 0);
     assert_eq!(
         runner.calls()[0].args,
-        compose_ps(None, &here.join("docker-compose.yml"), &[])
+        compose_ps(Some("netobs"), &here.join("docker-compose.yml"), &[])
+    );
+}
+
+#[test]
+fn a_nobs_toml_project_beside_the_book_layout_reaches_docker() {
+    let copy = Bare::new("book-project");
+    for file in ["chapters/ch1/docker-compose.yml", "containerlab/lab.yml"] {
+        let target = copy.0.join(file);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(fixture("book-lab").join(file), target).unwrap();
+    }
+    fs::write(
+        copy.0.join("nobs.toml"),
+        "kind = \"lab\"\nproject = \"p\"\n",
+    )
+    .unwrap();
+    let here = enter(&copy.0);
+
+    let (code, runner) = nobs(&["docker", "ps", "-s", "ch1"]);
+
+    assert_eq!(code, 0);
+    assert_eq!(
+        runner.calls()[0].args,
+        compose_ps(
+            Some("p"),
+            &here.join("chapters/ch1/docker-compose.yml"),
+            &[]
+        )
     );
 }
 

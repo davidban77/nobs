@@ -2,11 +2,11 @@
 
 A terminal program (a text user interface) for network labs and observability workshops. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (4 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## Commands
 
-Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. netobs has no `containerlab` commands, so its cell is empty in those rows.
+Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The four `lab` commands of nobs have the same names as in netobs. netobs also has `lab prepare`, `lab update` and `lab rebuild`; nobs does not have them. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows.
 
 | labcli X | netobs X | nobs X |
 |---|---|---|
@@ -26,6 +26,10 @@ Each `docker` command of labcli and netobs has the same name in nobs, and so doe
 | `labcli containerlab deploy` | | `nobs containerlab deploy` |
 | `labcli containerlab destroy` | | `nobs containerlab destroy` |
 | `labcli containerlab inspect` | | `nobs containerlab inspect` |
+| | `netobs lab deploy` | `nobs lab deploy` |
+| | `netobs lab destroy` | `nobs lab destroy` |
+| | `netobs lab purge` | `nobs lab purge` |
+| | `netobs lab show` | `nobs lab show` |
 
 In `nobs docker exec`, the words after the service are passed to the container as separate arguments, and a flag meant for the command inside the container goes after `--`.
 
@@ -47,19 +51,22 @@ nobs knows three kinds of lab folder:
 
 nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
 
-To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker` and `nobs containerlab` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
+To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab` and `nobs lab` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
 
 These commands need a lab folder:
 
 - a `nobs docker` command without `--compose`, with or without `--scenario`, except `nobs docker network`;
 - a `nobs containerlab` command without a `TOPOLOGY` file;
+- `nobs lab ...`, which needs the book lab, not any lab folder (see [Book lab](#book-lab));
 - `nobs <workshop> ...` (see [Workshops](#workshops)).
 
 These commands do not need a lab folder. They work from any folder and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, `nobs tui`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)).
 
-In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.yml` in the book lab. In a workshop or a labcli lab, it uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml`. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`.
+In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.yml` in the book lab. In a workshop or a labcli lab, it uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml`. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`. For the book lab, nobs gives it the project name `netobs`, as netobs does, so every `nobs docker` command in the book lab passes `--project-name netobs`, unless a `nobs.toml` of the book lab sets `project`.
 
-A labcli lab may also hold a `nobs.toml` with `kind = "lab"`. In it, `compose` and `topology` name other files to use, relative to the lab folder, and `project` sets the project name. nobs also accepts `network`, but does not use it. Each of these is optional.
+A labcli lab may also hold a `nobs.toml` with `kind = "lab"`. In it, `compose` and `topology` name other files to use, relative to the lab folder, and `project` sets the project name. nobs also accepts `network`, but a labcli lab does not use it. Each of these is optional.
+
+A `nobs.toml` with `kind = "lab"` in the book lab folder, next to `chapters/` and `containerlab/lab.yml`, keeps the folder a book lab and overrides its defaults: `topology`, `project` and `network` (the network `nobs lab deploy` creates). The `lab` commands do not use `compose`, because each scenario has its own `docker-compose.yml`. Which folder nobs takes is still decided by the walk above, so a `nobs.toml` in a parent folder wins over a book lab lower down.
 
 When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the three kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
 
@@ -94,7 +101,7 @@ When the first word after `nobs` is not one of its commands, nobs takes it as a 
 
 So inside a workshop folder, or below it, you can leave the workshop name out. For example, from `/home/me/repo/workshops/nobs-t-one/sub`, `nobs up` does the same as `nobs nobs-t-one up`. This also works when `--dir` or `NOBS_DIR` names the workshop folder.
 
-The commands of nobs itself (`docker`, `containerlab`, `sonda`, `tui`, `workshops`, `setup`, `preflight` and `help`) keep their meaning in every folder. So inside a workshop, `nobs setup` is still the setup of every workshop (see [Setup and preflight](#setup-and-preflight)), not `nobs <workshop> setup`.
+The commands of nobs itself (`docker`, `containerlab`, `lab`, `sonda`, `tui`, `workshops`, `setup`, `preflight` and `help`) keep their meaning in every folder. So inside a workshop, `nobs setup` is still the setup of every workshop (see [Setup and preflight](#setup-and-preflight)), not `nobs <workshop> setup`.
 
 When the first word is not a workshop name, and you are not inside a workshop, nobs prints the error below and exits with 2. The second line lists the names nobs did find, and is left out when there are none.
 
@@ -1277,6 +1284,185 @@ smoke: packt: destroy
 ...
 smoke: packt: failed in 655s
 smoke: 1 of 2 workshops ok
+```
+
+## Book lab
+
+The book lab is the lab of the book "Modern Network Observability". Four `nobs lab` commands work on it: `deploy` brings it up, `destroy` takes it down, `purge` takes the whole lab down whatever chapter runs, and `show` lists what runs. They replace the netobs commands with the same names. netobs also has `lab prepare`, `lab update` and `lab rebuild`; nobs does not have them.
+
+The lab has two parts. The first part is a containerlab topology, the file `containerlab/lab.yml`. A topology lists the network devices of the lab and how they connect. Each device is a node, and each node runs as one container. The second part is one Docker Compose stack for each chapter, in `chapters/<scenario>/docker-compose.yml`. A scenario is a folder under `chapters/` that holds a `docker-compose.yml` file. nobs lists the scenarios from the folder, so a new chapter folder is a new scenario. A stack is the set of containers that one compose file starts. Docker Compose groups the containers of one stack under a project name, and by default nobs gives every scenario the project name `netobs`. Every chapter's stack joins one Docker network that the whole lab shares, `network-observability` by default. How nobs knows that a folder is the book lab is in [Where nobs runs from](#where-nobs-runs-from).
+
+Run the commands inside the Linux machine `clab`, with the Linux binary, in the way the `containerlab` commands run (see [Commands](#commands)). For example: `orb -m clab <path> lab deploy -s ch1`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab without `sudo` unless you give `--sudo` or set `LAB_SUDO` to true. This differs from `nobs containerlab`, which runs with `sudo` unless you give `--no-sudo`. With `--sudo`, nobs tells sudo to keep the `${NAME}` variables of the topology file, as `nobs containerlab` does.
+
+Each command runs its steps one after another. nobs builds the path of each file from the path of the lab folder. When nobs finds the lab folder itself, this is a full path; when you give `--dir` or `NOBS_DIR` as a relative path, it is relative too. In the lists below, `<topology>` is that path of the topology file, and the compose file is shown from the lab folder to keep the lines short.
+
+`nobs lab deploy -s <scenario>` runs these steps:
+
+1. It checks for clashes (see [The clash check](#the-clash-check)).
+2. It lists the Docker networks. When a network with that name exists, nobs uses it as it is. nobs does not check its subnet. An earlier run or another tool may have made it, and that is not a clash. Otherwise nobs creates a bridge network with the subnet.
+3. It runs `containerlab deploy -t <topology>`.
+4. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml up -d --remove-orphans`.
+5. It waits until everything runs (see [The wait](#the-wait)), unless you give `--wait 0`.
+
+`nobs lab destroy -s <scenario>` runs these steps:
+
+1. It takes the stack of the scenario down and removes its volumes.
+2. It runs `containerlab destroy -t <topology> --cleanup`. Seen with containerlab 0.77.0: when the network the stacks join is the management network of the topology (`mgmt.network`), this step removes the Docker network too. nobs itself never removes a network. The next `deploy` creates the network again.
+
+`nobs lab purge` runs these steps:
+
+1. For each scenario, in name order, it takes the stack down and removes its volumes. When a stack fails, nobs reports it and goes on with the next scenario.
+2. It lists the containers with `docker ps -a`. It runs `containerlab destroy -t <topology> --cleanup` once, and only when a node container of the topology exists. Like `destroy`, this step may remove the network too, when it is the management network of the topology. Without a node container, it prints `lab purge: no lab nodes to destroy`.
+
+`nobs lab show -s <scenario>` runs these steps:
+
+1. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml ps --all`.
+2. It runs `containerlab inspect -t <topology>`.
+
+`show` prints no line of its own. You see the output of Docker Compose and containerlab.
+
+### Flags and variables
+
+nobs takes each setting from the first source that has it: the flag, then the variable, then the `nobs.toml` setting, then the default.
+
+| Flag | Variable | `nobs.toml` setting | Default | Commands |
+|---|---|---|---|---|
+| `-s`, `--scenario NAME` | `LAB_SCENARIO` | none | none: nobs stops with exit 2 | `deploy`, `destroy`, `show` |
+| `--topology FILE` | none | `topology` | `containerlab/lab.yml` | all four |
+| `--sudo`, `--no-sudo` | `LAB_SUDO` | none | no `sudo` | all four |
+| `--network-name NAME` | `LAB_NETWORK_NAME` | `network` | `network-observability` | `deploy` |
+| `--subnet CIDR` | `LAB_SUBNET` | none | `198.51.100.0/24` | `deploy` |
+| `--wait SECONDS` | none | none | `300` | `deploy` |
+| none | none | `project` | `netobs` | all four (the project name) |
+
+A blank flag or variable, one that is empty or holds only spaces, counts as not set. nobs reads the variables from the shell and from the `.env` file of the lab folder. The shell wins over `.env`. `--dir` and `NOBS_DIR` work as in [Where nobs runs from](#where-nobs-runs-from).
+
+- `purge` takes only `--sudo`, `--no-sudo` and `--topology`.
+- When you give both `--sudo` and `--no-sudo`, the last one wins.
+- `LAB_SUDO` accepts `1`, `true`, `yes` and `on`, and `0`, `false`, `no` and `off`, in capital or small letters, with spaces around them allowed. Any other value stops nobs with exit 2.
+- A relative `--topology` path starts at the lab folder. This differs from `nobs containerlab`, whose `TOPOLOGY` starts at the current folder.
+- `--wait SECONDS` is the time `deploy` waits for the lab to be ready. `0` means no wait.
+
+### The clash check
+
+Before `deploy` changes anything, it lists the containers with `docker ps -a`. It refuses to go on in two cases:
+
+- a node container of the topology already exists;
+- the project (`netobs` by default) already has containers.
+
+One project name means one scenario runs at a time. So stop the other scenario first, with `nobs lab destroy -s <scenario>` or `nobs lab purge`. A listing that fails stops `deploy` too.
+
+containerlab names the container of a node from the `name` of the topology, the name of the node and the optional `prefix` of the topology:
+
+| `prefix` in the topology | Container name |
+|---|---|
+| no `prefix` | `clab-<name>-<node>` |
+| `prefix: ""` | `<node>` |
+| `prefix: __lab-name` | `<name>-<node>` |
+| any other `prefix` | `<prefix>-<name>-<node>` |
+
+The check does not look at the fixed container names (`container_name`) or the published ports in the compose file of a chapter. When one of them clashes, Docker fails at `compose up`, and nobs stops there with that step named.
+
+### The wait
+
+After `compose up`, `deploy` waits until the lab is ready. The lab is ready when all of these are true:
+
+- the stack lists at least one service;
+- each service is `running`, and `healthy` when it has a health check;
+- each node of the topology is `running`. A node that does not exist is not ready.
+
+nobs checks at once and then every 5 seconds, until `--wait` seconds have passed. When the lab is still not ready then, nobs prints the `not ready after` line below and exits with 1. A chapter whose services stop on their own never becomes ready, so use `--wait 0` for it.
+
+### The lines nobs prints
+
+The lines below go to standard output. `<topology>` is the path nobs gave to containerlab. When nobs finds the lab folder itself, this is a full path; when you give `--dir` or `NOBS_DIR` as a relative path, it is relative too. The success lines appear only when every step before them passed.
+
+| Line | When it appears | Success line |
+|---|---|---|
+| `lab deploy: network <network> exists, kept` | the network exists | no |
+| `lab deploy: creating network <network> (<subnet>)` | the network does not exist | no |
+| `lab deploy: deploying topology <topology>` | before `containerlab deploy` | no |
+| `lab deploy: starting <scenario> (project <project>)` | before `compose up` | no |
+| `lab deploy: waiting for <services> services and <nodes> nodes (up to <seconds>s)` | after the first check of the wait; not with `--wait 0` | no |
+| `lab deploy: ready after <seconds>s` | the lab is ready | no |
+| `lab deployed: scenario <scenario>` | the last line of `deploy` | yes |
+| `lab destroy: stopping <scenario> (project <project>)` | before the stack goes down | no |
+| `lab destroy: destroying topology <topology>` | before `containerlab destroy` | no |
+| `lab destroyed: scenario <scenario>` | the last line of `destroy` | yes |
+| `lab purge: <scenario>` | before the stack of that scenario goes down | no |
+| `lab purge: no lab nodes to destroy` | no node container of the topology exists | no |
+| `lab purge: destroying topology <topology>` | before `containerlab destroy` | no |
+| `lab purged: <count> scenarios` | the last line of `purge`; `<count>` is the number of scenarios, also when it is 1 | yes |
+
+The lines below go to standard error.
+
+| Line | Exit code | When it appears |
+|---|---|---|
+| `nobs: lab commands need the book lab (chapters/ and containerlab/lab.yml); <folder> is a workshop` | 1 | the lab folder is a workshop; it says `a labcli lab` for a labcli lab |
+| `nobs: lab <command> needs --scenario NAME or LAB_SCENARIO` | 2 | no scenario was given; a line `known: <names>`, with the scenarios separated by `, `, follows when there are any |
+| `nobs: no scenario named <name> under <folder>/chapters` | 1 | the scenario is not in `chapters/`; the `known:` line follows when there are any scenarios |
+| `nobs: lab <command>: cannot list scenarios: <error>` | 1 | nobs cannot read the `chapters/` folder |
+| `nobs: LAB_SUDO must be true or false, not <value>` | 2 | `LAB_SUDO` holds another word |
+| `nobs: topology file not found: <path>` | 1 | the topology file does not exist |
+| `nobs: cannot read topology file: <path>: <error>` | 1 | the file cannot be read; for `deploy` and `purge`, also when it has no `name` or no `topology` with `nodes` (`destroy` and `show` give such a file to containerlab, which reports it) |
+| `nobs: lab deploy: node containers already exist (<names>); run nobs lab destroy first` | 1 | the clash check found node containers |
+| `nobs: lab deploy: project <project> already has containers (<names>); run nobs lab destroy -s <scenario> first, or nobs lab purge` | 1 | the clash check found containers of the project |
+| `nobs: lab <command>: cannot list <what>: <reason>` | 1 | a listing failed; `<what>` is `containers`, `networks` or `containers of project <project>`, and `<reason>` is `exit <code>` or `cannot run docker: <error>` |
+| `nobs: lab <command>: <step> failed (exit <code>)` | `<code>` | a step ran and exited with a code that is not 0 |
+| `nobs: lab <command>: <step> failed: cannot run <program>: <error>` | 1 | nobs could not start the program of a step |
+| `nobs: lab deploy: cannot read <step> output: <error>` | 1 | during the wait, the answer of `compose ps` or `containerlab inspect` is not readable |
+| `nobs: lab deploy: not ready after <seconds>s: <waiting>` | 1 | the lab was not ready in time; `<waiting>` lists, separated by `, `, `no services listed`, `<service> (<state>/<health>)`, `<node> (<state>)` and `<node> (missing)` |
+
+`<step>` is one of `network create`, `containerlab deploy`, `compose up`, `compose ps`, `containerlab inspect`, `compose down` and `containerlab destroy`. A missing lab folder, or a `nobs.toml` nobs cannot read, stops the command as described in [Where nobs runs from](#where-nobs-runs-from).
+
+### Failures and exit codes
+
+| Exit code | Meaning |
+|---|---|
+| 0 | every step passed |
+| the code of the step | a step failed: nobs prints `nobs: lab <command>: <step> failed (exit <code>)` and exits with the code of that step |
+| 1 | an error of nobs itself: no book lab, unknown scenario, a topology file that is missing or unreadable, a clash, a listing that failed, a program that could not start, or a lab not ready in time |
+| 2 | a usage error: no scenario, or a bad `LAB_SUDO` |
+
+After a failed step, nothing after it runs, and nothing is undone. So after a failed `deploy`, run `nobs lab destroy -s <scenario>`. `purge` is the exception: it goes on after a failed stack, prints each failure, and exits with the code of the first step that failed.
+
+### Differences from netobs
+
+- nobs stops at the first failed step and never says the lab is deployed after a failure. netobs went on and always printed "Lab environment deployed".
+- nobs waits until the lab is ready. netobs did not wait.
+- nobs checks for clashes before `deploy` changes anything.
+- nobs does not pass the `--verbose` flag of Docker Compose.
+- `show` lists stopped containers too, because it runs `ps --all`.
+- `purge` destroys the topology once, not once for each scenario. It goes on after a failed stack and reports it.
+- `purge` takes `--topology`.
+- nobs lists the scenarios from the folder, not from a fixed list.
+
+### Example
+
+This `deploy` of the scenario `ch1` of the test lab in `tests/fixtures/book-lab` creates the network, because it does not exist yet. Docker, containerlab and Docker Compose print their own output between the lines of nobs, and the `...` marks it. `<lab>` is the full path of the lab folder, and `<seconds>` varies.
+
+```
+$ orb -m clab <path> --dir <lab> lab deploy -s ch1 --sudo --network-name nobs-t-net --subnet 203.0.113.0/24
+lab deploy: creating network nobs-t-net (203.0.113.0/24)
+...
+lab deploy: deploying topology <lab>/containerlab/lab.yml
+...
+lab deploy: starting ch1 (project netobs)
+...
+lab deploy: waiting for 1 services and 2 nodes (up to 300s)
+lab deploy: ready after <seconds>s
+lab deployed: scenario ch1
+```
+
+Then `destroy` takes the stack down and destroys the topology. containerlab removes the network `nobs-t-net` in this step, because it is the management network of that topology:
+
+```
+$ orb -m clab <path> --dir <lab> lab destroy -s ch1 --sudo
+lab destroy: stopping ch1 (project netobs)
+...
+lab destroy: destroying topology <lab>/containerlab/lab.yml
+...
+lab destroyed: scenario ch1
 ```
 
 ## Sonda
