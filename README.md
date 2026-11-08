@@ -1688,7 +1688,7 @@ The table has one line for each object type, and `Total` is `Created` plus `Upda
 
 `delete-nautobot` removes only the objects that `load-nautobot` writes, and never an object that Nautobot has of its own. It finds them by the same names, for example the devices by the location `lab` and the prefixes by the namespace `lab-default`, and it reads every page of each list.
 
-It removes the objects of each type in this order, and prints one line for each type as soon as it has removed them: `<kind>: <n> deleted`. The types are `ip address to interface`, `ip address`, `device`, `prefix`, `namespace`, `location`, `location type`, `status`, `custom field`, `device type`, `manufacturer` and `role`. It prints no line for interfaces. The last line is `Done: <n> objects deleted.`, where `<n>` is the sum of the lines above.
+It removes the objects of each type in this order, and prints one line for each type as soon as it has removed them: `<kind>: <n> deleted`. The types are `ip address to interface`, `ip address`, `device`, `prefix`, `namespace`, `location`, `location type`, `status`, `custom field`, `device type`, `manufacturer` and `role`. It prints no line for interfaces. Nautobot removes the interfaces together with their device, so none is left after the delete. The last line is `Done: <n> objects deleted.`, where `<n>` is the sum of the lines above.
 
 ### Errors of utils
 
@@ -1719,7 +1719,87 @@ nobs checks the folder first, then the token, then the address, then the two fil
 
 ### Example
 
-The example output is added after the run against the test stack.
+This example loads the lab of `tests/fixtures/book-lab` into the test Nautobot of `tests/fixtures/nautobot`, loads it a second time, and then deletes what it wrote. Start the test stack from the project folder with this command, which puts Nautobot on port 18080:
+
+```
+$ docker compose -f tests/fixtures/nautobot/docker-compose.yml --env-file tests/fixtures/nautobot/.env.example -p nobs-t-nautobot up -d
+```
+
+`<lab>` is the full path of a copy of the test lab. The token comes from `NAUTOBOT_SUPERUSER_API_TOKEN` in the `.env` file of that folder, so the commands have no token flag. The topology file `containerlab/lab-nautobot.yml` of the copy is the `lab.yml` of the test lab with `ipv4-subnet: 203.0.113.0/24` added under `mgmt`. The `...` marks progress lines that this page leaves out.
+
+The first load creates every object:
+
+```
+$ nobs --dir <lab> utils load-nautobot --nautobot-url http://localhost:18080 --topology containerlab/lab-nautobot.yml
+role network_device created
+manufacturer Arista created
+device type Arista cEOS created
+...
+device nobs-t-srl2 created
+interface ethernet-1/1 (nobs-t-peer) created
+ip address 192.0.2.1/31 created
+ip address to interface 192.0.2.1/31 nobs-t-srl2 ethernet-1/1 created
+ip address 203.0.113.12/32 created
+interface Management0 (mgmt) created
+ip address to interface 203.0.113.12/32 nobs-t-srl2 Management0 created
+Object type              Created  Updated  Total
+role                     1        0        1
+manufacturer             2        0        2
+device type              2        0        2
+location type            1        0        1
+status                   2        0        2
+custom field             1        0        1
+location                 1        0        1
+namespace                1        0        1
+prefix                   2        0        2
+device                   2        0        2
+interface                4        0        4
+ip address               4        0        4
+ip address to interface  4        0        4
+Done: 27 objects across 13 types. Open Nautobot at http://localhost:18080.
+```
+
+The second load is the same command. Every line says `updated` instead of `created`, and the table shows that nothing is created again:
+
+```
+$ nobs --dir <lab> utils load-nautobot --nautobot-url http://localhost:18080 --topology containerlab/lab-nautobot.yml
+role network_device updated
+...
+Object type              Created  Updated  Total
+role                     0        1        1
+manufacturer             0        2        2
+device type              0        2        2
+location type            0        1        1
+status                   0        2        2
+custom field             0        1        1
+location                 0        1        1
+namespace                0        1        1
+prefix                   0        2        2
+device                   0        2        2
+interface                0        4        4
+ip address               0        4        4
+ip address to interface  0        4        4
+Done: 27 objects across 13 types. Open Nautobot at http://localhost:18080.
+```
+
+Then `delete-nautobot` removes the 23 objects that it finds by name. The 4 interfaces are not in this count, because they go with their devices:
+
+```
+$ nobs --dir <lab> utils delete-nautobot --nautobot-url http://localhost:18080
+ip address to interface: 4 deleted
+ip address: 4 deleted
+device: 2 deleted
+prefix: 2 deleted
+namespace: 1 deleted
+location: 1 deleted
+location type: 1 deleted
+status: 2 deleted
+custom field: 1 deleted
+device type: 2 deleted
+manufacturer: 2 deleted
+role: 1 deleted
+Done: 23 objects deleted.
+```
 
 ## Sonda
 
