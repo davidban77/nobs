@@ -1,22 +1,37 @@
 # nobs
 
-A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in, and every command keeps working without the screen as the scriptable face of the same code. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
+A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen: the services workbench and the chooser work, and the device and lab workbenches are placeholders until slice 24. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen: the services workbench and the chooser work, and the devices workbench and the lab workbench are not built yet and show one line each. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
-Plain `nobs` opens a screen in the terminal. The screen shows the services of a lab or workshop, their health and their logs, and it holds the Sonda view. Every command in the rest of this file does one step without the screen, so a script can call it.
+Plain `nobs` opens a screen in the terminal. The screen shows the services of a lab or workshop, their health and their logs, and it also shows the test data that Sonda makes (see [Sonda](#sonda)). Every command in the rest of this file does one step without the screen, so a script can call it.
+
+Four words are used in this part:
+
+| Word | Meaning |
+|---|---|
+| workbench | one view of the screen for one kind of work; there are three, `1 devices`, `2 services` and `3 lab`, and the keys `1`, `2` and `3` switch between them |
+| stack | one group of containers that Docker Compose starts together: a workshop, one chapter of the book lab, or a labcli lab; the row `sonda only` is listed as a stack too, but it has no containers |
+| focus | the part of the screen that gets your keys, the stack list or the tabs; `Tab` moves it |
+| chooser | the list of labs that plain `nobs` shows when it finds no lab |
 
 ### Starting the screen
 
 Plain `nobs` looks for a lab folder the way every command does: from the folder you are in, upward, or in the folder that `--dir PATH` or the variable `NOBS_DIR` names (see [Where nobs runs from](#where-nobs-runs-from)). When it finds a lab folder, it opens the screen on that lab. When it finds none, it opens the chooser.
 
-The chooser is a list with one row per workshop nobs can find, in the same places as `nobs workshops`, and one last row, `sonda only`. A workshop row shows the name, the kind, the folder and the state of its stack (see [The services workbench](#the-services-workbench)). The `sonda only` row shows the address of the Sonda server: the variable `SONDA_SERVER_URL` in the shell, else the same variable in the `.env` file of the folder you started nobs in, else `http://localhost:8080`. `j`, `k` and the arrow keys move the selection, `Enter` opens the row, and `q` quits. `Enter` on a workshop opens the screen on it. `Enter` on `sonda only` opens the Sonda tab on the stack `sonda only` with the focus on the tabs, and the workshops stay in the list of stacks. When you quit the chooser with `q`, nobs prints `nobs: no lab or workshop found from here` and exits with 1, as every command does when it finds no lab.
+The chooser is a list with one row per workshop nobs can find, in the same places as `nobs workshops`, and one last row, `sonda only`.
+
+- A workshop row shows the name, the kind, the folder and the state of its stack (see [The services workbench](#the-services-workbench)).
+- The `sonda only` row shows the address of the Sonda server: the variable `SONDA_SERVER_URL` in the shell, else the same variable in the `.env` file of the folder you started nobs in, else `http://localhost:8080`.
+- `j`, `k` and the arrow keys move the selection.
+- `Enter` on a workshop opens the screen on it. `Enter` on `sonda only` opens the Sonda tab on the stack `sonda only` with the focus on the tabs, and the workshops stay in the list of stacks.
+- `q` quits. nobs then prints `nobs: no lab or workshop found from here` and exits with 1, as every command does when it finds no lab.
 
 The screen needs a terminal. When the input or the output of plain `nobs` is not a terminal, for example `nobs </dev/null` or `nobs | cat`, nobs does not open the screen. It prints the help on stderr and exits with 2, so a script sees text and never a screen.
 
-`nobs tui` opens the same screen on the lab it finds, with `--dir` and `NOBS_DIR` as for plain `nobs`. When it finds no lab, it does not open the chooser. It opens the Sonda tab alone, on the stack `sonda only`, which reads the `.env` file of the current folder. The flags `--server URL` and `--api-key KEY` set the address and the key of the Sonda tab (see [The Sonda tab](#the-sonda-tab)). `nobs tui` needs a terminal too. When its input or output is not a terminal, it prints `nobs: the screen needs a terminal` and exits with 1.
+`nobs tui` opens the same screen on the lab it finds, with `--dir` and `NOBS_DIR` as for plain `nobs`. When it finds no lab, it does not open the chooser. It opens the services workbench with one stack, `sonda only`, on its Sonda tab. `sonda only` reads the `.env` file of the current folder. It has no containers, so its state in the stack list is always `?` and its overview tab always shows `no answer yet`. The flags `--server URL` and `--api-key KEY` set the address and the key of the Sonda tab (see [The Sonda tab](#the-sonda-tab)). `nobs tui` needs a terminal too. When its input or output is not a terminal, it prints `nobs: the screen needs a terminal` and exits with 1.
 
 When nobs cannot read a `nobs.toml` file, or `--dir` or `NOBS_DIR` names a folder that is not a lab or workshop, plain `nobs` and `nobs tui` print `nobs: <reason>` as every command does, and exit with 1, before the screen opens.
 
@@ -26,8 +41,8 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 
 | Part | Where | What it shows |
 |---|---|---|
-| header | the first line | `nobs`, the name and the kind of the lab, and `sot infrahub` when the `.env` file of the lab sets `INFRAHUB_ADDRESS`, else `sot none` (`sot` is short for source of truth); the clock at the right end, in UTC; in the chooser `no lab here`; in the Sonda tab alone `sonda only` and the server address; from 100 columns, also the number of services |
-| switcher | the second line | `1 devices`, `2 services` and `3 lab`, with the open workbench in brackets; `? keys  q` at the right end; in the chooser `choose a lab, or q to quit` |
+| header | the first line | `nobs`, the name and the kind of the lab, and `sot infrahub` when the `.env` file of the lab sets `INFRAHUB_ADDRESS`, else `sot none` (`sot` is short for source of truth: the system that holds the intended state of the network, here Infrahub); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address; from 100 columns, also the number of services |
+| switcher | the second line | `1 devices`, `2 services` and `3 lab`, with the open workbench in brackets; `? keys  q quit` at the right end; in the chooser `choose a lab, or q to quit` |
 | body | the middle | the open workbench, or the chooser |
 | run line | the line above the last | `run  none`, and at the right end `o open`; when the run pane is open, the pane takes the place of the run line and its top border carries `run  none` and `Esc fold`; the chooser has no run line; nothing runs from the screen yet, and the run pane is an empty frame |
 | key line | the last line | the keys that work now; while you type a filter, `filter: <text>  Enter keep  Esc clear` |
@@ -38,7 +53,7 @@ When a data call fails, one red line appears between the switcher and the body (
 
 The services workbench is workbench `2`, and the screen opens on it. It has two sides.
 
-The left side is the list of stacks, titled `stacks <n>`. A stack is one group of containers: a workshop, one chapter of the book lab, or a labcli lab. A book lab lists its chapters first and then the workshops nobs finds. `>` marks the selected stack, and the right side shows that stack. The state of each stack comes from `docker compose ps --all --format json`, run for every stack every 2 seconds:
+The left side is the list of stacks, titled `stacks <n>`. A book lab lists its chapters first and then the workshops nobs finds. `>` marks the selected stack, and the right side shows that stack. The state of each stack comes from `docker compose ps --all --format json`, run for every stack:
 
 | State | Meaning | Colour |
 |---|---|---|
@@ -53,30 +68,39 @@ The overview tab is a table with one row per service of the selected stack. A ce
 
 | Column | What it shows | Where it comes from |
 |---|---|---|
-| `SERVICE` | the name of the service | `docker compose ps --all --format json`, every 2 seconds |
+| `SERVICE` | the name of the service | `docker compose ps --all --format json` |
 | `STATE` | `running`, `exited` and so on, as Docker reports it | the same call |
-| `HEALTH` | `ok`, `http <code>` or `down` | the probe of `nobs <workshop> status`, every 5 seconds, for the selected stack |
+| `HEALTH` | `ok`, `http <code>` or `down` | an HTTP check of the service (see below) |
 | `PORT` | the first published port | `docker compose ps --all --format json` |
 | `AGE` | how long the container has run | the same call |
 
-The probe sends one HTTP GET request to each of the seven services that `nobs <workshop> status` asks (see [status](#status)), and it finds each address in the same way: the shell variable, then the `.env` file of the stack, then the default address. The seven services are `grafana`, `prometheus`, `loki`, `alertmanager`, `infrahub`, `prefect` and `sonda`. Every other service shows `—` under `HEALTH`. `ok` means the service answered with a status code below 400, `http <code>` means 400 or more, and `down` means no answer.
+The HTTP check is the probe of `nobs <workshop> status`. It sends one HTTP GET request to each of the seven services that command asks (see [status](#status)), and it finds each address in the same way: the shell variable, then the `.env` file of the stack, then the default address. The seven services are `grafana`, `prometheus`, `loki`, `alertmanager`, `infrahub`, `prefect` and `sonda`. Every other service shows `—` under `HEALTH`. `ok` means the service answered with a status code below 400, `http <code>` means 400 or more, and `down` means no answer.
 
-A state is shown in colour: green for `running`, `ok` and `established`; yellow for `starting`, `pending`, `paused`, `waiting`, `restarting` and every `http <code>`; red for `down`, `failed`, `firing`, `exited` and `dead`; dim for `finished`, `stopped` and `created`. `AGE` is dim.
+A state is shown in colour: green for `running` and `ok`; yellow for `paused`, `restarting` and every `http <code>`; red for `down`, `exited` and `dead`; dim for `created`. `AGE` is dim.
 
-The logs tab shows the log of one service. Press `Enter` or `l` on a service in the overview tab to open it. nobs asks Docker Compose for the last 200 lines, then for the new lines every 2 seconds, and keeps the last 2,000 lines. At the right end of the tab row, nobs shows `<service>  following` while the log follows new lines, and `<service>  paused` after you press `f`. `f` pauses and resumes. While the log is paused, `k` scrolls back and `j` scrolls forward. `/` filters the lines: type the text, then press `Enter` to keep the filter or `Esc` to clear it (to clear a kept filter, press `/` and then `Esc`). `Esc` closes the logs and returns to the stack list.
+The logs tab shows the log of one service. Press `Enter` or `l` on a service in the overview tab to open it. nobs asks Docker Compose for the end of the log, then for the new lines. At the right end of the tab row, nobs shows `<service>  following` while the log follows new lines, and `<service>  paused` after you press `f` (only `following` or `paused` when the line is too short). `f` pauses and resumes. While the log is paused, `k` scrolls back and `j` scrolls forward. `/` filters the lines: type the text, then press `Enter` to keep the filter or `Esc` to clear it (to clear a kept filter, press `/` and then `Esc`). `Esc` closes the logs and returns to the stack list.
+
+### How often the screen asks
+
+| What | How often |
+|---|---|
+| the state of each stack and the services of the selected stack (`docker compose ps`) | every 2 seconds, for every stack |
+| `HEALTH` (the HTTP check) | every 5 seconds, for the selected stack |
+| the logs | the last 200 lines at first, then new lines every 2 seconds; the last 2,000 lines are kept |
+| the Sonda tab | every second |
 
 ### The Sonda tab
 
-The sonda tab shows the scenarios of a running `sonda-server` (see [Sonda](#sonda)). It asks the server for the list every second. It never waits for the server, so a key works at once even when the server does not answer. The tab has four parts:
+The sonda tab shows the scenarios of a running `sonda-server` (see [Sonda](#sonda)). It keeps asking the server for the list. It never waits for the server, so a key works at once even when the server does not answer. The tab has four parts:
 
 | Part | What it shows |
 |---|---|
 | top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error and its age, `(<n>s ago)`, when there is one |
 | left table | the scenarios, with the columns `ID` (its first 8 characters), `NAME`, `STATE`, `ELAPSED` (seconds) and `DEGRADED`; `>` marks the selected scenario |
 | right panel | what `nobs sonda stats` prints for the selected scenario, as `field  value` lines sorted by name (a text value keeps its quotes, for example `state  "running"`), then what `nobs sonda show` prints for it; the lines that do not fit are cut off |
-| bottom line | the keys; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
+| bottom line | the keys of the tab, empty while the focus is on the stack list; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
 
-A state is shown as the server sends it, for example `running`, `paused` or `finished`.
+A state is shown as the server sends it, for example `running`, `paused` or `finished`. On a narrow screen the column titles of the table are cut: `ELAPSE` and `DEGRADE` at 100 columns, and single letters at 60 columns.
 
 These keys work when the focus is on the tabs (press `Tab` to move it there):
 
@@ -100,7 +124,7 @@ When the server stops answering, or no reply comes within 10 seconds, the tab ke
 
 | Key | What it does |
 |---|---|
-| `1` `2` `3` | open the devices, the services or the lab workbench |
+| `1` `2` `3` | open the devices workbench, the services workbench or the lab workbench |
 | `Tab` | move the focus between the stack list and the tabs |
 | `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; scroll a paused log |
 | `[` `]` | open the previous or the next tab, when the focus is on the tabs |
@@ -117,17 +141,17 @@ When the server stops answering, or no reply comes within 10 seconds, the tab ke
 
 While a question or a filter is open, `q` is typed or answers the question, and Ctrl-C still closes the screen.
 
-### The devices and the lab workbench
+### The devices workbench and the lab workbench
 
-Workbench `1` (devices) and workbench `3` (lab) are placeholders. Each shows one line, `the device workbench comes with slice 24` or `the lab workbench comes with slice 24`.
+The devices workbench (`1`) and the lab workbench (`3`) are not built yet. Each shows one line, `the device workbench comes with slice 24` or `the lab workbench comes with slice 24`; slice 24 is the later version of nobs that builds them.
 
 ### Errors
 
-When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails (the stack then shows `?`), and `logs <service>` when the log call fails. The sonda tab shows its own errors on its top line. When a thread that gathers data stops, the line reads `<source>: polling stopped  <n>s ago`. `x` dismisses the line. A `ps` line also goes away when the next `ps` call of that stack works.
+When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails (the stack then shows `?`), and `logs <service>` when the log call fails. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda` or `poll`. `x` dismisses the line. A `ps` line also goes away when the next `ps` call of that stack works.
 
 ### Size
 
-The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: 60x15 needed`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`.
+The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`.
 
 ### Exit codes
 
@@ -138,14 +162,15 @@ The screen needs a terminal of at least 60 columns and 15 rows. A smaller termin
 | plain `nobs` without a terminal | 2, after the help on stderr |
 | `nobs tui` without a terminal | 1, after `nobs: the screen needs a terminal` |
 | the terminal fails while the screen is open | 1, after `nobs: the screen failed: <error>`; nobs gives the terminal back first |
+| nobs cannot read a `nobs.toml` file or the `.env` file of a lab, or `--dir` or `NOBS_DIR` names no lab | 1, after `nobs: <reason>`, before the screen opens |
 
 ### A capture
 
-This is the test frame of the screen at 60 columns and 15 rows, with made-up data. It shows the services workbench of a workshop named `autocon5`, with two more stacks in the stack list. The capture from a real run comes with the verification session.
+This is the test frame of the screen at 60 columns and 15 rows, with made-up data. It shows the services workbench of a workshop named `autocon5`, with two more stacks in the stack list.
 
 ```
  nobs  autocon5 workshop  sot infrahub             13:42:07
- 1 devices  [2 services]  3 lab                   ? keys  q
+ 1 devices  [2 services]  3 lab              ? keys  q quit
 ┌ stacks 3 ───────────┐┌ autocon5  refreshed 2s ago ───────┐
 │>autocon5  up 7/7    ││OVERVIEW  logs  sonda              │
 │ packt     down      ││ SERVICE    STATE    HLTH      PORT│

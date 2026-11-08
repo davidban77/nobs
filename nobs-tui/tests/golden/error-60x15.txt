@@ -1,5 +1,5 @@
  nobs  autocon5 workshop  sot infrahub             13:42:07
- 1 devices  [2 services]  3 lab                   ? keys  q
+ 1 devices  [2 services]  3 lab              ? keys  q quit
  ps packt: exit 1  12s ago
 ┌ stacks 3 ───────────┐┌ autocon5  refreshed 2s ago ───────┐
 │>autocon5  up 7/7    ││OVERVIEW  logs  sonda              │

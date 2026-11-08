@@ -1,5 +1,5 @@
  nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
- 1 devices  [2 services]  3 lab                                                           ? keys  q
+ 1 devices  [2 services]  3 lab                                                      ? keys  q quit
 
 
 
@@ -11,7 +11,7 @@
   │1 2 3    switch workbench                      l         service logs                         │
   │Tab      focus list/tabs                       f         follow/pause logs                    │
   │j k ↑ ↓  move                                  o         run pane                             │
-  │[ ]      previous/next tab                     x         dismiss the error                    │
+  │[ ]      other tab                             x         dismiss the error                    │
   │Enter    open the row                          ?         close                                │
   │/        filter                                q Ctrl-C  quit                                 │
   │r        refresh now                           Esc       close/clear/back                     │

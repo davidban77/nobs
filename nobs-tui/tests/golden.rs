@@ -263,6 +263,19 @@ fn the_sonda_frame_is_pinned() {
 }
 
 #[test]
+fn the_sonda_key_line_shows_only_with_the_focus_on_the_tabs() {
+    let mut off_the_tabs = sonda_model();
+    press(&mut off_the_tabs, KeyCode::Esc);
+
+    let on_tabs = lines(&render(sonda_model(), 100, 30)).join("\n");
+    let on_list = lines(&render(off_the_tabs, 100, 30)).join("\n");
+
+    assert!(on_tabs.contains("q quit  j/k select"), "{on_tabs}");
+    assert!(on_list.contains("SONDA"), "{on_list}");
+    assert!(!on_list.contains("q quit  j/k select"), "{on_list}");
+}
+
+#[test]
 fn the_help_frame_is_pinned() {
     golden("help", || pressed('?'));
 }

@@ -5,7 +5,7 @@
 
 
 
-             terminal too small: 60x15 needed
+     terminal too small: needs 60 columns and 15 rows
 
 
 

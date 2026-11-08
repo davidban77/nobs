@@ -12,7 +12,7 @@ use crate::view;
 const WIDE: u16 = 100;
 const LEFT_NARROW: u16 = 23;
 const LEFT_WIDE: u16 = 32;
-const TOO_SMALL: &str = "terminal too small: 60x15 needed";
+const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const HELP_HEIGHT: u16 = 11;
 const HELP_PLACEHOLDER_HEIGHT: u16 = 12;
 const HELP_PLACEHOLDER_NOTE: &str = "the workbench comes with slice 24";
@@ -21,7 +21,7 @@ const HELP: [(&str, &str); 14] = [
     ("1 2 3", "switch workbench"),
     ("Tab", "focus list/tabs"),
     ("j k ↑ ↓", "move"),
-    ("[ ]", "previous/next tab"),
+    ("[ ]", "other tab"),
     ("Enter", "open the row"),
     ("/", "filter"),
     ("r", "refresh now"),
@@ -170,7 +170,7 @@ fn switcher(frame: &mut Frame, area: Rect, model: &Model) {
         });
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    right(frame, area, Line::from("? keys  q"), 1);
+    right(frame, area, Line::from("? keys  q quit"), 1);
 }
 
 fn workbench(frame: &mut Frame, area: Rect, model: &Model) {
@@ -281,7 +281,17 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     match model.tab() {
         Tab::Overview => overview(frame, content, model, wide),
         Tab::Logs => logs(frame, content, model),
-        Tab::Sonda => view::draw_in(frame, content, model.sonda(), model.now()),
+        Tab::Sonda => {
+            view::draw_in(frame, content, model.sonda(), model.now());
+            if model.focus() == Focus::List {
+                let key_row = Rect {
+                    y: content.bottom().saturating_sub(1),
+                    height: 1,
+                    ..content
+                };
+                frame.render_widget(Clear, key_row.intersection(content));
+            }
+        }
     }
 }
 

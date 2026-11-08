@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const ABOUT: &str = "Plain nobs opens the screen on the lab found from here (or a chooser); the commands below run one step without the screen";
+const ABOUT: &str = "Plain nobs opens the screen on the lab found from here, or a list of labs to choose from; without a terminal it prints this help and exits with 2. The commands below run one step without the screen";
 
 #[test]
 fn plain_nobs_without_a_terminal_prints_the_help_on_stderr_and_exits_2() {
@@ -82,6 +82,11 @@ fn the_tui_help_names_the_flags_the_lab_and_the_sonda_server() {
     ] {
         assert!(help.contains(part), "{part}\n{help}");
     }
+    let server = help
+        .lines()
+        .find(|line| line.trim_start().starts_with("--server"))
+        .unwrap_or_default();
+    assert!(server.contains("the .env file of the stack"), "{help}");
 }
 
 fn text(bytes: &[u8]) -> String {

@@ -104,7 +104,7 @@ const HOSTS: [&str; 5] = [
 #[command(
     name = "nobs",
     version,
-    about = "Plain nobs opens the screen on the lab found from here (or a chooser); the commands below run one step without the screen"
+    about = "Plain nobs opens the screen on the lab found from here, or a list of labs to choose from; without a terminal it prints this help and exits with 2. The commands below run one step without the screen"
 )]
 pub struct Cli {
     #[arg(
@@ -148,7 +148,9 @@ pub enum Command {
         command: SondaCommand,
     },
     #[command(
-        about = "Open the screen on the lab found from here; with no lab, a screen with the scenarios of a running sonda-server"
+        about = "Open the screen on the lab found from here; with no lab, a screen with the scenarios of a running sonda-server",
+        mut_arg("server", |arg| arg.help("Address of Sonda for every stack; nobs looks at --server, then SONDA_SERVER_URL, then the .env file of the stack, then http://localhost:8085 (http://localhost:8080 for sonda only)")),
+        mut_arg("api_key", |arg|arg.help("Key to send to Sonda with each call except health and ready; nobs looks at --api-key, then SONDA_API_KEY, then the .env file of the stack"))
     )]
     Tui {
         #[command(flatten)]
