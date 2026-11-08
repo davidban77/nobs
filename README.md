@@ -1294,7 +1294,7 @@ The lab has two parts. The first part is a containerlab topology, the file `cont
 
 Run the commands inside the Linux machine `clab`, with the Linux binary, in the way the `containerlab` commands run (see [Commands](#commands)). For example: `orb -m clab <path> lab deploy -s ch1`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab without `sudo` unless you give `--sudo` or set `LAB_SUDO` to true. This differs from `nobs containerlab`, which runs with `sudo` unless you give `--no-sudo`. With `--sudo`, nobs tells sudo to keep the `${NAME}` variables of the topology file, as `nobs containerlab` does.
 
-Each command runs its steps one after another. nobs gives each program the path of each file in the lab folder. In the lists below, `<topology>` is that path of the topology file, and the compose file is shown from the lab folder to keep the lines short.
+Each command runs its steps one after another. nobs builds the path of each file from the path of the lab folder. When nobs finds the lab folder itself, this is a full path; when you give `--dir` or `NOBS_DIR` as a relative path, it is relative too. In the lists below, `<topology>` is that path of the topology file, and the compose file is shown from the lab folder to keep the lines short.
 
 `nobs lab deploy -s <scenario>` runs these steps:
 
@@ -1375,7 +1375,7 @@ nobs checks at once and then every 5 seconds, until `--wait` seconds have passed
 
 ### The lines nobs prints
 
-The lines below go to standard output. `<topology>` is the full path nobs gave to containerlab. The success lines appear only when every step before them passed.
+The lines below go to standard output. `<topology>` is the path nobs gave to containerlab. When nobs finds the lab folder itself, this is a full path; when you give `--dir` or `NOBS_DIR` as a relative path, it is relative too. The success lines appear only when every step before them passed.
 
 | Line | When it appears | Success line |
 |---|---|---|
