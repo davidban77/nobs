@@ -195,7 +195,7 @@ impl Nautobot {
         )?;
         let mut types = HashMap::new();
         for (manufacturer, model) in TYPES {
-            run.upsert(
+            let manufacturer_id = run.upsert(
                 Kind::Manufacturer,
                 &[("name", manufacturer)],
                 manufacturer,
@@ -204,7 +204,7 @@ impl Nautobot {
             )?;
             let id = run.upsert(
                 Kind::DeviceType,
-                &[("manufacturer", manufacturer), ("model", model)],
+                &[("manufacturer", &manufacturer_id), ("model", model)],
                 model,
                 json!({"manufacturer": manufacturer, "model": model}),
                 None,
@@ -252,7 +252,7 @@ impl Nautobot {
         for (prefix, description) in &plan.prefixes {
             run.upsert(
                 Kind::Prefix,
-                &[("prefix", prefix), ("namespace", NAMESPACE)],
+                &[("prefix", prefix), ("namespace", &lab.namespace)],
                 prefix,
                 json!({
                     "prefix": prefix,
@@ -335,6 +335,9 @@ impl Nautobot {
         ];
         found.extend(self.find_removed(removed_before_field())?);
         found.push((Kind::CustomField, ids(&self.find_custom_fields()?)));
+        let (device_types, manufacturers) = self.find_device_types()?;
+        found.push((Kind::DeviceType, ids(&device_types)));
+        found.push((Kind::Manufacturer, ids(&manufacturers)));
         found.extend(self.find_removed(removed_after_field())?);
         let mut rows = Vec::new();
         for (kind, kind_ids) in found {
@@ -387,6 +390,22 @@ impl Nautobot {
             found.push((kind, kind_ids));
         }
         Ok(found)
+    }
+
+    fn find_device_types(&self) -> Result<(Vec<Value>, Vec<Value>), Error> {
+        let mut device_types = Vec::new();
+        let mut manufacturers = Vec::new();
+        for (name, model) in TYPES {
+            let found = self.find_all(Kind::Manufacturer, &[("name", name)])?;
+            for manufacturer in &found {
+                device_types.extend(self.find_all(
+                    Kind::DeviceType,
+                    &[("manufacturer", id(manufacturer)), ("model", model)],
+                )?);
+            }
+            manufacturers.extend(found);
+        }
+        Ok((device_types, manufacturers))
     }
 
     fn find_custom_fields(&self) -> Result<Vec<Value>, Error> {
@@ -581,7 +600,7 @@ impl Run<'_> {
     fn ip_address(&mut self, lab: &Lab, address: &str) -> Result<String, Error> {
         self.upsert(
             Kind::IpAddress,
-            &[("address", address), ("namespace", NAMESPACE)],
+            &[("address", address), ("namespace", &lab.namespace)],
             address,
             json!({
                 "address": address,
@@ -875,25 +894,7 @@ fn removed_before_field() -> Vec<(Kind, Vec<Filter>)> {
 }
 
 fn removed_after_field() -> Vec<(Kind, Vec<Filter>)> {
-    vec![
-        (
-            Kind::DeviceType,
-            TYPES
-                .iter()
-                .map(|(manufacturer, model)| {
-                    vec![("manufacturer", *manufacturer), ("model", *model)]
-                })
-                .collect(),
-        ),
-        (
-            Kind::Manufacturer,
-            TYPES
-                .iter()
-                .map(|(manufacturer, _)| vec![("name", *manufacturer)])
-                .collect(),
-        ),
-        (Kind::Role, vec![vec![("name", ROLE_NAME)]]),
-    ]
+    vec![(Kind::Role, vec![vec![("name", ROLE_NAME)]])]
 }
 
 fn query(filter: &[(&str, &str)]) -> String {
@@ -965,6 +966,7 @@ mod tests {
     const FIXTURE_VARS: &str =
         include_str!("../../tests/fixtures/book-lab/containerlab/lab_vars.yml");
     const NO_RESULTS: &str = r#"{"count":0,"next":null,"results":[]}"#;
+    const NOT_AN_ID: &str = r#"{"manufacturer":["Select a valid choice. Arista is not one of the available choices."]}"#;
 
     type Call = (String, String, Value);
 
@@ -996,6 +998,10 @@ mod tests {
     }
 
     fn fresh_stub() -> Stub {
+        fresh_stub_refusing(&[])
+    }
+
+    fn fresh_stub_refusing(refused: &[String]) -> Stub {
         let created: Vec<(&str, String)> = Kind::ALL
             .iter()
             .flat_map(|kind| {
@@ -1009,7 +1015,11 @@ mod tests {
                 })
             })
             .collect();
-        let mut routes: Vec<(&str, &str, u16, &str)> = vec![("GET", "/api/*", 200, NO_RESULTS)];
+        let mut routes: Vec<(&str, &str, u16, &str)> = refused
+            .iter()
+            .map(|path| ("GET", path.as_str(), 400, NOT_AN_ID))
+            .collect();
+        routes.push(("GET", "/api/*", 200, NO_RESULTS));
         routes.extend(
             created
                 .iter()
@@ -1094,7 +1104,7 @@ mod tests {
         ));
         all.extend(step(
             "/api/ipam/ip-addresses/",
-            &format!("address={encoded_address}&namespace=lab-default"),
+            &format!("address={encoded_address}&namespace=namespaces-0"),
             json!({
                 "address": address,
                 "status": {"id": "statuses-0"},
@@ -1109,7 +1119,7 @@ mod tests {
         ));
         all.extend(step(
             "/api/ipam/ip-addresses/",
-            &format!("address={mgmt}&namespace=lab-default"),
+            &format!("address={mgmt}&namespace=namespaces-0"),
             json!({
                 "address": mgmt,
                 "status": {"id": "statuses-0"},
@@ -1163,7 +1173,7 @@ mod tests {
         ));
         all.extend(step(
             "/api/dcim/device-types/",
-            "manufacturer=Arista&model=cEOS",
+            "manufacturer=manufacturers-0&model=cEOS",
             json!({"manufacturer": "Arista", "model": "cEOS"}),
         ));
         all.extend(step(
@@ -1173,7 +1183,7 @@ mod tests {
         ));
         all.extend(step(
             "/api/dcim/device-types/",
-            "manufacturer=Nokia&model=SRLinux",
+            "manufacturer=manufacturers-1&model=SRLinux",
             json!({"manufacturer": "Nokia", "model": "SRLinux"}),
         ));
         all.extend(step(
@@ -1224,7 +1234,7 @@ mod tests {
             all.extend(step(
                 "/api/ipam/prefixes/",
                 &format!(
-                    "prefix={}&namespace=lab-default",
+                    "prefix={}&namespace=namespaces-0",
                     prefix.replace('/', "%2F")
                 ),
                 json!({
@@ -1498,16 +1508,20 @@ mod tests {
             ),
             ("/api/extras/custom-fields/?limit=200", fields.to_string()),
             (
-                "/api/dcim/device-types/?manufacturer=Arista&model=cEOS&limit=200",
-                page(&["dt-1"]),
+                "/api/dcim/manufacturers/?name=Arista&limit=200",
+                page(&["mf-0"]),
             ),
             (
-                "/api/dcim/device-types/?manufacturer=Nokia&model=SRLinux&limit=200",
-                page(&["dt-2"]),
+                "/api/dcim/device-types/?manufacturer=mf-0&model=cEOS&limit=200",
+                page(&["dt-1"]),
             ),
             (
                 "/api/dcim/manufacturers/?name=Nokia&limit=200",
                 page(&["mf-1"]),
+            ),
+            (
+                "/api/dcim/device-types/?manufacturer=mf-1&model=SRLinux&limit=200",
+                page(&["dt-2"]),
             ),
             (
                 "/api/extras/roles/?name=network_device&limit=200",
@@ -1538,7 +1552,7 @@ mod tests {
             ("status", 2),
             ("custom field", 1),
             ("device type", 2),
-            ("manufacturer", 1),
+            ("manufacturer", 2),
             ("role", 1),
         ]
         .map(|(kind, count)| (kind.to_string(), count));
@@ -1567,7 +1581,7 @@ mod tests {
                 bulk("/api/extras/statuses/", &["st-1", "st-2"]),
                 bulk("/api/extras/custom-fields/", &["cf-1"]),
                 bulk("/api/dcim/device-types/", &["dt-1", "dt-2"]),
-                bulk("/api/dcim/manufacturers/", &["mf-1"]),
+                bulk("/api/dcim/manufacturers/", &["mf-0", "mf-1"]),
                 bulk("/api/extras/roles/", &["role-1"]),
             ]
         );
@@ -1684,6 +1698,84 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    fn names_in_related_filters() -> Vec<String> {
+        let mut paths: Vec<String> = [
+            "/api/dcim/device-types/?manufacturer=Arista*",
+            "/api/dcim/device-types/?manufacturer=Nokia*",
+            "/api/dcim/devices/?location=lab*",
+            "/api/dcim/interfaces/?device=nobs-t-*",
+            "/api/ipam/prefixes/?namespace=lab-default*",
+            "/api/ipam/ip-addresses/?namespace=lab-default*",
+            "/api/ipam/ip-address-to-interface/?ip_address=192*",
+            "/api/ipam/ip-address-to-interface/?ip_address=203*",
+            "/api/ipam/ip-address-to-interface/?interface=ethernet*",
+            "/api/ipam/ip-address-to-interface/?interface=Management0*",
+        ]
+        .map(String::from)
+        .to_vec();
+        for prefix in ["192.0.2.0%2F24", "203.0.113.0%2F24"] {
+            paths.push(format!(
+                "/api/ipam/prefixes/?prefix={prefix}&namespace=lab-default"
+            ));
+        }
+        for address in [
+            "192.0.2.0%2F31",
+            "192.0.2.1%2F31",
+            "203.0.113.11",
+            "203.0.113.12",
+        ] {
+            paths.push(format!(
+                "/api/ipam/ip-addresses/?address={address}&namespace=lab-default"
+            ));
+        }
+        for ip in 0..4 {
+            for interface in ["ethernet-1%2F1", "Management0"] {
+                paths.push(format!(
+                    "/api/ipam/ip-address-to-interface/?ip_address=ip-addresses-{ip}&interface={interface}"
+                ));
+            }
+        }
+        paths
+    }
+
+    #[test]
+    fn a_load_sends_a_related_object_filter_only_with_the_id_of_an_object_it_has_written() {
+        let stub = fresh_stub_refusing(&names_in_related_filters());
+
+        let loaded = load(&stub, &topology(), FIXTURE_VARS);
+
+        assert!(loaded.is_ok(), "{loaded:?}");
+    }
+
+    #[test]
+    fn delete_on_an_empty_nautobot_twice_sends_no_related_object_filter_and_no_delete() {
+        let stub = fresh_stub_refusing(&names_in_related_filters());
+        let words = [
+            "ip address to interface",
+            "ip address",
+            "device",
+            "prefix",
+            "namespace",
+            "location",
+            "location type",
+            "status",
+            "custom field",
+            "device type",
+            "manufacturer",
+            "role",
+        ];
+        let rows: Vec<(String, usize)> = words.iter().map(|word| (word.to_string(), 0)).collect();
+
+        for _ in 0..2 {
+            let deleted = Nautobot::new(stub.url(), TOKEN)
+                .delete(&mut |_, _| {})
+                .unwrap();
+
+            assert_eq!(deleted.rows, rows);
+        }
+        assert!(calls(&stub).iter().all(|(method, _, _)| method == "GET"));
     }
 
     fn lab_found(deletes: &[(&str, &str, u16, &str)]) -> Stub {
