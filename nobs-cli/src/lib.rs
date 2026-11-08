@@ -5,7 +5,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::cascade;
 use nobs_core::compose::{network_args, Compose, NetworkAction};
@@ -101,7 +101,11 @@ const HOSTS: [&str; 5] = [
 ];
 
 #[derive(Debug, Parser)]
-#[command(name = "nobs", version)]
+#[command(
+    name = "nobs",
+    version,
+    about = "Plain nobs opens the screen on the lab found from here (or a chooser); the commands below run one step without the screen"
+)]
 pub struct Cli {
     #[arg(
         long,
@@ -111,7 +115,7 @@ pub struct Cli {
     )]
     pub dir: Option<PathBuf>,
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -144,7 +148,7 @@ pub enum Command {
         command: SondaCommand,
     },
     #[command(
-        about = "Open a screen with the scenarios of a running sonda-server, refreshed every second"
+        about = "Open the screen on the lab found from here; with no lab, a screen with the scenarios of a running sonda-server"
     )]
     Tui {
         #[command(flatten)]
@@ -1398,13 +1402,16 @@ pub enum DockerCommand {
 }
 
 pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
-    if matches!(cli.command, Command::Sonda { .. } | Command::Tui { .. }) {
+    if matches!(
+        cli.command,
+        None | Some(Command::Sonda { .. } | Command::Tui { .. })
+    ) {
         remove_blank_variables(&["SONDA_SERVER_URL", "SONDA_API_KEY"]);
     }
-    if matches!(cli.command, Command::Utils { .. }) {
+    if matches!(cli.command, Some(Command::Utils { .. })) {
         remove_blank_variables(&["NAUTOBOT_URL", "NAUTOBOT_SUPERUSER_API_TOKEN"]);
     }
-    if matches!(cli.command, Command::External(_)) {
+    if matches!(cli.command, Some(Command::External(_))) {
         remove_blank_variables(&[
             "PROMETHEUS_URL",
             "LOKI_URL",
@@ -1429,7 +1436,18 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             .map(PathBuf::from)
     });
     let given = given.as_deref();
-    let command = match cli.command {
+    let Some(command) = cli.command else {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            eprintln!("{}", Cli::command().render_help());
+            return 2;
+        }
+        let flags = SondaFlags {
+            server: None,
+            api_key: None,
+        };
+        return open_screen(given, flags, true);
+    };
+    let command = match command {
         Command::Docker { command } => command,
         Command::Containerlab { command } => {
             return run_containerlab_command(command, given, runner)
@@ -1439,7 +1457,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         Command::Sonda { flags, command } => {
             return with_env(Path::new("."), || run_sonda(flags, command))
         }
-        Command::Tui { flags } => return with_env(Path::new("."), || run_tui(flags)),
+        Command::Tui { flags } => return open_screen(given, flags, false),
         Command::Workshops => return with_env(Path::new("."), || list_workshops(given)),
         Command::Setup => {
             return with_env(Path::new("."), || {
@@ -4713,25 +4731,65 @@ fn sonda_client(flags: SondaFlags) -> Sonda {
     Sonda::new(server).api_key(key)
 }
 
-fn run_tui(flags: SondaFlags) -> i32 {
-    let start = nobs_tui::Start {
-        lab: None,
-        stacks: Vec::new(),
-        sonda: nobs_tui::SondaTarget {
+fn open_screen(given_dir: Option<&Path>, flags: SondaFlags, chooser: bool) -> i32 {
+    in_current_folder(|here| {
+        let sonda = nobs_tui::SondaTarget {
             server: given(flags.server).or_else(|| given(std::env::var("SONDA_SERVER_URL").ok())),
             api_key: given(flags.api_key).or_else(|| given(std::env::var("SONDA_API_KEY").ok())),
-        },
-        home: nobs_tui::Workbench::Services,
-        chooser: false,
-    };
-    let runner = std::sync::Arc::new(nobs_core::runner::CapturedRunner);
-    match nobs_tui::run(start, runner) {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("nobs: {error}");
-            1
+        };
+        let start = || -> Result<nobs_tui::Start, String> {
+            let home = nobs_tui::Workbench::Services;
+            match locate(here, given_dir) {
+                Ok(located) => {
+                    let workshops = workshop_list(here, given_dir)?;
+                    Ok(nobs_tui::Start {
+                        stacks: nobs_tui::shell::stacks(Some(&located), workshops)?,
+                        lab: Some(located),
+                        sonda,
+                        home,
+                        chooser: false,
+                    })
+                }
+                Err(LocateError::NotFound) if chooser => {
+                    let workshops = workshop_list(here, given_dir)?;
+                    Ok(nobs_tui::Start {
+                        lab: None,
+                        stacks: nobs_tui::shell::stacks(None, workshops)?,
+                        sonda,
+                        home,
+                        chooser: true,
+                    })
+                }
+                Err(LocateError::NotFound) => Ok(nobs_tui::Start {
+                    lab: None,
+                    stacks: Vec::new(),
+                    sonda,
+                    home,
+                    chooser: false,
+                }),
+                Err(error) => Err(error.to_string()),
+            }
+        };
+        let start = match start() {
+            Ok(start) => start,
+            Err(message) => {
+                eprintln!("nobs: {message}");
+                return 1;
+            }
+        };
+        let runner = std::sync::Arc::new(nobs_core::runner::CapturedRunner);
+        match nobs_tui::run(start, runner) {
+            Ok(1) => {
+                eprintln!("nobs: {}", LocateError::NotFound);
+                1
+            }
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("nobs: {error}");
+                1
+            }
         }
-    }
+    })
 }
 
 fn run_sonda(flags: SondaFlags, command: SondaCommand) -> i32 {
