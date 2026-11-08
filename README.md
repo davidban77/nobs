@@ -1419,7 +1419,7 @@ nobs: lab deploy: image ghcr.io/nokia/srlinux:24.10.1 of node srl1 is not presen
   pull it with: docker pull ghcr.io/nokia/srlinux:24.10.1
 ```
 
-For a node of kind `ceos` or `arista_ceos`, nobs prints the import instruction instead. The book lab reads the image from `${CEOS_IMAGE:-ceos:image}`. Below are three cases. In the first, `CEOS_IMAGE` is not set. In the second, `CEOS_IMAGE=ceos:4.32.0F` is set, but that image is not imported. In the third, the topology has no variable (`image: ceos:4.32.0F`). When the variable is set and not empty, the import line ends with the image itself, and there is no `then set` line.
+For a node of kind `ceos` or `arista_ceos`, nobs prints an import line instead of the `pull it with` line. The book lab reads the image from `${CEOS_IMAGE:-ceos:image}`. Below are three cases. In the first, `CEOS_IMAGE` is not set. In the second, `CEOS_IMAGE=ceos:4.32.0F` is set, but that image is not imported. In the third, the topology has no variable (`image: ceos:4.32.0F`). When the variable is set and not empty, the import line ends with the image itself, and there is no `then set` line.
 
 ```
 nobs: lab deploy: image ceos:image of nodes ceos1, ceos2 is not present
@@ -1445,7 +1445,7 @@ nobs shows the error output of Docker as it is. So Docker's own text, for exampl
 
 Arista cEOS is the container image of the Arista switch. It is not on a registry, so import it once. The Docker engine that nobs asks is the one inside the Linux machine `clab`, so run the commands inside `clab` too (see [Commands](#commands)).
 
-1. Download `cEOS64-lab-<version>.tar.xz` from arista.com. You need an Arista account. `<version>` is the version you chose, for example `4.32.0F`. On an arm64 machine such as `clab`, Arista offers only an engineering build of the arm64 cEOS-lab file, and its file name is not the one above. Download that file and use its name in step 2.
+1. Download the cEOS file for arm64 from arista.com. You need an Arista account. arm64, also called aarch64, is the processor type of `clab`; it is why the Linux binary is built for `aarch64`. For arm64, Arista offers the cEOS file only as an engineering build, which Arista does not offer as a regular release. Its file name is not `cEOS64-lab-<version>.tar.xz`, the name in the message of nobs and in step 2. In step 2, use the name of the file you downloaded instead, and use its version as `<version>`.
 2. Import the file into Docker, where `<folder>` is the full path of the folder that holds the file: `orb -m clab docker import <folder>/cEOS64-lab-<version>.tar.xz ceos:<version>`. A folder on the Mac works, because `clab` sees the Mac files at the same path.
 3. Give nobs the name of the image with the variable `CEOS_IMAGE`, because the topology of the book lab reads `${CEOS_IMAGE:-ceos:image}`. Without the variable, nobs looks for the image `ceos:image`. Set it in the `.env` file of the lab folder, as the line `CEOS_IMAGE=ceos:<version>`, or in the command, as in `orb -m clab env CEOS_IMAGE=ceos:<version> <path> lab deploy -s <scenario>`. A variable set in the Mac shell does not reach a command run inside `clab`.
 4. Run `deploy` or `prepare`. nobs finds the image and goes on.
