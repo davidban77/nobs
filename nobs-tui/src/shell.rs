@@ -542,6 +542,9 @@ impl Model {
                 self.chooser = false;
                 self.select(index);
                 self.tab = tab;
+                if tab == Tab::Sonda {
+                    self.focus = Focus::Tabs;
+                }
                 return vec![Command::SelectStack(index)];
             }
             _ => {}
@@ -1290,6 +1293,7 @@ mod tests {
 
         assert!(!model.chooser());
         assert_eq!(model.tab(), Tab::Sonda);
+        assert_eq!(model.focus(), Focus::Tabs);
         assert_eq!(model.stacks().len(), 2);
         assert_eq!(model.stacks()[0].name, "a");
         assert_eq!(model.stacks()[1].kind, StackKind::Sonda);

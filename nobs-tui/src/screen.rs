@@ -14,7 +14,7 @@ const LEFT_NARROW: u16 = 23;
 const LEFT_WIDE: u16 = 32;
 const TOO_SMALL: &str = "terminal too small: 60x15 needed";
 const HELP_HEIGHT: u16 = 11;
-const HELP_PLACEHOLDER_HEIGHT: u16 = 8;
+const HELP_PLACEHOLDER_HEIGHT: u16 = 12;
 const HELP_PLACEHOLDER_NOTE: &str = "the workbench comes with slice 24";
 const HELP_SONDA: &str = "sonda tab: l load  d delete  r refresh";
 const HELP: [(&str, &str); 14] = [
@@ -33,11 +33,15 @@ const HELP: [(&str, &str); 14] = [
     ("q Ctrl-C", "quit"),
     ("Esc", "close/clear/back"),
 ];
-const HELP_PLACEHOLDER: [(&str, &str); 4] = [
+const HELP_PLACEHOLDER: [(&str, &str); 8] = [
     ("1 2 3", "switch workbench"),
+    ("Tab", "focus list/tabs"),
+    ("r", "refresh now"),
+    ("o", "run pane"),
+    ("x", "dismiss the error"),
     ("?", "close"),
-    ("q Ctrl-C", "quit"),
     ("Esc", "close"),
+    ("q Ctrl-C", "quit"),
 ];
 const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -510,9 +514,10 @@ fn help(frame: &mut Frame, body: Rect, workbench: Workbench) {
             Paragraph::new(help_column(&HELP_PLACEHOLDER)),
             column(0, 0, inner.width, rows),
         );
+        let note_row = (rows + 1).min(inner.height.saturating_sub(1));
         frame.render_widget(
             Paragraph::new(HELP_PLACEHOLDER_NOTE),
-            column(0, rows + 1, inner.width, 1),
+            column(0, note_row, inner.width, 1),
         );
         return;
     }

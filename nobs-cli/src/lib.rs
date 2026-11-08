@@ -4744,6 +4744,10 @@ fn screen_start(
     let home = nobs_tui::Workbench::Services;
     match locate(here, given_dir) {
         Ok(located) => {
+            let located = Located {
+                dir: here.join(&located.dir),
+                ..located
+            };
             let workshops = workshop_list(here, given_dir)?;
             Ok(nobs_tui::Start {
                 stacks: nobs_tui::shell::stacks(Some(&located), workshops)?,
@@ -5614,6 +5618,46 @@ mod tests {
         let start = screen_start(&here.0, None, flags(Some("http://flag:1")), false).unwrap();
 
         assert_eq!(start.sonda.server.as_deref(), Some("http://flag:1"));
+    }
+
+    struct Cwd(PathBuf);
+
+    impl Cwd {
+        fn enter(dir: &Path) -> Self {
+            let before = std::env::current_dir().unwrap();
+            std::env::set_current_dir(dir).unwrap();
+            Self(before)
+        }
+    }
+
+    impl Drop for Cwd {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_relative_dir_naming_the_second_workshop_selects_that_workshop() {
+        let scratch = two_workshops("screen-relative");
+        fs::write(
+            scratch.0.join("workshops/two/.env"),
+            "INFRAHUB_ADDRESS=http://x\n",
+        )
+        .unwrap();
+        let _cwd = Cwd::enter(&scratch.0);
+        let here = std::env::current_dir().unwrap();
+
+        let start =
+            screen_start(&here, Some(Path::new("workshops/two")), flags(None), false).unwrap();
+
+        let model = nobs_tui::Shell::new(start);
+        assert_eq!(model.selected_stack(), 1);
+        assert_eq!(model.stacks()[1].name, "nobs-t-two");
+        assert!(
+            model.header().ends_with("sot infrahub"),
+            "{}",
+            model.header()
+        );
     }
 
     #[test]
