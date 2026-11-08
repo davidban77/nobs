@@ -1069,6 +1069,14 @@ const LAB_SUDO_HELP: &str = "Run containerlab with sudo; off by default, LAB_SUD
 const LAB_NO_SUDO_HELP: &str = "Run containerlab without sudo; this is the default";
 
 #[derive(Debug, Args)]
+pub struct SudoFlags {
+    #[arg(long, overrides_with = "no_sudo", help = LAB_SUDO_HELP)]
+    sudo: bool,
+    #[arg(long, overrides_with = "sudo", help = LAB_NO_SUDO_HELP)]
+    no_sudo: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct LabFlags {
     #[arg(
         short,
@@ -1079,10 +1087,8 @@ pub struct LabFlags {
     scenario: Option<String>,
     #[arg(long, value_name = "FILE", help = LAB_TOPOLOGY_HELP)]
     topology: Option<PathBuf>,
-    #[arg(long, overrides_with = "no_sudo", help = LAB_SUDO_HELP)]
-    sudo: bool,
-    #[arg(long, overrides_with = "sudo", help = LAB_NO_SUDO_HELP)]
-    no_sudo: bool,
+    #[command(flatten)]
+    sudo: SudoFlags,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1124,10 +1130,8 @@ pub enum LabCommand {
     Purge {
         #[arg(long, value_name = "FILE", help = LAB_TOPOLOGY_HELP)]
         topology: Option<PathBuf>,
-        #[arg(long, overrides_with = "no_sudo", help = LAB_SUDO_HELP)]
-        sudo: bool,
-        #[arg(long, overrides_with = "sudo", help = LAB_NO_SUDO_HELP)]
-        no_sudo: bool,
+        #[command(flatten)]
+        sudo: SudoFlags,
     },
     #[command(about = "List the containers of a scenario and the nodes of the topology")]
     Show {
@@ -1956,16 +1960,11 @@ fn run_lab_command(command: LabCommand, located: &Located, runner: &dyn Runner) 
             let scenario = lab_scenario(&flags, located, "destroy")?;
             LabRun::new("destroy", located, runner, &flags)?.destroy(&scenario)
         }
-        LabCommand::Purge {
-            sudo,
-            no_sudo,
-            topology,
-        } => {
+        LabCommand::Purge { topology, sudo } => {
             let flags = LabFlags {
                 scenario: None,
                 topology,
                 sudo,
-                no_sudo,
             };
             LabRun::new("purge", located, runner, &flags)?.purge()
         }
@@ -2008,7 +2007,7 @@ fn lab_scenario(flags: &LabFlags, located: &Located, command: &str) -> Result<St
     }
 }
 
-fn lab_sudo(flags: &LabFlags) -> Result<bool, i32> {
+fn lab_sudo(flags: &SudoFlags) -> Result<bool, i32> {
     if flags.sudo {
         return Ok(true);
     }
@@ -2043,7 +2042,7 @@ impl<'a> LabRun<'a> {
         runner: &'a dyn Runner,
         flags: &LabFlags,
     ) -> Result<Self, i32> {
-        let sudo = lab_sudo(flags)?;
+        let sudo = lab_sudo(&flags.sudo)?;
         let topology = match &flags.topology {
             Some(file) => located.dir.join(file),
             None => located.topology(),
