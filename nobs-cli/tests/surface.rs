@@ -36,6 +36,17 @@ fn the_help_pages_name_the_containerlab_group_and_exactly_its_three_commands() {
     assert_eq!(commands, CONTAINERLAB_COMMANDS);
 }
 
+const LAB_COMMANDS: [&str; 4] = ["deploy", "destroy", "purge", "show"];
+
+#[test]
+fn the_help_pages_name_the_lab_group_and_exactly_its_four_commands() {
+    let commands = commands_block(&help(&[]));
+    assert!(commands.iter().any(|word| word == "lab"), "{commands:?}");
+
+    let commands = commands_block(&help(&["lab"]));
+    assert_eq!(commands, LAB_COMMANDS);
+}
+
 const SONDA_COMMANDS: [&str; 10] = [
     "health", "ready", "list", "show", "stats", "delete", "load", "event", "metrics", "version",
 ];
