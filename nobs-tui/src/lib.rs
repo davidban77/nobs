@@ -14,10 +14,16 @@ use nobs_core::sonda::Sonda;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::Terminal;
 
-use data::{Command, Model, Note, Poller, Update};
+use data::{Model, Note, Poller};
 
 pub mod data;
+pub mod shell;
 pub mod view;
+
+pub use shell::{
+    handle, Command, Focus, Model as Shell, Service, SondaTarget, Stack, StackKind, StackState,
+    Start, Tab, Update, Workbench,
+};
 
 const PERIOD: Duration = Duration::from_secs(1);
 const KEY_WAIT: Duration = Duration::from_millis(100);
@@ -50,7 +56,7 @@ pub fn run(sonda: Sonda) -> Result<(), String> {
             )
         });
     drop(screen);
-    poller.send(Command::Stop);
+    poller.send(data::Command::Stop);
     result
 }
 
@@ -58,7 +64,7 @@ fn turns<B: Backend>(
     terminal: &mut Terminal<B>,
     model: &mut Model,
     poller: &Poller,
-    updates: &Receiver<Update>,
+    updates: &Receiver<data::Update>,
     notes: &Receiver<Note>,
     mut next_key: impl FnMut(Duration) -> Result<Option<KeyEvent>, String>,
 ) -> Result<(), String> {
@@ -136,7 +142,7 @@ mod tests {
         KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
     }
 
-    fn held() -> (Stub, Poller, Receiver<Update>, Receiver<Note>) {
+    fn held() -> (Stub, Poller, Receiver<data::Update>, Receiver<Note>) {
         let stub = Stub::start_silent(Duration::from_secs(2));
         let (poller, updates, notes) = Poller::start(Sonda::new(stub.url()), PERIOD);
         (stub, poller, updates, notes)
@@ -167,7 +173,7 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        poller.send(Command::Stop);
+        poller.send(data::Command::Stop);
     }
 
     #[test]
@@ -190,7 +196,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(waits, [Duration::from_millis(100); 2]);
-        poller.send(Command::Stop);
+        poller.send(data::Command::Stop);
     }
 
     #[test]
@@ -206,7 +212,7 @@ mod tests {
             turn += 1;
             if turn == 1 {
                 sender
-                    .send(Update {
+                    .send(data::Update {
                         at: Instant::now(),
                         list: Ok(LIST.to_string()),
                         selected: None,
@@ -229,6 +235,6 @@ mod tests {
         assert!(screen.contains("> a1       cpu"), "{screen}");
         let bottom: String = (0..80).map(|x| buffer[(x, 23)].symbol()).collect();
         assert!(bottom.starts_with("loaded x1"), "{bottom}");
-        poller.send(Command::Stop);
+        poller.send(data::Command::Stop);
     }
 }
