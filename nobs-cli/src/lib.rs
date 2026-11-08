@@ -120,7 +120,7 @@ pub enum Command {
         #[command(subcommand)]
         command: ContainerlabCommand,
     },
-    #[command(about = "Bring the book lab up and down: its network, topology and scenario stack")]
+    #[command(about = "Bring the book lab up and down, and list what runs")]
     Lab {
         #[command(subcommand)]
         command: LabCommand,
@@ -1062,7 +1062,7 @@ pub enum ContainerlabCommand {
     },
 }
 
-const LAB_TOPOLOGY_HELP: &str = "Topology file, a relative path starts at the lab folder; containerlab/lab.yml in the lab folder when none is given";
+const LAB_TOPOLOGY_HELP: &str = "Topology file, a relative path starts at the lab folder; the topology setting of nobs.toml, else containerlab/lab.yml in the lab folder, when none is given";
 
 const LAB_SUDO_HELP: &str = "Run containerlab with sudo; off by default, LAB_SUDO sets it too";
 
@@ -1088,7 +1088,7 @@ pub struct LabFlags {
 #[derive(Debug, Subcommand)]
 pub enum LabCommand {
     #[command(
-        about = "Create the network, deploy the topology, start a scenario and wait until all runs"
+        about = "Create the network, deploy the topology, start a scenario, then wait until its services and nodes run"
     )]
     Deploy {
         #[command(flatten)]
@@ -1113,19 +1113,21 @@ pub enum LabCommand {
         )]
         wait: u64,
     },
-    #[command(about = "Stop a scenario with its volumes, then destroy the topology")]
+    #[command(about = "Take a scenario down and remove its volumes, then destroy the topology")]
     Destroy {
         #[command(flatten)]
         flags: LabFlags,
     },
-    #[command(about = "Stop every scenario with its volumes, then destroy the topology")]
+    #[command(
+        about = "Take every scenario down and remove its volumes, then destroy the topology"
+    )]
     Purge {
+        #[arg(long, value_name = "FILE", help = LAB_TOPOLOGY_HELP)]
+        topology: Option<PathBuf>,
         #[arg(long, overrides_with = "no_sudo", help = LAB_SUDO_HELP)]
         sudo: bool,
         #[arg(long, overrides_with = "sudo", help = LAB_NO_SUDO_HELP)]
         no_sudo: bool,
-        #[arg(long, value_name = "FILE", help = LAB_TOPOLOGY_HELP)]
-        topology: Option<PathBuf>,
     },
     #[command(about = "List the containers of a scenario and the nodes of the topology")]
     Show {
