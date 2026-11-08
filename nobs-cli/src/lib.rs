@@ -1064,6 +1064,9 @@ pub enum ContainerlabCommand {
 
 const LAB_TOPOLOGY_HELP: &str = "Topology file, a relative path starts at the lab folder; the topology setting of nobs.toml, else containerlab/lab.yml in the lab folder, when none is given";
 
+const LAB_SCENARIO_HELP: &str =
+    "Scenario to use, a folder of chapters/ in the lab folder; LAB_SCENARIO when none is given";
+
 const LAB_SUDO_HELP: &str = "Run containerlab with sudo; off by default, LAB_SUDO sets it too";
 
 const LAB_NO_SUDO_HELP: &str = "Run containerlab without sudo; this is the default";
@@ -1078,17 +1081,48 @@ pub struct SudoFlags {
 
 #[derive(Debug, Args)]
 pub struct LabFlags {
-    #[arg(
-        short,
-        long,
-        value_name = "NAME",
-        help = "Scenario to use, a folder of chapters/ in the lab folder; LAB_SCENARIO when none is given"
-    )]
+    #[arg(short, long, value_name = "NAME", help = LAB_SCENARIO_HELP)]
     scenario: Option<String>,
     #[arg(long, value_name = "FILE", help = LAB_TOPOLOGY_HELP)]
     topology: Option<PathBuf>,
     #[command(flatten)]
     sudo: SudoFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct DeployFlags {
+    #[arg(
+        long,
+        value_name = "NAME",
+        help = "Docker network to create; LAB_NETWORK_NAME, then the network setting of nobs.toml, else network-observability"
+    )]
+    network_name: Option<String>,
+    #[arg(
+        long,
+        value_name = "CIDR",
+        help = "Subnet of the network to create; LAB_SUBNET, else 198.51.100.0/24"
+    )]
+    subnet: Option<String>,
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 300,
+        help = "Seconds to wait until the services and nodes run; 0 does not wait"
+    )]
+    wait: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct ServiceFlags {
+    #[arg(short, long, value_name = "NAME", help = LAB_SCENARIO_HELP)]
+    scenario: Option<String>,
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 300,
+        help = "Seconds to wait until the services run; 0 does not wait"
+    )]
+    wait: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1099,25 +1133,8 @@ pub enum LabCommand {
     Deploy {
         #[command(flatten)]
         flags: LabFlags,
-        #[arg(
-            long,
-            value_name = "NAME",
-            help = "Docker network to create; LAB_NETWORK_NAME, then the network setting of nobs.toml, else network-observability"
-        )]
-        network_name: Option<String>,
-        #[arg(
-            long,
-            value_name = "CIDR",
-            help = "Subnet of the network to create; LAB_SUBNET, else 198.51.100.0/24"
-        )]
-        subnet: Option<String>,
-        #[arg(
-            long,
-            value_name = "SECONDS",
-            default_value_t = 300,
-            help = "Seconds to wait until the services and nodes run; 0 does not wait"
-        )]
-        wait: u64,
+        #[command(flatten)]
+        deploy: DeployFlags,
     },
     #[command(about = "Take a scenario down and remove its volumes, then destroy the topology")]
     Destroy {
@@ -1137,6 +1154,39 @@ pub enum LabCommand {
     Show {
         #[command(flatten)]
         flags: LabFlags,
+    },
+    #[command(
+        about = "Take every scenario and the topology down, then deploy a scenario and wait until the services and nodes run"
+    )]
+    Prepare {
+        #[command(flatten)]
+        flags: LabFlags,
+        #[command(flatten)]
+        deploy: DeployFlags,
+    },
+    #[command(
+        about = "Remove services and their volumes, start them again, then wait until they run"
+    )]
+    Update {
+        #[arg(
+            value_name = "SERVICE",
+            help = "Services to update; all when none is given"
+        )]
+        services: Vec<String>,
+        #[command(flatten)]
+        service: ServiceFlags,
+    },
+    #[command(
+        about = "Stop services, build their images, start them again, then wait until they run"
+    )]
+    Rebuild {
+        #[arg(
+            value_name = "SERVICE",
+            help = "Services to rebuild; all when none is given"
+        )]
+        services: Vec<String>,
+        #[command(flatten)]
+        service: ServiceFlags,
     },
 }
 
@@ -1936,28 +1986,18 @@ fn run_lab_command(command: LabCommand, located: &Located, runner: &dyn Runner) 
         return Err(1);
     }
     match command {
-        LabCommand::Deploy {
-            flags,
-            network_name,
-            subnet,
-            wait,
-        } => {
-            let scenario = lab_scenario(&flags, located, "deploy")?;
-            let network = given(network_name)
-                .or_else(|| lab_variable("LAB_NETWORK_NAME"))
-                .unwrap_or_else(|| located.network().unwrap_or(lab::NETWORK).to_string());
-            let subnet = given(subnet)
-                .or_else(|| lab_variable("LAB_SUBNET"))
-                .unwrap_or_else(|| lab::SUBNET.to_string());
+        LabCommand::Deploy { flags, deploy } => {
+            let scenario = lab_scenario(flags.scenario.as_deref(), located, "deploy")?;
+            let (network, subnet) = lab_network(&deploy, located);
             LabRun::new("deploy", located, runner, &flags)?.deploy(
                 &scenario,
                 &network,
                 &subnet,
-                Duration::from_secs(wait),
+                Duration::from_secs(deploy.wait),
             )
         }
         LabCommand::Destroy { flags } => {
-            let scenario = lab_scenario(&flags, located, "destroy")?;
+            let scenario = lab_scenario(flags.scenario.as_deref(), located, "destroy")?;
             LabRun::new("destroy", located, runner, &flags)?.destroy(&scenario)
         }
         LabCommand::Purge { topology, sudo } => {
@@ -1969,8 +2009,34 @@ fn run_lab_command(command: LabCommand, located: &Located, runner: &dyn Runner) 
             LabRun::new("purge", located, runner, &flags)?.purge()
         }
         LabCommand::Show { flags } => {
-            let scenario = lab_scenario(&flags, located, "show")?;
+            let scenario = lab_scenario(flags.scenario.as_deref(), located, "show")?;
             LabRun::new("show", located, runner, &flags)?.show(&scenario)
+        }
+        LabCommand::Prepare { flags, deploy } => {
+            let scenario = lab_scenario(flags.scenario.as_deref(), located, "prepare")?;
+            let (network, subnet) = lab_network(&deploy, located);
+            LabRun::new("prepare", located, runner, &flags)?.prepare(
+                &scenario,
+                &network,
+                &subnet,
+                Duration::from_secs(deploy.wait),
+            )
+        }
+        LabCommand::Update { services, service } => {
+            let scenario = lab_scenario(service.scenario.as_deref(), located, "update")?;
+            LabRun::without_topology("update", located, runner).update(
+                &services,
+                &scenario,
+                Duration::from_secs(service.wait),
+            )
+        }
+        LabCommand::Rebuild { services, service } => {
+            let scenario = lab_scenario(service.scenario.as_deref(), located, "rebuild")?;
+            LabRun::without_topology("rebuild", located, runner).rebuild(
+                &services,
+                &scenario,
+                Duration::from_secs(service.wait),
+            )
         }
     }
 }
@@ -1979,7 +2045,17 @@ fn lab_variable(name: &str) -> Option<String> {
     given(std::env::var(name).ok())
 }
 
-fn lab_scenario(flags: &LabFlags, located: &Located, command: &str) -> Result<String, i32> {
+fn lab_network(flags: &DeployFlags, located: &Located) -> (String, String) {
+    let network = given(flags.network_name.clone())
+        .or_else(|| lab_variable("LAB_NETWORK_NAME"))
+        .unwrap_or_else(|| located.network().unwrap_or(lab::NETWORK).to_string());
+    let subnet = given(flags.subnet.clone())
+        .or_else(|| lab_variable("LAB_SUBNET"))
+        .unwrap_or_else(|| lab::SUBNET.to_string());
+    (network, subnet)
+}
+
+fn lab_scenario(scenario: Option<&str>, located: &Located, command: &str) -> Result<String, i32> {
     let known = lab::scenarios(&located.dir).map_err(|error| {
         eprintln!("nobs: lab {command}: cannot list scenarios: {error}");
         1
@@ -1989,7 +2065,7 @@ fn lab_scenario(flags: &LabFlags, located: &Located, command: &str) -> Result<St
             eprintln!("known: {}", known.join(", "));
         }
     };
-    match given(flags.scenario.clone()).or_else(|| lab_variable("LAB_SCENARIO")) {
+    match given(scenario.map(str::to_string)).or_else(|| lab_variable("LAB_SCENARIO")) {
         None => {
             eprintln!("nobs: lab {command} needs --scenario NAME or LAB_SCENARIO");
             print_known();
@@ -2027,15 +2103,27 @@ fn os_strings(list: &[&str]) -> Vec<OsString> {
     list.iter().map(OsString::from).collect()
 }
 
-struct LabRun<'a> {
+struct Topology {
+    containerlab: Containerlab,
+    text: String,
+}
+
+struct LabRun<'a, Topo> {
     command: &'static str,
     located: &'a Located,
     runner: &'a dyn Runner,
-    containerlab: Containerlab,
-    topology_text: String,
+    topology: Topo,
 }
 
-impl<'a> LabRun<'a> {
+fn service_names(services: &[String]) -> String {
+    if services.is_empty() {
+        "all services".to_string()
+    } else {
+        services.join(", ")
+    }
+}
+
+impl<'a> LabRun<'a, Topology> {
     fn new(
         command: &'static str,
         located: &'a Located,
@@ -2043,35 +2131,41 @@ impl<'a> LabRun<'a> {
         flags: &LabFlags,
     ) -> Result<Self, i32> {
         let sudo = lab_sudo(&flags.sudo)?;
-        let topology = match &flags.topology {
+        let file = match &flags.topology {
             Some(file) => located.dir.join(file),
             None => located.topology(),
         };
-        let topology_text = read_topology(&topology)?;
-        let containerlab = Containerlab::new(topology)
+        let text = read_topology(&file)?;
+        let containerlab = Containerlab::new(file)
             .sudo(sudo)
-            .preserve_env(env_names(&topology_text));
+            .preserve_env(env_names(&text));
         Ok(Self {
             command,
             located,
             runner,
-            containerlab,
-            topology_text,
+            topology: Topology { containerlab, text },
         })
     }
+}
 
+impl<'a> LabRun<'a, ()> {
+    fn without_topology(
+        command: &'static str,
+        located: &'a Located,
+        runner: &'a dyn Runner,
+    ) -> Self {
+        Self {
+            command,
+            located,
+            runner,
+            topology: (),
+        }
+    }
+}
+
+impl<'a, Topo> LabRun<'a, Topo> {
     fn project(&self) -> &str {
         self.located.project().unwrap_or(lab::PROJECT)
-    }
-
-    fn node_containers(&self) -> Result<Vec<String>, i32> {
-        lab::node_containers(&self.topology_text).map_err(|error| {
-            eprintln!(
-                "nobs: cannot read topology file: {}: {error}",
-                self.containerlab.topology().display()
-            );
-            1
-        })
     }
 
     fn finished(&self, step: &str, program: &str, result: std::io::Result<i32>) -> Result<(), i32> {
@@ -2141,6 +2235,194 @@ impl<'a> LabRun<'a> {
         )
     }
 
+    fn wait(
+        &self,
+        limit: Duration,
+        poll: impl FnMut() -> Result<Vec<String>, i32>,
+    ) -> Result<(), i32> {
+        match lab::wait_ready(poll, limit, std::thread::sleep, Instant::now) {
+            Ok(elapsed) => {
+                println!("lab {}: ready after {}s", self.command, elapsed.as_secs());
+                Ok(())
+            }
+            Err(WaitError::Failed(code)) => Err(code),
+            Err(WaitError::NotReady(waiting)) => {
+                eprintln!(
+                    "nobs: lab {}: not ready after {}s: {}",
+                    self.command,
+                    limit.as_secs(),
+                    waiting.join(", ")
+                );
+                Err(1)
+            }
+        }
+    }
+
+    fn wait_for_services(
+        &self,
+        compose: &Compose,
+        names: &[String],
+        limit: Duration,
+    ) -> Result<(), i32> {
+        let args = [compose.ps_args(&[]), os_strings(&["--format", "json"])].concat();
+        let mut announced = false;
+        let poll = || -> Result<Vec<String>, i32> {
+            let listed = self.answer("compose ps", Compose::PROGRAM, &args, lab::services)?;
+            if !announced {
+                announced = true;
+                let count = if names.is_empty() {
+                    listed.len()
+                } else {
+                    names.len()
+                };
+                println!(
+                    "lab {}: waiting for {count} services (up to {}s)",
+                    self.command,
+                    limit.as_secs()
+                );
+            }
+            let kept: Vec<lab::Service> = listed
+                .iter()
+                .filter(|service| names.is_empty() || names.contains(&service.name))
+                .cloned()
+                .collect();
+            let mut waiting = if names.is_empty() || !kept.is_empty() {
+                lab::not_ready(&kept, &[], &[])
+            } else {
+                Vec::new()
+            };
+            waiting.extend(
+                names
+                    .iter()
+                    .filter(|name| !listed.iter().any(|service| &service.name == *name))
+                    .map(|name| format!("{name} (missing)")),
+            );
+            Ok(waiting)
+        };
+        self.wait(limit, poll)
+    }
+
+    fn update(&self, services: &[String], scenario: &str, wait: Duration) -> Result<(), i32> {
+        let compose = compose_in(self.located, Some(scenario));
+        let names = service_names(services);
+        println!("lab update: removing {names} (project {})", self.project());
+        self.step(
+            Compose::PROGRAM,
+            &compose.rm_args(services, true, true),
+            "compose rm",
+        )?;
+        println!("lab update: starting {names}");
+        self.step(
+            Compose::PROGRAM,
+            &compose.start_args(services),
+            "compose up",
+        )?;
+        if !wait.is_zero() {
+            self.wait_for_services(&compose, services, wait)?;
+        }
+        println!("lab updated: scenario {scenario}");
+        Ok(())
+    }
+
+    fn rebuild(&self, services: &[String], scenario: &str, wait: Duration) -> Result<(), i32> {
+        let compose = compose_in(self.located, Some(scenario));
+        let names = service_names(services);
+        println!("lab rebuild: stopping {names}");
+        self.step(
+            Compose::PROGRAM,
+            &compose.stop_args(services),
+            "compose stop",
+        )?;
+        println!("lab rebuild: building {names}");
+        self.step(
+            Compose::PROGRAM,
+            &compose.build_args(services),
+            "compose build",
+        )?;
+        println!("lab rebuild: starting {names}");
+        self.step(
+            Compose::PROGRAM,
+            &compose.start_args(services),
+            "compose up",
+        )?;
+        if !wait.is_zero() {
+            self.wait_for_services(&compose, services, wait)?;
+        }
+        println!("lab rebuilt: scenario {scenario}");
+        Ok(())
+    }
+}
+
+impl<'a> LabRun<'a, Topology> {
+    fn node_containers(&self) -> Result<Vec<String>, i32> {
+        lab::node_containers(&self.topology.text).map_err(|error| {
+            eprintln!(
+                "nobs: cannot read topology file: {}: {error}",
+                self.topology.containerlab.topology().display()
+            );
+            1
+        })
+    }
+
+    fn refuse_missing_images(&self) -> Result<(), i32> {
+        let images = lab::node_images(&self.topology.text, |name| std::env::var(name).ok())
+            .map_err(|error| {
+                eprintln!(
+                    "nobs: cannot read topology file: {}: {error}",
+                    self.topology.containerlab.topology().display()
+                );
+                1
+            })?;
+        let mut missing = Vec::new();
+        for entry in images {
+            let args = os_strings(&["image", "inspect", "--format", "{{.Id}}", &entry.image]);
+            match self.runner.output(Compose::PROGRAM, &args) {
+                Ok(output) if output.code == 0 => {}
+                Ok(_) => missing.push(entry),
+                Err(error) => {
+                    eprintln!("nobs: lab {}: cannot run docker: {error}", self.command);
+                    return Err(1);
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        for entry in &missing {
+            let nodes = if entry.nodes.len() == 1 {
+                format!("node {}", entry.nodes[0])
+            } else {
+                format!("nodes {}", entry.nodes.join(", "))
+            };
+            eprintln!(
+                "nobs: lab {}: image {} of {nodes} is not present",
+                self.command, entry.image
+            );
+            let import = |target: &str| {
+                eprintln!(
+                    "  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz {target}"
+                )
+            };
+            match (
+                lab::CEOS_KINDS.contains(&entry.kind.as_str()),
+                &entry.variable,
+            ) {
+                (true, Some(name)) => {
+                    import("ceos:<version>");
+                    eprintln!("  then set {name}=ceos:<version>");
+                }
+                (true, None) => import(&entry.image),
+                (false, variable) => {
+                    eprintln!("  pull it with: docker pull {}", entry.image);
+                    if let Some(name) = variable {
+                        eprintln!("  or set {name} to an image that is present");
+                    }
+                }
+            }
+        }
+        Err(1)
+    }
+
     fn refuse_clashes(&self, nodes: &[String], scenario: &str) -> Result<(), i32> {
         let present = self.containers()?;
         let clashing: Vec<&str> = nodes
@@ -2150,7 +2432,8 @@ impl<'a> LabRun<'a> {
             .collect();
         if !clashing.is_empty() {
             eprintln!(
-                "nobs: lab deploy: node containers already exist ({}); run nobs lab destroy first",
+                "nobs: lab {}: node containers already exist ({}); run nobs lab destroy first",
+                self.command,
                 clashing.join(", ")
             );
             return Err(1);
@@ -2163,7 +2446,8 @@ impl<'a> LabRun<'a> {
         )?;
         if !held.is_empty() {
             eprintln!(
-                "nobs: lab deploy: project {project} already has containers ({}); run nobs lab destroy -s {scenario} first, or nobs lab purge",
+                "nobs: lab {}: project {project} already has containers ({}); run nobs lab destroy -s {scenario} first, or nobs lab purge",
+                self.command,
                 held.join(", ")
             );
             return Err(1);
@@ -2189,6 +2473,38 @@ impl<'a> LabRun<'a> {
     ) -> Result<(), i32> {
         let nodes = self.node_containers()?;
         self.refuse_clashes(&nodes, scenario)?;
+        self.refuse_missing_images()?;
+        self.start(&nodes, scenario, network, subnet, wait)
+    }
+
+    fn prepare(
+        &mut self,
+        scenario: &str,
+        network: &str,
+        subnet: &str,
+        wait: Duration,
+    ) -> Result<(), i32> {
+        let nodes = self.node_containers()?;
+        self.containers()?;
+        self.refuse_missing_images()?;
+        println!("lab prepare: scenario {scenario}");
+        self.command = "purge";
+        self.purge()?;
+        self.command = "deploy";
+        self.refuse_clashes(&nodes, scenario)?;
+        self.start(&nodes, scenario, network, subnet, wait)?;
+        println!("lab prepared: scenario {scenario}");
+        Ok(())
+    }
+
+    fn start(
+        &self,
+        nodes: &[String],
+        scenario: &str,
+        network: &str,
+        subnet: &str,
+        wait: Duration,
+    ) -> Result<(), i32> {
         if self.network_exists(network)? {
             println!("lab deploy: network {network} exists, kept");
         } else {
@@ -2203,11 +2519,11 @@ impl<'a> LabRun<'a> {
         }
         println!(
             "lab deploy: deploying topology {}",
-            self.containerlab.topology().display()
+            self.topology.containerlab.topology().display()
         );
         self.step(
-            self.containerlab.program(),
-            &self.containerlab.deploy_args(),
+            self.topology.containerlab.program(),
+            &self.topology.containerlab.deploy_args(),
             "containerlab deploy",
         )?;
         let compose = compose_in(self.located, Some(scenario));
@@ -2217,7 +2533,7 @@ impl<'a> LabRun<'a> {
         );
         self.step(Compose::PROGRAM, &compose.start_args(&[]), "compose up")?;
         if !wait.is_zero() {
-            self.wait_until_ready(&compose, &nodes, wait)?;
+            self.wait_until_ready(&compose, nodes, wait)?;
         }
         println!("lab deployed: scenario {scenario}");
         Ok(())
@@ -2231,7 +2547,7 @@ impl<'a> LabRun<'a> {
     ) -> Result<(), i32> {
         let services_args = [compose.ps_args(&[]), os_strings(&["--format", "json"])].concat();
         let nodes_args = [
-            self.containerlab.inspect_args(),
+            self.topology.containerlab.inspect_args(),
             os_strings(&["--format", "json"]),
         ]
         .concat();
@@ -2245,7 +2561,7 @@ impl<'a> LabRun<'a> {
             )?;
             let found = self.answer(
                 "containerlab inspect",
-                self.containerlab.program(),
+                self.topology.containerlab.program(),
                 &nodes_args,
                 lab::nodes,
             )?;
@@ -2260,21 +2576,7 @@ impl<'a> LabRun<'a> {
             }
             Ok(lab::not_ready(&services, &found, nodes))
         };
-        match lab::wait_ready(poll, limit, std::thread::sleep, Instant::now) {
-            Ok(elapsed) => {
-                println!("lab deploy: ready after {}s", elapsed.as_secs());
-                Ok(())
-            }
-            Err(WaitError::Failed(code)) => Err(code),
-            Err(WaitError::NotReady(waiting)) => {
-                eprintln!(
-                    "nobs: lab deploy: not ready after {}s: {}",
-                    limit.as_secs(),
-                    waiting.join(", ")
-                );
-                Err(1)
-            }
-        }
+        self.wait(limit, poll)
     }
 
     fn destroy(&self, scenario: &str) -> Result<(), i32> {
@@ -2290,11 +2592,11 @@ impl<'a> LabRun<'a> {
         )?;
         println!(
             "lab destroy: destroying topology {}",
-            self.containerlab.topology().display()
+            self.topology.containerlab.topology().display()
         );
         self.step(
-            self.containerlab.program(),
-            &self.containerlab.destroy_args(),
+            self.topology.containerlab.program(),
+            &self.topology.containerlab.destroy_args(),
             "containerlab destroy",
         )?;
         println!("lab destroyed: scenario {scenario}");
@@ -2335,11 +2637,11 @@ impl<'a> LabRun<'a> {
         }
         println!(
             "lab purge: destroying topology {}",
-            self.containerlab.topology().display()
+            self.topology.containerlab.topology().display()
         );
         self.step(
-            self.containerlab.program(),
-            &self.containerlab.destroy_args(),
+            self.topology.containerlab.program(),
+            &self.topology.containerlab.destroy_args(),
             "containerlab destroy",
         )
     }
@@ -2348,8 +2650,8 @@ impl<'a> LabRun<'a> {
         let compose = compose_in(self.located, Some(scenario));
         self.step(Compose::PROGRAM, &compose.ps_args(&[]), "compose ps")?;
         self.step(
-            self.containerlab.program(),
-            &self.containerlab.inspect_args(),
+            self.topology.containerlab.program(),
+            &self.topology.containerlab.inspect_args(),
             "containerlab inspect",
         )
     }
