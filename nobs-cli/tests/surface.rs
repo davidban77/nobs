@@ -49,6 +49,42 @@ fn the_help_pages_name_the_lab_group_and_exactly_its_seven_commands() {
     assert_eq!(commands, LAB_COMMANDS);
 }
 
+const UTILS_COMMANDS: [&str; 2] = ["load-nautobot", "delete-nautobot"];
+
+#[test]
+fn the_help_pages_name_the_utils_group_its_two_commands_and_their_flags() {
+    let commands = commands_block(&help(&[]));
+    assert!(commands.iter().any(|word| word == "utils"), "{commands:?}");
+
+    let commands = commands_block(&help(&["utils"]));
+    assert_eq!(commands, UTILS_COMMANDS);
+
+    let flags: [(&str, &[&str]); 2] = [
+        (
+            "load-nautobot",
+            &[
+                "--nautobot-url <URL>",
+                "--nautobot-token <TOKEN>",
+                "--topology <FILE>",
+                "--extra-topology-vars <FILE>",
+            ],
+        ),
+        (
+            "delete-nautobot",
+            &["--nautobot-url <URL>", "--nautobot-token <TOKEN>"],
+        ),
+    ];
+    for (command, flags) in flags {
+        let help = help(&["utils", command]);
+        for flag in flags {
+            assert!(
+                help.lines().any(|line| line.trim_start().starts_with(flag)),
+                "{command} {flag}\n{help}"
+            );
+        }
+    }
+}
+
 const SONDA_COMMANDS: [&str; 10] = [
     "health", "ready", "list", "show", "stats", "delete", "load", "event", "metrics", "version",
 ];

@@ -24,6 +24,7 @@ use nobs_core::lab_vars;
 use nobs_core::layers;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
 use nobs_core::loki::{self, Loki};
+use nobs_core::nautobot::{Error as NautobotError, Load, Nautobot, Outcome};
 use nobs_core::prefect::{self, FlowRun, Prefect};
 use nobs_core::preflight::{preflight, Check, Status};
 use nobs_core::prometheus::{self, Prometheus};
@@ -73,6 +74,11 @@ const SILENCES_SHOWN: usize = 5;
 const GROUPS_SHOWN: usize = 5;
 
 const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
+
+const NAUTOBOT_URL: &str = "http://localhost:8080";
+
+const NAUTOBOT_TOKEN_REQUIRED: &str =
+    "NAUTOBOT_SUPERUSER_API_TOKEN is required (set it in .env or pass --nautobot-token)";
 
 const KIND_WAIT: Duration = Duration::from_secs(30);
 
@@ -124,6 +130,11 @@ pub enum Command {
     Lab {
         #[command(subcommand)]
         command: LabCommand,
+    },
+    #[command(about = "Load the lab into Nautobot, or delete it from there")]
+    Utils {
+        #[command(subcommand)]
+        command: UtilsCommand,
     },
     #[command(about = "Talk to a running sonda-server over HTTP")]
     Sonda {
@@ -805,6 +816,22 @@ pub struct InfrahubFlags {
 }
 
 #[derive(Debug, Args)]
+pub struct NautobotFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Nautobot; nobs looks at --nautobot-url, then NAUTOBOT_URL, then http://localhost:8080"
+    )]
+    nautobot_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Token for Nautobot; nobs looks at --nautobot-token, then NAUTOBOT_SUPERUSER_API_TOKEN"
+    )]
+    nautobot_token: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct LoadInfrahubFlags {
     #[arg(
         long,
@@ -1190,6 +1217,32 @@ pub enum LabCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum UtilsCommand {
+    #[command(about = "Write the nodes, addresses and prefixes of the lab into Nautobot")]
+    LoadNautobot {
+        #[command(flatten)]
+        nautobot: NautobotFlags,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Topology file, a relative path starts at the lab folder; the topology setting of nobs.toml, else containerlab/lab.yml in the lab folder, when none is given"
+        )]
+        topology: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Lab variables file, a relative path starts at the lab folder; containerlab/lab_vars.yml in the lab folder when none is given"
+        )]
+        extra_topology_vars: Option<PathBuf>,
+    },
+    #[command(about = "Delete from Nautobot what load-nautobot wrote")]
+    DeleteNautobot {
+        #[command(flatten)]
+        nautobot: NautobotFlags,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct ComposeFlags {
     #[arg(
@@ -1346,6 +1399,9 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
     if matches!(cli.command, Command::Sonda { .. } | Command::Tui { .. }) {
         remove_blank_variables(&["SONDA_SERVER_URL", "SONDA_API_KEY"]);
     }
+    if matches!(cli.command, Command::Utils { .. }) {
+        remove_blank_variables(&["NAUTOBOT_URL", "NAUTOBOT_SUPERUSER_API_TOKEN"]);
+    }
     if matches!(cli.command, Command::External(_)) {
         remove_blank_variables(&[
             "PROMETHEUS_URL",
@@ -1377,6 +1433,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
             return run_containerlab_command(command, given, runner)
         }
         Command::Lab { command } => return run_lab(command, given, runner),
+        Command::Utils { command } => return run_utils(command, given),
         Command::Sonda { flags, command } => {
             return with_env(Path::new("."), || run_sonda(flags, command))
         }
@@ -1970,6 +2027,132 @@ fn run_lab(command: LabCommand, given: Option<&Path>, runner: &dyn Runner) -> i3
             Err(code) => code,
         }
     })
+}
+
+fn run_utils(command: UtilsCommand, given: Option<&Path>) -> i32 {
+    in_lab(given, |located| {
+        let result = match command {
+            UtilsCommand::LoadNautobot {
+                nautobot,
+                topology,
+                extra_topology_vars,
+            } => load_nautobot(nautobot, topology, extra_topology_vars, located),
+            UtilsCommand::DeleteNautobot { nautobot } => delete_nautobot(nautobot, located),
+        };
+        match result {
+            Ok(()) => 0,
+            Err(code) => code,
+        }
+    })
+}
+
+fn nautobot_client(
+    name: &str,
+    flags: NautobotFlags,
+    located: &Located,
+) -> Result<(Nautobot, String), i32> {
+    let other = match located.kind {
+        Kind::BookLab(_) => None,
+        Kind::Workshop(_) => Some("a workshop"),
+        Kind::LabcliLab(_) => Some("a labcli lab"),
+    };
+    if let Some(kind) = other {
+        eprintln!(
+            "nobs: utils {name} needs the book lab (chapters/ and containerlab/lab.yml); {} is {kind}",
+            located.dir.display()
+        );
+        return Err(1);
+    }
+    let url = given(flags.nautobot_url)
+        .or_else(|| given(std::env::var("NAUTOBOT_URL").ok()))
+        .unwrap_or_else(|| NAUTOBOT_URL.to_string());
+    let Some(token) = given(flags.nautobot_token)
+        .or_else(|| given(std::env::var("NAUTOBOT_SUPERUSER_API_TOKEN").ok()))
+    else {
+        eprintln!("nobs: utils {name}: {NAUTOBOT_TOKEN_REQUIRED}");
+        return Err(1);
+    };
+    if url.starts_with("https://") {
+        eprintln!("nobs: utils {name}: {url}: this build of nobs has no TLS; use an http:// URL");
+        return Err(1);
+    }
+    let shown = url.trim_end_matches('/').to_string();
+    Ok((Nautobot::new(&url, &token), shown))
+}
+
+fn read_nautobot_file(path: &Path) -> Result<String, i32> {
+    fs::read_to_string(path).map_err(|error| {
+        eprintln!(
+            "nobs: utils load-nautobot: cannot read {}: {error}",
+            path.display()
+        );
+        1
+    })
+}
+
+fn nautobot_failed(name: &str, error: NautobotError) -> i32 {
+    eprintln!("nobs: utils {name}: {error}");
+    1
+}
+
+fn load_nautobot(
+    flags: NautobotFlags,
+    topology: Option<PathBuf>,
+    extra_topology_vars: Option<PathBuf>,
+    located: &Located,
+) -> Result<(), i32> {
+    let (nautobot, url) = nautobot_client("load-nautobot", flags, located)?;
+    let topology = topology.map_or_else(|| located.topology(), |file| located.dir.join(file));
+    let vars = extra_topology_vars.map_or_else(
+        || located.dir.join("containerlab/lab_vars.yml"),
+        |file| located.dir.join(file),
+    );
+    let topology_text = read_nautobot_file(&topology)?;
+    let vars_text = read_nautobot_file(&vars)?;
+    let load = nautobot
+        .load(&topology_text, &vars_text, &mut |kind, display, outcome| {
+            let done = match outcome {
+                Outcome::Created => "created",
+                Outcome::Updated => "updated",
+            };
+            println!("{kind} {display} {done}");
+        })
+        .map_err(|error| nautobot_failed("load-nautobot", error))?;
+    println!("{}", nautobot_table(&load));
+    let objects: usize = load
+        .rows
+        .iter()
+        .map(|(_, created, updated)| created + updated)
+        .sum();
+    println!(
+        "Done: {objects} objects across {} types. Open Nautobot at {url}.",
+        load.rows.len()
+    );
+    Ok(())
+}
+
+fn delete_nautobot(flags: NautobotFlags, located: &Located) -> Result<(), i32> {
+    let (nautobot, _) = nautobot_client("delete-nautobot", flags, located)?;
+    let deleted = nautobot
+        .delete(&mut |kind, count| println!("{kind}: {count} deleted"))
+        .map_err(|error| nautobot_failed("delete-nautobot", error))?;
+    let objects: usize = deleted.rows.iter().map(|(_, count)| count).sum();
+    println!("Done: {objects} objects deleted.");
+    Ok(())
+}
+
+fn nautobot_table(load: &Load) -> String {
+    let header = ["Object type", "Created", "Updated", "Total"].map(String::from);
+    let mut lines = vec![header];
+    lines.extend(load.rows.iter().map(|(kind, created, updated)| {
+        [
+            kind.clone(),
+            created.to_string(),
+            updated.to_string(),
+            (created + updated).to_string(),
+        ]
+    }));
+    pad_lines(&lines)
 }
 
 fn run_lab_command(command: LabCommand, located: &Located, runner: &dyn Runner) -> Result<(), i32> {
