@@ -1099,7 +1099,7 @@ fn ceos_topology(kind: &str, image: &str) -> String {
     )
 }
 
-const CEOS_IMPORT: &str = "  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz from arista.com (an account is needed), then run: docker import cEOS64-lab-<version>.tar.xz";
+const CEOS_IMPORT: &str = "  Arista cEOS is not on a registry: download cEOS64-lab-<version>.tar.xz (x86_64) or cEOSarm-lab-<version>.tar.xz (arm64, the file for clab) from arista.com (an account is needed), then run: docker import <file>";
 
 #[test]
 fn a_missing_image_stops_the_deploy_after_the_two_listings_and_says_how_to_get_it() {

@@ -1,0 +1,26 @@
+prefixes:
+  - prefix: 192.0.2.0/24
+    name: nobs-t-links
+nodes:
+  nobs-t-srl1:
+    mgmt-ipv4: 203.0.113.11
+    interfaces:
+      - name: ethernet-1/1
+        ipv4: 192.0.2.0/31
+        role: nobs-t-peer
+  nobs-t-srl2:
+    mgmt-ipv4: 203.0.113.12
+    interfaces:
+      - name: ethernet-1/1
+        ipv4: 192.0.2.1/31
+        role: nobs-t-peer
+observability_intent:
+  bgp:
+    afi_safi: ipv4-unicast
+    intended_peers:
+      nobs-t-srl1:
+        - peer_ip: 192.0.2.1
+          remote_as: 65002
+      nobs-t-srl2:
+        - peer_ip: 192.0.2.0
+          remote_as: 65001
