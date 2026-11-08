@@ -4714,8 +4714,19 @@ fn sonda_client(flags: SondaFlags) -> Sonda {
 }
 
 fn run_tui(flags: SondaFlags) -> i32 {
-    match nobs_tui::run(sonda_client(flags)) {
-        Ok(()) => 0,
+    let start = nobs_tui::Start {
+        lab: None,
+        stacks: Vec::new(),
+        sonda: nobs_tui::SondaTarget {
+            server: given(flags.server).or_else(|| given(std::env::var("SONDA_SERVER_URL").ok())),
+            api_key: given(flags.api_key).or_else(|| given(std::env::var("SONDA_API_KEY").ok())),
+        },
+        home: nobs_tui::Workbench::Services,
+        chooser: false,
+    };
+    let runner = std::sync::Arc::new(nobs_core::runner::CapturedRunner);
+    match nobs_tui::run(start, runner) {
+        Ok(code) => code,
         Err(error) => {
             eprintln!("nobs: {error}");
             1

@@ -864,14 +864,14 @@ pub fn kind_text(kind: StackKind) -> &'static str {
     }
 }
 
-fn env_value<'a>(env: &'a [(String, String)], name: &str) -> Option<&'a str> {
+pub(crate) fn env_value<'a>(env: &'a [(String, String)], name: &str) -> Option<&'a str> {
     env.iter()
         .find(|(key, _)| key == name)
         .map(|(_, value)| value.as_str())
         .filter(|value| !value.trim().is_empty())
 }
 
-fn sonda_url(flag: Option<&str>, stack: Option<&Stack>) -> String {
+pub(crate) fn sonda_url(flag: Option<&str>, stack: Option<&Stack>) -> String {
     if let Some(url) = flag {
         return url.to_string();
     }
