@@ -966,7 +966,9 @@ mod tests {
     const FIXTURE_VARS: &str =
         include_str!("../../tests/fixtures/book-lab/containerlab/lab_vars.yml");
     const NO_RESULTS: &str = r#"{"count":0,"next":null,"results":[]}"#;
-    const NOT_AN_ID: &str = r#"{"manufacturer":["Select a valid choice. Arista is not one of the available choices."]}"#;
+    const OWN_FIELDS: [&str; 7] = [
+        "name", "model", "prefix", "address", "key", "limit", "offset",
+    ];
 
     type Call = (String, String, Value);
 
@@ -997,29 +999,27 @@ mod tests {
         path.trim_matches('/').rsplit('/').next().unwrap()
     }
 
-    fn fresh_stub() -> Stub {
-        fresh_stub_refusing(&[])
-    }
-
-    fn fresh_stub_refusing(refused: &[String]) -> Stub {
-        let created: Vec<(&str, String)> = Kind::ALL
+    fn created_ids() -> Vec<(Kind, String)> {
+        Kind::ALL
             .iter()
             .flat_map(|kind| {
-                (0..4).map(move |at| {
-                    let id = format!("{}-{at}", segment(kind.path()));
-                    let body = match kind {
-                        Kind::Role => json!({"id": id}),
-                        _ => json!({"id": id, "display": id}),
-                    };
-                    (kind.path(), body.to_string())
-                })
+                (0..4).map(move |at| (*kind, format!("{}-{at}", segment(kind.path()))))
+            })
+            .collect()
+    }
+
+    fn fresh_stub() -> Stub {
+        let created: Vec<(&str, String)> = created_ids()
+            .into_iter()
+            .map(|(kind, id)| {
+                let body = match kind {
+                    Kind::Role => json!({"id": id}),
+                    _ => json!({"id": id, "display": id}),
+                };
+                (kind.path(), body.to_string())
             })
             .collect();
-        let mut routes: Vec<(&str, &str, u16, &str)> = refused
-            .iter()
-            .map(|path| ("GET", path.as_str(), 400, NOT_AN_ID))
-            .collect();
-        routes.push(("GET", "/api/*", 200, NO_RESULTS));
+        let mut routes: Vec<(&str, &str, u16, &str)> = vec![("GET", "/api/*", 200, NO_RESULTS)];
         routes.extend(
             created
                 .iter()
@@ -1662,11 +1662,8 @@ mod tests {
     }
 
     #[test]
-    fn delete_on_an_empty_nautobot_sends_no_filter_on_a_parent_and_no_delete() {
-        let refused = r#"{"location":["Select a valid choice."]}"#;
+    fn delete_on_an_empty_nautobot_sends_no_related_object_filter_and_no_delete() {
         let stub = Stub::start(&[
-            ("GET", "/api/dcim/devices/?location=*", 400, refused),
-            ("GET", "/api/ipam/prefixes/?namespace=*", 400, refused),
             ("GET", "/api/*", 200, r#"{"next":null,"results":[]}"#),
             ("DELETE", "/api/*", 204, ""),
         ]);
@@ -1693,89 +1690,56 @@ mod tests {
         assert_eq!(deleted.rows, rows);
         for (method, path, _) in calls(&stub) {
             assert_eq!(method, "GET", "{path}");
-            assert!(
-                !path.contains("location=") && !path.contains("namespace="),
-                "{path}"
-            );
         }
+        assert_eq!(related_filters(&stub), []);
     }
 
-    fn names_in_related_filters() -> Vec<String> {
-        let mut paths: Vec<String> = [
-            "/api/dcim/device-types/?manufacturer=Arista*",
-            "/api/dcim/device-types/?manufacturer=Nokia*",
-            "/api/dcim/devices/?location=lab*",
-            "/api/dcim/interfaces/?device=nobs-t-*",
-            "/api/ipam/prefixes/?namespace=lab-default*",
-            "/api/ipam/ip-addresses/?namespace=lab-default*",
-            "/api/ipam/ip-address-to-interface/?ip_address=192*",
-            "/api/ipam/ip-address-to-interface/?ip_address=203*",
-            "/api/ipam/ip-address-to-interface/?interface=ethernet*",
-            "/api/ipam/ip-address-to-interface/?interface=Management0*",
-        ]
-        .map(String::from)
-        .to_vec();
-        for prefix in ["192.0.2.0%2F24", "203.0.113.0%2F24"] {
-            paths.push(format!(
-                "/api/ipam/prefixes/?prefix={prefix}&namespace=lab-default"
-            ));
-        }
-        for address in [
-            "192.0.2.0%2F31",
-            "192.0.2.1%2F31",
-            "203.0.113.11",
-            "203.0.113.12",
-        ] {
-            paths.push(format!(
-                "/api/ipam/ip-addresses/?address={address}&namespace=lab-default"
-            ));
-        }
-        for ip in 0..4 {
-            for interface in ["ethernet-1%2F1", "Management0"] {
-                paths.push(format!(
-                    "/api/ipam/ip-address-to-interface/?ip_address=ip-addresses-{ip}&interface={interface}"
-                ));
+    fn percent_decoded(text: &str) -> String {
+        let mut bytes = Vec::new();
+        let mut at = 0;
+        while at < text.len() {
+            let escaped = text
+                .get(at + 1..at + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            match (text.as_bytes()[at], escaped) {
+                (b'%', Some(byte)) => {
+                    bytes.push(byte);
+                    at += 3;
+                }
+                (byte, _) => {
+                    bytes.push(byte);
+                    at += 1;
+                }
             }
         }
-        paths
+        String::from_utf8(bytes).unwrap()
+    }
+
+    fn related_filters(stub: &Stub) -> Vec<(String, String)> {
+        let requests = stub.requests();
+        requests
+            .iter()
+            .filter_map(|request| request.path.split_once('?'))
+            .flat_map(|(_, query)| query.split('&'))
+            .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
+            .filter(|(key, _)| !OWN_FIELDS.contains(key))
+            .map(|(key, value)| (key.to_string(), percent_decoded(value)))
+            .collect()
     }
 
     #[test]
-    fn a_load_sends_a_related_object_filter_only_with_the_id_of_an_object_it_has_written() {
-        let stub = fresh_stub_refusing(&names_in_related_filters());
+    fn a_load_sends_a_related_object_filter_only_with_an_id_the_nautobot_handed_out() {
+        let stub = fresh_stub();
 
         let loaded = load(&stub, &topology(), FIXTURE_VARS);
 
         assert!(loaded.is_ok(), "{loaded:?}");
-    }
-
-    #[test]
-    fn delete_on_an_empty_nautobot_twice_sends_no_related_object_filter_and_no_delete() {
-        let stub = fresh_stub_refusing(&names_in_related_filters());
-        let words = [
-            "ip address to interface",
-            "ip address",
-            "device",
-            "prefix",
-            "namespace",
-            "location",
-            "location type",
-            "status",
-            "custom field",
-            "device type",
-            "manufacturer",
-            "role",
-        ];
-        let rows: Vec<(String, usize)> = words.iter().map(|word| (word.to_string(), 0)).collect();
-
-        for _ in 0..2 {
-            let deleted = Nautobot::new(stub.url(), TOKEN)
-                .delete(&mut |_, _| {})
-                .unwrap();
-
-            assert_eq!(deleted.rows, rows);
+        let handed_out: Vec<String> = created_ids().into_iter().map(|(_, id)| id).collect();
+        let filters = related_filters(&stub);
+        assert!(!filters.is_empty());
+        for (key, value) in &filters {
+            assert!(handed_out.contains(value), "{key}={value}");
         }
-        assert!(calls(&stub).iter().all(|(method, _, _)| method == "GET"));
     }
 
     fn lab_found(deletes: &[(&str, &str, u16, &str)]) -> Stub {
