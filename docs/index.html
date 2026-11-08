@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nobs</title>
+<meta name="description" content="nobs, a Rust command-line and terminal tool for network labs and observability workshops.">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+<a class="brand" href="index.html">nobs</a>
+<nav><a href="index.html" aria-current="page">Home</a><a href="commands.html">Commands</a><a href="roadmap.html">Roadmap</a><a href="how.html">How</a><a href="https://github.com/davidban77/nobs">GitHub</a><button id="theme" type="button" aria-label="Change the theme">Theme</button></nav>
+</div></header>
+<main><div class="wrap">
+<h1>nobs: one terminal tool for network labs</h1>
+<p class="lead">nobs is a command-line tool, written in Rust, for network labs and network observability workshops. A network lab is a small virtual network of routers and monitoring tools that runs on your own computer, in containers. nobs starts, checks, fixes and removes these labs with short commands. It replaces four older Python tools with one program. It also has a text user interface (TUI): a screen inside the terminal that you drive with keys.</p>
+
+<h2>Who it is for</h2>
+<p>nobs is for network engineers who learn or teach network observability: people who follow the book "Modern Network Observability" by David Flores, people in its workshops, and anyone who builds network labs with Docker and containerlab. Docker runs programs in containers. containerlab is a program that builds a virtual network from a topology file, with each network device as a container.</p>
+
+<h2>Status today</h2>
+<p>nobs is early, but most of its commands work today. It takes the place of these Python tools:</p>
+<ul>
+<li><strong>labcli</strong>: its 13 <code>docker</code> commands and 3 <code>containerlab</code> commands.</li>
+<li><strong>netobs</strong>, the tool of the book lab: its <code>docker</code> commands and its 7 <code>lab</code> commands. Its Nautobot helpers and its interface flap helper are not in nobs yet.</li>
+<li><strong>The workshops' nobs</strong>, the Python tool of the workshops: its 25 workshop commands and the <code>setup</code>, <code>preflight</code> and <code>workshops</code> commands.</li>
+<li><strong>labby</strong>: nobs follows its design. labby's project file and build flow come in a later step (see the <a href="roadmap.html">roadmap</a>).</li>
+</ul>
+<p>Today 62 commands are in Rust: 13 <code>docker</code>, 3 <code>containerlab</code>, 7 <code>lab</code>, 10 <code>sonda</code>, 25 workshop commands, and 4 at the top (<code>setup</code>, <code>preflight</code>, <code>workshops</code>, <code>tui</code>). The full list is on the <a href="commands.html">commands page</a>.</p>
+<p>Where it runs: nobs runs on a Mac (Apple silicon). containerlab runs only on Linux, so the <code>containerlab</code> and <code>lab</code> commands use a Linux arm64 build of nobs. That build runs inside <code>clab</code>, a Linux machine made by OrbStack, the Mac program that runs Docker and Linux machines.</p>
+
+<h2>What it looks like</h2>
+<p>These three outputs are copied from the nobs README without change.</p>
+<h3>Is the workshop ready?</h3>
+<p><code>status</code> asks the seven services of a workshop if they are up. Here Loki, the log store, is not ready yet.</p>
+<div class="term"><div class="bar">nobs nobs-t-one status</div><pre>$ nobs nobs-t-one status
+Service       URL                    State
+Grafana       http://localhost:3000  ok
+Prometheus    http://localhost:9090  ok
+Loki          http://localhost:3001  http 503
+Alertmanager  http://localhost:9093  ok
+Infrahub      http://localhost:8000  ok
+Prefect       http://localhost:4200  ok
+Sonda         http://localhost:8085  ok
+Some services are not ready yet: give them a minute, or check nobs nobs-t-one logs.</pre></div>
+<h3>Bring the book lab up</h3>
+<p><code>lab deploy</code> runs inside <code>clab</code> and brings up one chapter of the book lab, step by step, and waits until it is ready. The <code>...</code> lines stand for the output of Docker, containerlab and Docker Compose.</p>
+<div class="term"><div class="bar">orb -m clab &lt;path&gt; --dir &lt;lab&gt; lab deploy -s ch1 --sudo --network-name nobs-t-net --subnet 203.0.113.0/24</div><pre>$ orb -m clab &lt;path&gt; --dir &lt;lab&gt; lab deploy -s ch1 --sudo --network-name nobs-t-net --subnet 203.0.113.0/24
+lab deploy: creating network nobs-t-net (203.0.113.0/24)
+...
+lab deploy: deploying topology &lt;lab&gt;/containerlab/lab.yml
+...
+lab deploy: starting ch1 (project netobs)
+...
+lab deploy: waiting for 1 services and 2 nodes (up to 300s)
+lab deploy: ready after &lt;seconds&gt;s
+lab deployed: scenario ch1</pre></div>
+<h3>Fill the source of truth</h3>
+<p><code>load-infrahub</code> loads the devices, interfaces and BGP sessions of a workshop into Infrahub, the database that holds what the network should look like.</p>
+<div class="term"><div class="bar">nobs nobs-t-one load-infrahub</div><pre>$ nobs nobs-t-one load-infrahub
+INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000
+Applying schema /home/me/repo/workshops/nobs-t-one/infrahub/schema.yml
+Schema applied
+Loading /home/me/repo/workshops/nobs-t-one/lab_vars.yml into Infrahub at http://localhost:8000
+device srl1 created
+device srl2 created
+Node type           Created  Updated  Total
+WorkshopDevice      2        0        2
+WorkshopInterface   8        0        8
+WorkshopBgpSession  6        0        6
+Done: 16 nodes across 3 types. Open Infrahub at http://localhost:8000.</pre></div>
+
+<h2>Read more</h2>
+<div class="links">
+<a href="commands.html"><strong>Commands</strong><br><span class="muted">Every command, and the Python command it replaces.</span></a>
+<a href="roadmap.html"><strong>Roadmap</strong><br><span class="muted">What comes next.</span></a>
+<a href="how.html"><strong>How it is built</strong><br><span class="muted">How the work is organized.</span></a>
+<a href="https://github.com/davidban77/nobs"><strong>Repository</strong><br><span class="muted">The code and the full README on GitHub.</span></a>
+</div>
+
+</div></main>
+<footer class="site"><div class="wrap">nobs, by David Flores. Built in the open. 8 November 2026.</div></footer>
+<script>
+document.getElementById("theme").addEventListener("click",function(){var r=document.documentElement,d=r.dataset.theme||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"),n=d==="dark"?"light":"dark";r.dataset.theme=n;try{localStorage.setItem("theme",n);}catch(e){}});
+</script>
+</body>
+</html>

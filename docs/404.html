@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page not found</title>
+<meta name="description" content="This page does not exist.">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+<a class="brand" href="index.html">nobs</a>
+<nav><a href="index.html">Home</a><a href="commands.html">Commands</a><a href="roadmap.html">Roadmap</a><a href="how.html">How</a><a href="https://github.com/davidban77/nobs">GitHub</a><button id="theme" type="button" aria-label="Change the theme">Theme</button></nav>
+</div></header>
+<main><div class="wrap">
+<h1>Page not found</h1><p>This page does not exist. Go back to the <a href="index.html">nobs home page</a>.</p>
+</div></main>
+<footer class="site"><div class="wrap">nobs, by David Flores. Built in the open. 8 November 2026.</div></footer>
+<script>
+document.getElementById("theme").addEventListener("click",function(){var r=document.documentElement,d=r.dataset.theme||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"),n=d==="dark"?"light":"dark";r.dataset.theme=n;try{localStorage.setItem("theme",n);}catch(e){}});
+</script>
+</body>
+</html>

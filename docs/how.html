@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How nobs is built</title>
+<meta name="description" content="How the work on nobs is organized.">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+<a class="brand" href="index.html">nobs</a>
+<nav><a href="index.html">Home</a><a href="commands.html">Commands</a><a href="roadmap.html">Roadmap</a><a href="how.html" aria-current="page">How</a><a href="https://github.com/davidban77/nobs">GitHub</a><button id="theme" type="button" aria-label="Change the theme">Theme</button></nav>
+</div></header>
+<main><div class="wrap">
+<h1>How it is built</h1>
+<div class="card">
+<p>One architect plans nobs and writes a contract for each slice: a short page that says what to build, which files to touch and which tests to add.</p>
+<p>A factory session, an AI coding session, takes the contract and builds the slice on its own branch.</p>
+<p>It writes the code and the tests, runs the six checks, and runs the commands for real against labs that it creates and removes again.</p>
+<p>Then two reviews read the work: a technical review of the code and the tests, and a documentation review of every word a user sees.</p>
+<p>When a review asks for changes, the factory session fixes them and the review reads the work again.</p>
+<p>The architect reads the two reviews and opens the pull request.</p>
+<p>David reads the pull request and merges it; nobody else merges.</p>
+<p>Every slice leaves a record: what was built, every check with its output, the real runs and every change from the plan.</p>
+<p>One rule stands above all others: when a step fails, nobs stops and passes on the error, and it never says "done" after a failure.</p>
+<p>The older Python tools sometimes printed success after a failed step; nobs was built so that this cannot happen.</p>
+</div>
+
+</div></main>
+<footer class="site"><div class="wrap">nobs, by David Flores. Built in the open. 8 November 2026.</div></footer>
+<script>
+document.getElementById("theme").addEventListener("click",function(){var r=document.documentElement,d=r.dataset.theme||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"),n=d==="dark"?"light":"dark";r.dataset.theme=n;try{localStorage.setItem("theme",n);}catch(e){}});
+</script>
+</body>
+</html>
