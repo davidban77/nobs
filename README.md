@@ -1401,7 +1401,7 @@ The lines below go to standard error.
 | `nobs: lab commands need the book lab (chapters/ and containerlab/lab.yml); <folder> is a workshop` | 1 | the lab folder is a workshop; it says `a labcli lab` for a labcli lab |
 | `nobs: lab <command> needs --scenario NAME or LAB_SCENARIO` | 2 | no scenario was given; a line `known: <names>`, with the scenarios separated by `, `, follows when there are any |
 | `nobs: no scenario named <name> under <folder>/chapters` | 1 | the scenario is not in `chapters/`; the `known:` line follows |
-| `nobs: cannot list scenarios: <error>` | 1 | nobs cannot read the `chapters/` folder |
+| `nobs: lab <command>: cannot list scenarios: <error>` | 1 | nobs cannot read the `chapters/` folder |
 | `nobs: LAB_SUDO must be true or false, not <value>` | 2 | `LAB_SUDO` holds another word |
 | `nobs: topology file not found: <path>` | 1 | the topology file does not exist |
 | `nobs: cannot read topology file: <path>: <error>` | 1 | the file cannot be read, or has no `name` or no `topology` with `nodes` |
