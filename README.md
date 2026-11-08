@@ -12,7 +12,7 @@ Plain `nobs` opens a screen in the terminal. The screen shows the services of a 
 
 Plain `nobs` looks for a lab folder the way every command does: from the folder you are in, upward, or in the folder that `--dir PATH` or the variable `NOBS_DIR` names (see [Where nobs runs from](#where-nobs-runs-from)). When it finds a lab folder, it opens the screen on that lab. When it finds none, it opens the chooser.
 
-The chooser is a list with one row per workshop nobs can find, in the same places as `nobs workshops`, and one last row, `sonda only`. A workshop row shows the name, the kind, the folder and the state of its stack (see [The services workbench](#the-services-workbench)). The `sonda only` row shows the address of the Sonda server. `j`, `k` and the arrow keys move the selection, `Enter` opens the row, and `q` quits. `Enter` on a workshop opens the screen on it. `Enter` on `sonda only` opens the Sonda tab alone. When you quit the chooser with `q`, nobs prints `nobs: no lab or workshop found from here` and exits with 1, as every command does when it finds no lab.
+The chooser is a list with one row per workshop nobs can find, in the same places as `nobs workshops`, and one last row, `sonda only`. A workshop row shows the name, the kind, the folder and the state of its stack (see [The services workbench](#the-services-workbench)). The `sonda only` row shows the address of the Sonda server: the variable `SONDA_SERVER_URL` in the shell, else the same variable in the `.env` file of the folder you started nobs in, else `http://localhost:8080`. `j`, `k` and the arrow keys move the selection, `Enter` opens the row, and `q` quits. `Enter` on a workshop opens the screen on it. `Enter` on `sonda only` opens the Sonda tab on the stack `sonda only`, and the workshops stay in the list of stacks. When you quit the chooser with `q`, nobs prints `nobs: no lab or workshop found from here` and exits with 1, as every command does when it finds no lab.
 
 The screen needs a terminal. When the input or the output of plain `nobs` is not a terminal, for example `nobs </dev/null` or `nobs | cat`, nobs does not open the screen. It prints the help on stderr and exits with 2, so a script sees text and never a screen.
 
@@ -29,7 +29,7 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 | header | the first line | `nobs`, the name and the kind of the lab, and `sot infrahub` when the `.env` file of the lab sets `INFRAHUB_ADDRESS`, else `sot none` (`sot` is short for source of truth); the clock at the right end, in UTC; in the chooser `no lab here`; in the Sonda tab alone `sonda only` and the server address; from 100 columns, also the number of services |
 | switcher | the second line | `1 devices`, `2 services` and `3 lab`, with the open workbench in brackets; `? keys  q` at the right end; in the chooser `choose a lab, or q to quit` |
 | body | the middle | the open workbench, or the chooser |
-| run line | the line above the last | `run  none`, and at the right end `o open`, or `Esc fold` when the run pane is open; nothing runs from the screen yet, and the run pane is an empty frame |
+| run line | the line above the last | `run  none`, and at the right end `o open`; when the run pane is open, the pane takes the place of the run line and its top border carries `run  none` and `Esc fold`; the chooser has no run line; nothing runs from the screen yet, and the run pane is an empty frame |
 | key line | the last line | the keys that work now; while you type a filter, `filter: <text>  Enter keep  Esc clear` |
 
 When a data call fails, one red line appears between the switcher and the body (see [Errors](#errors)).
@@ -38,7 +38,7 @@ When a data call fails, one red line appears between the switcher and the body (
 
 The services workbench is workbench `2`, and the screen opens on it. It has two sides.
 
-The left side is the list of stacks, titled `stacks <n>`. A stack is one group of containers: a workshop, one chapter of the book lab, or a labcli lab. `>` marks the selected stack, and the right side shows that stack. The state of each stack comes from `docker compose ps --all --format json`, run for every stack every 2 seconds:
+The left side is the list of stacks, titled `stacks <n>`. A stack is one group of containers: a workshop, one chapter of the book lab, or a labcli lab. A book lab lists its chapters first and then the workshops nobs finds. `>` marks the selected stack, and the right side shows that stack. The state of each stack comes from `docker compose ps --all --format json`, run for every stack every 2 seconds:
 
 | State | Meaning | Colour |
 |---|---|---|

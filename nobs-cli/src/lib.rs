@@ -4731,46 +4731,54 @@ fn sonda_client(flags: SondaFlags) -> Sonda {
     Sonda::new(server).api_key(key)
 }
 
+fn screen_start(
+    here: &Path,
+    given_dir: Option<&Path>,
+    flags: SondaFlags,
+    chooser: bool,
+) -> Result<nobs_tui::Start, String> {
+    let sonda = nobs_tui::SondaTarget {
+        server: given(flags.server).or_else(|| given(std::env::var("SONDA_SERVER_URL").ok())),
+        api_key: given(flags.api_key).or_else(|| given(std::env::var("SONDA_API_KEY").ok())),
+    };
+    let home = nobs_tui::Workbench::Services;
+    match locate(here, given_dir) {
+        Ok(located) => {
+            let workshops = workshop_list(here, given_dir)?;
+            Ok(nobs_tui::Start {
+                stacks: nobs_tui::shell::stacks(Some(&located), workshops)?,
+                lab: Some(located),
+                sonda,
+                home,
+                chooser: false,
+            })
+        }
+        Err(LocateError::NotFound) if chooser => {
+            let workshops = workshop_list(here, given_dir)?;
+            let mut stacks = nobs_tui::shell::stacks(None, workshops)?;
+            stacks.push(nobs_tui::shell::sonda_only(here)?);
+            Ok(nobs_tui::Start {
+                lab: None,
+                stacks,
+                sonda,
+                home,
+                chooser: true,
+            })
+        }
+        Err(LocateError::NotFound) => Ok(nobs_tui::Start {
+            lab: None,
+            stacks: vec![nobs_tui::shell::sonda_only(here)?],
+            sonda,
+            home,
+            chooser: false,
+        }),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn open_screen(given_dir: Option<&Path>, flags: SondaFlags, chooser: bool) -> i32 {
     in_current_folder(|here| {
-        let sonda = nobs_tui::SondaTarget {
-            server: given(flags.server).or_else(|| given(std::env::var("SONDA_SERVER_URL").ok())),
-            api_key: given(flags.api_key).or_else(|| given(std::env::var("SONDA_API_KEY").ok())),
-        };
-        let start = || -> Result<nobs_tui::Start, String> {
-            let home = nobs_tui::Workbench::Services;
-            match locate(here, given_dir) {
-                Ok(located) => {
-                    let workshops = workshop_list(here, given_dir)?;
-                    Ok(nobs_tui::Start {
-                        stacks: nobs_tui::shell::stacks(Some(&located), workshops)?,
-                        lab: Some(located),
-                        sonda,
-                        home,
-                        chooser: false,
-                    })
-                }
-                Err(LocateError::NotFound) if chooser => {
-                    let workshops = workshop_list(here, given_dir)?;
-                    Ok(nobs_tui::Start {
-                        lab: None,
-                        stacks: nobs_tui::shell::stacks(None, workshops)?,
-                        sonda,
-                        home,
-                        chooser: true,
-                    })
-                }
-                Err(LocateError::NotFound) => Ok(nobs_tui::Start {
-                    lab: None,
-                    stacks: Vec::new(),
-                    sonda,
-                    home,
-                    chooser: false,
-                }),
-                Err(error) => Err(error.to_string()),
-            }
-        };
-        let start = match start() {
+        let start = match screen_start(here, given_dir, flags, chooser) {
             Ok(start) => start,
             Err(message) => {
                 eprintln!("nobs: {message}");
@@ -5550,6 +5558,72 @@ mod tests {
         for folder in ["one", "two"] {
             let env = scratch.0.join("workshops").join(folder).join(".env");
             assert!(!env.exists(), "{folder}");
+        }
+    }
+
+    fn flags(server: Option<&str>) -> SondaFlags {
+        SondaFlags {
+            server: server.map(str::to_string),
+            api_key: None,
+        }
+    }
+
+    #[test]
+    fn a_workshop_folder_starts_the_screen_on_that_workshop() {
+        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/workshop-one");
+
+        let start = screen_start(&here, None, flags(None), false).unwrap();
+
+        let lab = start.lab.expect("a located lab");
+        assert!(!start.chooser);
+        assert!(start
+            .stacks
+            .iter()
+            .any(|stack| stack.kind == nobs_tui::StackKind::Workshop && stack.path == lab.dir));
+    }
+
+    #[test]
+    fn an_empty_folder_starts_the_chooser_with_the_sonda_row_last() {
+        let here = Scratch::new("screen-chooser");
+
+        let start = screen_start(&here.0, None, flags(None), true).unwrap();
+
+        assert!(start.lab.is_none());
+        assert!(start.chooser);
+        let last = start.stacks.last().expect("a last stack");
+        assert_eq!(last.kind, nobs_tui::StackKind::Sonda);
+        assert_eq!(last.path, here.0);
+    }
+
+    #[test]
+    fn an_empty_folder_without_the_chooser_starts_on_the_sonda_stack_alone() {
+        let here = Scratch::new("screen-sonda-alone");
+
+        let start = screen_start(&here.0, None, flags(None), false).unwrap();
+
+        assert!(start.lab.is_none());
+        assert!(!start.chooser);
+        let kinds: Vec<_> = start.stacks.iter().map(|stack| stack.kind).collect();
+        assert_eq!(kinds, [nobs_tui::StackKind::Sonda]);
+    }
+
+    #[test]
+    fn the_server_flag_goes_to_the_sonda_target() {
+        let here = Scratch::new("screen-flag");
+
+        let start = screen_start(&here.0, None, flags(Some("http://flag:1")), false).unwrap();
+
+        assert_eq!(start.sonda.server.as_deref(), Some("http://flag:1"));
+    }
+
+    #[test]
+    fn an_unreadable_env_in_the_start_folder_is_an_error() {
+        let here = Scratch::new("screen-bad-env");
+        fs::write(here.0.join(".env"), "=x\n").unwrap();
+
+        for chooser in [true, false] {
+            let error = screen_start(&here.0, None, flags(None), chooser).unwrap_err();
+            assert!(error.ends_with("line 1: empty key"), "{error}");
         }
     }
 }

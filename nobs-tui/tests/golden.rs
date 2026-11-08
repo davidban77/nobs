@@ -84,17 +84,36 @@ fn press(model: &mut Shell, code: KeyCode) {
     handle(model, KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+fn sonda_only() -> Stack {
+    let path = PathBuf::from("/home/me");
+    Stack {
+        name: "sonda only".to_string(),
+        kind: StackKind::Sonda,
+        compose: path.clone(),
+        path,
+        project: None,
+        env: vec![(
+            "SONDA_SERVER_URL".to_string(),
+            "http://localhost:8080".to_string(),
+        )],
+    }
+}
+
 fn model(chooser: bool, packt_failed: bool) -> Shell {
     let start = Instant::now();
+    let mut stacks = vec![
+        stack("autocon5", &[("INFRAHUB_ADDRESS", "http://localhost:8000")]),
+        stack("packt", &[]),
+        stack("demo", &[]),
+    ];
+    if chooser {
+        stacks.push(sonda_only());
+    }
     let mut model = Shell::new(Start {
         lab: None,
-        stacks: vec![
-            stack("autocon5", &[("INFRAHUB_ADDRESS", "http://localhost:8000")]),
-            stack("packt", &[]),
-            stack("demo", &[]),
-        ],
+        stacks,
         sonda: SondaTarget {
-            server: chooser.then(|| "http://localhost:8080".to_string()),
+            server: None,
             api_key: None,
         },
         home: Workbench::Services,
@@ -246,6 +265,17 @@ fn the_sonda_frame_is_pinned() {
 #[test]
 fn the_help_frame_is_pinned() {
     golden("help", || pressed('?'));
+}
+
+#[test]
+fn the_placeholder_help_frame_is_pinned() {
+    let mut model = pressed('1');
+    press(&mut model, KeyCode::Char('?'));
+    let actual = lines(&render(model, 60, 15));
+
+    let failure = mismatch("help-devices", 60, 15, &actual);
+
+    assert!(failure.is_none(), "{}", failure.unwrap_or_default());
 }
 
 #[test]

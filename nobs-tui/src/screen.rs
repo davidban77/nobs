@@ -6,15 +6,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
-use crate::shell::{kind_text, Focus, Model, StackState, Tab, Workbench};
+use crate::shell::{kind_text, Focus, Model, StackKind, StackState, Tab, Workbench};
 use crate::view;
 
 const WIDE: u16 = 100;
 const LEFT_NARROW: u16 = 23;
 const LEFT_WIDE: u16 = 32;
 const TOO_SMALL: &str = "terminal too small: 60x15 needed";
-const SONDA_ONLY: &str = "sonda only";
 const HELP_HEIGHT: u16 = 11;
+const HELP_PLACEHOLDER_HEIGHT: u16 = 8;
+const HELP_PLACEHOLDER_NOTE: &str = "the workbench comes with slice 24";
 const HELP_SONDA: &str = "sonda tab: l load  d delete  r refresh";
 const HELP: [(&str, &str); 14] = [
     ("1 2 3", "switch workbench"),
@@ -32,6 +33,12 @@ const HELP: [(&str, &str); 14] = [
     ("q Ctrl-C", "quit"),
     ("Esc", "close/clear/back"),
 ];
+const HELP_PLACEHOLDER: [(&str, &str); 4] = [
+    ("1 2 3", "switch workbench"),
+    ("?", "close"),
+    ("q Ctrl-C", "quit"),
+    ("Esc", "close"),
+];
 const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 
@@ -42,18 +49,23 @@ pub fn draw(frame: &mut Frame, model: &Model) {
         return;
     }
     let error = model.error();
-    let [header_row, switcher_row, error_row, body, run_row, key_row] = Layout::vertical([
+    let [header_row, switcher_row, error_row, middle, key_row] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(u16::from(error.is_some())),
         Constraint::Min(0),
         Constraint::Length(1),
-        Constraint::Length(1),
     ])
     .areas(area);
-    let pane_height = if model.run_pane() { body.height / 3 } else { 0 };
-    let [body, pane] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(pane_height)]).areas(body);
+    let bottom_height = if model.chooser() {
+        0
+    } else if model.run_pane() {
+        middle.height.saturating_sub(1) / 3 + 1
+    } else {
+        1
+    };
+    let [body, bottom] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(bottom_height)]).areas(middle);
     header(frame, header_row, model);
     switcher(frame, switcher_row, model);
     if let Some((source, text, at)) = error {
@@ -64,16 +76,19 @@ pub fn draw(frame: &mut Frame, model: &Model) {
         );
     }
     workbench(frame, body, model);
-    if model.run_pane() {
-        let block = Block::bordered()
-            .title_top(" run  none ")
-            .title_top(Line::from(" Esc fold ").right_aligned());
-        frame.render_widget(block, pane);
+    if !model.chooser() {
+        if model.run_pane() {
+            let block = Block::bordered()
+                .title_top(" run  none ")
+                .title_top(Line::from(" Esc fold ").right_aligned());
+            frame.render_widget(block, bottom);
+        } else {
+            run_line(frame, bottom);
+        }
     }
-    run_line(frame, run_row, model);
     frame.render_widget(Paragraph::new(key_line(model)), key_row);
     if model.help() {
-        help(frame, body);
+        help(frame, body, model.workbench());
     }
 }
 
@@ -387,64 +402,56 @@ fn chooser(frame: &mut Frame, area: Rect, model: &Model) {
         .iter()
         .map(|stack| stack.name.chars().count())
         .max()
-        .unwrap_or(0)
-        .max(SONDA_ONLY.len());
-    let kind_width = stacks
-        .iter()
+        .unwrap_or(0);
+    let workshops = || stacks.iter().filter(|stack| stack.kind != StackKind::Sonda);
+    let kind_width = workshops()
         .map(|stack| kind_text(stack.kind).len())
         .max()
         .unwrap_or(0);
-    let path_width = paths
-        .iter()
-        .map(|path| path.chars().count())
+    let path_width = workshops()
+        .map(|stack| stack.path.display().to_string().chars().count())
         .max()
         .unwrap_or(0);
-    let mut lines: Vec<Line> = stacks
+    let lines: Vec<Line> = stacks
         .iter()
         .zip(&paths)
         .enumerate()
         .map(|(index, (stack, path))| {
-            let state = model.stack_state(index);
-            let line = Line::from(vec![
-                Span::raw(format!(
-                    "{}{}  {}  {}  ",
-                    marker(index == model.selected_stack()),
+            let selected = index == model.selected_stack();
+            let spans = if stack.kind == StackKind::Sonda {
+                vec![Span::raw(format!(
+                    "{}{}  {}",
+                    marker(selected),
                     fit(&stack.name, name_width),
-                    fit(kind_text(stack.kind), kind_width),
-                    fit(path, path_width)
-                )),
-                Span::styled(state.text(), state_style(state)),
-            ]);
-            if index == model.selected_stack() {
+                    model.sonda_address(index)
+                ))]
+            } else {
+                let state = model.stack_state(index);
+                vec![
+                    Span::raw(format!(
+                        "{}{}  {}  {}  ",
+                        marker(selected),
+                        fit(&stack.name, name_width),
+                        fit(kind_text(stack.kind), kind_width),
+                        fit(path, path_width)
+                    )),
+                    Span::styled(state.text(), state_style(state)),
+                ]
+            };
+            let line = Line::from(spans);
+            if selected {
                 highlighted(line, inner.width)
             } else {
                 line
             }
         })
         .collect();
-    let on_sonda = model.selected_stack() == stacks.len();
-    let line = Line::from(format!(
-        "{}{}  {}",
-        marker(on_sonda),
-        fit(SONDA_ONLY, name_width),
-        model.sonda().server()
-    ));
-    lines.push(if on_sonda {
-        highlighted(line, inner.width)
-    } else {
-        line
-    });
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn run_line(frame: &mut Frame, area: Rect, model: &Model) {
+fn run_line(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(" run  none"), area);
-    let hint = if model.run_pane() {
-        "Esc fold"
-    } else {
-        "o open"
-    };
-    right(frame, area, Line::from(hint), 1);
+    right(frame, area, Line::from("o open"), 1);
 }
 
 fn key_line(model: &Model) -> String {
@@ -471,9 +478,14 @@ fn key_line(model: &Model) -> String {
     keys.to_string()
 }
 
-fn help(frame: &mut Frame, body: Rect) {
+fn help(frame: &mut Frame, body: Rect, workbench: Workbench) {
+    let placeholder = workbench != Workbench::Services;
     let width = body.width.saturating_sub(4);
-    let height = body.height.min(HELP_HEIGHT);
+    let height = body.height.min(if placeholder {
+        HELP_PLACEHOLDER_HEIGHT
+    } else {
+        HELP_HEIGHT
+    });
     let popup = Rect::new(
         body.x + (body.width - width) / 2,
         body.y + (body.height - height) / 2,
@@ -481,15 +493,32 @@ fn help(frame: &mut Frame, body: Rect) {
         height,
     );
     frame.render_widget(Clear, body);
-    let block = Block::bordered().title_top(" keys  services workbench ");
+    let name = match workbench {
+        Workbench::Devices => "devices",
+        Workbench::Services => "services",
+        Workbench::Lab => "lab",
+    };
+    let block = Block::bordered().title_top(format!(" keys  {name} workbench "));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let (first, second) = HELP.split_at(HELP.len() / 2);
-    let rows = u16::try_from(first.len()).unwrap_or(u16::MAX);
-    let middle = inner.width / 2;
     let column = |x: u16, y: u16, width: u16, height: u16| {
         Rect::new(inner.x + x, inner.y + y, width, height).intersection(inner)
     };
+    if placeholder {
+        let rows = u16::try_from(HELP_PLACEHOLDER.len()).unwrap_or(u16::MAX);
+        frame.render_widget(
+            Paragraph::new(help_column(&HELP_PLACEHOLDER)),
+            column(0, 0, inner.width, rows),
+        );
+        frame.render_widget(
+            Paragraph::new(HELP_PLACEHOLDER_NOTE),
+            column(0, rows + 1, inner.width, 1),
+        );
+        return;
+    }
+    let (first, second) = HELP.split_at(HELP.len() / 2);
+    let rows = u16::try_from(first.len()).unwrap_or(u16::MAX);
+    let middle = inner.width / 2;
     frame.render_widget(
         Paragraph::new(help_column(first)),
         column(0, 0, middle, rows),

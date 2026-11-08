@@ -326,8 +326,8 @@ mod tests {
             vec![stack(&[("SONDA_SERVER_URL", stub.url())])],
             false,
         ));
-        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
         let started = Instant::now();
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
 
         let result = turns(
             &mut terminal(80, 24),
@@ -409,14 +409,14 @@ mod tests {
             sleep: Duration::from_secs(3),
             ..Scripted::default()
         });
+        let mut terminal = terminal(100, 30);
+        let started = Instant::now();
         let (pollers, updates) = Pollers::start(
             runner,
             model.stacks().to_vec(),
             model.selected_stack(),
             target(),
         );
-        let mut terminal = terminal(100, 30);
-        let started = Instant::now();
 
         let result = turns(&mut terminal, &mut model, &pollers, &updates, |_| {
             Ok(Some(q()))
@@ -582,6 +582,36 @@ mod tests {
 
             assert_eq!(result, Ok(code), "chooser {chooser}");
         }
+    }
+
+    #[test]
+    fn the_sonda_row_of_the_chooser_polls_the_address_its_own_stack_names() {
+        let stub = Stub::start(&[("GET", "/scenarios", 200, r#"{"scenarios":[]}"#)]);
+        let sonda = Stack {
+            name: "sonda only".to_string(),
+            kind: StackKind::Sonda,
+            env: vec![("SONDA_SERVER_URL".to_string(), stub.url().to_string())],
+            ..stack(&[])
+        };
+        let mut model = Model::new(start(vec![stack(&[CLOSED]), sonda], true));
+        let (pollers, _updates) = launch(&scripted(Vec::new()), &model);
+
+        let commands: Vec<Command> = [KeyCode::Char('j'), KeyCode::Enter]
+            .into_iter()
+            .flat_map(|code| handle(&mut model, key(code)))
+            .collect();
+        for command in &commands {
+            pollers.send(command.clone());
+        }
+
+        assert_eq!(commands, [Command::SelectStack(1)]);
+        let listed = || stub.requests().iter().any(|seen| seen.path == "/scenarios");
+        let end = Instant::now() + Duration::from_secs(2);
+        while !listed() && Instant::now() < end {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(listed(), "{:?}", stub.requests());
+        assert_eq!(model.sonda().server(), stub.url());
     }
 
     #[test]

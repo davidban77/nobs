@@ -4,8 +4,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::env::read_env;
 use nobs_core::lab;
-use nobs_core::locate::{Kind, Located, FILE};
-use nobs_core::settings::{read_settings_file, Settings};
+use nobs_core::locate::{locate, Kind, Located};
 use nobs_core::sonda::Sonda;
 
 use crate::data::{self, Prompt};
@@ -228,15 +227,12 @@ impl Model {
     pub fn new(start: Start) -> Model {
         let Start {
             lab,
-            mut stacks,
+            stacks,
             sonda,
             home,
             chooser,
         } = start;
         let sonda_only_start = lab.is_none() && !chooser;
-        if sonda_only_start && !stacks.iter().any(|stack| stack.kind == StackKind::Sonda) {
-            stacks.push(sonda_only(Path::new(".")));
-        }
         let selected = match &lab {
             Some(lab) => stacks.iter().position(|stack| stack.path == lab.dir),
             None if sonda_only_start => stacks
@@ -368,8 +364,8 @@ impl Model {
             .collect()
     }
 
-    pub fn filter(&self) -> Option<&str> {
-        self.filter.text.as_deref()
+    pub fn sonda_address(&self, index: usize) -> String {
+        sonda_url(self.server.as_deref(), self.stacks.get(index))
     }
 
     pub fn typing(&self) -> bool {
@@ -428,10 +424,6 @@ impl Model {
         self.run_pane
     }
 
-    pub fn size(&self) -> (u16, u16) {
-        self.size
-    }
-
     pub fn now(&self) -> Instant {
         self.now
     }
@@ -452,7 +444,11 @@ impl Model {
             }
             (None, _) => return format!("nobs  sonda only  {}", self.sonda.server()),
         };
-        let infrahub = stack
+        let source = match &self.lab {
+            Some(lab) => self.stacks.iter().find(|stack| stack.path == lab.dir),
+            None => stack,
+        };
+        let infrahub = source
             .and_then(|stack| env_value(&stack.env, INFRAHUB_ENV))
             .is_some();
         let sot = if infrahub { "infrahub" } else { "none" };
@@ -516,7 +512,7 @@ impl Model {
 
     fn select(&mut self, index: usize) {
         self.selected = index;
-        self.sonda = data::Model::new(sonda_url(self.server.as_deref(), self.stacks.get(index)));
+        self.sonda = data::Model::new(self.sonda_address(index));
         self.services.clear();
         self.services_at = None;
         self.health.clear();
@@ -527,32 +523,21 @@ impl Model {
         }
     }
 
-    fn sonda_stack(&mut self) -> usize {
-        if let Some(index) = self
-            .stacks
-            .iter()
-            .position(|stack| stack.kind == StackKind::Sonda)
-        {
-            return index;
-        }
-        self.stacks.push(sonda_only(Path::new(".")));
-        self.states.push(StackState::Unknown);
-        self.stacks.len() - 1
-    }
-
     fn chooser_key(&mut self, code: KeyCode) -> Vec<Command> {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.selected = (self.selected + 1).min(self.stacks.len());
+                self.selected = (self.selected + 1).min(self.stacks.len().saturating_sub(1));
             }
             KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Enter => {
-                let mut tab = Tab::Overview;
-                let index = if self.selected < self.stacks.len() {
-                    self.selected
+                let index = self.selected;
+                let Some(stack) = self.stacks.get(index) else {
+                    return Vec::new();
+                };
+                let tab = if stack.kind == StackKind::Sonda {
+                    Tab::Sonda
                 } else {
-                    tab = Tab::Sonda;
-                    self.sonda_stack()
+                    Tab::Overview
                 };
                 self.chooser = false;
                 self.select(index);
@@ -779,31 +764,53 @@ pub fn stacks(
     lab: Option<&Located>,
     workshops: Vec<(String, String, PathBuf)>,
 ) -> Result<Vec<Stack>, String> {
+    let workshops = workshops
+        .into_iter()
+        .map(|(name, _, dir)| workshop_stack(name, dir));
     match lab {
-        Some(lab) if matches!(lab.kind, Kind::BookLab(_)) => book_stacks(lab),
+        Some(lab) if matches!(lab.kind, Kind::BookLab(_)) => {
+            let mut stacks = book_stacks(lab)?;
+            stacks.extend(workshops);
+            Ok(stacks)
+        }
         Some(lab) if matches!(lab.kind, Kind::LabcliLab(_)) => Ok(vec![lab_stack(lab)?]),
-        _ => Ok(workshops
-            .into_iter()
-            .map(|(name, _, dir)| Stack {
-                kind: StackKind::Workshop,
-                compose: dir.join("docker-compose.yml"),
-                project: workshop_project(&dir),
-                env: read_env(&dir).unwrap_or_default(),
-                name,
-                path: dir,
-            })
-            .collect()),
+        _ => {
+            if let Some(lab) = lab {
+                read_env(&lab.dir)?;
+            }
+            Ok(workshops.collect())
+        }
     }
 }
 
-pub fn sonda_only(here: &Path) -> Stack {
-    Stack {
+pub fn sonda_only(here: &Path) -> Result<Stack, String> {
+    Ok(Stack {
         name: "sonda only".to_string(),
         kind: StackKind::Sonda,
         path: here.to_path_buf(),
         compose: here.to_path_buf(),
         project: None,
-        env: read_env(here).unwrap_or_default(),
+        env: read_env(here)?,
+    })
+}
+
+fn workshop_stack(name: String, dir: PathBuf) -> Stack {
+    let located = locate(&dir, Some(&dir))
+        .ok()
+        .filter(|located| matches!(located.kind, Kind::Workshop(_)));
+    Stack {
+        kind: StackKind::Workshop,
+        compose: located.as_ref().map_or_else(
+            || dir.join("docker-compose.yml"),
+            |located| located.compose(None),
+        ),
+        project: located
+            .as_ref()
+            .and_then(Located::project)
+            .map(str::to_string),
+        env: read_env(&dir).unwrap_or_default(),
+        name,
+        path: dir,
     }
 }
 
@@ -832,13 +839,6 @@ fn lab_stack(lab: &Located) -> Result<Stack, String> {
         project: lab.project().map(str::to_string),
         env: read_env(&lab.dir)?,
     })
-}
-
-fn workshop_project(dir: &Path) -> Option<String> {
-    match read_settings_file(&dir.join(FILE)) {
-        Ok(Settings::Workshop(workshop)) => Some(workshop.project),
-        _ => None,
-    }
 }
 
 fn folder_name(dir: &Path) -> String {
@@ -973,10 +973,14 @@ mod tests {
         Model::new(start(stacks))
     }
 
+    fn sonda_stack() -> Stack {
+        sonda_only(Path::new("/nonexistent-sonda-folder")).unwrap()
+    }
+
     fn sonda_tab() -> Model {
         Model::new(Start {
             chooser: false,
-            ..start(vec![sonda_only(Path::new("/nonexistent-sonda-folder"))])
+            ..start(vec![sonda_stack()])
         })
     }
 
@@ -1004,7 +1008,7 @@ mod tests {
                 model.focus(),
                 model.tab(),
                 model.selected_stack(),
-                model.filter(),
+                model.typed_filter(),
                 model.typing(),
                 model.selected_service(),
                 model.help(),
@@ -1081,7 +1085,7 @@ mod tests {
         ch(&mut model, '/');
         assert_eq!(ch(&mut model, 'q'), []);
         assert!(!model.quit());
-        assert_eq!(model.filter(), Some("q"));
+        assert_eq!(model.typed_filter(), Some("q"));
         let ctrl_c = with(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(handle(&mut model, ctrl_c), [Command::Quit]);
         assert!(model.quit());
@@ -1215,10 +1219,11 @@ mod tests {
     fn esc_closes_the_filter_then_the_pane_then_the_question_then_moves_to_the_list() {
         let mut model = opened(&["a"]);
         ch(&mut model, '/');
-        ch(&mut model, 'a');
+        ch(&mut model, 'z');
+        assert!(model.visible_stacks().is_empty());
         code(&mut model, KeyCode::Esc);
         assert!(!model.typing());
-        assert_eq!(model.filter(), None);
+        assert_eq!(model.visible_stacks(), [0]);
 
         code(&mut model, KeyCode::Tab);
         ch(&mut model, 'o');
@@ -1239,7 +1244,7 @@ mod tests {
     }
 
     #[test]
-    fn the_chooser_moves_over_the_stacks_and_the_sonda_row_and_enter_opens_the_row() {
+    fn the_chooser_moves_over_the_stacks_and_enter_opens_the_row() {
         let mut model = chooser(&["a", "b"]);
         assert!(model.chooser());
         assert_eq!(ch(&mut model, 'k'), []);
@@ -1247,8 +1252,10 @@ mod tests {
         ch(&mut model, 'j');
         code(&mut model, KeyCode::Down);
         code(&mut model, KeyCode::Down);
-        assert_eq!(model.selected_stack(), 2);
+        assert_eq!(model.selected_stack(), 1);
         code(&mut model, KeyCode::Up);
+        assert_eq!(model.selected_stack(), 0);
+        ch(&mut model, 'j');
         assert_eq!(model.selected_stack(), 1);
         for ignored in ['1', '2', '3', '?', 'o', 'r', 'x', 'l'] {
             assert_eq!(ch(&mut model, ignored), [], "{ignored}");
@@ -1267,8 +1274,13 @@ mod tests {
     }
 
     #[test]
-    fn the_chooser_sonda_row_appends_the_sonda_stack_and_opens_the_sonda_tab() {
-        let mut model = chooser(&["a"]);
+    fn the_chooser_sonda_row_is_a_stack_of_the_list_and_opens_the_sonda_tab() {
+        let sonda = Stack {
+            env: vec![(SONDA_ENV.to_string(), "http://s:9".to_string())],
+            ..sonda_stack()
+        };
+        let mut model = Model::new(start(vec![stack("a", &[]), sonda]));
+        assert_eq!(model.sonda_address(1), "http://s:9");
         ch(&mut model, 'j');
         assert_eq!(model.selected_stack(), 1);
         ch(&mut model, 'j');
@@ -1279,9 +1291,23 @@ mod tests {
         assert!(!model.chooser());
         assert_eq!(model.tab(), Tab::Sonda);
         assert_eq!(model.stacks().len(), 2);
+        assert_eq!(model.stacks()[0].name, "a");
         assert_eq!(model.stacks()[1].kind, StackKind::Sonda);
-        assert_eq!(model.stacks()[1].name, "sonda only");
-        assert_eq!(model.stack_state(1), &StackState::Unknown);
+        assert_eq!(model.sonda().server(), "http://s:9");
+    }
+
+    #[test]
+    fn the_model_never_adds_a_stack_and_enter_in_an_empty_chooser_does_nothing() {
+        let mut model = Model::new(start(Vec::new()));
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+        assert!(model.chooser());
+        assert_eq!(model.stacks(), []);
+
+        let model = Model::new(Start {
+            chooser: false,
+            ..start(Vec::new())
+        });
+        assert_eq!(model.stacks(), []);
     }
 
     #[test]
@@ -1339,12 +1365,12 @@ mod tests {
         let mut model = opened(&["a", "b"]);
         ch(&mut model, '/');
         assert!(model.typing());
-        assert_eq!(model.filter(), Some(""));
+        assert_eq!(model.typed_filter(), Some(""));
         typed(&mut model, "x1j?");
         code(&mut model, KeyCode::Tab);
         code(&mut model, KeyCode::Down);
         code(&mut model, KeyCode::Backspace);
-        assert_eq!(model.filter(), Some("x1j"));
+        assert_eq!(model.typed_filter(), Some("x1j"));
         assert_eq!(model.workbench(), Workbench::Services);
         assert_eq!(model.focus(), Focus::List);
         assert_eq!(model.selected_stack(), 0);
@@ -1352,14 +1378,14 @@ mod tests {
 
         assert_eq!(code(&mut model, KeyCode::Enter), []);
         assert!(!model.typing());
-        assert_eq!(model.filter(), Some("x1j"));
+        assert!(model.visible_stacks().is_empty());
 
         ch(&mut model, '/');
         assert!(model.typing());
-        assert_eq!(model.filter(), Some("x1j"));
+        assert_eq!(model.typed_filter(), Some("x1j"));
         code(&mut model, KeyCode::Esc);
         assert!(!model.typing());
-        assert_eq!(model.filter(), None);
+        assert_eq!(model.visible_stacks(), [0, 1]);
     }
 
     #[test]
@@ -1510,14 +1536,22 @@ mod tests {
     }
 
     #[test]
-    fn the_book_lab_gives_one_stack_per_chapter() {
+    fn the_book_lab_gives_one_stack_per_chapter_then_the_workshops() {
         let dir = fixture("book-lab");
         let located = locate(&dir, Some(&dir)).unwrap();
+        let one = fixture("workshop-one");
 
-        let stacks = stacks(Some(&located), vec![]).unwrap();
+        let stacks = stacks(
+            Some(&located),
+            vec![("one".to_string(), "One".to_string(), one.clone())],
+        )
+        .unwrap();
 
         let names: Vec<&str> = stacks.iter().map(|stack| stack.name.as_str()).collect();
-        assert_eq!(names, ["ch1", "ch2"]);
+        assert_eq!(names, ["ch1", "ch2", "one"]);
+        assert_eq!(stacks[2].kind, StackKind::Workshop);
+        assert_eq!(stacks[2].path, one);
+        assert_eq!(stacks[2].project.as_deref(), Some("nobs-t-one"));
         for (stack, chapter) in stacks.iter().zip(["ch1", "ch2"]) {
             assert_eq!(stack.kind, StackKind::BookLab);
             assert_eq!(stack.path, dir);
@@ -1621,8 +1655,27 @@ mod tests {
         let stacks = stacks(None, workshops).unwrap();
         assert_eq!(stacks[0].env, []);
 
-        let sonda = sonda_only(&bad.0);
-        assert_eq!(sonda.env, []);
+        let error = sonda_only(&bad.0).unwrap_err();
+        assert!(error.ends_with("line 1: empty key"), "{error}");
+    }
+
+    #[test]
+    fn an_unreadable_env_of_the_located_workshop_is_an_error() {
+        let copy = Scratch::new("bad-workshop-env", "=x\n");
+        let one = fixture("workshop-one");
+        for file in ["nobs.toml", "docker-compose.yml"] {
+            fs::copy(one.join(file), copy.0.join(file)).unwrap();
+        }
+        let located = locate(&copy.0, Some(&copy.0)).unwrap();
+        assert!(matches!(located.kind, Kind::Workshop(_)));
+
+        let error = stacks(
+            Some(&located),
+            vec![("one".to_string(), "One".to_string(), copy.0.clone())],
+        )
+        .unwrap_err();
+
+        assert!(error.ends_with("line 1: empty key"), "{error}");
     }
 
     #[test]
@@ -1639,7 +1692,7 @@ mod tests {
     fn the_sonda_only_stack_reads_the_env_of_its_folder() {
         let folder = Scratch::new("sonda-env", "SONDA_SERVER_URL=http://s:9\n");
 
-        let stack = sonda_only(&folder.0);
+        let stack = sonda_only(&folder.0).unwrap();
 
         assert_eq!(stack.name, "sonda only");
         assert_eq!(stack.kind, StackKind::Sonda);
@@ -1751,7 +1804,7 @@ mod tests {
     fn the_sonda_only_stack_uses_the_default_sonda_address() {
         let model = Model::new(Start {
             chooser: false,
-            ..start(vec![sonda_only(Path::new("/nonexistent-sonda-folder"))])
+            ..start(vec![sonda_stack()])
         });
 
         assert_eq!(url_of(&model), "http://localhost:8080");
@@ -1764,7 +1817,7 @@ mod tests {
         let stacks = vec![
             stack("x", &[("SONDA_SERVER_URL", "http://x:1")]),
             stack("y", &[]),
-            sonda_only(Path::new("/nonexistent-sonda-folder")),
+            sonda_stack(),
         ];
         let mut model = Model::new(Start {
             sonda: target(Some("http://flag:9")),
@@ -1806,7 +1859,6 @@ mod tests {
         typed(&mut model, "pa");
         code(&mut model, KeyCode::Enter);
 
-        assert_eq!(model.filter(), Some("pa"));
         assert_eq!(model.visible_stacks(), [1, 2]);
         assert_eq!(ch(&mut model, 'j'), [Command::SelectStack(1)]);
         assert_eq!(ch(&mut model, 'j'), [Command::SelectStack(2)]);
@@ -1954,7 +2006,6 @@ mod tests {
             assert!(model.too_small(), "{columns}x{rows}");
             assert_eq!(ch(&mut model, 'j'), []);
             assert_eq!(model.selected_stack(), 0);
-            assert_eq!(model.size(), (columns, rows));
             assert_eq!(ch(&mut model, 'q'), [Command::Quit]);
             assert!(model.quit());
         }
@@ -1993,7 +2044,7 @@ mod tests {
 
         assert_eq!(model.clock(), "13:42:07");
         assert_eq!(model.now(), at);
-        assert_eq!(model.size(), (100, 30));
+        assert!(!model.too_small());
     }
 
     #[test]
@@ -2022,6 +2073,17 @@ mod tests {
         });
         assert_eq!(model.header(), "nobs  nobs-t-one workshop  sot infrahub");
 
+        let mut own = stack("one", &[("INFRAHUB_ADDRESS", "http://i:8000")]);
+        own.path = fixture("workshop-one");
+        let mut model = Model::new(Start {
+            lab: Some(locate(&dir, Some(&dir)).unwrap()),
+            chooser: false,
+            ..start(vec![own, stack("other", &[])])
+        });
+        ch(&mut model, 'j');
+        assert_eq!(model.selected_stack(), 1);
+        assert_eq!(model.header(), "nobs  nobs-t-one workshop  sot infrahub");
+
         let mut plain = stack("autocon5", &[("INFRAHUB_ADDRESS", "  ")]);
         plain.path = fixture("book-lab");
         let book = fixture("book-lab");
@@ -2036,7 +2098,7 @@ mod tests {
 
         let model = Model::new(Start {
             chooser: false,
-            ..start(vec![sonda_only(Path::new("/nonexistent-sonda-folder"))])
+            ..start(vec![sonda_stack()])
         });
         assert_eq!(model.header(), "nobs  sonda only  http://localhost:8080");
     }

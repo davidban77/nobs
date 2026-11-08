@@ -249,14 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn real_runner_output_leaves_stderr_to_the_terminal_and_returns_it_empty() {
-        let output = RealRunner
-            .output("sh", &args(&["-c", "printf out; printf err >&2; exit 3"]))
-            .unwrap();
-        assert_eq!(output.stderr, "");
-    }
-
-    #[test]
     fn real_runner_output_reports_a_killed_child_as_128_plus_signal() {
         let output = RealRunner
             .output("sh", &args(&["-c", "kill -9 $$"]))

@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::io;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use nobs_core::compose::Compose;
@@ -22,7 +22,6 @@ const SONDA_KEY_ENV: &str = "SONDA_API_KEY";
 
 struct Source {
     commands: Sender<Command>,
-    thread: JoinHandle<()>,
 }
 
 pub struct Pollers {
@@ -118,13 +117,6 @@ impl Pollers {
             let _ = source.commands.send(command.clone());
         }
     }
-
-    pub fn stop(self) {
-        self.send(Command::Quit);
-        for source in [self.ps, self.health, self.logs, self.sonda] {
-            let _ = source.thread.join();
-        }
-    }
 }
 
 fn spawn(
@@ -138,12 +130,12 @@ fn spawn(
         updates: updates.clone(),
         armed: true,
     };
-    let thread = thread::spawn(move || {
+    thread::spawn(move || {
         if work(&inbox, &guard.updates) {
             guard.disarm();
         }
     });
-    Source { commands, thread }
+    Source { commands }
 }
 
 fn wait(inbox: &Receiver<Command>, until: Option<Instant>) -> Wake {

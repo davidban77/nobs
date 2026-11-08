@@ -1,0 +1,15 @@
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ [1 devices]  2 services  3 lab                   ? keys  q
+
+  ┌ keys  devices workbench ─────────────────────────────┐
+  │1 2 3     switch workbench                            │
+  │?         close                                       │
+  │q Ctrl-C  quit                                        │
+  │Esc       close                                       │
+  │                                                      │
+  │the workbench comes with slice 24                     │
+  └──────────────────────────────────────────────────────┘
+
+
+ run  none                                           o open
+ 1 2 3 switch  ? keys  q quit
