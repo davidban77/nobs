@@ -1980,7 +1980,7 @@ fn lab_variable(name: &str) -> Option<String> {
 
 fn lab_scenario(flags: &LabFlags, located: &Located, command: &str) -> Result<String, i32> {
     let known = lab::scenarios(&located.dir).map_err(|error| {
-        eprintln!("nobs: cannot list scenarios: {error}");
+        eprintln!("nobs: lab {command}: cannot list scenarios: {error}");
         1
     })?;
     let print_known = || {
@@ -2303,7 +2303,7 @@ impl<'a> LabRun<'a> {
     fn purge(&self) -> Result<(), i32> {
         let nodes = self.node_containers()?;
         let scenarios = lab::scenarios(&self.located.dir).map_err(|error| {
-            eprintln!("nobs: cannot list scenarios: {error}");
+            eprintln!("nobs: lab {}: cannot list scenarios: {error}", self.command);
             1
         })?;
         let mut results = Vec::new();

@@ -266,23 +266,18 @@ mod tests {
                 "name: lab\n{prefix}topology:\n  nodes:\n    b: {{}}\n    a: {{}}\n"
             ))
         };
-        assert_eq!(with(""), Ok(strings(&["clab-lab-a", "clab-lab-b"])));
+        let rastreo =
+            "name: rastreo-lab\ntopology:\n  nodes:\n    srl-01:\n      kind: nokia_srlinux\n";
+        assert_eq!(
+            node_containers(rastreo),
+            Ok(strings(&["clab-rastreo-lab-srl-01"]))
+        );
         assert_eq!(with("prefix: \"\"\n"), Ok(strings(&["a", "b"])));
         assert_eq!(
             with("prefix: __lab-name\n"),
             Ok(strings(&["lab-a", "lab-b"]))
         );
         assert_eq!(with("prefix: x\n"), Ok(strings(&["x-lab-a", "x-lab-b"])));
-    }
-
-    #[test]
-    fn node_containers_of_a_lab_without_a_prefix_key_keep_the_clab_prefix() {
-        let text =
-            "name: rastreo-lab\ntopology:\n  nodes:\n    srl-01:\n      kind: nokia_srlinux\n";
-        assert_eq!(
-            node_containers(text),
-            Ok(strings(&["clab-rastreo-lab-srl-01"]))
-        );
     }
 
     #[test]

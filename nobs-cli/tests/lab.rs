@@ -302,6 +302,52 @@ fn sudo_comes_from_the_last_flag_then_lab_sudo_and_is_off_by_default() {
 }
 
 #[test]
+fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
+    let lab = Lab::new("sudo-others");
+    let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
+    let down = docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]);
+    let cases: [(Flags, Vec<Step>, Vec<Call>); 3] = [
+        (
+            &["destroy", "-s", "ch1"],
+            vec![],
+            vec![
+                down.clone(),
+                sudo_containerlab(&topology, "destroy", &["--cleanup"]),
+            ],
+        ),
+        (
+            &["show", "-s", "ch1"],
+            vec![],
+            vec![
+                docker_compose("netobs", &ch1, &["ps", "--all"]),
+                sudo_containerlab(&topology, "inspect", &[]),
+            ],
+        ),
+        (
+            &["purge"],
+            vec![(0, ""), (0, "clab-nobs-t-book-nobs-t-srl1\n")],
+            vec![
+                down,
+                call(CONTAINERS),
+                sudo_containerlab(&topology, "destroy", &["--cleanup"]),
+            ],
+        ),
+    ];
+
+    for (command, steps, expected) in cases {
+        lab.script(&steps);
+        let mut args = vec!["lab"];
+        args.extend(command);
+        args.push("--sudo");
+
+        let run = lab.run(&args, &[]);
+
+        assert_eq!(run.code, 0, "{command:?}: {}", run.stderr);
+        assert_eq!(lab.calls(), expected, "{command:?}");
+    }
+}
+
+#[test]
 fn network_and_subnet_come_from_the_flag_then_the_variable_then_the_setting_then_the_default() {
     let lab = Lab::new("network");
     lab.file("nobs.toml", "kind = \"lab\"\nnetwork = \"settingnet\"\n");
@@ -674,7 +720,7 @@ fn wait_0_makes_no_poll_and_still_says_deployed() {
 }
 
 #[test]
-fn destroy_takes_the_stack_down_with_its_volumes_then_the_topology_and_keeps_the_network() {
+fn destroy_takes_the_stack_down_with_its_volumes_then_the_topology_and_runs_no_network_command() {
     let lab = Lab::new("destroy");
     let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
 
