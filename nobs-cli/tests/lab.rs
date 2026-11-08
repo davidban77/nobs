@@ -1281,6 +1281,39 @@ fn a_ceos_image_from_a_set_variable_gets_the_import_line_for_that_image_and_no_s
 }
 
 #[test]
+fn a_ceos_image_from_an_empty_variable_gets_the_import_line_and_the_variable_to_set() {
+    let lab = Lab::new("image-ceos-empty");
+    lab.file(
+        "t/ceos.yml",
+        &ceos_topology("ceos", "\"${NOBS_T_CEOS:-ceos:image}\""),
+    );
+    lab.script(&[(0, ""), (0, ""), (1, "")]);
+
+    let run = lab.run(
+        &[
+            "lab",
+            "deploy",
+            "-s",
+            "ch1",
+            "--wait",
+            "0",
+            "--topology",
+            "t/ceos.yml",
+        ],
+        &[("NOBS_T_CEOS", "")],
+    );
+
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "nobs: lab deploy: image ceos:image of node ceos1 is not present\n{CEOS_IMPORT} ceos:<version>\n  then set NOBS_T_CEOS=ceos:<version>\n"
+        )
+    );
+    assert_eq!(lab.calls()[2], inspect("ceos:image"));
+}
+
+#[test]
 fn update_removes_the_named_service_with_its_volumes_starts_it_and_waits_for_it_alone() {
     let lab = Lab::new("update");
     lab.script(&[(0, ""), (0, ""), (0, SERVICES_MIXED)]);
@@ -1773,11 +1806,17 @@ fn the_prepare_help_names_every_flag_of_a_deploy_and_a_purge() {
         "--topology",
         "--network-name",
         "--subnet",
-        "--sudo",
         "--no-sudo",
         "--wait",
         "[default: 300]",
     ] {
         assert!(run.stdout.contains(flag), "{flag}\n{}", run.stdout);
     }
+    assert!(
+        run.stdout
+            .lines()
+            .any(|line| line.trim_start().starts_with("--sudo")),
+        "--sudo\n{}",
+        run.stdout
+    );
 }

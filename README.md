@@ -1302,7 +1302,7 @@ Each command runs its steps one after another. nobs builds the path of each file
 `nobs lab deploy -s <scenario>` runs these steps:
 
 1. It checks for clashes (see [The clash check](#the-clash-check)).
-2. It checks that Docker has the image of every node (see [The image check](#the-image-check)).
+2. It checks that Docker has the image of every node that names an image (see [The image check](#the-image-check)).
 3. It lists the Docker networks. When a network with that name exists, nobs uses it as it is. nobs does not check its subnet. An earlier run or another tool may have made it, and that is not a clash. Otherwise nobs creates a bridge network with the subnet.
 4. It runs `containerlab deploy -t <topology>`.
 5. It runs `docker compose --project-name <project> -f chapters/<scenario>/docker-compose.yml up -d --remove-orphans`.
@@ -1328,7 +1328,7 @@ Each command runs its steps one after another. nobs builds the path of each file
 `nobs lab prepare -s <scenario>` runs these steps:
 
 1. It lists the containers with `docker ps -a`. When the listing fails, the command stops and nothing has changed.
-2. It checks that Docker has the image of every node (see [The image check](#the-image-check)).
+2. It checks that Docker has the image of every node that names an image (see [The image check](#the-image-check)).
 3. It runs the steps of `nobs lab purge`, with the same topology file: it takes the stack of every scenario down and removes its volumes, then destroys the topology once, and only when a node container exists.
 4. It runs the steps of `nobs lab deploy` that follow the image check, with the same topology file: the clash check, the network, `containerlab deploy`, `compose up` and the wait.
 
@@ -1393,7 +1393,7 @@ The check does not look at the fixed container names (`container_name`) or the p
 
 ### The image check
 
-Before `deploy` or `prepare` changes anything, nobs checks that Docker has the image of every node. An image is the packaged program that a container runs. A registry is a server that stores images. When an image is missing, the command stops with exit 1 and nothing has changed.
+Before `deploy` or `prepare` changes anything, nobs checks that Docker has the image of every node that names an image. An image is the packaged program that a container runs. A registry is a server that stores images. When an image is missing, the command stops with exit 1 and nothing has changed.
 
 nobs finds the image of a node in the topology file: the `image` of the node itself, else the `image` of its kind under `topology.kinds`, else the `image` under `topology.defaults`. It replaces the `${NAME}` forms in the image with the values that containerlab would get: the value in the shell first, then the value in the `.env` file of the lab folder. Then it asks Docker for each image with `docker image inspect`. When that fails for an image, nobs counts the image as missing. nobs asks once for each different image, and names every node that uses it.
 
