@@ -306,9 +306,11 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
     let lab = Lab::new("sudo-others");
     let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
     let down = docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]);
-    let cases: [(Flags, Vec<Step>, Vec<Call>); 3] = [
+    let node = vec![(0, ""), (0, "clab-nobs-t-book-nobs-t-srl1\n")];
+    let cases: [(Flags, Env, Vec<Step>, Vec<Call>); 4] = [
         (
-            &["destroy", "-s", "ch1"],
+            &["destroy", "-s", "ch1", "--sudo"],
+            &[],
             vec![],
             vec![
                 down.clone(),
@@ -316,7 +318,8 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
             ],
         ),
         (
-            &["show", "-s", "ch1"],
+            &["show", "-s", "ch1", "--sudo"],
+            &[],
             vec![],
             vec![
                 docker_compose("netobs", &ch1, &["ps", "--all"]),
@@ -324,26 +327,36 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
             ],
         ),
         (
-            &["purge"],
-            vec![(0, ""), (0, "clab-nobs-t-book-nobs-t-srl1\n")],
+            &["purge", "--sudo"],
+            &[],
+            node.clone(),
             vec![
-                down,
+                down.clone(),
                 call(CONTAINERS),
                 sudo_containerlab(&topology, "destroy", &["--cleanup"]),
             ],
         ),
+        (
+            &["purge", "--no-sudo"],
+            &[("LAB_SUDO", "true")],
+            node,
+            vec![
+                down,
+                call(CONTAINERS),
+                containerlab(&topology, "destroy", &["--cleanup"]),
+            ],
+        ),
     ];
 
-    for (command, steps, expected) in cases {
+    for (command, env, steps, expected) in cases {
         lab.script(&steps);
         let mut args = vec!["lab"];
         args.extend(command);
-        args.push("--sudo");
 
-        let run = lab.run(&args, &[]);
+        let run = lab.run(&args, env);
 
         assert_eq!(run.code, 0, "{command:?}: {}", run.stderr);
-        assert_eq!(lab.calls(), expected, "{command:?}");
+        assert_eq!(lab.calls(), expected, "{command:?} {env:?}");
     }
 }
 
