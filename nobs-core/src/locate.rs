@@ -95,7 +95,12 @@ impl Located {
 
 type Marker = fn(&Path) -> Result<Option<Kind>, LocateError>;
 
-const MARKERS: [Marker; 3] = [settings_file, book_lab_layout, labcli_lab_layout];
+const MARKERS: [Marker; 4] = [
+    settings_file,
+    book_lab_layout,
+    project_file,
+    labcli_lab_layout,
+];
 
 fn settings_file(dir: &Path) -> Result<Option<Kind>, LocateError> {
     let file = dir.join(FILE);
@@ -122,6 +127,13 @@ fn has_book_layout(dir: &Path) -> bool {
 
 fn book_lab_layout(dir: &Path) -> Result<Option<Kind>, LocateError> {
     Ok(has_book_layout(dir).then_some(Kind::BookLab(None)))
+}
+
+fn project_file(dir: &Path) -> Result<Option<Kind>, LocateError> {
+    Ok(dir
+        .join("nobs_project.yml")
+        .is_file()
+        .then_some(Kind::LabcliLab(None)))
 }
 
 fn labcli_lab_layout(dir: &Path) -> Result<Option<Kind>, LocateError> {

@@ -135,7 +135,7 @@ fn no_containerlab_help_page_says_show_netobs_or_labcli() {
 fn the_root_help_names_the_groups_workshops_and_the_dir_flag() {
     let help = help(&[]);
     let commands = commands_block(&help);
-    for command in ["docker", "containerlab", "sonda", "workshops"] {
+    for command in ["docker", "containerlab", "sonda", "workshops", "project"] {
         assert!(commands.iter().any(|word| word == command), "{commands:?}");
     }
     assert!(help.contains("--dir <PATH>"), "{help}");
