@@ -13,6 +13,7 @@ pub mod lab_vars;
 pub mod layers;
 pub mod locate;
 pub mod loki;
+pub mod nautobot;
 pub mod prefect;
 pub mod preflight;
 pub mod prometheus;
