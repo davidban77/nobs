@@ -355,7 +355,7 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
 
         let run = lab.run(&args, env);
 
-        assert_eq!(run.code, 0, "{command:?}: {}", run.stderr);
+        assert_eq!(run.code, 0, "{command:?} {env:?}: {}", run.stderr);
         assert_eq!(lab.calls(), expected, "{command:?} {env:?}");
     }
 }
