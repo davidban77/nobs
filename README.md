@@ -301,7 +301,7 @@ nobs: no workshop named nobs-t-none
 known: nobs-t-two
 ```
 
-`nobs <workshop> --help` lists the commands of a workshop. There are twenty-five, the full set of the workshop's own commands. Sixteen of them make no Docker call, and the second column below says so. Each of the others runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
+`nobs <workshop> --help` lists the commands of a workshop. There are twenty-six, the full set of the workshop's own commands. Seventeen of them make no Docker call, and the second column below says so. Each of the others runs `docker compose --project-name <project> -f <folder>/docker-compose.yml`, then the words in the second column. `<project>` is the `project` setting in the workshop's `nobs.toml`, and `<folder>` is the workshop folder. `SERVICES` are service names from the compose file; when you give none, the command acts on all of them.
 
 | Command | What it runs | Notes |
 |---|---|---|
@@ -320,6 +320,7 @@ known: nobs-t-two
 | `nobs <workshop> load-infrahub [OPTIONS]` | no Docker call | applies the schema file to Infrahub, then loads the lab variables into it; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
 | `nobs <workshop> schema load PATH [OPTIONS]` | no Docker call | applies one schema file to Infrahub; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
 | `nobs <workshop> maintenance -d NAME [OPTIONS]` | no Docker call | sets or clears the maintenance flag of a device in Infrahub, then tells Sonda; the options are in [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) |
+| `nobs <workshop> devices [OPTIONS]` | no Docker call | prints the devices of the lab's source of truth as one table; the options are in [devices](#devices) |
 | `nobs <workshop> rca [DEVICE] [PEER] [OPTIONS]` | no Docker call | prints the most recent AI RCA records from Loki; the options are in [rca and evidence](#rca-and-evidence) |
 | `nobs <workshop> evidence DEVICE PEER [OPTIONS]` | no Docker call | prints what Infrahub, Prometheus and Loki say about one BGP session, then a policy hint; the options are in [rca and evidence](#rca-and-evidence) |
 | `nobs <workshop> cycle DEVICE PEER [OPTIONS]` | no Docker call | prints four panels about one BGP session: its alert, its silences, the flow runs of the automation and the last decision; with `--trigger` it first starts a new cycle through the webhook; the options are in [cycle and page](#cycle-and-page) |
@@ -361,7 +362,7 @@ Prefect       http://localhost:4200
 Sonda         http://localhost:8085
 ```
 
-A workshop's `nobs.toml` holds `kind = "workshop"` and 11 settings, for example:
+A workshop's `nobs.toml` holds `kind = "workshop"` and 12 settings. The example leaves out `sot`, because it is optional:
 
 ```toml
 kind = "workshop"
@@ -380,9 +381,25 @@ schema_file = "infrahub/schema.yml"
 sonda = "ghcr.io/davidban77/sonda:1.22.2"
 ```
 
-Every setting is required except `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file`, `evidence_query`, `workflow_label`, `cascade_prefix` and `silence_hints`; it checks the others but does not use them. `flap-interface` uses `cascade_prefix` as the start of each scenario name, and `title` as the first words of each description (see [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios)). `reset` uses `silence_hints` to find the silences to expire, and `cascade_prefix` to find the baselines that a cascade left stuck (see [reset](#reset)). `cycle` uses `workflow_label` as the value of the `workflow` label it looks for in Loki (see [cycle and page](#cycle-and-page)).
+Every setting is required except `sot` and `[image_pins]`, and an unknown key is an error. nobs uses only `name`, `title`, `project`, `schema_file`, `evidence_query`, `workflow_label`, `cascade_prefix`, `silence_hints` and `sot`; it checks the others but does not use them. `flap-interface` uses `cascade_prefix` as the start of each scenario name, and `title` as the first words of each description (see [flap-interface, incident and scenarios](#flap-interface-incident-and-scenarios)). `reset` uses `silence_hints` to find the silences to expire, and `cascade_prefix` to find the baselines that a cascade left stuck (see [reset](#reset)). `cycle` uses `workflow_label` as the value of the `workflow` label it looks for in Loki (see [cycle and page](#cycle-and-page)).
 
 The `evidence_query` setting is a Loki query. It may hold the placeholders `{device}` and `{peer}`. `nobs <workshop> evidence` replaces each one with the device and the peer you give it, and sends the result to Loki. For example, `evidence_query = "{device=\"{device}\"} != \"license\""` becomes `{device="srl1"} != "license"` for the device `srl1`. The braces around the placeholders belong to the query and stay.
+
+The `sot` setting says which system is the source of truth of the lab. A source of truth is the system that holds what the lab should look like: its devices, their interfaces and BGP sessions, and the maintenance flag of each device. Today that system is Infrahub. The value is `"infrahub"` or `"none"`. When you leave `sot` out, it is `"infrahub"`, so a `nobs.toml` written before this setting keeps working. The value `"none"` says the lab has no source of truth. Any other value is an error, like an unknown key: nobs runs nothing, prints the file and what is wrong, and exits with 1. For example, with `sot = "netbox"`:
+
+```
+nobs: /home/me/repo/workshops/nobs-t-one/nobs.toml: sot: must be "infrahub" or "none", not "netbox"
+```
+
+With `sot = "none"`, three commands change. None of them asks for a token or prints the rewrite line (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)), because none of them calls Infrahub.
+
+| Command | With `sot = "none"` |
+|---|---|
+| `devices` | prints the header line `NAME  KIND  SITE  ROLE  MAINT` and no device; exit code 0 |
+| `maintenance` | prints `nobs: this lab has no source of truth` on standard error and exits with 1; it sends nothing to Infrahub or Sonda |
+| `evidence` | prints `Source of truth` and `this lab has no source of truth.` as its first block; it still prints the Prometheus and Loki blocks, and ends with the policy hint `decision: stop` and `reason  : this lab has no source of truth`; exit code 0 |
+
+The setting changes only these three commands. `load-infrahub`, `schema load`, `try-it`, `reset` and `preflight` still talk to Infrahub whatever `sot` says.
 
 ### status
 
@@ -613,6 +630,49 @@ These three variables follow the same rule as the Infrahub variables: the shell 
 In the post failure line, `<error>` is `cannot reach <address>: <reason>` when Sonda does not answer, or `sonda answered <status>: <body>` when it answers with a status code of 400 or more.
 
 The files under `captures/` are the record of what the Python SDK (Infrahub's own client library) sent to Infrahub 1.1 and 1.11.2, and what Infrahub answered. The tests of nobs use them.
+
+### devices
+
+`nobs <workshop> devices` prints the devices of the lab as the source of truth holds them, as one table. The source of truth is the system that holds what the lab should look like (see [Workshops](#workshops)); today it is Infrahub. The command only reads, and it makes no Docker call. Inside a workshop folder, `nobs devices` does the same. The devices workbench of the screen, which is not built yet, will show the same list.
+
+| Flag | What it does |
+|---|---|
+| `--infrahub-url URL` | gives the address of Infrahub |
+| `--token TOKEN` | gives the token for Infrahub |
+
+nobs finds the address in this order: `--infrahub-url`, then the variable `INFRAHUB_ADDRESS`, then `http://localhost:8000`. It finds the token in this order: `--token`, then the variable `INFRAHUB_API_TOKEN`. This is the order of `evidence`, and the other rules are the same too (see [rca and evidence](#rca-and-evidence)): a variable can be set in the shell or in the `.env` file of the workshop, the shell wins, a value that is empty or only spaces counts as not given, and a trailing `/` on an address is dropped. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line first (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)).
+
+The table has one header line and one line per device, with the columns lined up:
+
+| Column | What it shows |
+|---|---|
+| `NAME` | the name of the device |
+| `KIND` | the kind of the device, or `—` when the source does not hold one; today it is always `—`, because no source holds a device kind yet |
+| `SITE` | the site of the device, or `—` when the source does not hold one |
+| `ROLE` | the role of the device, or `—` when the source does not hold one |
+| `MAINT` | `yes` when the maintenance flag of the device is set, else `no` |
+
+For example, with two devices, when the address names `infrahub-server`:
+
+```
+$ nobs nobs-t-one devices
+INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000
+NAME  KIND  SITE  ROLE  MAINT
+srl1  —     lab   edge  no
+srl2  —     lab   edge  no
+```
+
+After `nobs nobs-t-one maintenance -d srl1 --state`, the line of `srl1` ends with `yes`. When the source holds no device, nobs prints the header line alone and exits with 0.
+
+When the lab has `sot = "none"`, nobs prints the header line alone, asks for no token and prints no rewrite line (see [Workshops](#workshops)). When nobs cannot read the devices from Infrahub, it prints one line on standard error and exits with 1. Standard output then holds nothing, except the rewrite line when one came first.
+
+| Exit code | When |
+|---|---|
+| 0 | nobs printed the table, or the header line alone |
+| 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
+| 1 | Infrahub did not answer: `nobs: cannot reach <url>: <reason>` |
+| 1 | Infrahub answered with an error: `nobs: <error>`, where `<error>` is `Infrahub answered <status> on <path>: <answer>` or `Infrahub: <message>` |
+| 2 | a flag nobs does not know |
 
 ### rca and evidence
 
