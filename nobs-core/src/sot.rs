@@ -331,7 +331,7 @@ schema_file = "infrahub/schema.yml"
         let (line, source) = open(
             &workshop,
             Some("http://infrahub-server:8000"),
-            Some("nobs-t-token"),
+            None,
             None,
             &|_| None,
         );

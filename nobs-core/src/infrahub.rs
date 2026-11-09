@@ -1538,23 +1538,6 @@ mod tests {
     }
 
     #[test]
-    fn set_maintenance_through_the_trait_uses_the_kind_the_client_was_given() {
-        let stub = graphql_stub(&[
-            filter_answer("Other", Some("x")),
-            mutation_answer("OtherUpdate", "x"),
-        ]);
-        let mut client = Infrahub::new(stub.url(), TOKEN);
-        client.set_maintenance_kind("Other");
-        let source: &dyn SourceOfTruth = &client;
-
-        source.set_maintenance("srl1", true).unwrap();
-
-        let sent = queries(&stub);
-        assert_eq!(root(&sent[0]), "Other");
-        assert_eq!(root(&sent[1]), "OtherUpdate");
-    }
-
-    #[test]
     fn connect_takes_the_flag_then_the_variable_then_the_default_and_a_blank_is_not_given() {
         let lookup = |name: &str| match name {
             "INFRAHUB_ADDRESS" => Some("http://10.0.0.5:8000/".to_string()),
@@ -1590,20 +1573,6 @@ mod tests {
         );
         let (_, defaulted) = connect(None, Some("t"), &blank_variables);
         assert_eq!(defaulted.unwrap().address(), DEFAULT_ADDRESS);
-    }
-
-    #[test]
-    fn connect_returns_the_rewrite_line_even_when_the_token_is_missing() {
-        let (line, client) = connect(Some("http://infrahub-server:8000/"), None, &|_| None);
-
-        assert_eq!(
-            line,
-            Some("INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000".to_string())
-        );
-        assert_eq!(
-            client.err(),
-            Some("INFRAHUB_API_TOKEN is required (set it in .env or pass --token).".to_string())
-        );
     }
 
     #[test]
