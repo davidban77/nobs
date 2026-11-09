@@ -1105,7 +1105,7 @@ pub struct ProjectFlags {
     #[arg(
         long,
         value_name = "PATH",
-        help = "Project file to read; nobs_project.yml in the lab folder when none is given; a relative path starts at the lab folder"
+        help = "Project file to read (default: nobs_project.yml in the lab folder); a relative path starts at the lab folder"
     )]
     project: Option<PathBuf>,
     #[arg(
@@ -1130,7 +1130,7 @@ pub enum ProjectCommand {
     Render {
         #[arg(
             long,
-            help = "Write nothing; name each file that would change and exit 1 when any would"
+            help = "Write nothing; list each file that is missing or different, and exit 1 if there is one"
         )]
         check: bool,
     },
