@@ -16,8 +16,7 @@ use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_tex
 use nobs_core::grafana::Grafana;
 use nobs_core::http;
 use nobs_core::infrahub::{
-    annotation, host_address, read_schema, DeviceIntent, Error as InfrahubError, Infrahub,
-    IntentSession, Maintenance, Seed, DEFAULT_ADDRESS, KINDS,
+    annotation, host_address, read_schema, Infrahub, Seed, DEFAULT_ADDRESS, KINDS,
 };
 use nobs_core::lab::{self, WaitError};
 use nobs_core::lab_vars;
@@ -35,6 +34,7 @@ use nobs_core::runner::Runner;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
+use nobs_core::sot::{Device, Error as InfrahubError, Maintenance, Session, SourceOfTruth};
 use nobs_core::status::{self, probe_all, Probe, State, Urls};
 use nobs_core::time;
 use nobs_core::try_it;
@@ -3503,7 +3503,7 @@ fn read_metrics(
     }
 }
 
-fn source_found(intent: &DeviceIntent, session: Option<&IntentSession>) -> String {
+fn source_found(intent: &Device, session: Option<&Session>) -> String {
     let unknown = |text: &Option<String>| text.clone().unwrap_or_else(|| "?".to_string());
     let row = |label: &str, value: &str| format!("{label:<16}{value}");
     let mut lines = vec![
@@ -3601,7 +3601,8 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
     let Some(token) = require_token(token) else {
         return 1;
     };
-    let intent = Infrahub::new(&infrahub_address, &token).device_intent(&flags.device);
+    let source: &dyn SourceOfTruth = &Infrahub::new(&infrahub_address, &token);
+    let intent = source.device(&flags.device);
     let prometheus = Prometheus::new(service_address(
         flags.prom_url,
         PROMETHEUS_ADDRESS,
