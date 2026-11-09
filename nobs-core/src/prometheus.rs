@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -15,6 +16,12 @@ const BODY_CUT: usize = 200;
 pub struct Prometheus {
     url: String,
     agent: Agent,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sample {
+    pub labels: BTreeMap<String, String>,
+    pub value: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +87,26 @@ impl Prometheus {
         }
         parse(&reply.body).map_err(Error::Body)
     }
+
+    pub fn samples(&self, query: &str) -> Result<Vec<Sample>, Error> {
+        let sent = self
+            .agent
+            .get(format!("{}{PATH}", self.url))
+            .query("query", query)
+            .call();
+        let reply = http::read(&self.url, sent).map_err(|error| Error::Reach {
+            url: self.url.clone(),
+            reason: http::reason(error, &self.url),
+        })?;
+        if reply.status >= 400 {
+            return Err(Error::Status {
+                status: reply.status,
+                path: PATH.to_string(),
+                body: reply.body,
+            });
+        }
+        parse_samples(&reply.body).map_err(Error::Body)
+    }
 }
 
 fn parse(body: &str) -> Result<Option<f64>, String> {
@@ -98,6 +125,28 @@ fn parse(body: &str) -> Result<Option<f64>, String> {
         .and_then(|text| text.parse().ok())
         .map(Some)
         .ok_or_else(|| "the first result has no number in value".to_string())
+}
+
+fn parse_samples(body: &str) -> Result<Vec<Sample>, String> {
+    let answer: Value =
+        serde_json::from_str(body).map_err(|_| "the reply is not JSON".to_string())?;
+    let result = answer
+        .pointer("/data/result")
+        .and_then(Value::as_array)
+        .ok_or("the reply has no data.result list")?;
+    Ok(result.iter().filter_map(sample).collect())
+}
+
+fn sample(entry: &Value) -> Option<Sample> {
+    let value = entry.pointer("/value/1")?.as_str()?.parse().ok()?;
+    let labels = entry
+        .get("metric")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, label)| Some((name.clone(), label.as_str()?.to_string())))
+        .collect();
+    Some(Sample { labels, value })
 }
 
 #[cfg(test)]
@@ -199,6 +248,61 @@ mod tests {
             let result = prometheus.instant(QUERY);
             assert!(matches!(result, Err(Error::Body(_))), "{body}: {result:?}");
         }
+    }
+
+    #[test]
+    fn samples_keeps_every_result_with_its_labels() {
+        let stub = Stub::start(&[(
+            "GET",
+            ROUTE,
+            200,
+            r#"{"status":"success","data":{"resultType":"vector","result":[
+                {"metric":{"__name__":"bgp_oper_state","device":"srl1","peer_address":"10.1.2.2"},"value":[1793960400,"1"]},
+                {"metric":{"__name__":"interface_oper_state","device":"srl2","name":"ethernet-1/11"},"value":[1793960400,"2"]},
+                {"metric":{"__name__":"bad"},"value":[1793960400,"soon"]}
+            ]}}"#,
+        )]);
+
+        let samples = Prometheus::new(stub.url())
+            .samples(r#"{__name__=~"bgp_oper_state|interface_oper_state"}"#)
+            .unwrap();
+
+        let labels = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            samples,
+            [
+                Sample {
+                    labels: labels(&[
+                        ("__name__", "bgp_oper_state"),
+                        ("device", "srl1"),
+                        ("peer_address", "10.1.2.2")
+                    ]),
+                    value: 1.0
+                },
+                Sample {
+                    labels: labels(&[
+                        ("__name__", "interface_oper_state"),
+                        ("device", "srl2"),
+                        ("name", "ethernet-1/11")
+                    ]),
+                    value: 2.0
+                },
+            ]
+        );
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0]
+                .path
+                .starts_with("/api/v1/query?query=%7B__name__"),
+            "{}",
+            requests[0].path
+        );
     }
 
     #[test]

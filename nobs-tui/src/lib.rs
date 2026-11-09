@@ -18,6 +18,7 @@ use ratatui::Terminal;
 use shell::Model;
 
 pub mod data;
+pub mod devices;
 pub mod poll;
 pub mod screen;
 pub mod shell;
