@@ -279,7 +279,7 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
     tabs(frame, tab_row, model);
     match model.tab() {
-        Tab::Overview => overview(frame, content, model, wide),
+        Tab::Overview | Tab::Interfaces | Tab::Timeline => overview(frame, content, model, wide),
         Tab::Logs => logs(frame, content, model),
         Tab::Sonda => {
             view::draw_in(frame, content, model.sonda(), model.now());
@@ -479,7 +479,9 @@ fn key_line(model: &Model) -> String {
     } else {
         match (model.focus(), model.tab()) {
             (Focus::List, _) => " Tab focus  j/k move  / filter  l logs  r refresh",
-            (Focus::Tabs, Tab::Overview) => " Tab focus  j/k move  [ ] tab  Enter logs  Esc back",
+            (Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Timeline) => {
+                " Tab focus  j/k move  [ ] tab  Enter logs  Esc back"
+            }
             (Focus::Tabs, Tab::Logs) => match model.logs() {
                 Some((_, _, false, _)) => {
                     " f follow  / filter  j/k scroll  [ ] tab  Esc back to list"

@@ -228,6 +228,7 @@ fn the_join_matches_the_peer_by_subnet_and_decodes_the_live_columns() {
         .iter()
         .all(|row| row.admin == "?" && row.oper == "?"));
     assert_eq!(unknown[0].bgp, "?");
+    assert!(unknown.iter().all(|row| !row.differs));
     assert_eq!(unknown[2].bgp, "");
 
     let states = oper_states("srl1", &samples);
@@ -236,6 +237,21 @@ fn the_join_matches_the_peer_by_subnet_and_decodes_the_live_columns() {
         values(&[("10.1.2.2", 1.0), ("10.1.7.2", 1.0), ("10.1.99.2", 5.0)])
     );
     assert!(oper_states("srl2", &samples).is_empty());
+
+    let without_peer: Vec<Sample> = samples
+        .iter()
+        .filter(|sample| sample.labels.get("peer_address").map(String::as_str) != Some("10.1.2.2"))
+        .cloned()
+        .collect();
+    let missing = join(
+        "srl1",
+        &device.interfaces,
+        &device.sessions,
+        Some(&without_peer),
+    );
+    assert_eq!(missing[0].peer, "10.1.2.2");
+    assert_eq!(missing[0].bgp, "—");
+    assert!(!missing[0].differs);
 }
 
 #[test]

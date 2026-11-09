@@ -4935,6 +4935,9 @@ fn screen_start(
                 lab: Some(located),
                 sonda,
                 home,
+                source: None,
+                source_error: None,
+                urls: nobs_core::status::Urls::from_lookup(|name| std::env::var(name).ok()),
                 chooser: false,
             })
         }
@@ -4947,6 +4950,9 @@ fn screen_start(
                 stacks,
                 sonda,
                 home,
+                source: None,
+                source_error: None,
+                urls: nobs_core::status::Urls::from_lookup(|name| std::env::var(name).ok()),
                 chooser: true,
             })
         }
@@ -4955,6 +4961,9 @@ fn screen_start(
             stacks: vec![nobs_tui::shell::sonda_only(here)?],
             sonda,
             home,
+            source: None,
+            source_error: None,
+            urls: nobs_core::status::Urls::from_lookup(|name| std::env::var(name).ok()),
             chooser: false,
         }),
         Err(error) => Err(error.to_string()),

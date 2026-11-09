@@ -4,7 +4,7 @@ use std::panic;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{self, Event, KeyEvent};
 use crossterm::terminal::{
@@ -74,7 +74,7 @@ fn turns<B: Backend>(
     loop {
         drain(updates, model, &mut gone);
         let size = terminal.size().map_err(failed)?;
-        model.tick(Instant::now(), clock(), (size.width, size.height));
+        model.tick(Instant::now(), SystemTime::now(), (size.width, size.height));
         terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         if let Some(key) = next_key(KEY_WAIT)? {
             for command in handle(model, key) {
@@ -98,19 +98,6 @@ fn drain(updates: &Receiver<Update>, model: &mut Model, gone: &mut bool) {
             }
         }
     }
-}
-
-fn clock() -> String {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-        % 86_400;
-    format!(
-        "{:02}:{:02}:{:02}",
-        seconds / 3600,
-        seconds % 3600 / 60,
-        seconds % 60
-    )
 }
 
 fn read_key(wait: Duration) -> Result<Option<KeyEvent>, String> {
@@ -161,6 +148,7 @@ mod tests {
     use nobs_core::lab;
     use nobs_core::locate::{Kind, Located};
     use nobs_core::runner::Output;
+    use nobs_core::status::Urls;
     use ratatui::backend::TestBackend;
 
     use super::*;
@@ -276,6 +264,9 @@ mod tests {
             sonda: target(),
             home: Workbench::Services,
             chooser,
+            source: None,
+            source_error: None,
+            urls: Urls::defaults(),
         }
     }
 
@@ -404,7 +395,7 @@ mod tests {
             ("INFRAHUB_ADDRESS", url),
         ];
         let mut model = Model::new(start(vec![stack(&env)], false));
-        model.tick(Instant::now(), clock(), (100, 30));
+        model.tick(Instant::now(), SystemTime::now(), (100, 30));
         model.apply(Update::Services(0, Ok(lab::services(TWO).unwrap())));
         let runner = Arc::new(Scripted {
             sleep: Duration::from_secs(3),
@@ -659,7 +650,9 @@ mod tests {
 
     #[test]
     fn the_clock_is_a_time_of_day() {
-        let now = clock();
+        let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
+        model.tick(Instant::now(), SystemTime::now(), (80, 24));
+        let now = model.clock().to_string();
         let parts: Vec<u32> = now.split(':').map(|part| part.parse().unwrap()).collect();
         assert_eq!(now.len(), 8, "{now}");
         assert!(parts[0] < 24 && parts[1] < 60 && parts[2] < 60, "{now}");

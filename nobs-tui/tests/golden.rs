@@ -1,9 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nobs_core::lab::{services, Service};
+use nobs_core::status::Urls;
 use nobs_tui::shell::Health;
 use nobs_tui::{
     data, draw, handle, view, Shell, SondaTarget, Stack, StackKind, Start, Update, Workbench,
@@ -14,7 +15,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 
-const CLOCK: &str = "13:42:07";
+const CLOCK_SECONDS: u64 = 1_794_231_727;
 const SIZES: [(u16, u16); 2] = [(60, 15), (100, 30)];
 const WORKSHOP: [(&str, &str, u16, &str); 7] = [
     ("grafana", "running", 3000, "41 seconds ago"),
@@ -99,6 +100,10 @@ fn sonda_only() -> Stack {
     }
 }
 
+fn clock() -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(CLOCK_SECONDS)
+}
+
 fn model(chooser: bool, packt_failed: bool) -> Shell {
     let start = Instant::now();
     let mut stacks = vec![
@@ -118,14 +123,17 @@ fn model(chooser: bool, packt_failed: bool) -> Shell {
         },
         home: Workbench::Services,
         chooser: true,
+        source: None,
+        source_error: None,
+        urls: Urls::defaults(),
     });
     if !chooser {
         press(&mut model, KeyCode::Enter);
     }
-    model.tick(start, CLOCK.to_string(), (80, 24));
+    model.tick(start, clock(), (80, 24));
     if packt_failed {
         model.apply(Update::Services(1, Err("exit 1".to_string())));
-        model.tick(start + Duration::from_secs(10), CLOCK.to_string(), (80, 24));
+        model.tick(start + Duration::from_secs(10), clock(), (80, 24));
     }
     model.apply(Update::Services(0, Ok(ps(&WORKSHOP))));
     model.apply(Update::Health(0, health()));
@@ -175,7 +183,7 @@ fn pressed(key: char) -> Shell {
 
 fn render(mut model: Shell, width: u16, height: u16) -> Buffer {
     let now = model.now() + Duration::from_secs(2);
-    model.tick(now, CLOCK.to_string(), (width, height));
+    model.tick(now, clock(), (width, height));
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| draw(frame, &model)).unwrap();
     terminal.backend().buffer().clone()

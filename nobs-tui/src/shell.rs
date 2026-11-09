@@ -1,27 +1,61 @@
+use std::cmp::Reverse;
+use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use nobs_core::alertmanager::Alert;
 use nobs_core::env::read_env;
 use nobs_core::lab;
 use nobs_core::locate::{locate, Kind, Located};
+use nobs_core::loki::Line;
+use nobs_core::prefect::FlowRun;
+use nobs_core::prometheus::Sample;
 use nobs_core::sonda::Sonda;
+use nobs_core::sot::{Device, SourceOfTruth};
+use nobs_core::status::Urls;
+use nobs_core::time;
 
 use crate::data::{self, Prompt};
+use crate::devices;
 
 const LOG_LINES: usize = 2000;
+pub const WINDOW_MINUTES: u64 = 30;
+const WINDOW_MIN: u64 = 1;
+const WINDOW_MAX: u64 = 1440;
+const SERVICES_TABS: [Tab; 3] = [Tab::Overview, Tab::Logs, Tab::Sonda];
+const DEVICE_TABS: [Tab; 4] = [Tab::Overview, Tab::Interfaces, Tab::Timeline, Tab::Logs];
 const MIN_SIZE: (u16, u16) = (60, 15);
 const STACK_SONDA_URL: &str = "http://localhost:8085";
 const SONDA_ENV: &str = "SONDA_SERVER_URL";
 const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Start {
     pub lab: Option<Located>,
     pub stacks: Vec<Stack>,
     pub sonda: SondaTarget,
     pub home: Workbench,
     pub chooser: bool,
+    pub source: Option<Arc<dyn SourceOfTruth>>,
+    pub source_error: Option<String>,
+    pub urls: Urls,
+}
+
+impl fmt::Debug for Start {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Start")
+            .field("lab", &self.lab)
+            .field("stacks", &self.stacks)
+            .field("sonda", &self.sonda)
+            .field("home", &self.home)
+            .field("chooser", &self.chooser)
+            .field("source", &self.source.as_ref().map(|_| ".."))
+            .field("source_error", &self.source_error)
+            .field("urls", &self.urls)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,26 +80,42 @@ pub enum Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Overview,
+    Interfaces,
+    Timeline,
     Logs,
     Sonda,
 }
 
 impl Tab {
-    fn next(self) -> Tab {
+    pub fn title(self, wide: bool) -> &'static str {
         match self {
-            Tab::Overview => Tab::Logs,
-            Tab::Logs => Tab::Sonda,
-            Tab::Sonda => Tab::Overview,
+            Tab::Overview => "overview",
+            Tab::Interfaces if wide => "interfaces",
+            Tab::Interfaces => "ifaces",
+            Tab::Timeline => "timeline",
+            Tab::Logs => "logs",
+            Tab::Sonda => "sonda",
         }
     }
+}
 
-    fn previous(self) -> Tab {
-        match self {
-            Tab::Overview => Tab::Sonda,
-            Tab::Logs => Tab::Overview,
-            Tab::Sonda => Tab::Logs,
-        }
-    }
+fn step(tabs: &[Tab], tab: Tab, forward: bool) -> Tab {
+    let at = tabs
+        .iter()
+        .position(|candidate| *candidate == tab)
+        .unwrap_or(0);
+    let next = if forward {
+        (at + 1) % tabs.len()
+    } else {
+        (at + tabs.len() - 1) % tabs.len()
+    };
+    tabs[next]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cursor {
+    Device(usize),
+    Alert(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +178,12 @@ pub enum Update {
     Sonda(data::Update),
     Note(data::Note),
     Stopped(String),
+    Devices(Result<Vec<Device>, String>),
+    Metrics(Result<Vec<Sample>, String>),
+    Alerts(Result<Vec<Alert>, String>),
+    DeviceLogs(String, Result<Vec<Line>, String>),
+    Rcas(String, Result<Vec<Line>, String>),
+    FlowRuns(Result<Vec<FlowRun>, String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +195,9 @@ pub enum Command {
     Follow(bool),
     CloseLogs,
     Sonda(data::Command),
+    SelectDevice(String),
+    OpenTab(Tab),
+    Window(u64),
 }
 
 #[derive(Default)]
@@ -177,6 +236,11 @@ impl Filter {
             .as_deref()
             .is_none_or(|filter| text.contains(filter))
     }
+}
+
+struct DeviceLine {
+    line: Line,
+    shown: String,
 }
 
 struct LogsState {
@@ -218,9 +282,29 @@ pub struct Model {
     run_pane: bool,
     size: (u16, u16),
     now: Instant,
+    wall: SystemTime,
     clock: String,
     quit: bool,
     exit_code: i32,
+    source: bool,
+    source_error: Option<String>,
+    devices: Vec<Device>,
+    devices_at: Option<Instant>,
+    device: usize,
+    cursor: Cursor,
+    device_filter: Filter,
+    metrics: Option<Vec<Sample>>,
+    alerts: Vec<Alert>,
+    alerts_ok: bool,
+    runs: Vec<FlowRun>,
+    rcas: Vec<Line>,
+    device_lines: Vec<DeviceLine>,
+    logs_following: bool,
+    logs_scroll: usize,
+    logs_filter: Filter,
+    window: u64,
+    timeline_row: usize,
+    popup: bool,
 }
 
 impl Model {
@@ -231,6 +315,9 @@ impl Model {
             sonda,
             home,
             chooser,
+            source,
+            source_error,
+            urls: _,
         } = start;
         let sonda_only_start = lab.is_none() && !chooser;
         let selected = match &lab {
@@ -272,15 +359,36 @@ impl Model {
             run_pane: false,
             size: (80, 24),
             now: Instant::now(),
+            wall: UNIX_EPOCH,
             clock: String::new(),
             quit: false,
             exit_code: 0,
+            source: source.is_some(),
+            source_error,
+            devices: Vec::new(),
+            devices_at: None,
+            device: 0,
+            cursor: Cursor::Device(0),
+            device_filter: Filter::default(),
+            metrics: None,
+            alerts: Vec::new(),
+            alerts_ok: false,
+            runs: Vec::new(),
+            rcas: Vec::new(),
+            device_lines: Vec::new(),
+            logs_following: true,
+            logs_scroll: 0,
+            logs_filter: Filter::default(),
+            window: WINDOW_MINUTES,
+            timeline_row: 0,
+            popup: false,
         }
     }
 
-    pub fn tick(&mut self, now: Instant, clock: String, size: (u16, u16)) {
+    pub fn tick(&mut self, now: Instant, wall: SystemTime, size: (u16, u16)) {
         self.now = now;
-        self.clock = clock;
+        self.wall = wall;
+        self.clock = clock(wall);
         self.size = size;
     }
 
@@ -327,7 +435,89 @@ impl Model {
             Update::Stopped(source) => {
                 self.error = Some((source, "polling stopped".to_string(), self.now));
             }
+            Update::Devices(Ok(list)) => {
+                self.devices = list;
+                self.devices_at = Some(self.now);
+                let last = self.devices.len().saturating_sub(1);
+                self.device = self.device.min(last);
+                if let Cursor::Device(at) = self.cursor {
+                    self.cursor = Cursor::Device(at.min(last));
+                }
+                self.clear_error("sot");
+            }
+            Update::Devices(Err(text)) => self.fail("sot", text),
+            Update::Metrics(Ok(samples)) => {
+                self.metrics = Some(samples);
+                self.clear_error("prometheus");
+            }
+            Update::Metrics(Err(text)) => {
+                self.metrics = None;
+                self.fail("prometheus", text);
+            }
+            Update::Alerts(Ok(mut list)) => {
+                list.sort_by_key(|alert| Reverse(time::parse_rfc3339(&alert.starts_at)));
+                self.alerts = list;
+                self.alerts_ok = true;
+                if let Cursor::Alert(at) = self.cursor {
+                    self.cursor = match self.alerts.len() {
+                        0 => Cursor::Device(self.devices.len().saturating_sub(1)),
+                        len => Cursor::Alert(at.min(len - 1)),
+                    };
+                }
+                self.clear_error("alertmanager");
+            }
+            Update::Alerts(Err(text)) => {
+                self.alerts_ok = false;
+                self.fail("alertmanager", text);
+            }
+            Update::DeviceLogs(device, Ok(lines)) => {
+                if !self.is_selected(&device) {
+                    return;
+                }
+                for line in lines {
+                    if self.device_lines.iter().all(|held| held.line != line) {
+                        let shown = line.message().unwrap_or_else(|| line.text.clone());
+                        self.device_lines.push(DeviceLine { line, shown });
+                    }
+                }
+                self.device_lines
+                    .sort_by_key(|held| Reverse(held.line.nanoseconds));
+                self.device_lines.truncate(LOG_LINES);
+                self.clear_error("loki");
+            }
+            Update::DeviceLogs(_, Err(text)) => self.fail("loki", text),
+            Update::Rcas(device, Ok(lines)) => {
+                if self.is_selected(&device) {
+                    self.rcas = lines;
+                    self.clear_error("loki");
+                }
+            }
+            Update::Rcas(_, Err(text)) => self.fail("loki", text),
+            Update::FlowRuns(Ok(runs)) => {
+                self.runs = runs;
+                self.clear_error("prefect");
+            }
+            Update::FlowRuns(Err(text)) => self.fail("prefect", text),
         }
+    }
+
+    fn fail(&mut self, source: &str, text: String) {
+        self.error = Some((source.to_string(), text, self.now));
+    }
+
+    fn clear_error(&mut self, source: &str) {
+        if self
+            .error
+            .as_ref()
+            .is_some_and(|(held, _, _)| held == source)
+        {
+            self.error = None;
+        }
+    }
+
+    fn is_selected(&self, device: &str) -> bool {
+        self.selected_device()
+            .is_some_and(|selected| selected.name == device)
     }
 
     pub fn chooser(&self) -> bool {
@@ -369,12 +559,21 @@ impl Model {
     }
 
     pub fn typing(&self) -> bool {
-        self.filter.typing || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
+        self.filter.typing
+            || self.device_filter.typing
+            || self.logs_filter.typing
+            || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
     }
 
     pub fn typed_filter(&self) -> Option<&str> {
         if self.filter.typing {
             return self.filter.text.as_deref();
+        }
+        if self.device_filter.typing {
+            return self.device_filter.text.as_deref();
+        }
+        if self.logs_filter.typing {
+            return self.logs_filter.text.as_deref();
         }
         self.logs
             .as_ref()
@@ -432,6 +631,154 @@ impl Model {
         &self.clock
     }
 
+    pub fn wall(&self) -> SystemTime {
+        self.wall
+    }
+
+    pub fn devices(&self) -> &[Device] {
+        &self.devices
+    }
+
+    pub fn visible_devices(&self) -> Vec<usize> {
+        let needle = self.device_filter.text.as_deref().map(str::to_lowercase);
+        (0..self.devices.len())
+            .filter(|index| {
+                needle
+                    .as_deref()
+                    .is_none_or(|needle| self.devices[*index].name.to_lowercase().contains(needle))
+            })
+            .collect()
+    }
+
+    pub fn selected_device(&self) -> Option<&Device> {
+        self.devices.get(self.device)
+    }
+
+    pub fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
+    pub fn device_rows(&self) -> Vec<devices::ListRow> {
+        let visible = self.visible_devices();
+        devices::list_rows(
+            &self.devices,
+            self.metrics.as_deref(),
+            self.alerts_ok.then_some(self.alerts.as_slice()),
+        )
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| visible.contains(index))
+        .map(|(_, row)| row)
+        .collect()
+    }
+
+    pub fn source_note(&self) -> Option<&'static str> {
+        if !self.devices.is_empty() {
+            None
+        } else if self.source_error.is_some() {
+            Some("source of truth not opened")
+        } else if !self.source {
+            Some("no source of truth (sot = \"none\")")
+        } else if self.devices_at.is_none() {
+            Some("no answer yet")
+        } else {
+            Some("no devices")
+        }
+    }
+
+    pub fn source_error(&self) -> Option<&str> {
+        self.source_error.as_deref()
+    }
+
+    pub fn devices_at(&self) -> Option<Instant> {
+        self.devices_at
+    }
+
+    pub fn alerts(&self) -> &[Alert] {
+        &self.alerts
+    }
+
+    pub fn alerts_ok(&self) -> bool {
+        self.alerts_ok
+    }
+
+    pub fn interfaces(&self) -> Vec<devices::Row> {
+        self.selected_device().map_or_else(Vec::new, |device| {
+            devices::join(
+                &device.name,
+                &device.interfaces,
+                &device.sessions,
+                self.metrics.as_deref(),
+            )
+        })
+    }
+
+    pub fn timeline(&self) -> Vec<devices::Entry> {
+        let Some(device) = self.selected_device() else {
+            return Vec::new();
+        };
+        let logs: Vec<Line> = self
+            .device_lines
+            .iter()
+            .map(|held| held.line.clone())
+            .collect();
+        devices::merge(
+            &device.name,
+            &self.alerts,
+            &self.runs,
+            &self.rcas,
+            &logs,
+            Duration::from_secs(self.window * 60),
+            self.wall,
+        )
+    }
+
+    pub fn timeline_row(&self) -> usize {
+        self.timeline_row
+    }
+
+    pub fn popup(&self) -> bool {
+        self.popup
+    }
+
+    pub fn device_logs(&self) -> Option<(&str, Vec<&str>, bool, usize)> {
+        let device = self.selected_device()?;
+        Some((
+            device.name.as_str(),
+            self.shown_device_logs(),
+            self.logs_following,
+            self.logs_scroll,
+        ))
+    }
+
+    fn shown_device_logs(&self) -> Vec<&str> {
+        self.device_lines
+            .iter()
+            .map(|held| held.shown.as_str())
+            .filter(|text| self.logs_filter.matches(text))
+            .collect()
+    }
+
+    pub fn window(&self) -> u64 {
+        self.window
+    }
+
+    pub fn sot(&self) -> String {
+        match self.lab.as_ref().map(|lab| &lab.kind) {
+            Some(Kind::Workshop(workshop)) => workshop.sot.clone(),
+            Some(Kind::BookLab(_)) => "lab_vars".to_string(),
+            Some(Kind::LabcliLab(_)) => "none".to_string(),
+            None => {
+                let infrahub = self
+                    .stacks
+                    .get(self.selected)
+                    .and_then(|stack| env_value(&stack.env, INFRAHUB_ENV))
+                    .is_some();
+                if infrahub { "infrahub" } else { "none" }.to_string()
+            }
+        }
+    }
+
     pub fn header(&self) -> String {
         if self.chooser {
             return "nobs  no lab here".to_string();
@@ -444,15 +791,7 @@ impl Model {
             }
             (None, _) => return format!("nobs  sonda only  {}", self.sonda.server()),
         };
-        let source = match &self.lab {
-            Some(lab) => self.stacks.iter().find(|stack| stack.path == lab.dir),
-            None => stack,
-        };
-        let infrahub = source
-            .and_then(|stack| env_value(&stack.env, INFRAHUB_ENV))
-            .is_some();
-        let sot = if infrahub { "infrahub" } else { "none" };
-        format!("nobs  {name} {kind}  sot {sot}")
+        format!("nobs  {name} {kind}  sot {}", self.sot())
     }
 
     pub fn quit(&self) -> bool {
@@ -557,6 +896,14 @@ impl Model {
             self.filter.type_key(key.code);
             return Vec::new();
         }
+        if self.device_filter.typing {
+            self.device_filter.type_key(key.code);
+            return Vec::new();
+        }
+        if self.logs_filter.typing {
+            self.logs_filter.type_key(key.code);
+            return Vec::new();
+        }
         if let Some(logs) = self.logs.as_mut().filter(|logs| logs.filter.typing) {
             logs.filter.type_key(key.code);
             return Vec::new();
@@ -568,9 +915,9 @@ impl Model {
             return self.sonda_key(key);
         }
         match key.code {
-            KeyCode::Char('1') => self.workbench = Workbench::Devices,
-            KeyCode::Char('2') => self.workbench = Workbench::Services,
-            KeyCode::Char('3') => self.workbench = Workbench::Lab,
+            KeyCode::Char('1') => self.switch(Workbench::Devices),
+            KeyCode::Char('2') => self.switch(Workbench::Services),
+            KeyCode::Char('3') => self.switch(Workbench::Lab),
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('x') => self.error = None,
             KeyCode::Char('o') => self.run_pane = !self.run_pane,
@@ -583,9 +930,22 @@ impl Model {
             KeyCode::Esc => return self.escape(key),
             KeyCode::Char('r') if !sonda_keys => return vec![Command::Refresh],
             _ if self.workbench == Workbench::Services => return self.services_key(key),
+            _ if self.workbench == Workbench::Devices => return self.devices_key(key),
             _ => {}
         }
         Vec::new()
+    }
+
+    fn switch(&mut self, workbench: Workbench) {
+        self.workbench = workbench;
+        let tabs: &[Tab] = match workbench {
+            Workbench::Devices => &DEVICE_TABS,
+            Workbench::Services => &SERVICES_TABS,
+            Workbench::Lab => return,
+        };
+        if !tabs.contains(&self.tab) {
+            self.tab = Tab::Overview;
+        }
     }
 
     fn escape(&mut self, key: KeyEvent) -> Vec<Command> {
@@ -604,6 +964,10 @@ impl Model {
                 return vec![Command::CloseLogs];
             }
         }
+        if self.workbench == Workbench::Devices && self.popup {
+            self.popup = false;
+            return Vec::new();
+        }
         self.focus = Focus::List;
         Vec::new()
     }
@@ -619,17 +983,175 @@ impl Model {
     fn services_key(&mut self, key: KeyEvent) -> Vec<Command> {
         if self.focus == Focus::Tabs {
             match key.code {
-                KeyCode::Char('[') => return self.go_tab(self.tab.previous()),
-                KeyCode::Char(']') => return self.go_tab(self.tab.next()),
+                KeyCode::Char('[') => return self.go_tab(step(&SERVICES_TABS, self.tab, false)),
+                KeyCode::Char(']') => return self.go_tab(step(&SERVICES_TABS, self.tab, true)),
                 _ => {}
             }
         }
         match (self.focus, self.tab) {
             (Focus::List, _) => self.list_key(key.code),
-            (Focus::Tabs, Tab::Overview) => self.overview_key(key.code),
+            (Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Timeline) => {
+                self.overview_key(key.code)
+            }
             (Focus::Tabs, Tab::Logs) => self.logs_key(key.code),
             (Focus::Tabs, Tab::Sonda) => self.sonda_key(key),
         }
+    }
+
+    fn devices_key(&mut self, key: KeyEvent) -> Vec<Command> {
+        if self.focus == Focus::List {
+            return self.device_list_key(key.code);
+        }
+        match key.code {
+            KeyCode::Char('[') => return self.open_device_tab(false),
+            KeyCode::Char(']') => return self.open_device_tab(true),
+            _ => {}
+        }
+        match self.tab {
+            Tab::Timeline => self.timeline_key(key.code),
+            Tab::Logs => self.device_logs_key(key.code),
+            _ => Vec::new(),
+        }
+    }
+
+    fn open_device_tab(&mut self, forward: bool) -> Vec<Command> {
+        self.tab = step(&DEVICE_TABS, self.tab, forward);
+        let mut commands: Vec<Command> = self
+            .selected_device()
+            .map(|device| Command::SelectDevice(device.name.clone()))
+            .into_iter()
+            .collect();
+        commands.push(Command::OpenTab(self.tab));
+        commands
+    }
+
+    fn device_list_key(&mut self, code: KeyCode) -> Vec<Command> {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => return self.step_cursor(true),
+            KeyCode::Char('k') | KeyCode::Up => return self.step_cursor(false),
+            KeyCode::Char('/') => self.device_filter.start(),
+            KeyCode::Enter => return self.enter_cursor(),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn step_cursor(&mut self, down: bool) -> Vec<Command> {
+        let visible = self.visible_devices();
+        let next = match (self.cursor, down) {
+            (Cursor::Device(at), true) => visible
+                .iter()
+                .find(|index| **index > at)
+                .map(|index| Cursor::Device(*index))
+                .or_else(|| (!self.alerts.is_empty()).then_some(Cursor::Alert(0))),
+            (Cursor::Device(at), false) => visible
+                .iter()
+                .rev()
+                .find(|index| **index < at)
+                .map(|index| Cursor::Device(*index)),
+            (Cursor::Alert(at), true) => {
+                (at + 1 < self.alerts.len()).then_some(Cursor::Alert(at + 1))
+            }
+            (Cursor::Alert(0), false) => visible.last().map(|index| Cursor::Device(*index)),
+            (Cursor::Alert(at), false) => Some(Cursor::Alert(at - 1)),
+        };
+        let Some(next) = next else {
+            return Vec::new();
+        };
+        self.cursor = next;
+        match next {
+            Cursor::Device(index) => self.select_device(index),
+            Cursor::Alert(_) => Vec::new(),
+        }
+    }
+
+    fn enter_cursor(&mut self) -> Vec<Command> {
+        match self.cursor {
+            Cursor::Device(index) if index < self.devices.len() => {
+                let mut commands = self.select_device(index);
+                self.focus = Focus::Tabs;
+                self.tab = Tab::Overview;
+                commands.push(Command::OpenTab(Tab::Overview));
+                commands
+            }
+            Cursor::Device(_) => Vec::new(),
+            Cursor::Alert(at) => {
+                let Some(index) = self
+                    .alerts
+                    .get(at)
+                    .and_then(|alert| alert.labels.get("device"))
+                    .and_then(|name| self.devices.iter().position(|device| device.name == *name))
+                else {
+                    return Vec::new();
+                };
+                let mut commands = self.select_device(index);
+                self.focus = Focus::Tabs;
+                self.tab = Tab::Timeline;
+                commands.push(Command::OpenTab(Tab::Timeline));
+                commands
+            }
+        }
+    }
+
+    fn select_device(&mut self, index: usize) -> Vec<Command> {
+        let Some(name) = self.devices.get(index).map(|device| device.name.clone()) else {
+            return Vec::new();
+        };
+        if index != self.device {
+            self.device = index;
+            self.device_lines.clear();
+            self.rcas.clear();
+            self.logs_scroll = 0;
+            self.timeline_row = 0;
+            self.popup = false;
+        }
+        vec![Command::SelectDevice(name)]
+    }
+
+    fn timeline_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let entries = self.timeline().len();
+        let last = entries.saturating_sub(1);
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.timeline_row = (self.timeline_row + 1).min(last);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.timeline_row = self.timeline_row.saturating_sub(1).min(last);
+            }
+            KeyCode::Enter if entries > 0 => self.popup = true,
+            KeyCode::Char('-') => {
+                self.window = (self.window / 2).max(WINDOW_MIN);
+                return vec![Command::Window(self.window)];
+            }
+            KeyCode::Char('+') => {
+                self.window = (self.window * 2).min(WINDOW_MAX);
+                return vec![Command::Window(self.window)];
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn device_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
+        match code {
+            KeyCode::Char('f') => {
+                self.logs_following = !self.logs_following;
+                if self.logs_following {
+                    self.logs_scroll = 0;
+                }
+                return vec![Command::Follow(self.logs_following)];
+            }
+            KeyCode::Char('/') => self.logs_filter.start(),
+            KeyCode::Char('j') | KeyCode::Down if !self.logs_following => {
+                self.logs_scroll = self.logs_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up if !self.logs_following => {
+                let shown = self.shown_device_logs().len();
+                self.logs_scroll = (self.logs_scroll + 1).min(shown.saturating_sub(1));
+            }
+            _ => {}
+        }
+        Vec::new()
     }
 
     fn list_key(&mut self, code: KeyCode) -> Vec<Command> {
@@ -898,11 +1420,27 @@ fn untimed(line: &str) -> &str {
     line.split_once(' ').map_or(line, |(_, text)| text)
 }
 
+fn clock(wall: SystemTime) -> String {
+    let seconds = wall
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+        % 86_400;
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds % 3600 / 60,
+        seconds % 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
 
+    use nobs_core::lab_vars;
     use nobs_core::locate::locate;
+    use nobs_core::sot::Fixed;
 
     use super::*;
 
@@ -961,6 +1499,9 @@ mod tests {
             sonda: target(None),
             home: Workbench::Services,
             chooser: true,
+            source: None,
+            source_error: None,
+            urls: Urls::defaults(),
         }
     }
 
@@ -1023,7 +1564,7 @@ mod tests {
     }
 
     fn small(model: &mut Model, columns: u16, rows: u16) {
-        model.tick(Instant::now(), "13:42:07".to_string(), (columns, rows));
+        model.tick(Instant::now(), UNIX_EPOCH, (columns, rows));
     }
 
     fn sonda_rows(model: &mut Model) {
@@ -1316,7 +1857,7 @@ mod tests {
 
     #[test]
     fn a_placeholder_workbench_acts_on_the_global_keys_only() {
-        for number in ['1', '3'] {
+        for number in ['3'] {
             let mut model = opened(&["a", "b"]);
             ch(&mut model, number);
             let before = snapshot(&model);
@@ -1736,7 +2277,7 @@ mod tests {
         for text in [LINES, LIST] {
             let mut model = opened(&["autocon5"]);
             let at = Instant::now();
-            model.tick(at, "13:42:07".to_string(), (80, 24));
+            model.tick(at, UNIX_EPOCH, (80, 24));
             model.apply(Update::Health(
                 0,
                 vec![health("grafana", "ok"), health("loki", "http 503")],
@@ -2023,7 +2564,7 @@ mod tests {
     fn stopped_gives_an_error_x_clears_it_and_a_later_ps_answer_keeps_other_sources() {
         let mut model = opened(&["a"]);
         let at = Instant::now();
-        model.tick(at, "13:42:07".to_string(), (80, 24));
+        model.tick(at, UNIX_EPOCH, (80, 24));
 
         model.apply(Update::Stopped("sonda".to_string()));
 
@@ -2044,7 +2585,11 @@ mod tests {
         let mut model = opened(&["a"]);
         let at = Instant::now();
 
-        model.tick(at, "13:42:07".to_string(), (100, 30));
+        model.tick(
+            at,
+            UNIX_EPOCH + Duration::from_secs(1_794_231_727),
+            (100, 30),
+        );
 
         assert_eq!(model.clock(), "13:42:07");
         assert_eq!(model.now(), at);
@@ -2096,7 +2641,7 @@ mod tests {
             chooser: false,
             ..start(vec![plain])
         });
-        assert_eq!(model.header(), "nobs  book-lab book lab  sot none");
+        assert_eq!(model.header(), "nobs  book-lab book lab  sot lab_vars");
 
         assert_eq!(chooser(&["a"]).header(), "nobs  no lab here");
 
@@ -2121,5 +2666,258 @@ mod tests {
         assert_eq!(model.selected_stack(), 1);
         assert_eq!(model.tab(), Tab::Overview);
         assert_eq!(model.focus(), Focus::List);
+    }
+
+    fn workshop_source() -> Arc<dyn SourceOfTruth> {
+        let text = fs::read_to_string(fixture("workshop-one/lab_vars.yml")).unwrap();
+        Arc::new(Fixed::from_lab_vars(&lab_vars::read(&text).unwrap()))
+    }
+
+    fn workshop_located(sot: &str) -> Located {
+        let dir = fixture("workshop-one");
+        let mut located = locate(&dir, Some(&dir)).unwrap();
+        if let Kind::Workshop(workshop) = &mut located.kind {
+            workshop.sot = sot.to_string();
+        }
+        located
+    }
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    fn alert(device: &str, name: &str, starts_at: &str) -> Alert {
+        Alert {
+            labels: map(&[("alertname", name), ("device", device)]),
+            state: "active".to_string(),
+            silenced: false,
+            inhibited: false,
+            starts_at: starts_at.to_string(),
+            silenced_by: Vec::new(),
+            annotations: BTreeMap::new(),
+        }
+    }
+
+    fn peer_samples(value: f64) -> Vec<Sample> {
+        ["10.1.2.2", "10.1.7.2", "10.1.99.2"]
+            .into_iter()
+            .map(|peer| Sample {
+                labels: map(&[
+                    ("__name__", "bgp_oper_state"),
+                    ("device", "srl1"),
+                    ("peer_address", peer),
+                ]),
+                value,
+            })
+            .collect()
+    }
+
+    fn log_line(nanoseconds: i64, text: &str) -> Line {
+        Line {
+            nanoseconds,
+            text: text.to_string(),
+        }
+    }
+
+    fn srl1() -> Command {
+        Command::SelectDevice("srl1".to_string())
+    }
+
+    fn devices_model() -> Model {
+        let source = workshop_source();
+        let mut model = Model::new(Start {
+            lab: Some(workshop_located("infrahub")),
+            source: Some(source.clone()),
+            home: Workbench::Devices,
+            chooser: false,
+            ..start(vec![stack("a", &[])])
+        });
+        model.apply(Update::Devices(Ok(source.devices().unwrap())));
+        model.apply(Update::Alerts(Ok(vec![alert(
+            "srl2",
+            "BgpSessionNotUp",
+            "2026-11-09T13:53:32Z",
+        )])));
+        model
+    }
+
+    #[test]
+    fn the_device_keys_open_the_tabs_move_the_window_pause_the_logs_filter_and_pick_an_alert() {
+        let mut model = devices_model();
+        assert_eq!(model.focus(), Focus::List);
+
+        let commands = code(&mut model, KeyCode::Enter);
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Overview));
+        assert_eq!(commands, [srl1(), Command::OpenTab(Tab::Overview)]);
+
+        for expected in [Tab::Interfaces, Tab::Timeline, Tab::Logs, Tab::Overview] {
+            let commands = ch(&mut model, ']');
+            assert_eq!(model.tab(), expected);
+            assert_eq!(commands, [srl1(), Command::OpenTab(expected)]);
+        }
+        assert_eq!(ch(&mut model, '['), [srl1(), Command::OpenTab(Tab::Logs)]);
+        assert_eq!(
+            ch(&mut model, '['),
+            [srl1(), Command::OpenTab(Tab::Timeline)]
+        );
+        assert_eq!(model.tab(), Tab::Timeline);
+
+        assert_eq!(ch(&mut model, '-'), [Command::Window(15)]);
+        assert_eq!(model.window(), 15);
+        assert_eq!(ch(&mut model, '+'), [Command::Window(30)]);
+        assert_eq!(ch(&mut model, '+'), [Command::Window(60)]);
+        assert_eq!(model.window(), 60);
+
+        assert_eq!(code(&mut model, KeyCode::Esc), []);
+        assert_eq!((model.focus(), model.tab()), (Focus::List, Tab::Timeline));
+
+        assert_eq!(
+            ch(&mut model, 'j'),
+            [Command::SelectDevice("srl2".to_string())]
+        );
+        assert_eq!(model.cursor(), Cursor::Device(1));
+        assert_eq!(ch(&mut model, 'j'), []);
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+        assert_eq!(
+            code(&mut model, KeyCode::Enter),
+            [
+                Command::SelectDevice("srl2".to_string()),
+                Command::OpenTab(Tab::Timeline)
+            ]
+        );
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Timeline));
+
+        model.tick(
+            Instant::now(),
+            UNIX_EPOCH + Duration::from_secs(1_794_232_500 + 3 * 3600),
+            (80, 24),
+        );
+        assert!(model.timeline().is_empty());
+        model.tick(
+            Instant::now(),
+            UNIX_EPOCH + Duration::from_secs(1_794_232_500),
+            (80, 24),
+        );
+        assert_eq!(model.timeline().len(), 1);
+        assert_eq!(ch(&mut model, 'j'), []);
+        assert_eq!(model.timeline_row(), 0);
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+        assert!(model.popup());
+        assert_eq!(code(&mut model, KeyCode::Esc), []);
+        assert!(!model.popup());
+        assert_eq!(model.focus(), Focus::Tabs);
+
+        ch(&mut model, '2');
+        assert_eq!(model.workbench(), Workbench::Services);
+        assert_eq!(model.tab(), Tab::Overview);
+        ch(&mut model, '1');
+        assert_eq!(model.workbench(), Workbench::Devices);
+        for expected in [Tab::Interfaces, Tab::Timeline, Tab::Logs] {
+            let srl2 = Command::SelectDevice("srl2".to_string());
+            assert_eq!(ch(&mut model, ']'), [srl2, Command::OpenTab(expected)]);
+        }
+        assert_eq!(ch(&mut model, 'f'), [Command::Follow(false)]);
+        assert!(!model.device_logs().unwrap().2);
+
+        assert_eq!(code(&mut model, KeyCode::Esc), []);
+        assert_eq!(model.focus(), Focus::List);
+        ch(&mut model, '/');
+        assert!(model.typing());
+        typed(&mut model, "srl1");
+        assert_eq!(model.typed_filter(), Some("srl1"));
+        code(&mut model, KeyCode::Enter);
+        assert!(!model.typing());
+        assert_eq!(model.visible_devices(), [0]);
+    }
+
+    #[test]
+    fn the_sot_word_comes_from_the_workshop_setting_and_is_lab_vars_in_the_book_lab() {
+        let header = |located: Located| {
+            Model::new(Start {
+                lab: Some(located),
+                chooser: false,
+                ..start(vec![stack("autocon5", &[])])
+            })
+            .header()
+        };
+        assert!(header(workshop_located("none")).ends_with("sot none"));
+        assert!(header(workshop_located("infrahub")).ends_with("sot infrahub"));
+        let book = fixture("book-lab");
+        let located = locate(&book, Some(&book)).unwrap();
+        assert!(header(located).ends_with("sot lab_vars"));
+    }
+
+    #[test]
+    fn a_failed_prometheus_poll_shows_question_marks_and_its_success_clears_its_own_error() {
+        let mut model = devices_model();
+        assert_eq!(model.device_rows()[1].alerts, Some((1, false)));
+
+        model.apply(Update::Metrics(Ok(peer_samples(1.0))));
+        assert_eq!(model.device_rows()[0].health, devices::Health::Ok);
+
+        model.apply(Update::Metrics(Err("cannot reach http://x".to_string())));
+        assert_eq!(model.device_rows()[0].health, devices::Health::Unknown);
+        let (source, text, _) = model.error().unwrap();
+        assert_eq!(source, "prometheus");
+        assert!(text.contains("cannot reach"), "{text}");
+
+        model.apply(Update::Metrics(Ok(peer_samples(1.0))));
+        assert_eq!(model.device_rows()[0].health, devices::Health::Ok);
+        assert_eq!(model.error(), None);
+
+        model.apply(Update::Alerts(Err("cannot reach http://a".to_string())));
+        assert_eq!(model.device_rows()[0].alerts, None);
+        assert_eq!(model.alerts().len(), 1);
+        assert!(!model.alerts_ok());
+        model.apply(Update::Metrics(Ok(peer_samples(1.0))));
+        assert_eq!(model.error().unwrap().0, "alertmanager");
+        model.apply(Update::Alerts(Ok(Vec::new())));
+        assert_eq!(model.error(), None);
+    }
+
+    #[test]
+    fn moving_to_another_device_clears_its_logs_and_a_repeated_log_line_shows_once() {
+        let mut model = devices_model();
+        assert_eq!(model.selected_device().unwrap().name, "srl1");
+        let first = vec![
+            log_line(1, "link down"),
+            log_line(2, r#"{"message":"bgp idle"}"#),
+        ];
+        let second = vec![
+            log_line(2, r#"{"message":"bgp idle"}"#),
+            log_line(3, "bgp up"),
+        ];
+
+        model.apply(Update::DeviceLogs("srl1".to_string(), Ok(first)));
+        model.apply(Update::DeviceLogs("srl1".to_string(), Ok(second)));
+
+        let (name, lines, following, _) = model.device_logs().unwrap();
+        assert_eq!(name, "srl1");
+        assert_eq!(lines, ["bgp up", "bgp idle", "link down"]);
+        assert!(following);
+
+        model.apply(Update::DeviceLogs(
+            "srl2".to_string(),
+            Ok(vec![log_line(4, "other")]),
+        ));
+        assert_eq!(model.device_logs().unwrap().1.len(), 3);
+
+        assert_eq!(
+            ch(&mut model, 'j'),
+            [Command::SelectDevice("srl2".to_string())]
+        );
+        let (name, lines, _, _) = model.device_logs().unwrap();
+        assert_eq!(name, "srl2");
+        assert!(lines.is_empty());
+
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![log_line(5, "late")]),
+        ));
+        assert!(model.device_logs().unwrap().1.is_empty());
     }
 }

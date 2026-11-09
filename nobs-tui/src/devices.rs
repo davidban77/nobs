@@ -232,7 +232,8 @@ pub fn join(
                     value.map_or(DASH.to_string(), |value| evidence::decode_oper(Some(value)))
                 }
             };
-            let differs = (session.is_some() && bgp != "up") || (admin == "up" && oper == "down");
+            let differs = !matches!(bgp.as_str(), "up" | UNKNOWN | DASH | "")
+                || (admin == "up" && oper == "down");
             Row {
                 name: interface.name.clone(),
                 intent: interface

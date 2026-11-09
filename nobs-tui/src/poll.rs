@@ -112,6 +112,7 @@ impl Pollers {
             Command::SelectStack(_) => &[&self.health, &self.sonda],
             Command::OpenLogs { .. } | Command::Follow(_) | Command::CloseLogs => &[&self.logs],
             Command::Sonda(_) => &[&self.sonda],
+            Command::SelectDevice(_) | Command::OpenTab(_) | Command::Window(_) => &[],
         };
         for source in sources {
             let _ = source.commands.send(command.clone());
