@@ -79,6 +79,8 @@ fn peer_sample(peer: &str, value: f64) -> Sample {
             ("__name__", "bgp_oper_state"),
             ("device", "srl1"),
             ("peer_address", peer),
+            ("afi_safi_name", "ipv4-unicast"),
+            ("name", "default"),
         ],
         value,
     )
@@ -161,6 +163,41 @@ fn the_health_rule_gives_ok_warn_down_and_unknown_from_values() {
 }
 
 #[test]
+fn the_session_state_comes_from_the_series_of_its_address_family_and_instance() {
+    let series = |afi_safi: &str, instance: &str, value: f64| {
+        sample(
+            &[
+                ("__name__", "bgp_oper_state"),
+                ("device", "srl1"),
+                ("peer_address", "10.1.2.2"),
+                ("afi_safi_name", afi_safi),
+                ("name", instance),
+            ],
+            value,
+        )
+    };
+    let samples = [
+        series("ipv6-unicast", "default", 5.0),
+        series("ipv4-unicast", "other", 2.0),
+        series("ipv4-unicast", "default", 1.0),
+    ];
+    let session = |afi_safi: Option<&str>| {
+        let mut session = srl1().sessions.remove(0);
+        assert_eq!(session.peer, "10.1.2.2");
+        session.afi_safi = afi_safi.map(str::to_string);
+        session
+    };
+
+    let default_family = oper_states("srl1", &[session(None)], &samples);
+    let ipv6 = oper_states("srl1", &[session(Some("ipv6-unicast"))], &samples);
+    let other_only = oper_states("srl1", &[session(None)], &samples[1..2]);
+
+    assert_eq!(default_family, values(&[("10.1.2.2", 1.0)]));
+    assert_eq!(ipv6, values(&[("10.1.2.2", 5.0)]));
+    assert!(other_only.is_empty());
+}
+
+#[test]
 fn the_alert_count_is_per_device_active_only_and_red_for_a_critical() {
     let at = "2026-11-09T13:53:32Z";
     let mut alerts = vec![
@@ -234,12 +271,12 @@ fn the_join_matches_the_peer_by_subnet_and_decodes_the_live_columns() {
     assert!(unknown.iter().all(|row| !row.differs));
     assert_eq!(unknown[2].bgp, "");
 
-    let states = oper_states("srl1", &samples);
+    let states = oper_states("srl1", &device.sessions, &samples);
     assert_eq!(
         states,
         values(&[("10.1.2.2", 1.0), ("10.1.7.2", 1.0), ("10.1.99.2", 5.0)])
     );
-    assert!(oper_states("srl2", &samples).is_empty());
+    assert!(oper_states("srl2", &device.sessions, &samples).is_empty());
 
     let without_peer: Vec<Sample> = samples
         .iter()
@@ -444,6 +481,13 @@ fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
     }
     pollers.send(Command::Quit);
 
+    assert!(
+        stub.requests().iter().any(|request| request
+            .path
+            .contains("query=%7Bdevice%3D%22srl1%22%2C%20source!%3D%22prefect%22%7D")),
+        "{:?}",
+        stub.requests()
+    );
     let names: Vec<String> = devices.unwrap().into_iter().map(|d| d.name).collect();
     assert_eq!(names, ["srl1", "srl2"]);
     assert_eq!(metrics.unwrap().len(), 2);

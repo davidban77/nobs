@@ -200,6 +200,8 @@ fn metrics() -> Vec<Sample> {
                 ("__name__", "bgp_oper_state"),
                 ("device", device),
                 ("peer_address", peer),
+                ("afi_safi_name", "ipv4-unicast"),
+                ("name", "default"),
             ],
             value,
         ));

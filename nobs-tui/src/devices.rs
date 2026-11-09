@@ -15,6 +15,8 @@ const UNKNOWN: &str = "?";
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 const SECONDS_PER_DAY: i64 = 86_400;
 const BGP_OPER_STATE: &str = "bgp_oper_state";
+const AFI_SAFI: &str = "ipv4-unicast";
+const INSTANCE: &str = "default";
 const INTERFACE_ADMIN_STATE: &str = "interface_admin_state";
 const INTERFACE_OPER_STATE: &str = "interface_oper_state";
 
@@ -106,14 +108,27 @@ fn value_of(
         .map(|sample| sample.value)
 }
 
-pub fn oper_states(device: &str, samples: &[Sample]) -> BTreeMap<String, f64> {
-    samples
+pub fn oper_states(
+    device: &str,
+    sessions: &[Session],
+    samples: &[Sample],
+) -> BTreeMap<String, f64> {
+    sessions
         .iter()
-        .filter(|sample| {
-            label(sample, "__name__") == Some(BGP_OPER_STATE)
-                && label(sample, "device") == Some(device)
+        .filter_map(|session| {
+            let afi_safi = session.afi_safi.as_deref().unwrap_or(AFI_SAFI);
+            let value = samples
+                .iter()
+                .find(|sample| {
+                    label(sample, "__name__") == Some(BGP_OPER_STATE)
+                        && label(sample, "device") == Some(device)
+                        && label(sample, "peer_address") == Some(session.peer.as_str())
+                        && label(sample, "afi_safi_name") == Some(afi_safi)
+                        && label(sample, "name") == Some(INSTANCE)
+                })
+                .map(|sample| sample.value)?;
+            Some((session.peer.clone(), value))
         })
-        .filter_map(|sample| Some((label(sample, "peer_address")?.to_string(), sample.value)))
         .collect()
 }
 
@@ -158,7 +173,7 @@ pub fn list_rows(
             health: health(
                 &device.sessions,
                 samples
-                    .map(|samples| oper_states(&device.name, samples))
+                    .map(|samples| oper_states(&device.name, &device.sessions, samples))
                     .as_ref(),
             ),
             alerts: alerts.map(|alerts| alert_count(alerts, &device.name)),
@@ -184,17 +199,7 @@ pub fn alert_count(alerts: &[Alert], device: &str) -> (usize, bool) {
 }
 
 pub fn alert_state(alert: &Alert) -> String {
-    if alert.silenced {
-        "silenced".to_string()
-    } else if alert.inhibited {
-        "inhibited".to_string()
-    } else {
-        match alert.state.to_lowercase().as_str() {
-            "active" => "firing".to_string(),
-            "" => DASH.to_string(),
-            other => other.to_string(),
-        }
-    }
+    alert.state_word()
 }
 
 pub fn join(
@@ -203,6 +208,7 @@ pub fn join(
     sessions: &[Session],
     samples: Option<&[Sample]>,
 ) -> Vec<Row> {
+    let states = samples.map(|samples| oper_states(device, sessions, samples));
     interfaces
         .iter()
         .map(|interface| {
@@ -218,18 +224,13 @@ pub fn join(
             };
             let admin = live(INTERFACE_ADMIN_STATE);
             let oper = live(INTERFACE_OPER_STATE);
-            let bgp = match (session, samples) {
+            let bgp = match (session, &states) {
                 (None, _) => String::new(),
                 (Some(_), None) => UNKNOWN.to_string(),
-                (Some(session), Some(samples)) => {
-                    let value = value_of(
-                        samples,
-                        BGP_OPER_STATE,
-                        device,
-                        "peer_address",
-                        &session.peer,
-                    );
-                    value.map_or(DASH.to_string(), |value| evidence::decode_oper(Some(value)))
+                (Some(session), Some(states)) => {
+                    states.get(&session.peer).map_or(DASH.to_string(), |value| {
+                        evidence::decode_oper(Some(*value))
+                    })
                 }
             };
             let differs = !matches!(bgp.as_str(), "up" | UNKNOWN | DASH | "")

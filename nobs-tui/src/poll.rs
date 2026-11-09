@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 use nobs_core::alertmanager::Alertmanager;
 use nobs_core::compose::Compose;
 use nobs_core::lab;
-use nobs_core::loki::Loki;
+use nobs_core::loki::{rca_selector, Loki};
 use nobs_core::prefect::Prefect;
 use nobs_core::prometheus::Prometheus;
 use nobs_core::runner::{Output, Runner};
@@ -404,7 +404,7 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
         let now = SystemTime::now();
         let lines = client
             .query_range(
-                &format!(r#"{{device="{name}"}}"#),
+                &format!(r#"{{device="{name}", source!="prefect"}}"#),
                 window,
                 DEVICE_LOG_LIMIT,
                 now,
@@ -417,9 +417,8 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
             return true;
         }
         if tab == Tab::Timeline {
-            let query = format!(r#"{{source="prefect", ai_rca="true", device="{name}"}}"#);
             let rcas = client
-                .query_range(&query, window, DEVICE_LOG_LIMIT, now)
+                .query_range(&rca_selector(Some(name)), window, DEVICE_LOG_LIMIT, now)
                 .map_err(|error| error.to_string());
             if out.send(Update::Rcas(name.to_string(), rcas)).is_err() {
                 return true;

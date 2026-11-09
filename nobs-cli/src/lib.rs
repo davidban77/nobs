@@ -3479,14 +3479,11 @@ fn run_rca(flags: RcaFlags, located: &Located) -> i32 {
     };
     let device = given(flags.device);
     let peer = given(flags.peer);
-    let mut query = String::from(r#"{source="prefect", ai_rca="true""#);
-    if let Some(device) = &device {
-        query.push_str(&format!(r#", device="{device}""#));
-    }
+    let mut query = loki::rca_selector(device.as_deref());
     if let Some(peer) = &peer {
-        query.push_str(&format!(r#", peer_address="{peer}""#));
+        query.pop();
+        query.push_str(&format!(r#", peer_address="{peer}"}}"#));
     }
-    query.push('}');
     let client = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, |name| {
         std::env::var(name).ok()
     }));
@@ -5166,16 +5163,6 @@ fn alert_row(alert: &Alert, now: i64) -> [String; 5] {
         Some(peer) => format!("{device} → {peer}"),
         None => device,
     };
-    let state = if alert.silenced {
-        "silenced".to_string()
-    } else if alert.inhibited {
-        "inhibited".to_string()
-    } else {
-        match alert.state.to_lowercase().as_str() {
-            "active" => "firing".to_string(),
-            other => or_dash(other),
-        }
-    };
     [
         alert
             .labels
@@ -5184,7 +5171,7 @@ fn alert_row(alert: &Alert, now: i64) -> [String; 5] {
             .unwrap_or_else(|| DASH.to_string()),
         or_dash(label("severity")),
         target,
-        state,
+        alert.state_word(),
         time::age(&alert.starts_at, now),
     ]
 }

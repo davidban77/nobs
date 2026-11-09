@@ -145,6 +145,13 @@ impl Loki {
     }
 }
 
+pub fn rca_selector(device: Option<&str>) -> String {
+    match device {
+        Some(device) => format!(r#"{{source="prefect", ai_rca="true", device="{device}"}}"#),
+        None => r#"{source="prefect", ai_rca="true"}"#.to_string(),
+    }
+}
+
 fn nanoseconds_since_1970(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH).map_or(0, |elapsed| {
         i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX)
@@ -218,6 +225,15 @@ mod tests {
 
     fn texts(lines: &[Line]) -> Vec<&str> {
         lines.iter().map(|line| line.text.as_str()).collect()
+    }
+
+    #[test]
+    fn the_rca_selector_names_the_device_when_given() {
+        assert_eq!(rca_selector(None), r#"{source="prefect", ai_rca="true"}"#);
+        assert_eq!(
+            rca_selector(Some("srl1")),
+            r#"{source="prefect", ai_rca="true", device="srl1"}"#
+        );
     }
 
     #[test]

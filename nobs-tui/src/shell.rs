@@ -729,7 +729,7 @@ impl Model {
         let values = self
             .metrics
             .as_deref()
-            .map(|samples| devices::oper_states(&device.name, samples));
+            .map(|samples| devices::oper_states(&device.name, &device.sessions, samples));
         device
             .sessions
             .iter()
@@ -2770,6 +2770,8 @@ mod tests {
                     ("__name__", "bgp_oper_state"),
                     ("device", "srl1"),
                     ("peer_address", peer),
+                    ("afi_safi_name", "ipv4-unicast"),
+                    ("name", "default"),
                 ]),
                 value,
             })
