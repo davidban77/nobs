@@ -508,7 +508,7 @@ fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
     assert!(
         stub.requests().iter().any(|request| request
             .path
-            .contains("query=%7Bdevice%3D%22srl1%22%2C%20source!%3D%22prefect%22%7D")),
+            .contains("query=%7Bdevice%3D%22srl1%22%2C%20ai_rca!%3D%22true%22%7D")),
         "{:?}",
         stub.requests()
     );

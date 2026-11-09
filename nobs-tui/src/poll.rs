@@ -404,7 +404,7 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
         let now = SystemTime::now();
         let lines = client
             .query_range(
-                &format!(r#"{{device="{name}", source!="prefect"}}"#),
+                &format!(r#"{{device="{name}", ai_rca!="true"}}"#),
                 window,
                 DEVICE_LOG_LIMIT,
                 now,
