@@ -635,8 +635,75 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Tab::Overview => device_overview(frame, content, model),
         Tab::Timeline => timeline(frame, content, model),
         Tab::Logs => device_logs(frame, content, model),
-        Tab::Interfaces | Tab::Sonda => {}
+        Tab::Interfaces => device_interfaces(frame, content, model, wide),
+        Tab::Sonda => {}
     }
+}
+
+fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
+    let interfaces = model.interfaces();
+    let columns: &[usize] = if wide {
+        &[0, 1, 2, 3, 4, 5]
+    } else {
+        &[0, 2, 3, 5]
+    };
+    let titles = ["NAME", "INTENT", "ADMIN", "OPER", "PEER", "BGP"];
+    let cells: Vec<[&str; 6]> = interfaces
+        .iter()
+        .map(|row| {
+            [
+                row.name.as_str(),
+                row.intent.as_str(),
+                row.admin.as_str(),
+                row.oper.as_str(),
+                row.peer.as_str(),
+                row.bgp.as_str(),
+            ]
+        })
+        .collect();
+    let mut widths = titles.map(|title| title.chars().count());
+    for row in &cells {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    let width = usize::from(area.width);
+    let line = |row: &[&str; 6], yellow: bool, states: bool| {
+        let parts = columns
+            .iter()
+            .map(|&column| {
+                let text = if column == 5 {
+                    row[column].to_string()
+                } else {
+                    format!("{:<1$}  ", row[column], widths[column])
+                };
+                let style = if yellow {
+                    Style::new().fg(Color::Yellow)
+                } else if states && matches!(column, 2 | 3 | 5) {
+                    tone(row[column])
+                } else {
+                    Style::new()
+                };
+                (text, style)
+            })
+            .collect();
+        fitted(parts, width)
+    };
+    let [table, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let mut lines = vec![line(&titles, false, false)];
+    lines.extend(
+        cells
+            .iter()
+            .zip(&interfaces)
+            .map(|(row, source)| line(row, source.differs, true)),
+    );
+    frame.render_widget(Paragraph::new(lines), table);
+    let differs = interfaces.iter().filter(|row| row.differs).count();
+    let summary = format!("{} interfaces  {differs} differs", interfaces.len());
+    frame.render_widget(
+        Paragraph::new(fitted(vec![(summary, Style::new())], width)),
+        footer,
+    );
 }
 
 fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {

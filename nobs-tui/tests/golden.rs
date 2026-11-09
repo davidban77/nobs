@@ -545,6 +545,11 @@ fn the_devices_frame_is_pinned() {
 }
 
 #[test]
+fn the_devices_interfaces_frame_is_pinned() {
+    golden("devices-interfaces", || on_tab(1));
+}
+
+#[test]
 fn the_devices_timeline_frame_is_pinned() {
     golden("devices-timeline", || on_tab(2));
 }
