@@ -1017,7 +1017,7 @@ pub struct StatusFlags {
     #[arg(
         long,
         value_name = "URL",
-        help = "Address of Prefect; nobs looks at --prefect-url, then http://localhost:4200"
+        help = "Address of Prefect; nobs looks at --prefect-url, then PREFECT_API_URL, then http://localhost:4200"
     )]
     prefect_url: Option<String>,
     #[arg(

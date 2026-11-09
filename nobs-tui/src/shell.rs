@@ -332,6 +332,10 @@ impl Model {
         }
         .unwrap_or(0);
         let url = sonda_url(sonda.server.as_deref(), stacks.get(selected));
+        let now = Instant::now();
+        let error = source_error
+            .clone()
+            .map(|text| ("sot".to_string(), text, now));
         Model {
             lab,
             states: vec![StackState::Unknown; stacks.len()],
@@ -357,11 +361,11 @@ impl Model {
             logs: None,
             server: sonda.server,
             sonda: data::Model::new(url),
-            error: None,
+            error,
             help: false,
             run_pane: false,
             size: (80, 24),
-            now: Instant::now(),
+            now,
             wall: UNIX_EPOCH,
             clock: String::new(),
             quit: false,
@@ -2601,6 +2605,26 @@ mod tests {
         model.apply(Update::Services(0, Err("exit 1".to_string())));
         assert_eq!(model.error(), Some(("ps a", "exit 1", at)));
         with_services(&mut model, &["grafana"]);
+        assert_eq!(model.error(), None);
+    }
+
+    #[test]
+    fn a_source_that_could_not_be_opened_is_named_on_the_error_row() {
+        let reason = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
+        let mut model = Model::new(Start {
+            lab: Some(workshop_located("infrahub")),
+            source: None,
+            source_error: Some(reason.to_string()),
+            home: Workbench::Devices,
+            chooser: false,
+            ..start(vec![stack("a", &[])])
+        });
+
+        model.tick(Instant::now(), UNIX_EPOCH, (80, 24));
+
+        let (source, text, _) = model.error().unwrap();
+        assert_eq!((source, text), ("sot", reason));
+        ch(&mut model, 'x');
         assert_eq!(model.error(), None);
     }
 

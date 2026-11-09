@@ -103,7 +103,7 @@ With `sot = "none"` in `nobs.toml`, the lab has no source of truth. The list and
 
 The `sot` word of the header is found like this: in a workshop, it is the `sot` setting of `nobs.toml` (`infrahub` or `none`); in a book lab, it is `lab_vars`, and the devices come from `containerlab/lab_vars.yml`, which nobs reads once when the screen opens; in a labcli lab, it is `none`. A workshop that you open from the chooser has no source of truth in the devices workbench: the word follows its `.env` file, as before, and the workbench shows the `sot = "none"` line. To get the devices, start plain `nobs` in the workshop folder.
 
-When nobs cannot open the source of truth, for example because `INFRAHUB_API_TOKEN` is not set or `containerlab/lab_vars.yml` cannot be read, the screen still opens. The list stays empty and, with the body of the tab, shows the dim line `source of truth not opened`. The alerts box is still filled. Before the first answer the line reads `no answer yet`, and when the source answers with no device it reads `no devices`.
+When nobs cannot open the source of truth, for example because `INFRAHUB_API_TOKEN` is not set or `containerlab/lab_vars.yml` cannot be read, the screen still opens. The red error row under the switcher names it (`sot:` and the reason), and the list stays empty and shows, with the body of the tab, the dim line `source of truth not opened`. The alerts box is still filled. Before the first answer the line reads `no answer yet`, and when the source answers with no device it reads `no devices`.
 
 ### The services workbench
 
@@ -892,7 +892,7 @@ nobs finds each address in this order: the flag, then the variable, then the def
 | the address of Prefect (`cycle`) | `--prefect-url URL` | `PREFECT_API_URL` | `http://localhost:4200` |
 | the address of the webhook (`cycle`) | `--webhook-url URL` | `WEBHOOK_URL` | `http://localhost:9997/v1/api/webhook` |
 
-A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Alertmanager, Loki or Prefect is dropped, and so is a trailing `/api` on the address of Prefect, so `http://localhost:4200/api` works as well as `http://localhost:4200`. The address of the webhook is used as it is given. `nobs <workshop> status` reads `PREFECT_API_URL` too, but it does not drop a trailing `/api` from the address. Each call waits at most 10 seconds, and the post to the webhook waits at most 15.
+A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Alertmanager, Loki or Prefect is dropped, and so is a trailing `/api` on the address of Prefect, so `http://localhost:4200/api` works as well as `http://localhost:4200`. The address of the webhook is used as it is given. `nobs <workshop> status` reads `PREFECT_API_URL` too, and drops a trailing `/api` from it as `cycle` does. Each call waits at most 10 seconds, and the post to the webhook waits at most 15.
 
 `cycle` prints a blank line, a title line and a body for each of four panels, in the order of the table below. When a call fails, the panel keeps its title and its body is the error. The exit code stays 0 whatever the panels found. For example, with an alert that a silence mutes, and a flow that started three child flows:
 

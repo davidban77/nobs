@@ -78,13 +78,15 @@ fn default_url(name: &str) -> String {
 
 pub fn targets(urls: &Urls) -> Vec<Target> {
     let infrahub = host_address(&urls.infrahub);
+    let prefect = urls.prefect.trim_end_matches('/');
+    let prefect = prefect.strip_suffix("/api").unwrap_or(prefect);
     [
         ("Grafana", urls.grafana.as_str(), "/api/health"),
         ("Prometheus", urls.prometheus.as_str(), "/-/ready"),
         ("Loki", urls.loki.as_str(), "/ready"),
         ("Alertmanager", urls.alertmanager.as_str(), "/-/ready"),
         ("Infrahub", infrahub.as_str(), "/health"),
-        ("Prefect", urls.prefect.as_str(), "/api/health"),
+        ("Prefect", prefect, "/api/health"),
         ("Sonda", urls.sonda.as_str(), "/health"),
     ]
     .into_iter()
@@ -234,6 +236,21 @@ mod tests {
         let found = targets(&urls);
         assert_eq!(found[0].base, "http://g:3000");
         assert_eq!(found[6].base, "http://s:8085");
+    }
+
+    #[test]
+    fn the_prefect_probe_drops_a_trailing_api_from_the_address() {
+        for given in ["http://prefect.test:4200/api", "http://prefect.test:4200"] {
+            let urls = Urls {
+                prefect: given.to_string(),
+                ..Urls::defaults()
+            };
+            let found = &targets(&urls)[5];
+            assert_eq!(
+                format!("{}{}", found.base, found.path),
+                "http://prefect.test:4200/api/health"
+            );
+        }
     }
 
     #[test]
