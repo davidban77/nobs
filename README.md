@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen: the services workbench and the chooser work, and the devices workbench and the lab workbench are not built yet and show one line each. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and `nobs <workshop> ps` work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen: the services workbench and the chooser work, and the devices workbench and the lab workbench are not built yet and show one line each. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -648,14 +648,14 @@ nobs finds the address and the token in this order: the flag, then the variable,
 | the address of Infrahub | `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
 | the token | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none |
 
-A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line first (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)). `maintenance` names the address flag `--address`; `devices` and `evidence` name it `--infrahub-url`.
+A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line first (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)). `load-infrahub`, `schema load` and `maintenance` name the address flag `--address`; `devices` and `evidence` name it `--infrahub-url`.
 
 The table has one header line and one line per device, with the columns lined up:
 
 | Column | What it shows |
 |---|---|
 | `NAME` | the name of the device |
-| `KIND` | the kind of the device, or `—` when the source does not hold one; it is always `—`, because Infrahub holds no kind for a device |
+| `KIND` | the kind of the device, or `—` when the source does not hold one; with Infrahub it is always `—`, because nobs reads no device kind from Infrahub; this is not the node kind, such as `WorkshopDevice` (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)) |
 | `SITE` | the site of the device, or `—` when the source does not hold one |
 | `ROLE` | the role of the device, or `—` when the source does not hold one |
 | `MAINT` | `yes` when the maintenance flag of the device is set, else `no` |
