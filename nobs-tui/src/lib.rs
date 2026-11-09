@@ -514,12 +514,15 @@ mod tests {
             None,
         );
         let mut terminal = terminal(100, 30);
-        let mut turn = 0;
+        let mut gone = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while model.error().is_none_or(|(source, ..)| source != "ps") && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+            drain(&updates, &mut model, &mut gone);
+        }
 
         turns(&mut terminal, &mut model, &pollers, &updates, |_| {
-            turn += 1;
-            thread::sleep(Duration::from_millis(20));
-            Ok((turn == 25).then(q))
+            Ok(Some(q()))
         })
         .unwrap();
 
