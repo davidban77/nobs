@@ -399,7 +399,7 @@ With `sot = "none"`, three commands change. None of them asks for a token or pri
 | `maintenance` | prints `nobs: this lab has no source of truth` on standard error and exits with 1; it sends nothing to Infrahub or Sonda |
 | `evidence` | prints `Source of truth` and `this lab has no source of truth.` as its first block; it still prints the Prometheus and Loki blocks, and ends with the policy hint `decision: stop` and `reason  : this lab has no source of truth`; exit code 0 |
 
-The setting changes only these three commands. `load-infrahub`, `schema load`, `try-it`, `reset` and `preflight` still talk to Infrahub whatever `sot` says.
+The setting changes only these three commands. `load-infrahub`, `schema load`, `try-it`, `reset` and `preflight` still talk to Infrahub whatever `sot` says. `status` and the `HEALTH` column of the screen still ask Infrahub whether it is up. The header of the screen does not read `sot` either: it shows `sot infrahub` when the `.env` file of the lab sets `INFRAHUB_ADDRESS`, so a lab with `sot = "none"` can still show `sot infrahub` there.
 
 ### status
 
@@ -558,7 +558,7 @@ A variable can be set in the shell or in the `.env` file of the workshop; the sh
 
 The containers reach Infrahub by the name `infrahub-server`, and your machine cannot. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead. Before any other line, it then prints the rewrite line: `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000`. The line says `INFRAHUB_ADDRESS` even when the address came from `--address`. A trailing `/` is dropped without a message.
 
-`load-infrahub` and `maintenance` check the token first. Then `load-infrahub` reads the schema file (unless you give `--skip-schema`) and the lab variables file. `schema load` first checks that its schema file is there, then checks the token, then reads the file. `load-infrahub` and `schema load` send nothing to Infrahub before they have read their files. When a file is missing, nobs prints `nobs: schema file not found: <path>` or `nobs: lab_vars file not found: <path>`. When a file is there but is not valid YAML, or does not have the shape nobs expects, nobs prints `nobs: cannot read <path>: <reason>`.
+`load-infrahub` and `maintenance` check the token first; `maintenance` does not when the lab has `sot = "none"` (see [Workshops](#workshops)). Then `load-infrahub` reads the schema file (unless you give `--skip-schema`) and the lab variables file. `schema load` first checks that its schema file is there, then checks the token, then reads the file. `load-infrahub` and `schema load` send nothing to Infrahub before they have read their files. When a file is missing, nobs prints `nobs: schema file not found: <path>` or `nobs: lab_vars file not found: <path>`. When a file is there but is not valid YAML, or does not have the shape nobs expects, nobs prints `nobs: cannot read <path>: <reason>`.
 
 `load-infrahub` prints the rewrite line when there is one, then `Applying schema <path>` and `Schema applied` (both left out with `--skip-schema`), then `Loading <path> into Infrahub at <address>`. Infrahub needs a moment before it shows the kinds of a new schema, so nobs waits up to 30 seconds until Infrahub shows `WorkshopDevice`, `WorkshopInterface` and `WorkshopBgpSession`. Then nobs prints one progress line for each device, as soon as it has created or updated that device, for example `device srl1 created` or `device srl1 updated`. After that line, nobs loads the interfaces and BGP sessions of the device, and prints no line for them. Then one table and one last line. For example:
 
@@ -616,6 +616,7 @@ These three variables follow the same rule as the Infrahub variables: the shell 
 | Exit code | When |
 |---|---|
 | 0 | the command finished |
+| 1 | `maintenance` in a lab with `sot = "none"`: `nobs: this lab has no source of truth`; nobs asks for no token and sends nothing |
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 1 | a file is missing: `nobs: schema file not found: <path>` or `nobs: lab_vars file not found: <path>` |
 | 1 | a file cannot be read: `nobs: cannot read <path>: <reason>` |
@@ -633,21 +634,28 @@ The files under `captures/` are the record of what the Python SDK (Infrahub's ow
 
 ### devices
 
-`nobs <workshop> devices` prints the devices of the lab as the source of truth holds them, as one table. The source of truth is the system that holds what the lab should look like (see [Workshops](#workshops)); today it is Infrahub. The command only reads, and it makes no Docker call. Inside a workshop folder, `nobs devices` does the same. The devices workbench of the screen, which is not built yet, will show the same list.
+`nobs <workshop> devices` prints the devices of the lab's source of truth (see [Workshops](#workshops)) as one table. The command only reads, and it makes no Docker call. Inside a workshop folder, `nobs devices` does the same.
 
 | Flag | What it does |
 |---|---|
 | `--infrahub-url URL` | gives the address of Infrahub |
 | `--token TOKEN` | gives the token for Infrahub |
 
-nobs finds the address in this order: `--infrahub-url`, then the variable `INFRAHUB_ADDRESS`, then `http://localhost:8000`. It finds the token in this order: `--token`, then the variable `INFRAHUB_API_TOKEN`. This is the order of `evidence`, and the other rules are the same too (see [rca and evidence](#rca-and-evidence)): a variable can be set in the shell or in the `.env` file of the workshop, the shell wins, a value that is empty or only spaces counts as not given, and a trailing `/` on an address is dropped. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line first (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)).
+nobs finds the address and the token in this order: the flag, then the variable, then the default.
+
+| Value | Flag | Variable | Default |
+|---|---|---|---|
+| the address of Infrahub | `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
+| the token | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none |
+
+A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line first (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)). `maintenance` names the address flag `--address`; `devices` and `evidence` name it `--infrahub-url`.
 
 The table has one header line and one line per device, with the columns lined up:
 
 | Column | What it shows |
 |---|---|
 | `NAME` | the name of the device |
-| `KIND` | the kind of the device, or `—` when the source does not hold one; today it is always `—`, because no source holds a device kind yet |
+| `KIND` | the kind of the device, or `—` when the source does not hold one; it is always `—`, because Infrahub holds no kind for a device |
 | `SITE` | the site of the device, or `—` when the source does not hold one |
 | `ROLE` | the role of the device, or `—` when the source does not hold one |
 | `MAINT` | `yes` when the maintenance flag of the device is set, else `no` |
@@ -670,13 +678,13 @@ When the lab has `sot = "none"`, nobs prints the header line alone, asks for no 
 |---|---|
 | 0 | nobs printed the table, or the header line alone |
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
-| 1 | Infrahub did not answer: `nobs: cannot reach <url>: <reason>` |
+| 1 | Infrahub did not answer: `nobs: cannot reach <address>: <reason>` |
 | 1 | Infrahub answered with an error: `nobs: <error>`, where `<error>` is `Infrahub answered <status> on <path>: <answer>` or `Infrahub: <message>` |
 | 2 | a flag nobs does not know |
 
 ### rca and evidence
 
-Two commands show what the running stack knows about a BGP session. Both only read, and neither makes a Docker call. Inside a workshop folder, `nobs rca` and `nobs evidence` do the same. RCA means root cause analysis. An AI RCA record is a log line in Loki, written by the workshop's automation, that holds a short explanation of why an alert fired. SoT means source of truth: what Infrahub holds about the lab.
+Two commands show what the running stack knows about a BGP session. Both only read, and neither makes a Docker call. Inside a workshop folder, `nobs rca` and `nobs evidence` do the same. RCA means root cause analysis. An AI RCA record is a log line in Loki, written by the workshop's automation, that holds a short explanation of why an alert fired. SoT is short for source of truth (see [Workshops](#workshops)).
 
 | Command | What it does |
 |---|---|
@@ -707,7 +715,7 @@ nobs finds each address and the token in this order: the flag, then the variable
 | the address of Infrahub (`evidence`) | `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
 | the token for Infrahub (`evidence`) | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none |
 
-A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. Each call waits at most 10 seconds. `evidence` treats the Infrahub address and the token as `load-infrahub` does (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)): when the address names `infrahub-server`, nobs prints the rewrite line first and uses `http://localhost:8000`, and with no token it prints the required-token line and sends nothing.
+A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. Each call waits at most 10 seconds. `evidence` treats the Infrahub address and the token as `load-infrahub` does (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)): when the address names `infrahub-server`, nobs prints the rewrite line first and uses `http://localhost:8000`, and with no token it prints the required-token line and sends nothing. With `sot = "none"`, `evidence` asks for no token and does not call Infrahub (see [Workshops](#workshops)).
 
 `rca` sends one request to Loki for the lines that carry the labels `source="prefect"` and `ai_rca="true"`, and the labels `device` and `peer_address` when you give them. It asks for the newest lines first, at most `--last` of them. When Loki returns no line, nobs prints one line, where `<scope>` is `device=D peer=P`, `device=D`, `peer=P` or `any device/peer`, `<folder>` is the workshop folder, and `<name>` is the `name` setting in its `nobs.toml`:
 
@@ -767,6 +775,7 @@ The first block depends on what Infrahub answered. A peer is intended when the d
 | has the device | `Source of truth (Infrahub)` and the lines of the example |
 | has no such device | `Source of truth`, then `device not found in Infrahub.` |
 | did not answer, or answered with an error | `Source of truth`, then `Infrahub query failed: <error>`, where `<error>` is `cannot reach <address>: <reason>`, `Infrahub answered <status> on <path>: <answer>` or `Infrahub: <message>` |
+| is not asked, because the lab has `sot = "none"` | `Source of truth`, then `this lab has no source of truth.` |
 
 In the second block, the `Value` column is right-aligned. A whole number shows without a fraction (`1`, `10`) and any other number as it is (`0.5`). A missing `admin_state` or `oper_state` shows as `-1`, a missing counter as `0`, and a number that is not finite as `?`. `Decoded` is `enable` for an `admin_state` of 1 and `disable` for 2, and `up`, `down`, `idle`, `connect` or `active` for an `oper_state` of 1 to 5. Any other number is `unknown`, a missing state is `—`, and the four counters always show `—`.
 
@@ -776,7 +785,7 @@ The last block shows the first row of this table that fits:
 
 | decision | reason | When |
 |---|---|---|
-| `stop` | `device not found in Infrahub`, or the `Infrahub query failed` text | the first block is not `Source of truth (Infrahub)` |
+| `stop` | `device not found in Infrahub`, `this lab has no source of truth`, or the `Infrahub query failed` text | the first block is not `Source of truth (Infrahub)` |
 | `skip` | `device under maintenance` | the device has `maintenance` set to true |
 | `skip` | `peer not intended in SoT` | the peer is not intended |
 | `skip` | `SoT expects this peer to be down/disabled` | the expected state, in lower case, is `down` or `disabled`; with no expected state, nobs reads `established` |
