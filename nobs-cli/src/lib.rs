@@ -4905,9 +4905,21 @@ fn screen_start(
     flags: SondaFlags,
     chooser: bool,
 ) -> Result<nobs_tui::Start, String> {
+    screen_start_with(here, given_dir, flags, chooser, &|name| {
+        std::env::var(name).ok()
+    })
+}
+
+fn screen_start_with(
+    here: &Path,
+    given_dir: Option<&Path>,
+    flags: SondaFlags,
+    chooser: bool,
+    process: &dyn Fn(&str) -> Option<String>,
+) -> Result<nobs_tui::Start, String> {
     let sonda = nobs_tui::SondaTarget {
-        server: given(flags.server).or_else(|| given(std::env::var("SONDA_SERVER_URL").ok())),
-        api_key: given(flags.api_key).or_else(|| given(std::env::var("SONDA_API_KEY").ok())),
+        server: given(flags.server).or_else(|| given(process("SONDA_SERVER_URL"))),
+        api_key: given(flags.api_key).or_else(|| given(process("SONDA_API_KEY"))),
     };
     let home = nobs_tui::Workbench::Services;
     match locate(here, given_dir) {
@@ -4923,7 +4935,7 @@ fn screen_start(
                 .find(|stack| stack.path == located.dir)
                 .map_or(&[][..], |stack| stack.env.as_slice());
             let lookup = |name: &str| {
-                given(std::env::var(name).ok()).or_else(|| {
+                given(process(name)).or_else(|| {
                     given(
                         lab_env
                             .iter()
@@ -4984,7 +4996,7 @@ fn screen_start(
                 home,
                 source: None,
                 source_error: None,
-                urls: nobs_core::status::Urls::from_lookup(|name| std::env::var(name).ok()),
+                urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
                 chooser: true,
             })
         }
@@ -4995,7 +5007,7 @@ fn screen_start(
             home,
             source: None,
             source_error: None,
-            urls: nobs_core::status::Urls::from_lookup(|name| std::env::var(name).ok()),
+            urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
             chooser: false,
         }),
         Err(error) => Err(error.to_string()),
@@ -5881,7 +5893,7 @@ mod tests {
             None,
             Some("INFRAHUB_API_TOKEN=nobs-t-token\nINFRAHUB_ADDRESS=http://127.0.0.1:1\n"),
         );
-        let start = screen_start(&workshop.0, None, flags(None), false).unwrap();
+        let start = screen_start_with(&workshop.0, None, flags(None), false, &|_| None).unwrap();
         assert_eq!(start.home, nobs_tui::Workbench::Devices);
         assert!(start.source.is_some());
         assert!(start.source_error.is_none());
@@ -5890,7 +5902,7 @@ mod tests {
         assert!(header.ends_with("sot infrahub"), "{header}");
 
         let book = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/book-lab");
-        let start = screen_start(&book, None, flags(None), false).unwrap();
+        let start = screen_start_with(&book, None, flags(None), false, &|_| None).unwrap();
         assert_eq!(start.home, nobs_tui::Workbench::Services);
         assert!(start.source_error.is_none());
         let names: Vec<_> = start
@@ -5907,7 +5919,7 @@ mod tests {
         assert!(header.ends_with("sot lab_vars"), "{header}");
 
         let none = workshop_scratch("screen-home-none", Some("none"), None);
-        let start = screen_start(&none.0, None, flags(None), false).unwrap();
+        let start = screen_start_with(&none.0, None, flags(None), false, &|_| None).unwrap();
         assert_eq!(start.home, nobs_tui::Workbench::Devices);
         assert!(start.source.is_none());
         assert!(start.source_error.is_none());
@@ -5919,7 +5931,7 @@ mod tests {
     fn a_workshop_without_a_token_opens_with_the_source_error_and_no_source() {
         let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/workshop-one");
 
-        let start = screen_start(&here, None, flags(None), false).unwrap();
+        let start = screen_start_with(&here, None, flags(None), false, &|_| None).unwrap();
 
         assert_eq!(start.home, nobs_tui::Workbench::Devices);
         assert!(start.source.is_none());

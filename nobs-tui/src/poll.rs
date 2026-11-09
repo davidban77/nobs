@@ -190,7 +190,8 @@ impl Pollers {
             ),
             Command::SelectStack(_) => (&[&self.health, &self.sonda], &[]),
             Command::OpenLogs { .. } | Command::CloseLogs => (&[&self.logs], &[]),
-            Command::Follow(_) => (&[&self.logs], &[&self.loki]),
+            Command::Follow(_) => (&[&self.logs], &[]),
+            Command::FollowDevice(_) => (&[], &[&self.loki]),
             Command::Sonda(_) => (&[&self.sonda], &[]),
             Command::SelectDevice(_) | Command::OpenTab(_) | Command::Window(_) => {
                 (&[], &[&self.loki, &self.prefect])
@@ -389,7 +390,7 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
                 window = minutes;
                 true
             }
-            Wake::Command(Command::Follow(on)) => {
+            Wake::Command(Command::FollowDevice(on)) => {
                 following = on;
                 on
             }

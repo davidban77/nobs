@@ -11,15 +11,17 @@ use ratatui::Frame;
 use nobs_core::time;
 
 use crate::devices;
-use crate::shell::{kind_text, Cursor, Focus, Model, StackKind, StackState, Tab, Workbench};
+use crate::shell::{
+    kind_text, Cursor, Focus, Model, StackKind, StackState, Tab, Workbench, DEVICE_TABS,
+    SERVICES_TABS,
+};
 use crate::view;
 
 const WIDE: u16 = 100;
 const LEFT_NARROW: u16 = 23;
 const LEFT_WIDE: u16 = 32;
 const LEFT_DEVICES: u16 = 42;
-const SERVICES_TABS: [Tab; 3] = [Tab::Overview, Tab::Logs, Tab::Sonda];
-const DEVICE_TABS: [Tab; 4] = [Tab::Overview, Tab::Interfaces, Tab::Timeline, Tab::Logs];
+
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const HELP_HEIGHT: u16 = 11;
 const HELP_PLACEHOLDER_HEIGHT: u16 = 12;
@@ -754,7 +756,7 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
             } else {
                 expected
             };
-            wanted != state
+            wanted != state && state != "?" && state != "—"
         });
         if let Some(expected) = unmet {
             parts.push((
@@ -768,6 +770,7 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
         alert.labels.get("device") == Some(&device.name) && devices::alert_state(alert) == "firing"
     });
     lines.push(line(match latest {
+        _ if !model.alerts_ok() => "alerts   ?".to_string(),
         Some(alert) => format!(
             "alerts   {}  {}  {}",
             alert.labels.get("alertname").map_or("—", String::as_str),

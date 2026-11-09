@@ -69,26 +69,14 @@ impl Prometheus {
     }
 
     pub fn instant(&self, query: &str) -> Result<Option<f64>, Error> {
-        let sent = self
-            .agent
-            .get(format!("{}{PATH}", self.url))
-            .query("query", query)
-            .call();
-        let reply = http::read(&self.url, sent).map_err(|error| Error::Reach {
-            url: self.url.clone(),
-            reason: http::reason(error, &self.url),
-        })?;
-        if reply.status >= 400 {
-            return Err(Error::Status {
-                status: reply.status,
-                path: PATH.to_string(),
-                body: reply.body,
-            });
-        }
-        parse(&reply.body).map_err(Error::Body)
+        parse(&self.body(query)?).map_err(Error::Body)
     }
 
     pub fn samples(&self, query: &str) -> Result<Vec<Sample>, Error> {
+        parse_samples(&self.body(query)?).map_err(Error::Body)
+    }
+
+    fn body(&self, query: &str) -> Result<String, Error> {
         let sent = self
             .agent
             .get(format!("{}{PATH}", self.url))
@@ -105,7 +93,7 @@ impl Prometheus {
                 body: reply.body,
             });
         }
-        parse_samples(&reply.body).map_err(Error::Body)
+        Ok(reply.body)
     }
 }
 

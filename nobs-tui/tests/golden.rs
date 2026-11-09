@@ -643,6 +643,35 @@ fn the_device_colours_are_fixed() {
 }
 
 #[test]
+fn the_overview_draws_no_judgement_from_unknown_data() {
+    let overview = |metrics: Result<Vec<Sample>, String>, alerts: Option<Vec<Alert>>| {
+        let source = Fixed::from_lab_vars(
+            &lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap(),
+        );
+        let devices = source.devices().unwrap();
+        let mut model = model_with(false, false, Some(Arc::new(source)), None);
+        press(&mut model, KeyCode::Char('1'));
+        model.apply(Update::Devices(Ok(devices)));
+        model.apply(Update::Metrics(metrics));
+        if let Some(alerts) = alerts {
+            model.apply(Update::Alerts(Ok(alerts)));
+        }
+        lines(&render(model, 100, 30)).join("\n")
+    };
+
+    let failed = overview(Err("cannot reach http://x".to_string()), None);
+    let empty = overview(Ok(Vec::new()), None);
+    let answered = overview(Ok(metrics()), Some(Vec::new()));
+
+    for screen in [&failed, &empty] {
+        assert!(!screen.contains("! expected"), "{screen}");
+        assert!(screen.contains("alerts   ?"), "{screen}");
+    }
+    assert!(answered.contains("! expected"), "{answered}");
+    assert!(answered.contains("alerts   none"), "{answered}");
+}
+
+#[test]
 fn draw_in_draws_inside_its_area_and_nowhere_else() {
     let at = Instant::now();
     let mut sonda = data::Model::new("http://127.0.0.1:18122".to_string());

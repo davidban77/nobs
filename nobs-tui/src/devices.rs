@@ -283,7 +283,7 @@ pub fn merge(
     alerts: &[Alert],
     runs: &[FlowRun],
     rcas: &[Line],
-    logs: &[Line],
+    logs: &[(i64, &str)],
     window: Duration,
     now: SystemTime,
 ) -> Vec<Entry> {
@@ -322,10 +322,10 @@ pub fn merge(
             text: evidence::rca_record(&line.text)?.message,
         })
     });
-    let logs = logs.iter().map(|line| Entry {
-        nanoseconds: line.nanoseconds,
+    let logs = logs.iter().map(|(nanoseconds, text)| Entry {
+        nanoseconds: *nanoseconds,
         kind: Kind::Log,
-        text: line.message().unwrap_or_else(|| line.text.clone()),
+        text: text.to_string(),
     });
     let oldest = now
         .duration_since(UNIX_EPOCH)

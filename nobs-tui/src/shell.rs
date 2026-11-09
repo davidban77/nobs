@@ -25,8 +25,8 @@ const LOG_LINES: usize = 2000;
 pub const WINDOW_MINUTES: u64 = 30;
 const WINDOW_MIN: u64 = 1;
 const WINDOW_MAX: u64 = 1440;
-const SERVICES_TABS: [Tab; 3] = [Tab::Overview, Tab::Logs, Tab::Sonda];
-const DEVICE_TABS: [Tab; 4] = [Tab::Overview, Tab::Interfaces, Tab::Timeline, Tab::Logs];
+pub(crate) const SERVICES_TABS: [Tab; 3] = [Tab::Overview, Tab::Logs, Tab::Sonda];
+pub(crate) const DEVICE_TABS: [Tab; 4] = [Tab::Overview, Tab::Interfaces, Tab::Timeline, Tab::Logs];
 const MIN_SIZE: (u16, u16) = (60, 15);
 const STACK_SONDA_URL: &str = "http://localhost:8085";
 const SONDA_ENV: &str = "SONDA_SERVER_URL";
@@ -196,6 +196,7 @@ pub enum Command {
     SelectStack(usize),
     OpenLogs { stack: usize, service: String },
     Follow(bool),
+    FollowDevice(bool),
     CloseLogs,
     Sonda(data::Command),
     SelectDevice(String),
@@ -440,6 +441,11 @@ impl Model {
             Update::Sonda(update) => self.sonda.apply(update),
             Update::Note(note) => self.sonda.note(note.text, note.at),
             Update::Stopped(source) => {
+                match source.as_str() {
+                    "prometheus" => self.metrics = None,
+                    "alertmanager" => self.alerts_ok = false,
+                    _ => {}
+                }
                 self.error = Some((source, "polling stopped".to_string(), self.now));
             }
             Update::Devices(Ok(list)) => {
@@ -693,10 +699,6 @@ impl Model {
         }
     }
 
-    pub fn source_error(&self) -> Option<&str> {
-        self.source_error.as_deref()
-    }
-
     pub fn devices_at(&self) -> Option<Instant> {
         self.devices_at
     }
@@ -745,11 +747,7 @@ impl Model {
         let Some(device) = self.selected_device() else {
             return Vec::new();
         };
-        let logs: Vec<Line> = self
-            .device_lines
-            .iter()
-            .map(|held| held.line.clone())
-            .collect();
+        let logs: Vec<(i64, &str)> = self.held_device_logs().collect();
         devices::merge(
             &device.name,
             &self.alerts,
@@ -779,10 +777,14 @@ impl Model {
         ))
     }
 
-    fn shown_device_logs(&self) -> Vec<(i64, &str)> {
+    fn held_device_logs(&self) -> impl Iterator<Item = (i64, &str)> {
         self.device_lines
             .iter()
             .map(|held| (held.line.nanoseconds, held.shown.as_str()))
+    }
+
+    fn shown_device_logs(&self) -> Vec<(i64, &str)> {
+        self.held_device_logs()
             .filter(|(_, text)| self.logs_filter.matches(text))
             .collect()
     }
@@ -943,9 +945,9 @@ impl Model {
             return self.sonda_key(key);
         }
         match key.code {
-            KeyCode::Char('1') => self.switch(Workbench::Devices),
-            KeyCode::Char('2') => self.switch(Workbench::Services),
-            KeyCode::Char('3') => self.switch(Workbench::Lab),
+            KeyCode::Char('1') => return self.switch(Workbench::Devices),
+            KeyCode::Char('2') => return self.switch(Workbench::Services),
+            KeyCode::Char('3') => return self.switch(Workbench::Lab),
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('x') => self.error = None,
             KeyCode::Char('o') => self.run_pane = !self.run_pane,
@@ -964,15 +966,26 @@ impl Model {
         Vec::new()
     }
 
-    fn switch(&mut self, workbench: Workbench) {
+    fn switch(&mut self, workbench: Workbench) -> Vec<Command> {
+        let left_devices = self.workbench == Workbench::Devices && workbench != Workbench::Devices;
         self.workbench = workbench;
         let tabs: &[Tab] = match workbench {
             Workbench::Devices => &DEVICE_TABS,
             Workbench::Services => &SERVICES_TABS,
-            Workbench::Lab => return,
+            Workbench::Lab => &[],
         };
-        if !tabs.contains(&self.tab) {
+        if !tabs.is_empty() && !tabs.contains(&self.tab) {
             self.tab = Tab::Overview;
+        }
+        if left_devices {
+            return vec![Command::OpenTab(Tab::Overview)];
+        }
+        match (workbench, self.selected_device()) {
+            (Workbench::Devices, Some(device)) => vec![
+                Command::SelectDevice(device.name.clone()),
+                Command::OpenTab(self.tab),
+            ],
+            _ => Vec::new(),
         }
     }
 
@@ -1167,7 +1180,7 @@ impl Model {
                 if self.logs_following {
                     self.logs_scroll = 0;
                 }
-                return vec![Command::Follow(self.logs_following)];
+                return vec![Command::FollowDevice(self.logs_following)];
             }
             KeyCode::Char('/') => self.logs_filter.start(),
             KeyCode::Char('j') | KeyCode::Down if !self.logs_following => {
@@ -2815,9 +2828,12 @@ mod tests {
 
         assert_eq!(ch(&mut model, '-'), [Command::Window(15)]);
         assert_eq!(model.window(), 15);
+        assert_eq!(devices::window_text(model.window()), "15m");
         assert_eq!(ch(&mut model, '+'), [Command::Window(30)]);
+        assert_eq!(devices::window_text(model.window()), "30m");
         assert_eq!(ch(&mut model, '+'), [Command::Window(60)]);
         assert_eq!(model.window(), 60);
+        assert_eq!(devices::window_text(model.window()), "1h");
 
         assert_eq!(code(&mut model, KeyCode::Esc), []);
         assert_eq!((model.focus(), model.tab()), (Focus::List, Tab::Timeline));
@@ -2868,7 +2884,7 @@ mod tests {
             let srl2 = Command::SelectDevice("srl2".to_string());
             assert_eq!(ch(&mut model, ']'), [srl2, Command::OpenTab(expected)]);
         }
-        assert_eq!(ch(&mut model, 'f'), [Command::Follow(false)]);
+        assert_eq!(ch(&mut model, 'f'), [Command::FollowDevice(false)]);
         assert!(!model.device_logs().unwrap().2);
 
         assert_eq!(code(&mut model, KeyCode::Esc), []);
@@ -2880,6 +2896,75 @@ mod tests {
         code(&mut model, KeyCode::Enter);
         assert!(!model.typing());
         assert_eq!(model.visible_devices(), [0]);
+    }
+
+    #[test]
+    fn the_services_f_does_not_pause_the_device_logs_and_the_device_f_does_not_pause_the_services_tail(
+    ) {
+        let mut services = logs_open("grafana");
+        assert_eq!(ch(&mut services, 'f'), [Command::Follow(false)]);
+
+        let mut devices = devices_model();
+        code(&mut devices, KeyCode::Enter);
+        for _ in 0..3 {
+            ch(&mut devices, ']');
+        }
+        assert_eq!(devices.tab(), Tab::Logs);
+        assert_eq!(ch(&mut devices, 'f'), [Command::FollowDevice(false)]);
+        assert_eq!(ch(&mut devices, 'f'), [Command::FollowDevice(true)]);
+    }
+
+    #[test]
+    fn switching_workbench_tells_the_pollers_which_device_tab_is_open() {
+        let mut model = devices_model();
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        assert_eq!(model.tab(), Tab::Timeline);
+
+        assert_eq!(ch(&mut model, '2'), [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(model.tab(), Tab::Overview);
+        assert_eq!(
+            ch(&mut model, '1'),
+            [srl1(), Command::OpenTab(Tab::Overview)]
+        );
+
+        for _ in 0..3 {
+            ch(&mut model, ']');
+        }
+        assert_eq!(model.tab(), Tab::Logs);
+        assert_eq!(ch(&mut model, '2'), [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(model.tab(), Tab::Logs);
+        assert_eq!(ch(&mut model, '1'), [srl1(), Command::OpenTab(Tab::Logs)]);
+
+        assert_eq!(ch(&mut model, '3'), [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(ch(&mut model, '2'), []);
+    }
+
+    #[test]
+    fn a_dead_prometheus_thread_leaves_no_green_ok_behind() {
+        let mut model = devices_model();
+        model.apply(Update::Metrics(Ok(peer_samples(1.0))));
+        assert_eq!(model.device_rows()[0].health, devices::Health::Ok);
+
+        model.apply(Update::Stopped("prometheus".to_string()));
+
+        assert_eq!(model.device_rows()[0].health, devices::Health::Unknown);
+        assert!(model.session_states().iter().all(|(_, state)| state == "?"));
+        assert_eq!(model.error().unwrap().0, "prometheus");
+
+        model.apply(Update::Alerts(Ok(vec![alert(
+            "srl1",
+            "BgpSessionNotUp",
+            "2026-11-09T13:53:32Z",
+        )])));
+        assert_eq!(model.device_rows()[0].alerts, Some((1, false)));
+
+        model.apply(Update::Stopped("alertmanager".to_string()));
+
+        assert_eq!(model.device_rows()[0].alerts, None);
+        assert_eq!(model.alerts().len(), 1);
+        assert_eq!(model.error().unwrap().0, "alertmanager");
     }
 
     #[test]

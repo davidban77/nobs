@@ -116,15 +116,8 @@ fn nanoseconds(time_text: &str) -> i64 {
     time::parse_rfc3339(time_text).unwrap() * 1_000_000_000
 }
 
-fn line(time_text: &str, text: &str) -> Line {
-    Line {
-        nanoseconds: nanoseconds(time_text),
-        text: text.to_string(),
-    }
-}
-
 #[test]
-fn the_list_rows_follow_the_source_order_with_the_marker_the_dash_kind_and_the_sync_dash() {
+fn the_list_rows_follow_the_source_order_with_the_marker_and_the_dash_kind() {
     let source = fixed(BOOK_LAB);
     source.set_maintenance("nobs-t-srl1", true).unwrap();
 
@@ -305,19 +298,19 @@ fn the_merge_orders_four_kinds_newest_first_cuts_the_window_and_counts_them() {
         nanoseconds: nanoseconds("2026-11-09T13:49:48Z") + 890_000_000,
         text: rca_text.to_string(),
     }];
-    let nested = |message: &str| {
-        format!(
-            r#"{{"timestamp":"2026-11-09T13:51:17.170Z","severity":"info","message":"{message}","labels":{{"device":"srl1"}},"fields":{{}}}}"#
-        )
-    };
-    let flat = r#"{"message":"Interface ethernet-1/11 changed to down","level":"err","hostname":"srl1","sonda":{"scenario":"flap"}}"#;
     let logs = [
-        line("2026-11-09T13:54:50Z", &nested("newest nested")),
-        line("2026-11-09T13:53:00Z", &nested("second nested")),
-        line("2026-11-09T13:52:10Z", flat),
-        line("2026-11-09T13:51:00Z", &nested("third nested")),
-        line("2026-11-09T13:50:30Z", "level=info plain text line"),
-        line("2026-11-09T13:20:00Z", "older than the window"),
+        (nanoseconds("2026-11-09T13:54:50Z"), "newest nested"),
+        (nanoseconds("2026-11-09T13:53:00Z"), "second nested"),
+        (
+            nanoseconds("2026-11-09T13:52:10Z"),
+            "Interface ethernet-1/11 changed to down",
+        ),
+        (nanoseconds("2026-11-09T13:51:00Z"), "third nested"),
+        (
+            nanoseconds("2026-11-09T13:50:30Z"),
+            "level=info plain text line",
+        ),
+        (nanoseconds("2026-11-09T13:20:00Z"), "older than the window"),
     ];
 
     let entries = merge(
@@ -462,4 +455,65 @@ fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
     let runs = runs.unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].device.as_deref(), Some("srl1"));
+}
+
+#[test]
+fn the_services_follow_does_not_stop_the_device_logs_and_the_device_follow_does() {
+    let stub = Stub::start(&[
+        ("GET", "/api/v1/query*", 200, PROMETHEUS_BODY),
+        ("GET", "/api/v2/alerts*", 200, ALERTS_BODY),
+        ("GET", "/loki/api/v1/query_range*", 200, LOKI_BODY),
+        ("POST", "/api/flow_runs/filter", 200, PREFECT_BODY),
+    ]);
+    let address = || stub.url().to_string();
+    let urls = Urls {
+        grafana: address(),
+        prometheus: address(),
+        loki: address(),
+        alertmanager: address(),
+        infrahub: address(),
+        prefect: address(),
+        sonda: address(),
+    };
+    let (pollers, updates) = Pollers::start(
+        Arc::new(Silent),
+        Vec::new(),
+        0,
+        SondaTarget {
+            server: None,
+            api_key: None,
+        },
+        Some(Arc::new(fixed(WORKSHOP_ONE))),
+        Some(urls),
+    );
+    let device_logs_within = |wait: Duration| {
+        let end = Instant::now() + wait;
+        loop {
+            match updates.recv_timeout(end.saturating_duration_since(Instant::now())) {
+                Ok(Update::DeviceLogs(..)) => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    };
+    pollers.send(Command::SelectDevice("srl1".to_string()));
+    pollers.send(Command::OpenTab(Tab::Logs));
+    assert!(device_logs_within(Duration::from_secs(5)));
+
+    pollers.send(Command::Follow(false));
+    pollers.send(Command::Refresh);
+    assert!(
+        device_logs_within(Duration::from_secs(3)),
+        "the services follow command paused the device logs"
+    );
+
+    pollers.send(Command::FollowDevice(false));
+    pollers.send(Command::Refresh);
+    let polled = device_logs_within(Duration::from_millis(500));
+    pollers.send(Command::Quit);
+
+    assert!(
+        !polled,
+        "the device follow command did not pause the device logs"
+    );
 }
