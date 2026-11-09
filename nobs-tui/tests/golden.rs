@@ -674,6 +674,29 @@ fn the_overview_draws_no_judgement_from_unknown_data() {
 }
 
 #[test]
+fn the_timeline_counts_line_follows_the_window() {
+    let timeline_after = |keys: &str| {
+        let mut model = on_tab(2);
+        for key in keys.chars() {
+            press(&mut model, KeyCode::Char(key));
+        }
+        lines(&render(model, 100, 30))
+    };
+
+    let narrower = timeline_after("-");
+    let wider = timeline_after("-++");
+
+    assert!(
+        narrower.iter().any(|row| row.contains("last 15m")),
+        "{narrower:#?}"
+    );
+    assert!(
+        wider.iter().any(|row| row.contains("last 1h")),
+        "{wider:#?}"
+    );
+}
+
+#[test]
 fn draw_in_draws_inside_its_area_and_nowhere_else() {
     let at = Instant::now();
     let mut sonda = data::Model::new("http://127.0.0.1:18122".to_string());

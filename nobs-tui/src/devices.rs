@@ -132,14 +132,24 @@ pub fn oper_states(
         .collect()
 }
 
-pub fn health(sessions: &[Session], values: Option<&BTreeMap<String, f64>>) -> Health {
+pub fn has_bgp_series(device: &str, samples: &[Sample]) -> bool {
+    samples.iter().any(|sample| {
+        label(sample, "__name__") == Some(BGP_OPER_STATE) && label(sample, "device") == Some(device)
+    })
+}
+
+pub fn health(
+    sessions: &[Session],
+    values: Option<&BTreeMap<String, f64>>,
+    any_series: bool,
+) -> Health {
     if sessions.is_empty() {
         return Health::NoSessions;
     }
     let Some(values) = values else {
         return Health::Unknown;
     };
-    if values.is_empty() {
+    if values.is_empty() && !any_series {
         Health::Down
     } else if sessions
         .iter()
@@ -175,6 +185,7 @@ pub fn list_rows(
                 samples
                     .map(|samples| oper_states(&device.name, &device.sessions, samples))
                     .as_ref(),
+                samples.is_some_and(|samples| has_bgp_series(&device.name, samples)),
             ),
             alerts: alerts.map(|alerts| alert_count(alerts, &device.name)),
             maintenance: device.maintenance,
@@ -187,19 +198,13 @@ pub fn alert_count(alerts: &[Alert], device: &str) -> (usize, bool) {
         .iter()
         .filter(|alert| {
             alert.labels.get("device").map(String::as_str) == Some(device)
-                && alert.state == "active"
-                && !alert.silenced
-                && !alert.inhibited
+                && alert.state_word() == "firing"
         })
         .collect();
     let critical = counted
         .iter()
         .any(|alert| alert.labels.get("severity").map(String::as_str) == Some("critical"));
     (counted.len(), critical)
-}
-
-pub fn alert_state(alert: &Alert) -> String {
-    alert.state_word()
 }
 
 pub fn join(
@@ -295,7 +300,7 @@ pub fn merge(
             let mut text = format!(
                 "{}  {}",
                 alert.labels.get("alertname").map_or(DASH, String::as_str),
-                alert_state(alert)
+                alert.state_word()
             );
             for (name, value) in &alert.labels {
                 text.push_str(&format!("\n{name}={value}"));

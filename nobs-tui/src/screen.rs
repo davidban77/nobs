@@ -21,7 +21,6 @@ const WIDE: u16 = 100;
 const LEFT_NARROW: u16 = 23;
 const LEFT_WIDE: u16 = 32;
 const LEFT_DEVICES: u16 = 42;
-
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const HELP_HEIGHT: u16 = 11;
 const HELP_PLACEHOLDER_HEIGHT: u16 = 12;
@@ -596,7 +595,7 @@ fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
                 Style::new()
             };
             let parts = if wide {
-                let state = devices::alert_state(alert);
+                let state = alert.state_word();
                 let style = base.patch(tone(&state));
                 vec![
                     (format!("{name}  {device}  "), base),
@@ -767,7 +766,7 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
         lines.push(fitted(parts, width));
     }
     let latest = model.alerts().iter().find(|alert| {
-        alert.labels.get("device") == Some(&device.name) && devices::alert_state(alert) == "firing"
+        alert.labels.get("device") == Some(&device.name) && alert.state_word() == "firing"
     });
     lines.push(line(match latest {
         _ if !model.alerts_ok() => "alerts   ?".to_string(),

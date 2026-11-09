@@ -15,7 +15,7 @@ use nobs_core::sot::{Device, Fixed, SourceOfTruth};
 use nobs_core::status::Urls;
 use nobs_core::time;
 use nobs_tui::devices::{
-    alert_count, alert_state, counts, health, join, list_rows, merge, oper_states, Health, Kind,
+    alert_count, counts, has_bgp_series, health, join, list_rows, merge, oper_states, Health, Kind,
 };
 use nobs_tui::{Command, Pollers, SondaTarget, Tab, Update};
 
@@ -142,12 +142,33 @@ fn the_health_rule_gives_ok_warn_down_and_unknown_from_values() {
     let one_active = values(&[("10.1.2.2", 1.0), ("10.1.7.2", 1.0), ("10.1.99.2", 5.0)]);
     let one_missing = values(&[("10.1.2.2", 1.0), ("10.1.7.2", 1.0)]);
 
-    let ok = health(&sessions, Some(&all_up));
-    let not_up = health(&sessions, Some(&one_active));
-    let missing = health(&sessions, Some(&one_missing));
-    let down = health(&sessions, Some(&BTreeMap::new()));
-    let unknown = health(&sessions, None);
-    let none = health(&[], Some(&all_up));
+    let ok = health(&sessions, Some(&all_up), true);
+    let not_up = health(&sessions, Some(&one_active), true);
+    let missing = health(&sessions, Some(&one_missing), true);
+    let down = health(&sessions, Some(&BTreeMap::new()), false);
+    let unknown = health(&sessions, None, false);
+    let none = health(&[], Some(&all_up), true);
+
+    let health_from = |samples: &[Sample]| {
+        health(
+            &sessions,
+            Some(&oper_states("srl1", &sessions, samples)),
+            has_bgp_series("srl1", samples),
+        )
+    };
+    let other_family = sample(
+        &[
+            ("__name__", "bgp_oper_state"),
+            ("device", "srl1"),
+            ("peer_address", "10.1.2.2"),
+            ("afi_safi_name", "ipv6-unicast"),
+            ("name", "default"),
+        ],
+        1.0,
+    );
+    let unintended_peer = health_from(&[peer_sample("10.9.9.9", 1.0)]);
+    let unintended_family = health_from(&[other_family]);
+    let no_series = health_from(&[interface_sample("interface_oper_state", "lo0", 1.0)]);
 
     assert_eq!(ok, Health::Ok);
     assert_eq!(not_up, Health::Warn);
@@ -155,6 +176,9 @@ fn the_health_rule_gives_ok_warn_down_and_unknown_from_values() {
     assert_eq!(down, Health::Down);
     assert_eq!(unknown, Health::Unknown);
     assert_eq!(none, Health::NoSessions);
+    assert_eq!(unintended_peer, Health::Warn);
+    assert_eq!(unintended_family, Health::Warn);
+    assert_eq!(no_series, Health::Down);
     let words: Vec<&str> = [ok, not_up, missing, down, unknown, none]
         .into_iter()
         .map(Health::text)
@@ -211,9 +235,9 @@ fn the_alert_count_is_per_device_active_only_and_red_for_a_critical() {
     assert_eq!(alert_count(&alerts, "srl1"), (2, false));
     assert_eq!(alert_count(&alerts, "srl2"), (1, false));
     assert_eq!(alert_count(&alerts, "srl9"), (0, false));
-    assert_eq!(alert_state(&alerts[3]), "silenced");
-    assert_eq!(alert_state(&alerts[4]), "silenced");
-    assert_eq!(alert_state(&alerts[0]), "firing");
+    assert_eq!(alerts[3].state_word(), "silenced");
+    assert_eq!(alerts[4].state_word(), "silenced");
+    assert_eq!(alerts[0].state_word(), "firing");
 
     alerts[1]
         .labels

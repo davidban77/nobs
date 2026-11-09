@@ -444,6 +444,7 @@ impl Model {
                 match source.as_str() {
                     "prometheus" => self.metrics = None,
                     "alertmanager" => self.alerts_ok = false,
+                    "loki" => self.logs_following = false,
                     _ => {}
                 }
                 self.error = Some((source, "polling stopped".to_string(), self.now));
@@ -2967,6 +2968,13 @@ mod tests {
         assert_eq!(model.device_rows()[0].alerts, None);
         assert_eq!(model.alerts().len(), 1);
         assert_eq!(model.error().unwrap().0, "alertmanager");
+
+        assert!(model.device_logs().unwrap().2);
+
+        model.apply(Update::Stopped("loki".to_string()));
+
+        assert!(!model.device_logs().unwrap().2);
+        assert_eq!(model.error().unwrap().0, "loki");
     }
 
     #[test]
