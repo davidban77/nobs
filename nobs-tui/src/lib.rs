@@ -1,9 +1,9 @@
 use std::fmt::Display;
 use std::io::{self, IsTerminal};
-use std::panic;
+use std::panic::{self, PanicHookInfo};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
-use std::thread;
+use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{self, Event, KeyEvent};
@@ -39,21 +39,18 @@ pub fn run(start: Start, runner: Arc<dyn Runner + Send + Sync>) -> Result<i32, S
         return Err("the screen needs a terminal".to_string());
     }
     let sonda = start.sonda.clone();
+    let source = start.source.clone();
+    let urls = start.lab.is_some().then(|| start.urls.clone());
     let mut model = Model::new(start);
-    let main = thread::current().id();
-    let previous = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-        if thread::current().id() == main {
-            restore();
-        }
-        previous(info);
-    }));
+    panic::set_hook(panic_hook(thread::current().id(), panic::take_hook()));
     let screen = Screen::open()?;
     let (pollers, updates) = Pollers::start(
         runner,
         model.stacks().to_vec(),
         model.selected_stack(),
         sonda,
+        source,
+        urls,
     );
     let result = Terminal::new(CrosstermBackend::new(io::stdout()))
         .map_err(failed)
@@ -61,6 +58,17 @@ pub fn run(start: Start, runner: Arc<dyn Runner + Send + Sync>) -> Result<i32, S
     drop(screen);
     pollers.send(Command::Quit);
     result
+}
+
+type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync>;
+
+fn panic_hook(main: ThreadId, previous: Hook) -> Hook {
+    Box::new(move |info| {
+        if thread::current().id() == main {
+            restore();
+            previous(info);
+        }
+    })
 }
 
 fn turns<B: Backend>(
@@ -148,6 +156,7 @@ mod tests {
     use nobs_core::lab;
     use nobs_core::locate::{Kind, Located};
     use nobs_core::runner::Output;
+    use nobs_core::sot::{self, Device, Maintenance, SourceOfTruth};
     use nobs_core::status::Urls;
     use ratatui::backend::TestBackend;
 
@@ -276,6 +285,8 @@ mod tests {
             model.stacks().to_vec(),
             model.selected_stack(),
             target(),
+            None,
+            None,
         )
     }
 
@@ -309,32 +320,6 @@ mod tests {
             Update::Services(0, result) => Some(result),
             _ => None,
         })
-    }
-
-    #[test]
-    fn q_ends_the_loop_at_once_while_the_server_holds_the_connection() {
-        let stub = Stub::start_silent(Duration::from_secs(2));
-        let mut model = Model::new(start(
-            vec![stack(&[("SONDA_SERVER_URL", stub.url())])],
-            false,
-        ));
-        let started = Instant::now();
-        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
-
-        let result = turns(
-            &mut terminal(80, 24),
-            &mut model,
-            &pollers,
-            &updates,
-            |_| Ok(Some(q())),
-        );
-
-        assert_eq!(result, Ok(0));
-        assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "{:?}",
-            started.elapsed()
-        );
     }
 
     #[test]
@@ -408,6 +393,8 @@ mod tests {
             model.stacks().to_vec(),
             model.selected_stack(),
             target(),
+            None,
+            None,
         );
 
         let result = turns(&mut terminal, &mut model, &pollers, &updates, |_| {
@@ -421,6 +408,124 @@ mod tests {
         assert!(screen.contains("refreshed"), "{screen}");
         assert!(screen.contains("grafana"), "{screen}");
         assert!(screen.contains("loki"), "{screen}");
+    }
+
+    struct Holding;
+
+    impl SourceOfTruth for Holding {
+        fn devices(&self) -> Result<Vec<Device>, sot::Error> {
+            thread::sleep(Duration::from_secs(2));
+            Ok(Vec::new())
+        }
+
+        fn device(&self, _name: &str) -> Result<Option<Device>, sot::Error> {
+            Ok(None)
+        }
+
+        fn set_maintenance(&self, _device: &str, _state: bool) -> Result<Maintenance, sot::Error> {
+            Ok(Maintenance { previous: false })
+        }
+    }
+
+    fn device(name: &str) -> Device {
+        Device {
+            name: name.to_string(),
+            kind: None,
+            site: None,
+            role: None,
+            asn: None,
+            maintenance: false,
+            interfaces: Vec::new(),
+            sessions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_device_sources_that_hold_on_never_delay_a_key() {
+        let stub = Stub::start_silent(Duration::from_secs(2));
+        let address = || stub.url().to_string();
+        let begin = Start {
+            home: Workbench::Devices,
+            source: Some(Arc::new(Holding)),
+            urls: Urls {
+                grafana: address(),
+                prometheus: address(),
+                loki: address(),
+                alertmanager: address(),
+                infrahub: address(),
+                prefect: address(),
+                sonda: address(),
+            },
+            ..start(vec![stack(&[CLOSED])], false)
+        };
+        let (source, urls) = (begin.source.clone(), Some(begin.urls.clone()));
+        let mut model = Model::new(begin);
+        model.tick(Instant::now(), SystemTime::now(), (100, 30));
+        model.apply(Update::Devices(Ok(vec![device("srl1")])));
+        let mut terminal = terminal(100, 30);
+        let mut keys = vec![
+            key(KeyCode::Enter),
+            key(KeyCode::Char(']')),
+            key(KeyCode::Char(']')),
+        ]
+        .into_iter();
+        let started = Instant::now();
+        let (pollers, updates) = Pollers::start(
+            scripted(Vec::new()),
+            model.stacks().to_vec(),
+            model.selected_stack(),
+            target(),
+            source,
+            urls,
+        );
+
+        let result = turns(&mut terminal, &mut model, &pollers, &updates, |_| {
+            Ok(Some(keys.next().unwrap_or_else(q)))
+        });
+        let elapsed = started.elapsed();
+
+        assert_eq!(result, Ok(0));
+        assert_eq!(model.tab(), Tab::Timeline);
+        assert!(elapsed < Duration::from_millis(100), "{elapsed:?}");
+        let screen = text(&terminal);
+        assert!(screen.contains("devices"), "{screen}");
+    }
+
+    #[test]
+    fn a_panic_off_the_main_thread_writes_nothing_and_the_screen_shows_the_stopped_row() {
+        let (sender, receiver) = mpsc::channel();
+        panic::set_hook(panic_hook(
+            thread::current().id(),
+            Box::new(move |_| sender.send(()).unwrap()),
+        ));
+
+        let joined = thread::spawn(|| panic!("boom")).join();
+        let _ = panic::take_hook();
+
+        assert!(joined.is_err());
+        assert!(receiver.try_recv().is_err());
+        let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
+        let (pollers, updates) = Pollers::start(
+            Arc::new(Panicking),
+            model.stacks().to_vec(),
+            model.selected_stack(),
+            target(),
+            None,
+            None,
+        );
+        let mut terminal = terminal(100, 30);
+        let mut turn = 0;
+
+        turns(&mut terminal, &mut model, &pollers, &updates, |_| {
+            turn += 1;
+            thread::sleep(Duration::from_millis(20));
+            Ok((turn == 25).then(q))
+        })
+        .unwrap();
+
+        let screen = text(&terminal);
+        assert!(screen.contains("ps: polling stopped"), "{screen}");
+        assert!(screen.contains("nobs"), "{screen}");
     }
 
     #[test]
@@ -441,7 +546,7 @@ mod tests {
         model.apply(Update::Services(0, Ok(lab::services(LOKI).unwrap())));
         let mut polled = model.stacks().to_vec();
         polled[0].kind = StackKind::Sonda;
-        let (pollers, updates) = Pollers::start(runner.clone(), polled, 0, target());
+        let (pollers, updates) = Pollers::start(runner.clone(), polled, 0, target(), None, None);
 
         for command in [KeyCode::Tab, KeyCode::Char('l')]
             .into_iter()
@@ -547,8 +652,14 @@ mod tests {
 
     #[test]
     fn a_thread_that_dies_tells_the_screen_it_stopped() {
-        let (_pollers, updates) =
-            Pollers::start(Arc::new(Panicking), vec![stack(&[CLOSED])], 0, target());
+        let (_pollers, updates) = Pollers::start(
+            Arc::new(Panicking),
+            vec![stack(&[CLOSED])],
+            0,
+            target(),
+            None,
+            None,
+        );
 
         let source = next(&updates, Duration::from_secs(2), |update| match update {
             Update::Stopped(source) => Some(source),

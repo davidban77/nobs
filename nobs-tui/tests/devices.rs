@@ -1,17 +1,27 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
-use std::time::{Duration, UNIX_EPOCH};
+use std::io;
+use std::sync::Arc;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use nobs_core::alertmanager::Alert;
 use nobs_core::lab_vars;
 use nobs_core::loki::Line;
 use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
+use nobs_core::runner::{Output, Runner};
 use nobs_core::sot::{Device, Fixed, SourceOfTruth};
+use nobs_core::status::Urls;
 use nobs_core::time;
 use nobs_tui::devices::{
     alert_count, alert_state, counts, health, join, list_rows, merge, oper_states, Health, Kind,
 };
+use nobs_tui::{Command, Pollers, SondaTarget, Tab, Update};
+
+#[path = "../../tests/support/stub.rs"]
+mod stub;
+use stub::Stub;
 
 const WORKSHOP_ONE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -349,4 +359,107 @@ fn the_merge_orders_four_kinds_newest_first_cuts_the_window_and_counts_them() {
         "BgpSessionNotUp  firing\nalertname=BgpSessionNotUp\ndevice=srl1\nseverity=warning"
     );
     assert!(entries[7].text.starts_with("AI RCA disabled"));
+}
+
+const PROMETHEUS_BODY: &str = r#"{"status":"success","data":{"resultType":"vector","result":[
+    {"metric":{"__name__":"bgp_oper_state","device":"srl1","peer_address":"10.1.2.2"},"value":[1793960400,"1"]},
+    {"metric":{"__name__":"bgp_oper_state","device":"srl1","peer_address":"10.1.7.2"},"value":[1793960400,"2"]}
+]}}"#;
+const ALERTS_BODY: &str = r#"[{"labels":{"alertname":"BgpSessionNotUp","severity":"critical","device":"srl1"},"status":{"state":"active","silencedBy":[],"inhibitedBy":[]},"startsAt":"2026-11-09T13:40:00.000Z"}]"#;
+const LOKI_BODY: &str = r#"{"status":"success","data":{"resultType":"streams","result":[
+    {"stream":{"device":"srl1"},"values":[["1793960390000000000","a-new"],["1793960300000000000","a-old"]]}
+]}}"#;
+const PREFECT_BODY: &str = r#"[{"id":"q1","name":"quarantine_bgp | srl1:10.1.99.2","parameters":{"device":"srl1","peer_address":"10.1.99.2"},"start_time":"2026-11-09T13:41:00Z","state":{"type":"COMPLETED"},"parent_task_run_id":null}]"#;
+
+struct Silent;
+
+impl Runner for Silent {
+    fn run(&self, _program: &str, _args: &[OsString]) -> io::Result<i32> {
+        Ok(0)
+    }
+
+    fn output(&self, _program: &str, _args: &[OsString]) -> io::Result<Output> {
+        Ok(Output {
+            code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        })
+    }
+}
+
+#[test]
+fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
+    let stub = Stub::start(&[
+        ("GET", "/api/v1/query*", 200, PROMETHEUS_BODY),
+        ("GET", "/api/v2/alerts*", 200, ALERTS_BODY),
+        ("GET", "/loki/api/v1/query_range*", 200, LOKI_BODY),
+        ("POST", "/api/flow_runs/filter", 200, PREFECT_BODY),
+    ]);
+    let address = || stub.url().to_string();
+    let urls = Urls {
+        grafana: address(),
+        prometheus: address(),
+        loki: address(),
+        alertmanager: address(),
+        infrahub: address(),
+        prefect: address(),
+        sonda: address(),
+    };
+    let (pollers, updates) = Pollers::start(
+        Arc::new(Silent),
+        Vec::new(),
+        0,
+        SondaTarget {
+            server: None,
+            api_key: None,
+        },
+        Some(Arc::new(fixed(WORKSHOP_ONE))),
+        Some(urls),
+    );
+    pollers.send(Command::SelectDevice("srl1".to_string()));
+    pollers.send(Command::OpenTab(Tab::Timeline));
+
+    let mut devices = None;
+    let mut metrics = None;
+    let mut alerts = None;
+    let mut logs = None;
+    let mut rcas = None;
+    let mut runs = None;
+    let end = Instant::now() + Duration::from_secs(5);
+    while [
+        devices.is_some(),
+        metrics.is_some(),
+        alerts.is_some(),
+        logs.is_some(),
+        rcas.is_some(),
+        runs.is_some(),
+    ]
+    .contains(&false)
+    {
+        let update = updates
+            .recv_timeout(end.saturating_duration_since(Instant::now()))
+            .expect("the six answers in time");
+        match update {
+            Update::Devices(Ok(list)) => devices = Some(list),
+            Update::Metrics(Ok(list)) => metrics = Some(list),
+            Update::Alerts(Ok(list)) => alerts = Some(list),
+            Update::DeviceLogs(name, Ok(list)) if name == "srl1" => logs = Some(list),
+            Update::Rcas(name, Ok(list)) if name == "srl1" => rcas = Some(list),
+            Update::FlowRuns(Ok(list)) => runs = Some(list),
+            _ => {}
+        }
+    }
+    pollers.send(Command::Quit);
+
+    let names: Vec<String> = devices.unwrap().into_iter().map(|d| d.name).collect();
+    assert_eq!(names, ["srl1", "srl2"]);
+    assert_eq!(metrics.unwrap().len(), 2);
+    let alerts = alerts.unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].labels["alertname"], "BgpSessionNotUp");
+    assert_eq!(logs.unwrap().len(), 2);
+    assert_eq!(rcas.unwrap().len(), 2);
+    let runs = runs.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].device.as_deref(), Some("srl1"));
 }
