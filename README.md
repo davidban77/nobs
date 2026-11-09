@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen: the devices workbench, the services workbench and the chooser work, and the lab workbench is not built yet and shows one line. The devices workbench is the home screen in a workshop, and it only reads. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench and the chooser work. The lab workbench is not built yet and shows one line. A workshop opens on the devices workbench, which only reads. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -51,9 +51,9 @@ When a data call fails, one red line appears between the switcher and the body (
 
 ### The devices workbench
 
-The devices workbench is workbench `1`. It shows the devices of the lab, one row for each, with their health and their alerts, and four tabs for the device you select. It only reads: it changes nothing in the lab. A workshop opens on it. Every other start, a book lab, a labcli lab, the chooser and `sonda only`, opens on the services workbench until the lab workbench (`3`) is built.
+The devices workbench is workbench `1`. It shows the devices of the lab, one row for each, with their health and their alerts, and four tabs for the device you select. It only reads: it changes nothing in the lab. A workshop opens on it. A book lab, a labcli lab, the chooser and `sonda only` open on the services workbench. This stays so until the lab workbench (`3`) is built.
 
-The data comes from five systems. The source of truth is the system that holds what the lab should look like: its devices, their interfaces, their BGP sessions and the maintenance flag of each device.
+The data comes from five systems. The first is the source of truth, the `sot` of the header. It holds what the lab should look like: its devices, their interfaces, their BGP sessions and the maintenance flag of each device.
 
 | System | What the workbench takes from it | Name on the red error line |
 |---|---|---|
@@ -65,12 +65,32 @@ The data comes from five systems. The source of truth is the system that holds w
 
 nobs finds each address the way `status` does: the shell variable, then the `.env` file in the folder of the lab, then the default address (see [status](#status)).
 
+At 60 by 15 the workbench looks like this:
+
+```
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ [1 devices]  2 services  3 lab              ? keys  q quit
+┌ devices 2 ──────────┐┌ srl1 ─────────────────────────────┐
+│   NAME  HLTH  ALRT  ││OVERVIEW  ifaces  timeline  logs   │
+│>  srl1  warn     1  ││kind —   site lab   role edge      │
+│ M srl2  ok          ││maintenance no   sot infrahub   se…│
+│                     ││bgp sessions  3 intended  2 establ…│
+│                     ││ 10.1.2.2   ipv4-unicast  up       │
+│                     ││ 10.1.7.2   ipv4-unicast  up       │
+├ alerts 2 ───────────┤│ 10.1.99.2  ipv4-unicast  active  …│
+│srl1  BgpSessionNotUp││alerts   BgpSessionNotUp  warning …│
+│srl1  BgpSessionNotUp││                                   │
+└─────────────────────┘└───────────────────────────────────┘
+ run  none                                           o open
+ Tab focus  j/k move  / filter  Enter open  r refresh
+```
+
 The left side is the list of devices, titled `devices <n>`, with the alerts box under it. `>` marks the selected device, and the right side shows that device. These are the columns of the list:
 
 | Column | What it shows |
 |---|---|
 | `NAME` | the name of the device; a yellow `M` before it means the device is in maintenance |
-| `KIND` | `srl` or `ceos`, the kind of the device (another kind is shown as the source of truth gives it); `—` when the source of truth does not say |
+| `KIND` | `srl` or `ceos`, the kind of the device; another kind is shown as the source of truth gives it, cut to 4 characters (`linux` becomes `lin…`); `—` when the source of truth does not say |
 | `HLTH` | the health of the device, from its intended BGP sessions and the live state in Prometheus; see below |
 | `SYNC` | `—` for now; a later version will fill it |
 | `ALRT` | how many alerts of the device are firing; empty when none; red when one of them is critical; `?` when Alertmanager did not answer |
@@ -87,23 +107,53 @@ The left side is the list of devices, titled `devices <n>`, with the alerts box 
 
 `KIND` and `SYNC` appear from 100 columns.
 
-The alerts box lists every alert of the lab, newest first, with the name of the alert, the device, the state (`firing`, `silenced` or `inhibited`) and the age. A silenced or inhibited alert is dim. Its title shows the number of alerts. `j` and `k` walk down the list of devices and then into the alerts box. `Enter` on an alert selects its device and opens the timeline tab of that device.
+The alerts box lists every alert of the lab, newest first. From 100 columns, a row shows the name of the alert, the device, the state (`firing`, `silenced` or `inhibited`) and the age, for example `BgpSessionNotUp  srl1  firing  21s`. At 60 columns, a row shows the device first and then the name, for example `srl1  BgpSessionNotUp`. A silenced or inhibited alert is dim. The title shows the number of alerts, or `?` when Alertmanager did not answer. `j` and `k` walk down the list of devices and then into the alerts box. `Enter` on an alert selects its device and opens the timeline tab of that device.
 
 The right side has four tabs, `overview`, `interfaces`, `timeline` and `logs`, with the open tab in capital letters. `Enter` on a device moves the focus to the tabs, on the overview tab.
 
-The overview tab shows the identity line (`kind`, `site` and `role`), the maintenance flag with the `sot` word and `seen <n>s ago` (how long ago the source of truth answered), then the intended BGP sessions of the device. Each session shows its peer, its address family and its live state from Prometheus: `up`, `down`, `idle`, `connect`, `active`, `—` when Prometheus has no value, or `?` when it did not answer. When the live state is not the intended one, the line ends with `! expected <state>` in yellow (not when the state is `?` or `—`, which say nothing yet). The last line shows the newest firing alert of the device, or `alerts none`, or `alerts ?` while Alertmanager has not answered.
+The overview tab shows these lines, from the top:
 
-The interfaces tab shows one row per interface from the source of truth, with the live admin and oper state from Prometheus and the BGP session whose peer lies in the subnet of the interface. A row whose session is not up, or whose admin state is up while its oper state is down, is yellow. It shows the columns `NAME`, `INTENT`, `ADMIN`, `OPER`, `PEER` and `BGP` from 100 columns, and `NAME`, `ADMIN`, `OPER` and `BGP` at 60 columns; the last line counts the interfaces and the rows that differ.
+| Line | Example | What it shows |
+|---|---|---|
+| identity | `kind —   site lab   role edge` | the kind, the site and the role of the device; `—` when the source of truth does not say |
+| source | `maintenance no   sot infrahub   seen 2s ago` | the maintenance flag, the `sot` word, and how long ago the source of truth answered |
+| count | `bgp sessions  3 intended  2 established  1 other` | how many BGP sessions the source of truth intends, how many of them are up, and how many are in another state or have no state |
+| one per session | `10.1.99.2  ipv4-unicast  active  ! expected established` | the peer, the address family (the kind of routes the session carries, here IPv4) and the live state |
+| alert | `alerts   BgpSessionNotUp  warning  21s` | the newest firing alert of the device, with its severity and age; `alerts   none` when there is none; `alerts   ?` when Alertmanager did not answer |
 
-The timeline tab merges what happened to the device in the last 30 minutes, newest first: its alerts, its flow runs, its RCA records and its log lines. The first line counts each kind, for example `last 30m   alerts 2  flows 3  rca 1  logs 5`. Each row shows the time in UTC, the kind (`alert`, `flow`, `rca` or `log`) and the first line of the text. `j` and `k` move the row, `Enter` opens its full text in a box, and `Esc` closes the box. `-` halves the window and `+` doubles it, between 1 minute and 24 hours. The same window sets how far back the logs tab looks.
+The live state of a session comes from Prometheus. It is `up`, `down`, `idle`, `connect` or `active`, or `unknown` for any other value. It is `—` when Prometheus has no value and `?` when Prometheus did not answer. The source of truth calls the up state `established`, so `established` and `up` mean the same.
 
-The logs tab shows the Loki lines of the device, newest first, each with its time in UTC, without the RCA records, which the timeline tab shows as `rca`. nobs asks for the last 200 lines at first, then again every 2 seconds while the log follows, and keeps the last 2,000. At the right end of the tab row it shows `<device>  following` or `<device>  paused`. `f` pauses and resumes, `j` and `k` scroll a paused log, and `/` filters the lines (type the text, then `Enter` keeps the filter and `Esc` clears it). A line in JSON shows its `message` field instead of the whole line.
+When the live state is not the intended one, the line ends with `! expected <state>` in yellow. This mark is not shown when the state is `?` or `—`, because those say nothing yet.
 
-With `sot = "none"` in `nobs.toml`, the lab has no source of truth. The list and the body of the tab then show one dim line, `no source of truth (sot = "none")`, and the alerts box is still filled, because nobs asks Alertmanager whatever the source is.
+The interfaces tab shows one row per interface from the source of truth. A row is yellow when its BGP session is not up, or when its admin state is up and its oper state is down. The last line counts the interfaces and the yellow rows, for example `4 interfaces  1 differs`. These are the columns:
 
-The `sot` word of the header is found like this: in a workshop, it is the `sot` setting of `nobs.toml` (`infrahub` or `none`); in a book lab, it is `lab_vars`, and the devices come from `containerlab/lab_vars.yml`, which nobs reads once when the screen opens; in a labcli lab, it is `none`. A workshop that you open from the chooser has no source of truth in the devices workbench: the word follows its `.env` file, as before, and the workbench shows the `sot = "none"` line. To get the devices, start plain `nobs` in the workshop folder.
+| Column | What it shows |
+|---|---|
+| `NAME` | the name of the interface |
+| `INTENT` | the state the source of truth wants for the interface, for example `up` or `down`; `—` when it does not say; from 100 columns |
+| `ADMIN` | the admin state from Prometheus, which says whether the interface is switched on in its configuration: `up` or `down`; `unknown` for another value; `—` when Prometheus has no value; `?` when it did not answer |
+| `OPER` | the oper state from Prometheus, which says whether the link really works; the same values as `ADMIN` |
+| `PEER` | the peer of the BGP session whose address lies in the subnet of the interface; empty when there is none; from 100 columns |
+| `BGP` | the live state of that session, with the same words as the overview tab; empty when there is no session |
 
-When nobs cannot open the source of truth, for example because `INFRAHUB_API_TOKEN` is not set or `containerlab/lab_vars.yml` cannot be read, the screen still opens. The red error row under the switcher names it (`sot:` and the reason), and the list stays empty and shows, with the body of the tab, the dim line `source of truth not opened`. The alerts box is still filled. Before the first answer the line reads `no answer yet`, and when the source answers with no device it reads `no devices`.
+The timeline tab merges what happened to the device in a time window, at first the last 30 minutes, newest first: its alerts, its flow runs, its RCA records and its log lines. The first line counts each kind, for example `last 30m   alerts 2  flows 3  rca 1  logs 5`. Each row shows the time in UTC, the kind (`alert`, `flow`, `rca` or `log`) and the first line of the text. `j` and `k` move the row, `Enter` opens its full text in a box, and `Esc` closes the box. `-` halves the window and `+` doubles it, between 1 minute and 24 hours. The same window sets how far back the logs tab looks.
+
+The logs tab shows the Loki lines of the device, newest first, each with its time in UTC, without the RCA records, which the timeline tab shows as `rca`. nobs asks for the last 200 lines at first, then again every 2 seconds while the log follows, and keeps the last 2,000. At the right end of the tab row it shows `<device>  following` or `<device>  paused`. When the row is too short it shows only `following` or `paused`, and at 60 columns it shows nothing. `f` pauses and resumes, `j` and `k` scroll a paused log, and `/` filters the lines (type the text, then `Enter` keeps the filter and `Esc` clears it). A line in JSON shows its `message` field instead of the whole line.
+
+With `sot = "none"` in `nobs.toml`, the lab has no source of truth. The list and the body of the tab then show one dim line, `no source of truth (sot = "none")`, and the alerts box is still filled, because nobs asks Alertmanager whatever the source is. A labcli lab shows the same line.
+
+The `sot` word of the header is found like this: in a workshop, it is the `sot` setting of `nobs.toml` (`infrahub` or `none`); in a book lab, it is `lab_vars`, and the devices come from `containerlab/lab_vars.yml`, which nobs reads once when the screen opens; in a labcli lab, it is `none`. A workshop that you open from the chooser has no source of truth in the devices workbench, whatever its `nobs.toml` says. Its header shows `sot infrahub` when its `.env` file sets `INFRAHUB_ADDRESS`, else `sot none`. In both cases the workbench shows the dim line `no source of truth (sot = "none")`. To get the devices, start plain `nobs` in the workshop folder.
+
+When nobs cannot open the source of truth, for example because `INFRAHUB_API_TOKEN` is not set or `containerlab/lab_vars.yml` cannot be read, the screen still opens. The red error row under the switcher names it (`sot:` and the reason). The list has no devices. It and the body of the tab show one of these dim lines:
+
+| Dim line | When |
+|---|---|
+| `no source of truth (sot = "none")` | there is no source of truth |
+| `source of truth not opened` | opening the source of truth failed |
+| `no answer yet` | the source of truth has not answered yet |
+| `no devices` | the source of truth answered with no device |
+
+The alerts box is still filled.
 
 ### The services workbench
 
@@ -147,7 +197,8 @@ The logs tab shows the log of one service. Press `Enter` or `l` on a service in 
 | the devices (the source of truth) | every 10 seconds |
 | the BGP sessions and the interfaces (Prometheus) | every 2 seconds |
 | the alerts (Alertmanager) | every 2 seconds |
-| the log lines and the RCA records of the selected device (Loki) | every 2 seconds, while the timeline tab is open, or the logs tab is open and follows |
+| the log lines of the selected device (Loki) | every 2 seconds, while the timeline tab is open, or while the logs tab is open and follows |
+| the RCA records of the selected device (Loki) | every 2 seconds, while the timeline tab is open |
 | the flow runs (Prefect) | every 5 seconds, while the timeline tab is open |
 
 ### The Sonda tab
@@ -213,7 +264,7 @@ When a data call fails, the screen keeps the last good data and shows one red li
 
 ### Size
 
-The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`. In the devices workbench, the device list grows from 23 to 42 columns and adds the `KIND` and `SYNC` columns, the alerts box adds the state and the age, and the tab `ifaces` is written `interfaces`.
+The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`. In the devices workbench, the device list grows from 23 to 42 columns and adds the `KIND` and `SYNC` columns. The alerts box puts the name of the alert before the device and adds the state and the age. The tab `ifaces` is written `interfaces`. A line that does not fit is cut and ends with `…`.
 
 ### Exit codes
 
