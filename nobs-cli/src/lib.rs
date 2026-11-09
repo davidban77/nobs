@@ -15,9 +15,7 @@ use nobs_core::env::load_env;
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
 use nobs_core::http;
-use nobs_core::infrahub::{
-    annotation, host_address, read_schema, Infrahub, Seed, DEFAULT_ADDRESS, KINDS,
-};
+use nobs_core::infrahub::{annotation, connect, read_schema, Infrahub, Seed, KINDS};
 use nobs_core::lab::{self, WaitError};
 use nobs_core::lab_vars;
 use nobs_core::layers;
@@ -31,10 +29,11 @@ use nobs_core::prometheus::{self, Prometheus};
 use nobs_core::render::Renderer;
 use nobs_core::reset;
 use nobs_core::runner::Runner;
+use nobs_core::settings::Workshop;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
-use nobs_core::sot::{Device, Error as InfrahubError, Maintenance, Session, SourceOfTruth};
+use nobs_core::sot::{self, Device, Maintenance, Session, SourceOfTruth};
 use nobs_core::status::{self, probe_all, Probe, State, Urls};
 use nobs_core::time;
 use nobs_core::try_it;
@@ -74,8 +73,6 @@ const AUTO_PAUSE: Duration = Duration::from_secs(2);
 const SILENCES_SHOWN: usize = 5;
 
 const GROUPS_SHOWN: usize = 5;
-
-const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
 
 const NAUTOBOT_URL: &str = "http://localhost:8080";
 
@@ -285,6 +282,11 @@ pub enum WorkshopCommand {
     Maintenance {
         #[command(flatten)]
         flags: MaintenanceFlags,
+    },
+    #[command(about = "Print the devices of the lab's source of truth")]
+    Devices {
+        #[command(flatten)]
+        flags: DevicesFlags,
     },
     #[command(about = "Print the most recent AI RCA narratives from Loki")]
     Rca {
@@ -898,6 +900,22 @@ pub struct MaintenanceFlags {
     kind: String,
     #[command(flatten)]
     infrahub: InfrahubFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct DevicesFlags {
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
+    )]
+    infrahub_url: Option<String>,
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN"
+    )]
+    token: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1955,7 +1973,8 @@ fn run_workshop_command(
         WorkshopCommand::Schema {
             command: SchemaCommand::Load { path, infrahub },
         } => run_schema_load(&located.dir.join(path), infrahub),
-        WorkshopCommand::Maintenance { flags } => run_maintenance(flags),
+        WorkshopCommand::Maintenance { flags } => run_maintenance(flags, located),
+        WorkshopCommand::Devices { flags } => run_devices(flags, located),
         WorkshopCommand::Rca { flags } => run_rca(flags, located),
         WorkshopCommand::Evidence { flags } => run_evidence(flags, located),
         WorkshopCommand::Cycle { flags } => run_cycle(flags, located),
@@ -3145,30 +3164,33 @@ fn run_silences(flags: SilencesFlags) -> i32 {
     0
 }
 
-fn infrahub_settings(
-    flags: InfrahubFlags,
-    lookup: impl Fn(&str) -> Option<String>,
-) -> (String, Option<String>) {
-    let address = given(flags.address)
-        .or_else(|| given(lookup("INFRAHUB_ADDRESS")))
-        .unwrap_or_else(|| DEFAULT_ADDRESS.to_string());
-    let token = given(flags.token).or_else(|| given(lookup("INFRAHUB_API_TOKEN")));
-    (address, token)
+fn print_line(line: Option<String>) {
+    if let Some(line) = line {
+        println!("{line}");
+    }
 }
 
-fn require_token(token: Option<String>) -> Option<String> {
-    if token.is_none() {
-        eprintln!("nobs: {TOKEN_REQUIRED}");
-    }
-    token
+fn or_report<T>(result: Result<T, String>) -> Option<T> {
+    result.map_err(|error| eprintln!("nobs: {error}")).ok()
 }
 
-fn announce_rewrite(address: &str) {
-    let host = host_address(address);
-    let host = host.trim_end_matches('/');
-    if host != address.trim_end_matches('/') {
-        println!("INFRAHUB_ADDRESS rewritten to host-reachable {host}");
-    }
+fn connected(address: Option<&str>, token: Option<&str>) -> Option<Infrahub> {
+    let (line, client) = connect(address, token, &|name| std::env::var(name).ok());
+    print_line(line);
+    or_report(client)
+}
+
+fn opened(
+    workshop: &Workshop,
+    address: Option<&str>,
+    token: Option<&str>,
+    kind: Option<&str>,
+) -> Option<Box<dyn SourceOfTruth>> {
+    let (line, source) = sot::open(workshop, address, token, kind, &|name| {
+        std::env::var(name).ok()
+    });
+    print_line(line);
+    or_report(source)
 }
 
 fn infrahub_failed(error: impl std::fmt::Display) -> i32 {
@@ -3214,7 +3236,7 @@ fn read_input<T>(file: &Path, label: &str, parse: fn(&str) -> Result<T, String>)
 
 fn apply_schema(
     file: &Path,
-    load: impl FnOnce() -> Result<bool, InfrahubError>,
+    load: impl FnOnce() -> Result<bool, sot::Error>,
     say: &mut dyn FnMut(String),
 ) -> Result<(), String> {
     say(format!("Applying schema {}", file.display()));
@@ -3265,12 +3287,12 @@ fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
     let Kind::Workshop(workshop) = &located.kind else {
         unreachable!("a workshop command runs in a workshop");
     };
-    let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
-    announce_rewrite(&address);
-    let Some(token) = require_token(token) else {
+    let Some(infrahub) = connected(
+        flags.infrahub.address.as_deref(),
+        flags.infrahub.token.as_deref(),
+    ) else {
         return 1;
     };
-    let infrahub = Infrahub::new(&address, &token);
     let schema_file = located
         .dir
         .join(flags.schema.as_ref().unwrap_or(&workshop.schema_file));
@@ -3325,15 +3347,16 @@ fn seed_table(seed: &Seed) -> String {
 }
 
 fn run_schema_load(file: &Path, flags: InfrahubFlags) -> i32 {
-    let (address, token) = infrahub_settings(flags, |name| std::env::var(name).ok());
-    announce_rewrite(&address);
+    let (line, client) = connect(flags.address.as_deref(), flags.token.as_deref(), &|name| {
+        std::env::var(name).ok()
+    });
+    print_line(line);
     if is_missing(file, "schema") {
         return 1;
     }
-    let Some(token) = require_token(token) else {
+    let Some(infrahub) = or_report(client) else {
         return 1;
     };
-    let infrahub = Infrahub::new(&address, &token);
     let Some(schema) = read_input(file, "schema", read_schema) else {
         return 1;
     };
@@ -3352,16 +3375,15 @@ fn event_addresses(lookup: impl Fn(&str) -> Option<String>) -> (String, String) 
 }
 
 fn clear_or_set_maintenance(
-    infrahub: &Infrahub,
+    source: &dyn SourceOfTruth,
     sonda: &Sonda,
     sink: &str,
-    kind: &str,
     device: &str,
     state: bool,
     say: &mut dyn FnMut(String),
 ) -> Result<Maintenance, String> {
-    let saved = infrahub
-        .maintenance(kind, device, state)
+    let saved = source
+        .set_maintenance(device, state)
         .map_err(|error| error.to_string())?;
     say(format!(
         "{device}.maintenance: {} → {state}",
@@ -3378,33 +3400,71 @@ fn clear_or_set_maintenance(
     Ok(saved)
 }
 
-fn run_maintenance(flags: MaintenanceFlags) -> i32 {
+fn run_maintenance(flags: MaintenanceFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
     let state = flags.state || !flags.clear;
-    let (address, token) = infrahub_settings(flags.infrahub, |name| std::env::var(name).ok());
-    announce_rewrite(&address);
-    let Some(token) = require_token(token) else {
+    let Some(source) = opened(
+        workshop,
+        flags.infrahub.address.as_deref(),
+        flags.infrahub.token.as_deref(),
+        Some(&flags.kind),
+    ) else {
         return 1;
     };
-    let infrahub = Infrahub::new(&address, &token);
     let (server, sink) = event_addresses(|name| std::env::var(name).ok());
     let key = given(std::env::var("SONDA_API_KEY").ok());
     let sonda = Sonda::new(server).api_key(key);
-    update_maintenance(&infrahub, &sonda, &sink, &flags.kind, &flags.device, state)
+    update_maintenance(&*source, &sonda, &sink, &flags.device, state)
+}
+
+fn run_devices(flags: DevicesFlags, located: &Located) -> i32 {
+    let Kind::Workshop(workshop) = &located.kind else {
+        unreachable!("a workshop command runs in a workshop");
+    };
+    let Some(source) = opened(
+        workshop,
+        flags.infrahub_url.as_deref(),
+        flags.token.as_deref(),
+        None,
+    ) else {
+        return 1;
+    };
+    match source.devices() {
+        Ok(devices) => {
+            println!("{}", devices_table(&devices));
+            0
+        }
+        Err(error) => infrahub_failed(error),
+    }
+}
+
+fn devices_table(devices: &[Device]) -> String {
+    let text = |value: &Option<String>| value.clone().unwrap_or_else(|| DASH.to_string());
+    let mut lines = vec![["NAME", "KIND", "SITE", "ROLE", "MAINT"].map(String::from)];
+    lines.extend(devices.iter().map(|device| {
+        [
+            device.name.clone(),
+            text(&device.kind),
+            text(&device.site),
+            text(&device.role),
+            if device.maintenance { "yes" } else { "no" }.to_string(),
+        ]
+    }));
+    pad_lines(&lines)
 }
 
 fn update_maintenance(
-    infrahub: &Infrahub,
+    source: &dyn SourceOfTruth,
     sonda: &Sonda,
     sink: &str,
-    kind: &str,
     device: &str,
     state: bool,
 ) -> i32 {
-    if let Err(error) =
-        clear_or_set_maintenance(infrahub, sonda, sink, kind, device, state, &mut |line| {
-            println!("{line}")
-        })
-    {
+    if let Err(error) = clear_or_set_maintenance(source, sonda, sink, device, state, &mut |line| {
+        println!("{line}")
+    }) {
         eprintln!("nobs: {error}");
         return 1;
     }
@@ -3590,18 +3650,14 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
     let Kind::Workshop(workshop) = &located.kind else {
         unreachable!("a workshop command runs in a workshop");
     };
-    let (infrahub_address, token) = infrahub_settings(
-        InfrahubFlags {
-            address: flags.infrahub_url,
-            token: flags.token,
-        },
-        |name| std::env::var(name).ok(),
-    );
-    announce_rewrite(&infrahub_address);
-    let Some(token) = require_token(token) else {
+    let Some(source) = opened(
+        workshop,
+        flags.infrahub_url.as_deref(),
+        flags.token.as_deref(),
+        None,
+    ) else {
         return 1;
     };
-    let source: &dyn SourceOfTruth = &Infrahub::new(&infrahub_address, &token);
     let intent = source.device(&flags.device);
     let prometheus = Prometheus::new(service_address(
         flags.prom_url,
@@ -3629,6 +3685,7 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
     let found = intent.as_ref().ok().and_then(Option::as_ref);
     let session = found.and_then(|found| evidence::session(found, &flags.peer, &flags.afi_safi));
     let missing = match &intent {
+        Ok(_) if workshop.sot == "none" => sot::Error::NoSource.to_string(),
         Ok(_) => "device not found in Infrahub".to_string(),
         Err(error) => format!("Infrahub query failed: {error}"),
     };
@@ -4097,10 +4154,10 @@ fn stack_ready(
     healthy
 }
 
-fn set_maintenance(infrahub: &Infrahub, device: &str, state: bool) -> Option<i32> {
-    match infrahub.maintenance(KINDS[0], device, state) {
+fn set_maintenance(source: &dyn SourceOfTruth, device: &str, state: bool) -> Option<i32> {
+    match source.set_maintenance(device, state) {
         Ok(_) => println!("{device}.maintenance = {state}"),
-        Err(InfrahubError::NotFound { .. }) => {
+        Err(sot::Error::NotFound { .. }) => {
             eprintln!("nobs: could not find {device} in Infrahub (maintenance toggle skipped)")
         }
         Err(error) => return Some(infrahub_failed(error)),
@@ -4117,18 +4174,9 @@ fn run_try_it(flags: TryItFlags, located: &Located) -> i32 {
     let loki_address = service_address(flags.loki_url, LOKI_ADDRESS, lookup);
     let webhook_url = service_address(flags.webhook_url, WEBHOOK_ADDRESS, lookup);
     let alertmanager = alertmanager_address(flags.am_url, lookup);
-    let (infrahub_address, token) = infrahub_settings(
-        InfrahubFlags {
-            address: flags.infrahub_url,
-            token: flags.token,
-        },
-        lookup,
-    );
-    announce_rewrite(&infrahub_address);
-    let Some(token) = require_token(token) else {
+    let Some(infrahub) = connected(flags.infrahub_url.as_deref(), flags.token.as_deref()) else {
         return 1;
     };
-    let infrahub = Infrahub::new(&infrahub_address, &token);
     if !stack_ready(
         &workshop.name,
         &prometheus,
@@ -4483,19 +4531,10 @@ fn run_reset(flags: ResetFlags, located: &Located, runner: &dyn Runner) -> i32 {
     let alertmanager = Alertmanager::new(alertmanager_address(flags.alertmanager_url, lookup));
     let loki = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, lookup));
     let sonda = cascade_client(flags.sonda_url, None, lookup);
-    let (address, token) = infrahub_settings(
-        InfrahubFlags {
-            address: flags.infrahub_url,
-            token: flags.token,
-        },
-        lookup,
-    );
     println!("Resetting lab to known-good state.");
-    announce_rewrite(&address);
-    let Some(token) = require_token(token) else {
+    let Some(infrahub) = connected(flags.infrahub_url.as_deref(), flags.token.as_deref()) else {
         return 1;
     };
-    let infrahub = Infrahub::new(&address, &token);
     let compose = compose_in(located, None);
     let (_, sink) = event_addresses(lookup);
     let mut warnings = Warnings::default();
@@ -4563,15 +4602,14 @@ fn reset_infrahub_data(
 }
 
 fn clear_workshop_maintenance(
-    infrahub: &Infrahub,
+    source: &dyn SourceOfTruth,
     sonda: &Sonda,
     sink: &str,
     warnings: &mut Warnings,
 ) {
     let mut cleared = Vec::new();
     for device in cascade::DEVICES {
-        let result =
-            clear_or_set_maintenance(infrahub, sonda, sink, KINDS[0], device, false, &mut |_| {});
+        let result = clear_or_set_maintenance(source, sonda, sink, device, false, &mut |_| {});
         match result {
             Ok(_) => cleared.push(device),
             Err(error) => warnings.add(format!("maintenance --clear failed for {device}: {error}")),
@@ -4614,18 +4652,9 @@ fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
         .unwrap_or_else(|| PathBuf::from(PREFLIGHT_OUT_DIR));
     let sonda = cascade_client(flags.sonda_url.clone(), None, lookup);
     let (_, sink) = event_addresses(lookup);
-    let (address, token) = infrahub_settings(
-        InfrahubFlags {
-            address: flags.infrahub_url,
-            token: flags.token,
-        },
-        lookup,
-    );
-    announce_rewrite(&address);
-    let Some(token) = require_token(token) else {
+    let Some(infrahub) = connected(flags.infrahub_url.as_deref(), flags.token.as_deref()) else {
         return 1;
     };
-    let infrahub = Infrahub::new(&address, &token);
     if let Err(error) = fs::create_dir_all(&out_dir) {
         report_unwritable(&out_dir, &error);
         return 1;
@@ -4662,9 +4691,7 @@ fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
                     located,
                 )
             },
-            maintenance: || {
-                update_maintenance(&infrahub, &sonda, &sink, KINDS[0], PREFLIGHT_DEVICE, true)
-            },
+            maintenance: || update_maintenance(&infrahub, &sonda, &sink, PREFLIGHT_DEVICE, true),
         },
         layers::Timing {
             clock: SystemTime::now,
@@ -5486,31 +5513,6 @@ mod tests {
 
         assert_eq!(found, None);
         assert_eq!(tries, 3);
-    }
-
-    #[test]
-    fn the_infrahub_settings_are_the_flag_then_the_variable_then_the_default() {
-        let flags = |address: Option<&str>, token: Option<&str>| InfrahubFlags {
-            address: address.map(String::from),
-            token: token.map(String::from),
-        };
-        let variable = |name: &str| Some(format!("var-{name}"));
-
-        assert_eq!(
-            infrahub_settings(flags(Some("flag-address"), Some("flag-token")), variable),
-            ("flag-address".to_string(), Some("flag-token".to_string()))
-        );
-        assert_eq!(
-            infrahub_settings(flags(Some(" "), Some(" ")), variable),
-            (
-                "var-INFRAHUB_ADDRESS".to_string(),
-                Some("var-INFRAHUB_API_TOKEN".to_string())
-            )
-        );
-        assert_eq!(
-            infrahub_settings(flags(None, None), |_| Some("  ".to_string())),
-            ("http://localhost:8000".to_string(), None)
-        );
     }
 
     #[test]
