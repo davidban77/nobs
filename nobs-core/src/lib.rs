@@ -24,6 +24,7 @@ pub mod reset;
 pub mod runner;
 pub mod settings;
 pub mod sonda;
+pub mod sot;
 pub mod status;
 pub mod time;
 pub mod try_it;

@@ -1,4 +1,3 @@
-use std::fmt;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -6,7 +5,8 @@ use serde_json::{json, Value};
 use ureq::{Agent, Body, RequestBuilder};
 
 use crate::http::{self, Reply};
-use crate::lab_vars::{BgpSession, Device, Interface, LabVars};
+use crate::lab_vars::{BgpSession, Device as LabDevice, Interface as LabInterface, LabVars};
+use crate::sot::{Device, Error, Interface, Maintenance, Session, SourceOfTruth};
 
 pub const DEFAULT_ADDRESS: &str = "http://localhost:8000";
 pub const KINDS: [&str; 3] = [DEVICE, INTERFACE, SESSION];
@@ -21,8 +21,10 @@ const RETRY: Duration = Duration::from_secs(1);
 const SCHEMA_LOAD_PATH: &str = "/api/schema/load?branch=main";
 const SCHEMA_PATH: &str = "/api/schema?branch=main";
 const GRAPHQL_PATH: &str = "/graphql/main";
-const BODY_CUT: usize = 200;
-const INTENT_QUERY: &str = "query DeviceIntent($name: String!) { WorkshopDevice(name__value: $name) { edges { node { name { value } maintenance { value } site_name { value } role { value } bgp_sessions { edges { node { peer_address { value } afi_safi { value } expected_state { value } remote_as { value } expected_prefixes_received { value } reason { value } } } } } } } }";
+const ADDRESS_VARIABLE: &str = "INFRAHUB_ADDRESS";
+const TOKEN_VARIABLE: &str = "INFRAHUB_API_TOKEN";
+const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
+const DEVICE_NODES: &str = "edges { node { name { value } asn { value } maintenance { value } site_name { value } role { value } interfaces { edges { node { name { value } role { value } ip_address { value } expected_state { value } } } } bgp_sessions { edges { node { peer_address { value } afi_safi { value } expected_state { value } remote_as { value } expected_prefixes_received { value } reason { value } } } } } }";
 
 type Field = (&'static str, Option<Value>);
 
@@ -34,42 +36,30 @@ pub fn host_address(infrahub: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error {
-    Reach {
-        url: String,
-        reason: String,
-    },
-    Status {
-        status: u16,
-        path: String,
-        body: String,
-    },
-    Graphql(String),
-    NotReady(Vec<String>),
-    NotFound {
-        kind: String,
-        device: String,
-    },
+pub fn connect(
+    address: Option<&str>,
+    token: Option<&str>,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> (Option<String>, Result<Infrahub, String>) {
+    let address = given(address.map(str::to_string))
+        .or_else(|| given(lookup(ADDRESS_VARIABLE)))
+        .unwrap_or_else(|| DEFAULT_ADDRESS.to_string());
+    let token = given(token.map(str::to_string)).or_else(|| given(lookup(TOKEN_VARIABLE)));
+    let client = Infrahub::new(&address, token.as_deref().unwrap_or_default());
+    let line = (client.address != address.trim_end_matches('/')).then(|| {
+        format!(
+            "INFRAHUB_ADDRESS rewritten to host-reachable {}",
+            client.address
+        )
+    });
+    match token {
+        Some(_) => (line, Ok(client)),
+        None => (line, Err(TOKEN_REQUIRED.to_string())),
+    }
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Reach { url, reason } => write!(f, "cannot reach {url}: {reason}"),
-            Error::Status { status, path, body } => {
-                let body: String = body.chars().take(BODY_CUT).collect();
-                write!(f, "Infrahub answered {status} on {path}: {body}")
-            }
-            Error::Graphql(message) => write!(f, "Infrahub: {message}"),
-            Error::NotReady(kinds) => write!(
-                f,
-                "workshop schema kinds {} not visible to Infrahub after 30 s",
-                kinds.join(", ")
-            ),
-            Error::NotFound { kind, device } => write!(f, "{kind} {device} not found in Infrahub."),
-        }
-    }
+fn given(value: Option<String>) -> Option<String> {
+    value.filter(|text| !text.trim().is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,33 +67,10 @@ pub struct Seed {
     pub rows: Vec<(String, u32, u32)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Maintenance {
-    pub previous: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceIntent {
-    pub name: String,
-    pub maintenance: bool,
-    pub site: Option<String>,
-    pub role: Option<String>,
-    pub sessions: Vec<IntentSession>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IntentSession {
-    pub peer: String,
-    pub afi_safi: Option<String>,
-    pub expected_state: Option<String>,
-    pub remote_as: Option<i64>,
-    pub expected_prefixes: Option<i64>,
-    pub reason: Option<String>,
-}
-
 pub struct Infrahub {
     address: String,
     token: String,
+    maintenance_kind: String,
     agent: Agent,
 }
 
@@ -119,8 +86,13 @@ impl Infrahub {
         Self {
             address: host_address(address).trim_end_matches('/').to_string(),
             token: token.to_string(),
+            maintenance_kind: DEVICE.to_string(),
             agent: http::agent(TIMEOUT),
         }
+    }
+
+    pub(crate) fn set_maintenance_kind(&mut self, kind: &str) {
+        self.maintenance_kind = kind.to_string();
     }
 
     pub fn address(&self) -> &str {
@@ -201,29 +173,6 @@ impl Infrahub {
         })
     }
 
-    pub fn device_intent(&self, device: &str) -> Result<Option<DeviceIntent>, Error> {
-        let answer = self.graphql_with(INTENT_QUERY, &json!({ "name": device }))?;
-        let edges = at(&answer, "/data/WorkshopDevice/edges")?;
-        let Some(node) = edges.pointer("/0/node") else {
-            return Ok(None);
-        };
-        Ok(Some(DeviceIntent {
-            name: attribute_text(node, "name").unwrap_or_else(|| device.to_string()),
-            maintenance: attribute_value(node, "maintenance")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            site: attribute_text(node, "site_name"),
-            role: attribute_text(node, "role"),
-            sessions: node
-                .pointer("/bgp_sessions/edges")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(|edge| intent_session(&edge["node"]))
-                .collect(),
-        }))
-    }
-
     pub fn device_names(&self) -> Result<Vec<String>, Error> {
         let query = format!("{{ {DEVICE} {{ edges {{ node {{ name {{ value }} }} }} }} }}");
         let reply = self.post(GRAPHQL_PATH, &json!({ "query": query }), TIMEOUT)?;
@@ -233,6 +182,24 @@ impl Infrahub {
             .into_iter()
             .flatten()
             .map(|edge| attribute_text(&edge["node"], "name").unwrap_or_default())
+            .collect())
+    }
+
+    fn read_devices(&self, name: Option<&str>) -> Result<Vec<Device>, Error> {
+        let answer = match name {
+            Some(name) => self.graphql_with(
+                &format!(
+                    "query DeviceIntent($name: String!) {{ {DEVICE}(name__value: $name) {{ {DEVICE_NODES} }} }}"
+                ),
+                &json!({ "name": name }),
+            )?,
+            None => self.graphql(&format!("{{ {DEVICE} {{ {DEVICE_NODES} }} }}"))?,
+        };
+        Ok(at(&answer, &format!("/data/{DEVICE}/edges"))?
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|edge| device_from(&edge["node"]))
             .collect())
     }
 
@@ -345,6 +312,20 @@ impl Infrahub {
     }
 }
 
+impl SourceOfTruth for Infrahub {
+    fn devices(&self) -> Result<Vec<Device>, Error> {
+        self.read_devices(None)
+    }
+
+    fn device(&self, name: &str) -> Result<Option<Device>, Error> {
+        Ok(self.read_devices(Some(name))?.into_iter().next())
+    }
+
+    fn set_maintenance(&self, device: &str, state: bool) -> Result<Maintenance, Error> {
+        self.maintenance(&self.maintenance_kind, device, state)
+    }
+}
+
 fn tally(row: &mut (u32, u32), created: bool) {
     if created {
         row.0 += 1;
@@ -379,15 +360,43 @@ fn attribute_text(node: &Value, name: &str) -> Option<String> {
     attribute_value(node, name)?.as_str().map(str::to_string)
 }
 
-fn intent_session(node: &Value) -> IntentSession {
-    IntentSession {
-        peer: attribute_text(node, "peer_address").unwrap_or_default(),
-        afi_safi: attribute_text(node, "afi_safi"),
-        expected_state: attribute_text(node, "expected_state"),
-        remote_as: attribute_value(node, "remote_as").and_then(Value::as_i64),
-        expected_prefixes: attribute_value(node, "expected_prefixes_received")
-            .and_then(Value::as_i64),
-        reason: attribute_text(node, "reason"),
+fn related<'a>(node: &'a Value, relationship: &str) -> impl Iterator<Item = &'a Value> {
+    node.pointer(&format!("/{relationship}/edges"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|edge| &edge["node"])
+}
+
+fn device_from(node: &Value) -> Device {
+    Device {
+        name: attribute_text(node, "name").unwrap_or_default(),
+        kind: None,
+        site: attribute_text(node, "site_name"),
+        role: attribute_text(node, "role"),
+        asn: attribute_value(node, "asn").and_then(Value::as_i64),
+        maintenance: attribute_value(node, "maintenance")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        interfaces: related(node, "interfaces")
+            .map(|interface| Interface {
+                name: attribute_text(interface, "name").unwrap_or_default(),
+                role: attribute_text(interface, "role"),
+                address: attribute_text(interface, "ip_address"),
+                expected_state: attribute_text(interface, "expected_state"),
+            })
+            .collect(),
+        sessions: related(node, "bgp_sessions")
+            .map(|session| Session {
+                peer: attribute_text(session, "peer_address").unwrap_or_default(),
+                afi_safi: attribute_text(session, "afi_safi"),
+                expected_state: attribute_text(session, "expected_state"),
+                remote_as: attribute_value(session, "remote_as").and_then(Value::as_i64),
+                expected_prefixes: attribute_value(session, "expected_prefixes_received")
+                    .and_then(Value::as_i64),
+                reason: attribute_text(session, "reason"),
+            })
+            .collect(),
     }
 }
 
@@ -419,7 +428,7 @@ fn parent(device_id: &str) -> Field {
     ("device", Some(json!({ "id": device_id })))
 }
 
-fn device_row(device: &Device) -> Upsert {
+fn device_row(device: &LabDevice) -> Upsert {
     Upsert {
         kind: DEVICE,
         filters: vec![("name__value", json!(device.name))],
@@ -433,7 +442,7 @@ fn device_row(device: &Device) -> Upsert {
     }
 }
 
-fn interface_row(device_id: &str, interface: &Interface) -> Upsert {
+fn interface_row(device_id: &str, interface: &LabInterface) -> Upsert {
     Upsert {
         kind: INTERFACE,
         filters: vec![
@@ -1197,12 +1206,10 @@ mod tests {
     }
 
     #[test]
-    fn device_intent_sends_one_post_with_the_key_the_fields_and_the_name_as_a_variable() {
+    fn device_sends_one_post_with_the_key_the_fields_and_the_name_as_a_variable() {
         let stub = graphql_stub(&[INTENT_REPLY.to_string()]);
 
-        Infrahub::new(stub.url(), TOKEN)
-            .device_intent("srl1")
-            .unwrap();
+        Infrahub::new(stub.url(), TOKEN).device("srl1").unwrap();
 
         let requests = stub.requests();
         assert_eq!(requests.len(), 1);
@@ -1231,19 +1238,22 @@ mod tests {
     }
 
     #[test]
-    fn device_intent_reads_the_device_and_its_session_from_the_reply() {
+    fn device_reads_the_device_and_its_session_from_the_reply() {
         let stub = graphql_stub(&[INTENT_REPLY.to_string()]);
 
-        let intent = Infrahub::new(stub.url(), TOKEN).device_intent("srl1");
+        let intent = Infrahub::new(stub.url(), TOKEN).device("srl1");
 
         assert_eq!(
             intent,
-            Ok(Some(DeviceIntent {
+            Ok(Some(Device {
                 name: "srl1".to_string(),
+                kind: None,
                 maintenance: false,
                 site: Some("lab".to_string()),
                 role: Some("edge".to_string()),
-                sessions: vec![IntentSession {
+                asn: None,
+                interfaces: vec![],
+                sessions: vec![Session {
                     peer: "10.1.99.2".to_string(),
                     afi_safi: Some("ipv4-unicast".to_string()),
                     expected_state: Some("established".to_string()),
@@ -1256,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn device_intent_reads_maintenance_as_it_is_stored_and_null_as_false() {
+    fn device_reads_maintenance_as_it_is_stored_and_null_as_false() {
         for (stored, maintenance) in [("true", true), ("false", false), ("null", false)] {
             let reply = format!(
                 r#"{{"data":{{"WorkshopDevice":{{"edges":[{{"node":{{"name":{{"value":"srl1"}},"maintenance":{{"value":{stored}}}}}}}]}}}}}}"#
@@ -1264,7 +1274,7 @@ mod tests {
             let stub = graphql_stub(&[reply]);
 
             let intent = Infrahub::new(stub.url(), TOKEN)
-                .device_intent("srl1")
+                .device("srl1")
                 .unwrap()
                 .unwrap();
 
@@ -1273,19 +1283,19 @@ mod tests {
     }
 
     #[test]
-    fn device_intent_gives_none_for_every_null_or_missing_field() {
+    fn device_gives_none_for_every_null_or_missing_field() {
         let reply = r#"{"data":{"WorkshopDevice":{"edges":[{"node":{"name":{"value":"srl1"},"maintenance":{"value":false},"site_name":{"value":null},"bgp_sessions":{"edges":[{"node":{"peer_address":{"value":"10.1.99.2"},"afi_safi":{"value":null},"expected_state":{"value":null},"remote_as":{"value":null},"expected_prefixes_received":{"value":10},"reason":{"value":null}}}]}}}]}}}"#;
         let stub = graphql_stub(&[reply.to_string()]);
 
         let intent = Infrahub::new(stub.url(), TOKEN)
-            .device_intent("srl1")
+            .device("srl1")
             .unwrap()
             .unwrap();
 
         assert_eq!((intent.site, intent.role), (None, None));
         assert_eq!(
             intent.sessions,
-            vec![IntentSession {
+            vec![Session {
                 peer: "10.1.99.2".to_string(),
                 afi_safi: None,
                 expected_state: None,
@@ -1297,31 +1307,28 @@ mod tests {
     }
 
     #[test]
-    fn device_intent_for_a_device_with_no_edges_is_none() {
+    fn device_for_a_device_with_no_edges_is_none() {
         let stub = graphql_stub(&[r#"{"data":{"WorkshopDevice":{"edges":[]}}}"#.to_string()]);
 
-        assert_eq!(
-            Infrahub::new(stub.url(), TOKEN).device_intent("srl9"),
-            Ok(None)
-        );
+        assert_eq!(Infrahub::new(stub.url(), TOKEN).device("srl9"), Ok(None));
     }
 
     #[test]
-    fn device_intent_with_a_200_that_has_errors_is_a_graphql_error() {
+    fn device_with_a_200_that_has_errors_is_a_graphql_error() {
         let stub = graphql_stub(&[r#"{"errors":[{"message":"Cannot query field"}]}"#.to_string()]);
 
         assert_eq!(
-            Infrahub::new(stub.url(), TOKEN).device_intent("srl1"),
+            Infrahub::new(stub.url(), TOKEN).device("srl1"),
             Err(Error::Graphql("Cannot query field".to_string()))
         );
     }
 
     #[test]
-    fn device_intent_with_a_reply_that_has_no_edges_list_is_a_graphql_error() {
+    fn device_with_a_reply_that_has_no_edges_list_is_a_graphql_error() {
         let stub = graphql_stub(&[r#"{"data":{}}"#.to_string()]);
 
         assert_eq!(
-            Infrahub::new(stub.url(), TOKEN).device_intent("srl1"),
+            Infrahub::new(stub.url(), TOKEN).device("srl1"),
             Err(Error::Graphql(
                 "the reply has no /data/WorkshopDevice/edges".to_string()
             ))
@@ -1329,11 +1336,11 @@ mod tests {
     }
 
     #[test]
-    fn device_intent_with_a_status_that_is_not_200_is_a_status_error() {
+    fn device_with_a_status_that_is_not_200_is_a_status_error() {
         let stub = Stub::start(&[("POST", GRAPHQL_PATH, 500, "down")]);
 
         assert_eq!(
-            Infrahub::new(stub.url(), TOKEN).device_intent("srl1"),
+            Infrahub::new(stub.url(), TOKEN).device("srl1"),
             Err(Error::Status {
                 status: 500,
                 path: GRAPHQL_PATH.to_string(),
@@ -1343,13 +1350,229 @@ mod tests {
     }
 
     #[test]
-    fn device_intent_on_a_closed_port_is_a_reach_error() {
+    fn device_on_a_closed_port_is_a_reach_error() {
         let url = closed_port_url();
 
         assert!(matches!(
-            Infrahub::new(&url, TOKEN).device_intent("srl1"),
+            Infrahub::new(&url, TOKEN).device("srl1"),
             Err(Error::Reach { .. })
         ));
+    }
+
+    fn srl1_node() -> Value {
+        json!({
+            "name": {"value": "srl1"},
+            "asn": {"value": 65101},
+            "maintenance": {"value": false},
+            "site_name": {"value": "lab"},
+            "role": {"value": "edge"},
+            "interfaces": {"edges": [
+                {"node": {
+                    "name": {"value": "ethernet-1/1"},
+                    "role": {"value": "peer"},
+                    "ip_address": {"value": "10.1.2.1/24"},
+                    "expected_state": {"value": "up"}
+                }},
+                {"node": {
+                    "name": {"value": "lo0"},
+                    "role": {"value": "loopback"},
+                    "ip_address": {"value": null},
+                    "expected_state": {"value": "down"}
+                }}
+            ]},
+            "bgp_sessions": {"edges": [
+                {"node": {
+                    "peer_address": {"value": "10.1.2.2"},
+                    "afi_safi": {"value": "ipv4-unicast"},
+                    "expected_state": {"value": "established"},
+                    "remote_as": {"value": 65102},
+                    "expected_prefixes_received": {"value": 10},
+                    "reason": {"value": null}
+                }}
+            ]}
+        })
+    }
+
+    fn srl2_node() -> Value {
+        json!({
+            "name": {"value": "srl2"},
+            "asn": {"value": 65102},
+            "maintenance": {"value": true},
+            "site_name": {"value": "lab"},
+            "role": {"value": "edge"},
+            "interfaces": {"edges": [
+                {"node": {
+                    "name": {"value": "ethernet-1/1"},
+                    "role": {"value": "peer"},
+                    "ip_address": {"value": "10.1.2.2/24"},
+                    "expected_state": {"value": "up"}
+                }}
+            ]},
+            "bgp_sessions": {"edges": [
+                {"node": {
+                    "peer_address": {"value": "10.1.2.1"},
+                    "afi_safi": {"value": "ipv4-unicast"},
+                    "expected_state": {"value": "established"},
+                    "remote_as": {"value": 65101},
+                    "expected_prefixes_received": {"value": null},
+                    "reason": {"value": "ip-mismatch-demo"}
+                }}
+            ]}
+        })
+    }
+
+    fn srl1() -> Device {
+        Device {
+            name: "srl1".to_string(),
+            kind: None,
+            site: Some("lab".to_string()),
+            role: Some("edge".to_string()),
+            asn: Some(65101),
+            maintenance: false,
+            interfaces: vec![
+                Interface {
+                    name: "ethernet-1/1".to_string(),
+                    role: Some("peer".to_string()),
+                    address: Some("10.1.2.1/24".to_string()),
+                    expected_state: Some("up".to_string()),
+                },
+                Interface {
+                    name: "lo0".to_string(),
+                    role: Some("loopback".to_string()),
+                    address: None,
+                    expected_state: Some("down".to_string()),
+                },
+            ],
+            sessions: vec![Session {
+                peer: "10.1.2.2".to_string(),
+                afi_safi: Some("ipv4-unicast".to_string()),
+                expected_state: Some("established".to_string()),
+                remote_as: Some(65102),
+                expected_prefixes: Some(10),
+                reason: None,
+            }],
+        }
+    }
+
+    fn srl2() -> Device {
+        Device {
+            name: "srl2".to_string(),
+            kind: None,
+            site: Some("lab".to_string()),
+            role: Some("edge".to_string()),
+            asn: Some(65102),
+            maintenance: true,
+            interfaces: vec![Interface {
+                name: "ethernet-1/1".to_string(),
+                role: Some("peer".to_string()),
+                address: Some("10.1.2.2/24".to_string()),
+                expected_state: Some("up".to_string()),
+            }],
+            sessions: vec![Session {
+                peer: "10.1.2.1".to_string(),
+                afi_safi: Some("ipv4-unicast".to_string()),
+                expected_state: Some("established".to_string()),
+                remote_as: Some(65101),
+                expected_prefixes: None,
+                reason: Some("ip-mismatch-demo".to_string()),
+            }],
+        }
+    }
+
+    fn devices_reply(nodes: &[Value]) -> String {
+        let edges: Vec<Value> = nodes.iter().map(|node| json!({ "node": node })).collect();
+        json!({"data": {"WorkshopDevice": {"edges": edges}}}).to_string()
+    }
+
+    #[test]
+    fn devices_reads_every_device_with_its_interfaces_and_sessions_in_one_post_without_variables() {
+        let stub = graphql_stub(&[devices_reply(&[srl1_node(), srl2_node()])]);
+
+        let devices = Infrahub::new(stub.url(), TOKEN).devices();
+
+        assert_eq!(devices, Ok(vec![srl1(), srl2()]));
+        assert_eq!(stub.requests().len(), 1);
+        let body = &sent_bodies(&stub)[0];
+        assert_eq!(body.get("variables"), None);
+        assert!(!body["query"].as_str().unwrap().contains("$name"));
+    }
+
+    #[test]
+    fn device_sends_the_name_as_a_variable_and_equals_that_device_from_devices() {
+        let listed = graphql_stub(&[devices_reply(&[srl1_node(), srl2_node()])]);
+        let from_list = Infrahub::new(listed.url(), TOKEN)
+            .devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.name == "srl2");
+        let stub = graphql_stub(&[devices_reply(&[srl2_node()])]);
+
+        let one = Infrahub::new(stub.url(), TOKEN).device("srl2").unwrap();
+
+        assert_eq!(stub.requests().len(), 1);
+        assert_eq!(sent_bodies(&stub)[0]["variables"], json!({"name": "srl2"}));
+        assert_eq!(one, Some(srl2()));
+        assert_eq!(one, from_list);
+    }
+
+    #[test]
+    fn set_maintenance_through_the_trait_reads_then_updates_and_returns_the_previous_state() {
+        let found = r#"{"data":{"WorkshopDevice":{"count":1,"edges":[{"node":{"id":"dev-9","maintenance":{"value":true}}}]}}}"#;
+        let stub = graphql_stub(&[
+            found.to_string(),
+            mutation_answer("WorkshopDeviceUpdate", "dev-9"),
+        ]);
+        let client = Infrahub::new(stub.url(), TOKEN);
+        let source: &dyn SourceOfTruth = &client;
+
+        let result = source.set_maintenance("srl1", false);
+
+        assert_eq!(result, Ok(Maintenance { previous: true }));
+        let sent = queries(&stub);
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].starts_with(r#"query { WorkshopDevice(name__value: "srl1""#));
+        assert_eq!(
+            sent[1],
+            r#"mutation { WorkshopDeviceUpdate(data: {maintenance: {value: false}, id: "dev-9"}) { ok object { id } } }"#
+        );
+    }
+
+    #[test]
+    fn connect_takes_the_flag_then_the_variable_then_the_default_and_a_blank_is_not_given() {
+        let lookup = |name: &str| match name {
+            "INFRAHUB_ADDRESS" => Some("http://10.0.0.5:8000/".to_string()),
+            "INFRAHUB_API_TOKEN" => Some("from-env".to_string()),
+            _ => None,
+        };
+
+        let (line, flagged) = connect(Some("http://10.0.0.6:8000"), Some("from-flag"), &lookup);
+        let flagged = flagged.unwrap();
+        assert_eq!(line, None);
+        assert_eq!(flagged.address(), "http://10.0.0.6:8000");
+        assert_eq!(flagged.token, "from-flag");
+
+        let (line, blank) = connect(Some("  "), Some(""), &lookup);
+        let blank = blank.unwrap();
+        assert_eq!(line, None);
+        assert_eq!(blank.address(), "http://10.0.0.5:8000");
+        assert_eq!(blank.token, "from-env");
+
+        let (line, default) = connect(None, Some("t"), &|_| None);
+        assert_eq!(line, None);
+        assert_eq!(default.unwrap().address(), DEFAULT_ADDRESS);
+
+        let blank_variables = |name: &str| match name {
+            "INFRAHUB_ADDRESS" | "INFRAHUB_API_TOKEN" => Some("   ".to_string()),
+            _ => None,
+        };
+        let (line, unset) = connect(None, None, &blank_variables);
+        assert_eq!(line, None);
+        assert_eq!(
+            unset.err(),
+            Some("INFRAHUB_API_TOKEN is required (set it in .env or pass --token).".to_string())
+        );
+        let (_, defaulted) = connect(None, Some("t"), &blank_variables);
+        assert_eq!(defaulted.unwrap().address(), DEFAULT_ADDRESS);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::infrahub::{DeviceIntent, IntentSession};
+use crate::sot::{Device, Session};
 
 const MISSING: &str = "—";
 const UNKNOWN_FIELD: &str = "?";
@@ -48,19 +48,15 @@ pub fn value_text(value: Option<f64>, missing: &str) -> String {
     }
 }
 
-pub fn session<'a>(
-    intent: &'a DeviceIntent,
-    peer: &str,
-    afi_safi: &str,
-) -> Option<&'a IntentSession> {
+pub fn session<'a>(intent: &'a Device, peer: &str, afi_safi: &str) -> Option<&'a Session> {
     intent.sessions.iter().find(|session| {
         session.peer == peer && session.afi_safi.as_deref().unwrap_or(DEFAULT_AFI_SAFI) == afi_safi
     })
 }
 
 pub fn decision(
-    intent: Option<&DeviceIntent>,
-    session: Option<&IntentSession>,
+    intent: Option<&Device>,
+    session: Option<&Session>,
     metrics: &Metrics,
     reason_when_missing: &str,
 ) -> (String, String) {
@@ -69,8 +65,8 @@ pub fn decision(
 }
 
 fn rule<'a>(
-    intent: Option<&DeviceIntent>,
-    session: Option<&IntentSession>,
+    intent: Option<&Device>,
+    session: Option<&Session>,
     metrics: &Metrics,
     reason_when_missing: &'a str,
 ) -> (&'static str, &'a str) {
@@ -140,18 +136,21 @@ mod tests {
     const AUTOCON5: &str = r#"{device="{device}"} != "license" |~ "(bgp|BGP|neighbor|session|route|ipv4-unicast|{peer})""#;
     const MISSING_REASON: &str = "device not found in Infrahub";
 
-    fn intent(maintenance: bool, sessions: Vec<IntentSession>) -> DeviceIntent {
-        DeviceIntent {
+    fn intent(maintenance: bool, sessions: Vec<Session>) -> Device {
+        Device {
             name: "srl1".to_string(),
+            kind: None,
             maintenance,
             site: None,
             role: None,
+            asn: None,
+            interfaces: vec![],
             sessions,
         }
     }
 
-    fn intended(expected_state: Option<&str>) -> IntentSession {
-        IntentSession {
+    fn intended(expected_state: Option<&str>) -> Session {
+        Session {
             peer: "10.1.99.2".to_string(),
             afi_safi: None,
             expected_state: expected_state.map(str::to_string),
@@ -173,8 +172,8 @@ mod tests {
     }
 
     fn decided(
-        intent: Option<&DeviceIntent>,
-        session: Option<&IntentSession>,
+        intent: Option<&Device>,
+        session: Option<&Session>,
         metrics: &Metrics,
     ) -> (String, String) {
         decision(intent, session, metrics, MISSING_REASON)

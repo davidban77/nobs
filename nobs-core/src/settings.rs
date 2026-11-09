@@ -19,8 +19,14 @@ pub struct Workshop {
     pub evidence_query: String,
     pub silence_hints: Vec<String>,
     pub schema_file: PathBuf,
+    #[serde(default = "default_sot")]
+    pub sot: String,
     #[serde(default)]
     pub image_pins: BTreeMap<String, String>,
+}
+
+fn default_sot() -> String {
+    "infrahub".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -45,9 +51,20 @@ pub fn read_settings(text: &str) -> Result<Settings, String> {
         .remove("kind")
         .ok_or_else(|| "kind: missing".to_string())?;
     match kind.get_ref().as_str() {
-        Some("workshop") => deserialize(text, root).map(Settings::Workshop),
+        Some("workshop") => deserialize(text, root)
+            .and_then(check_sot)
+            .map(Settings::Workshop),
         Some("lab") => deserialize(text, root).map(Settings::Lab),
         _ => Err("kind: must be \"workshop\" or \"lab\"".to_string()),
+    }
+}
+
+fn check_sot(workshop: Workshop) -> Result<Workshop, String> {
+    match workshop.sot.as_str() {
+        "infrahub" | "none" => Ok(workshop),
+        other => Err(format!(
+            "sot: must be \"infrahub\" or \"none\", not \"{other}\""
+        )),
     }
 }
 
@@ -139,7 +156,7 @@ sonda = "ghcr.io/davidban77/sonda:1.22.2"
     }
 
     #[test]
-    fn the_full_workshop_text_parses_to_the_eleven_settings() {
+    fn the_full_workshop_text_parses_to_the_twelve_settings() {
         assert_eq!(
             workshop(WORKSHOP),
             Workshop {
@@ -153,6 +170,7 @@ sonda = "ghcr.io/davidban77/sonda:1.22.2"
                 evidence_query: "{device=\"srl1\"}".to_string(),
                 silence_hints: vec!["Workshop".to_string(), "workshop".to_string()],
                 schema_file: PathBuf::from("infrahub/schema.yml"),
+                sot: "infrahub".to_string(),
                 image_pins: BTreeMap::from([(
                     "sonda".to_string(),
                     "ghcr.io/davidban77/sonda:1.22.2".to_string()
@@ -224,6 +242,23 @@ sonda = "ghcr.io/davidban77/sonda:1.22.2"
         assert_eq!(
             read_settings(&WORKSHOP.replace("kind = \"workshop\"", "kind = \"other\"")),
             Err("kind: must be \"workshop\" or \"lab\"".to_string())
+        );
+    }
+
+    #[test]
+    fn sot_is_infrahub_when_absent_and_none_reads_and_another_value_is_an_error() {
+        assert_eq!(workshop(WORKSHOP).sot, "infrahub");
+        let with = |value: &str| {
+            WORKSHOP.replace(
+                "kind = \"workshop\"\n",
+                &format!("kind = \"workshop\"\nsot = \"{value}\"\n"),
+            )
+        };
+        assert_eq!(workshop(&with("none")).sot, "none");
+        assert_eq!(workshop(&with("infrahub")).sot, "infrahub");
+        assert_eq!(
+            read_settings(&with("netbox")),
+            Err("sot: must be \"infrahub\" or \"none\", not \"netbox\"".to_string())
         );
     }
 
