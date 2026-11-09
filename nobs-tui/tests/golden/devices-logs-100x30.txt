@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
+ [1 devices]  2 services  3 lab                                                      ? keys  q quit
+┌ devices 2 ─────────────────────────────┐┌ srl1 ──────────────────────────────────────────────────┐
+│   NAME  KIND  HLTH  SYNC  ALRT         ││overview  interfaces  timeline  LOGS     srl1  following│
+│>  srl1  —     warn  —        1         ││13:41:17  chassis|1044|8|00012|Temperature sensor cpu: …│
+│ M srl2  —     ok    —                  ││13:41:17  BGP neighbor 10.1.7.2: state changed to idle  │
+│                                        ││13:41:07  BGP neighbor 10.1.99.2: connection refused — …│
+│                                        ││13:40:57  BGP neighbor 10.1.7.2: state changed to active│
+│                                        ││13:40:27  BGP neighbor 10.1.99.2: TCP session establish…│
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+├ alerts 2 ──────────────────────────────┤│                                                        │
+│BgpSessionNotUp  srl1  firing  21s      ││                                                        │
+│BgpSessionNotUp  srl1  silenced  1m32s  ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+ run  none                                                                                   o open
+ f pause  / filter  j/k scroll  [ ] tab  Esc back to list

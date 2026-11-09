@@ -7,13 +7,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::alertmanager::Alert;
 use nobs_core::env::read_env;
+use nobs_core::evidence;
 use nobs_core::lab;
 use nobs_core::locate::{locate, Kind, Located};
 use nobs_core::loki::Line;
 use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
 use nobs_core::sonda::Sonda;
-use nobs_core::sot::{Device, SourceOfTruth};
+use nobs_core::sot::{Device, Session, SourceOfTruth};
 use nobs_core::status::Urls;
 use nobs_core::time;
 
@@ -30,6 +31,8 @@ const MIN_SIZE: (u16, u16) = (60, 15);
 const STACK_SONDA_URL: &str = "http://localhost:8085";
 const SONDA_ENV: &str = "SONDA_SERVER_URL";
 const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
+
+pub type ShownDeviceLogs<'a> = (&'a str, Vec<(i64, &'a str)>, bool, usize);
 
 #[derive(Clone)]
 pub struct Start {
@@ -713,6 +716,27 @@ impl Model {
         })
     }
 
+    pub fn session_states(&self) -> Vec<(Session, String)> {
+        let Some(device) = self.selected_device() else {
+            return Vec::new();
+        };
+        let values = self
+            .metrics
+            .as_deref()
+            .map(|samples| devices::oper_states(&device.name, samples));
+        device
+            .sessions
+            .iter()
+            .map(|session| {
+                let state = match &values {
+                    Some(values) => evidence::decode_oper(values.get(&session.peer).copied()),
+                    None => "?".to_string(),
+                };
+                (session.clone(), state)
+            })
+            .collect()
+    }
+
     pub fn timeline(&self) -> Vec<devices::Entry> {
         let Some(device) = self.selected_device() else {
             return Vec::new();
@@ -741,7 +765,7 @@ impl Model {
         self.popup
     }
 
-    pub fn device_logs(&self) -> Option<(&str, Vec<&str>, bool, usize)> {
+    pub fn device_logs(&self) -> Option<ShownDeviceLogs<'_>> {
         let device = self.selected_device()?;
         Some((
             device.name.as_str(),
@@ -751,11 +775,11 @@ impl Model {
         ))
     }
 
-    fn shown_device_logs(&self) -> Vec<&str> {
+    fn shown_device_logs(&self) -> Vec<(i64, &str)> {
         self.device_lines
             .iter()
-            .map(|held| held.shown.as_str())
-            .filter(|text| self.logs_filter.matches(text))
+            .map(|held| (held.line.nanoseconds, held.shown.as_str()))
+            .filter(|(_, text)| self.logs_filter.matches(text))
             .collect()
     }
 
@@ -2880,6 +2904,47 @@ mod tests {
     }
 
     #[test]
+    fn the_session_states_follow_the_intended_sessions_and_show_question_marks_without_prometheus()
+    {
+        let mut model = devices_model();
+        let states = |model: &Model| -> Vec<(String, String)> {
+            model
+                .session_states()
+                .into_iter()
+                .map(|(session, state)| (session.peer, state))
+                .collect()
+        };
+        let pair = |peer: &str, state: &str| (peer.to_string(), state.to_string());
+        assert_eq!(states(&model).len(), 3);
+        assert!(states(&model).iter().all(|(_, state)| state == "?"));
+
+        let mut samples = peer_samples(1.0);
+        samples[2].value = 5.0;
+        model.apply(Update::Metrics(Ok(samples)));
+        assert_eq!(
+            states(&model),
+            [
+                pair("10.1.2.2", "up"),
+                pair("10.1.7.2", "up"),
+                pair("10.1.99.2", "active")
+            ]
+        );
+
+        model.apply(Update::Metrics(Ok(Vec::new())));
+        assert!(states(&model).iter().all(|(_, state)| state == "—"));
+
+        model.apply(Update::Metrics(Err("cannot reach http://x".to_string())));
+        assert_eq!(
+            states(&model),
+            [
+                pair("10.1.2.2", "?"),
+                pair("10.1.7.2", "?"),
+                pair("10.1.99.2", "?")
+            ]
+        );
+    }
+
+    #[test]
     fn moving_to_another_device_clears_its_logs_and_a_repeated_log_line_shows_once() {
         let mut model = devices_model();
         assert_eq!(model.selected_device().unwrap().name, "srl1");
@@ -2896,8 +2961,9 @@ mod tests {
         model.apply(Update::DeviceLogs("srl1".to_string(), Ok(second)));
 
         let (name, lines, following, _) = model.device_logs().unwrap();
+        let texts: Vec<&str> = lines.iter().map(|(_, text)| *text).collect();
         assert_eq!(name, "srl1");
-        assert_eq!(lines, ["bgp up", "bgp idle", "link down"]);
+        assert_eq!(texts, ["bgp up", "bgp idle", "link down"]);
         assert!(following);
 
         model.apply(Update::DeviceLogs(

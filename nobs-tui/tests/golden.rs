@@ -1,9 +1,18 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use nobs_core::alertmanager::Alert;
 use nobs_core::lab::{services, Service};
+use nobs_core::lab_vars;
+use nobs_core::locate::{locate, Kind, Located};
+use nobs_core::loki::Line as LokiLine;
+use nobs_core::prefect::FlowRun;
+use nobs_core::prometheus::Sample;
+use nobs_core::sot::{Fixed, SourceOfTruth};
 use nobs_core::status::Urls;
 use nobs_tui::shell::Health;
 use nobs_tui::{
@@ -16,6 +25,14 @@ use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 
 const CLOCK_SECONDS: u64 = 1_794_231_727;
+const WORKSHOP_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tests/fixtures/workshop-one"
+);
+const WORKSHOP_ONE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tests/fixtures/workshop-one/lab_vars.yml"
+);
 const SIZES: [(u16, u16); 2] = [(60, 15), (100, 30)];
 const WORKSHOP: [(&str, &str, u16, &str); 7] = [
     ("grafana", "running", 3000, "41 seconds ago"),
@@ -105,6 +122,15 @@ fn clock() -> SystemTime {
 }
 
 fn model(chooser: bool, packt_failed: bool) -> Shell {
+    model_with(chooser, packt_failed, None, None)
+}
+
+fn model_with(
+    chooser: bool,
+    packt_failed: bool,
+    source: Option<Arc<dyn SourceOfTruth>>,
+    lab: Option<Located>,
+) -> Shell {
     let start = Instant::now();
     let mut stacks = vec![
         stack("autocon5", &[("INFRAHUB_ADDRESS", "http://localhost:8000")]),
@@ -115,7 +141,7 @@ fn model(chooser: bool, packt_failed: bool) -> Shell {
         stacks.push(sonda_only());
     }
     let mut model = Shell::new(Start {
-        lab: None,
+        lab,
         stacks,
         sonda: SondaTarget {
             server: None,
@@ -123,7 +149,7 @@ fn model(chooser: bool, packt_failed: bool) -> Shell {
         },
         home: Workbench::Services,
         chooser: true,
-        source: None,
+        source,
         source_error: None,
         urls: Urls::defaults(),
     });
@@ -141,6 +167,191 @@ fn model(chooser: bool, packt_failed: bool) -> Shell {
         model.apply(Update::Services(1, Ok(Vec::new())));
     }
     model.apply(Update::Services(2, Ok(ps(&DEMO))));
+    model
+}
+
+fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
+fn sample(pairs: &[(&str, &str)], value: f64) -> Sample {
+    Sample {
+        labels: labels(pairs),
+        value,
+    }
+}
+
+fn metrics() -> Vec<Sample> {
+    let mut samples = Vec::new();
+    let peers = [
+        ("srl1", "10.1.2.2", 1.0),
+        ("srl1", "10.1.7.2", 1.0),
+        ("srl1", "10.1.99.2", 5.0),
+        ("srl2", "10.1.2.1", 1.0),
+        ("srl2", "10.1.7.1", 1.0),
+        ("srl2", "10.1.11.1", 1.0),
+    ];
+    for (device, peer, value) in peers {
+        samples.push(sample(
+            &[
+                ("__name__", "bgp_oper_state"),
+                ("device", device),
+                ("peer_address", peer),
+            ],
+            value,
+        ));
+    }
+    for device in ["srl1", "srl2"] {
+        for (name, oper) in [
+            ("ethernet-1/1", 1.0),
+            ("ethernet-1/10", 1.0),
+            ("ethernet-1/11", 2.0),
+        ] {
+            for (metric, value) in [
+                ("interface_admin_state", 1.0),
+                ("interface_oper_state", oper),
+            ] {
+                samples.push(sample(
+                    &[("__name__", metric), ("device", device), ("name", name)],
+                    value,
+                ));
+            }
+        }
+    }
+    samples
+}
+
+fn alert(state: &str, silenced: bool, peer: &str, starts_at: &str) -> Alert {
+    Alert {
+        labels: labels(&[
+            ("alertname", "BgpSessionNotUp"),
+            ("device", "srl1"),
+            ("peer_address", peer),
+            ("severity", "warning"),
+        ]),
+        state: state.to_string(),
+        silenced,
+        inhibited: false,
+        starts_at: starts_at.to_string(),
+        silenced_by: Vec::new(),
+        annotations: BTreeMap::new(),
+    }
+}
+
+fn alerts() -> Vec<Alert> {
+    vec![
+        alert("active", false, "10.1.99.2", "2026-11-09T13:41:46Z"),
+        alert("suppressed", true, "10.1.2.2", "2026-11-09T13:40:35Z"),
+    ]
+}
+
+fn nanoseconds(seconds_before_clock: u64, extra: i64) -> i64 {
+    i64::try_from((CLOCK_SECONDS - seconds_before_clock) * 1_000_000_000).unwrap() + extra
+}
+
+fn loki_line(seconds_before_clock: u64, extra: i64, text: &str) -> LokiLine {
+    LokiLine {
+        nanoseconds: nanoseconds(seconds_before_clock, extra),
+        text: text.to_string(),
+    }
+}
+
+fn device_logs() -> Vec<LokiLine> {
+    vec![
+        loki_line(
+            50,
+            500_000_000,
+            "chassis|1044|8|00012|Temperature sensor cpu: temperature is normal",
+        ),
+        loki_line(
+            50,
+            0,
+            r#"{"message":"BGP neighbor 10.1.7.2: state changed to idle"}"#,
+        ),
+        loki_line(
+            60,
+            0,
+            r#"{"message":"BGP neighbor 10.1.99.2: connection refused — retrying in 30 seconds","source":{"host":"srl1"}}"#,
+        ),
+        loki_line(
+            70,
+            0,
+            r#"{"message":"BGP neighbor 10.1.7.2: state changed to active","source":{"host":"srl1"}}"#,
+        ),
+        loki_line(
+            100,
+            0,
+            r#"{"message":"BGP neighbor 10.1.99.2: TCP session establishment failed","source":{"host":"srl1"}}"#,
+        ),
+    ]
+}
+
+fn rcas() -> Vec<LokiLine> {
+    vec![loki_line(
+        79,
+        500_000_000,
+        r#"{"timestamp":"2026-11-09T13:40:48.500Z","severity":"info","message":"AI RCA:\nAI RCA disabled (set ENABLE_AI_RCA=true to enable the analysis).","labels":{"ai_rca":"true","device":"srl1","peer_address":"10.1.99.2","source":"prefect"},"fields":{}}"#,
+    )]
+}
+
+fn flow_runs() -> Vec<FlowRun> {
+    [
+        ("evidence", "2026-11-09T13:40:46Z"),
+        ("policy", "2026-11-09T13:40:47Z"),
+        ("action", "2026-11-09T13:40:48Z"),
+    ]
+    .into_iter()
+    .map(|(name, start_time)| FlowRun {
+        id: format!("id-{name}"),
+        name: format!("{name} | srl1:10.1.99.2"),
+        device: Some("srl1".to_string()),
+        peer: Some("10.1.99.2".to_string()),
+        start_time: start_time.to_string(),
+        state: "COMPLETED".to_string(),
+        parent_task_run_id: None,
+    })
+    .collect()
+}
+
+fn devices_model() -> Shell {
+    let source =
+        Fixed::from_lab_vars(&lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap());
+    source.set_maintenance("srl2", true).unwrap();
+    let devices = source.devices().unwrap();
+    let mut model = model_with(false, false, Some(Arc::new(source)), None);
+    press(&mut model, KeyCode::Char('1'));
+    model.apply(Update::Devices(Ok(devices)));
+    model.apply(Update::Metrics(Ok(metrics())));
+    model.apply(Update::Alerts(Ok(alerts())));
+    model.apply(Update::DeviceLogs("srl1".to_string(), Ok(device_logs())));
+    model.apply(Update::Rcas("srl1".to_string(), Ok(rcas())));
+    model.apply(Update::FlowRuns(Ok(flow_runs())));
+    model
+}
+
+fn on_tab(presses: usize) -> Shell {
+    let mut model = devices_model();
+    press(&mut model, KeyCode::Enter);
+    for _ in 0..presses {
+        press(&mut model, KeyCode::Char(']'));
+    }
+    model
+}
+
+fn without_a_source() -> Shell {
+    let dir = PathBuf::from(WORKSHOP_DIR);
+    let mut lab = locate(&dir, Some(&dir)).unwrap();
+    lab.dir = PathBuf::from("/home/me/ws/autocon5");
+    if let Kind::Workshop(workshop) = &mut lab.kind {
+        workshop.name = "autocon5".to_string();
+        workshop.sot = "none".to_string();
+    }
+    let mut model = model_with(false, false, None, Some(lab));
+    press(&mut model, KeyCode::Char('1'));
+    model.apply(Update::Alerts(Ok(alerts())));
     model
 }
 
@@ -289,14 +500,23 @@ fn the_help_frame_is_pinned() {
 }
 
 #[test]
-fn the_placeholder_help_frame_is_pinned() {
-    let mut model = pressed('1');
+fn the_lab_placeholder_help_frame_is_pinned() {
+    let mut model = pressed('3');
     press(&mut model, KeyCode::Char('?'));
     let actual = lines(&render(model, 60, 15));
 
-    let failure = mismatch("help-devices", 60, 15, &actual);
+    let failure = mismatch("help-lab", 60, 15, &actual);
 
     assert!(failure.is_none(), "{}", failure.unwrap_or_default());
+}
+
+#[test]
+fn the_devices_help_frame_is_pinned() {
+    golden("help-devices", || {
+        let mut model = devices_model();
+        press(&mut model, KeyCode::Char('?'));
+        model
+    });
 }
 
 #[test]
@@ -321,7 +541,31 @@ fn the_error_frame_is_pinned() {
 
 #[test]
 fn the_devices_frame_is_pinned() {
-    golden("devices", || pressed('1'));
+    golden("devices", devices_model);
+}
+
+#[test]
+fn the_devices_timeline_frame_is_pinned() {
+    golden("devices-timeline", || on_tab(2));
+}
+
+#[test]
+fn the_devices_popup_frame_is_pinned() {
+    golden("devices-popup", || {
+        let mut model = on_tab(2);
+        press(&mut model, KeyCode::Enter);
+        model
+    });
+}
+
+#[test]
+fn the_devices_logs_frame_is_pinned() {
+    golden("devices-logs", || on_tab(3));
+}
+
+#[test]
+fn the_devices_without_a_source_frame_is_pinned() {
+    golden("devices-none", without_a_source);
 }
 
 #[test]
@@ -370,6 +614,27 @@ fn the_state_colours_are_fixed() {
         .contains(Modifier::DIM));
     assert_eq!(cell("autocon5", "up 7/7").fg, Color::Green);
     assert!(cell("demo", "down 0/3").modifier.contains(Modifier::DIM));
+}
+
+#[test]
+fn the_device_colours_are_fixed() {
+    let buffer = render(devices_model(), 100, 30);
+    let cell = |anchor: &str, needle: &str| {
+        let (x, y) = position(&buffer, anchor, needle);
+        buffer[(x, y)].clone()
+    };
+
+    assert_eq!(cell("srl1", "warn").fg, Color::Yellow);
+    assert_eq!(cell("srl2", "ok").fg, Color::Green);
+    assert_eq!(cell("M srl2", "M").fg, Color::Yellow);
+    assert!(cell("srl2", "—").modifier.contains(Modifier::DIM));
+    assert_eq!(cell("BgpSessionNotUp  srl1", "firing").fg, Color::Red);
+    assert!(cell("BgpSessionNotUp  srl1", "silenced")
+        .modifier
+        .contains(Modifier::DIM));
+    assert_eq!(cell("10.1.99.2", "active").fg, Color::Yellow);
+    assert_eq!(cell("10.1.99.2", "! expected").fg, Color::Yellow);
+    assert_eq!(cell("10.1.2.2", "up").fg, Color::Green);
 }
 
 #[test]
