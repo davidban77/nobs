@@ -239,9 +239,7 @@ nobs knows four kinds of lab folder:
 | A project | the folder holds a `nobs_project.yml` file |
 | A labcli lab | the folder holds a `docker-compose.yml` file |
 
-nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
-
-A folder that holds a `nobs_project.yml` file is a lab folder too, and `nobs project` works there (see [Project](#project)); nobs takes it after the book lab and before a folder with a `docker-compose.yml`.
+nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `nobs_project.yml`, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
 
 To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab`, `nobs lab` and `nobs project` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
 
@@ -2005,24 +2003,24 @@ $ docker compose -f tests/fixtures/nautobot/docker-compose.yml --env-file tests/
 
 ## Project
 
-A project file is one YAML file, `nobs_project.yml`, that you write by hand. It describes one lab: the name, the management network, the nodes, the links between them and the data of the lab. The `nobs project` group writes the containerlab files of the lab from it. Containerlab is the program that starts the virtual network devices of a lab. The lab folder is the folder that holds the project file (see [Where nobs runs from](#where-nobs-runs-from)).
+A project file is one YAML file, `nobs_project.yml`, that you write by hand. YAML is a text format for settings, with one `key: value` per line and indentation for nesting. It describes one lab: the name, the management network, the nodes, the links between them and the data of the lab. The `nobs project` group writes the containerlab files of the lab from it. Containerlab is the program that starts the virtual network devices of a lab. A node is one device of the lab, and its kind (for example `nokia_srlinux`) tells containerlab which device it is. The management network is the Docker network through which you reach the nodes. The lab folder is the folder that holds the project file (see [Where nobs runs from](#where-nobs-runs-from)).
 
-`nobs project render` writes three outputs under `containerlab/` in the lab folder. The topology is the file `lab.clab.yml`: the containerlab file that lists the nodes and the links. `lab_vars.yml` is the file that `nobs utils load-nautobot` and the workshop loaders read (see [Utils](#utils)); its shape does not change. A startup configuration is the configuration that a node loads when it starts. nobs writes one for each node, `configs/<node>.cfg`, from a template: a text file with places that nobs fills in with the data of the node. The project file is the only input you write by hand, so the three outputs agree with each other. Everything under `containerlab/` is written from the project file, and you can delete it and write it again.
+`nobs project render` writes three kinds of file under `containerlab/` in the lab folder. The topology is the file `lab.clab.yml`: the containerlab file that lists the nodes and the links. `lab_vars.yml` is the lab variables file: it has the shape that `nobs utils load-nautobot` reads (see [The two files](#the-two-files)). A startup configuration is the configuration that a node loads when it starts. nobs writes one for each node, `configs/<node>.cfg`, from a template: a text file with places that nobs fills in with the data of the node. You write two things by hand: the project file and the templates. nobs makes the three outputs from them, so the outputs agree with each other.
 
 | Command | What it does |
 |---|---|
 | `nobs project render` | writes the topology, `lab_vars.yml` and one startup configuration for each node under `containerlab/` of the lab folder |
 | `nobs project deploy` | writes the same files, then deploys the topology it just wrote with containerlab |
 
-Both commands run in a lab folder. nobs finds the folder as for the other commands (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. nobs reads the `.env` file of the lab folder first. A folder that holds `nobs_project.yml` is a lab folder. With `--project other.yml`, the folder still has to be a lab folder by one of the other markers (a `nobs.toml` file, the book lab layout or a `docker-compose.yml` file), because the file you name is not a marker.
+Both commands run in a lab folder. nobs finds the folder as for the other commands (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. nobs reads the `.env` file of the lab folder first. `--project` does not make a folder a lab folder: the folder must still be one of the four kinds in [Where nobs runs from](#where-nobs-runs-from).
 
 | Command | Flag | What it does |
 |---|---|---|
 | both | `--dir PATH` | gives the lab folder to use instead of the one nobs finds |
-| both | `--project PATH` | gives the project file to read; the default is `nobs_project.yml` in the lab folder; a relative path starts at the lab folder |
+| both | `--project PATH` | gives the project file to read (default: `nobs_project.yml` in the lab folder); a relative path starts at the lab folder |
 | `deploy` | `--sudo` | runs containerlab with sudo; this is on by default |
 | `deploy` | `--no-sudo` | runs containerlab without sudo; sudo is on by default |
-| `render` | `--check` | writes nothing; names each file that would change and exits 1 when any would |
+| `render` | `--check` | writes nothing; lists each file that is missing or different, and exits 1 if there is one |
 
 `--project`, `--sudo` and `--no-sudo` belong to the group and go before `render` or `deploy`, as in `nobs project --no-sudo deploy`. `--check` goes after `render`.
 
@@ -2030,7 +2028,7 @@ Both commands run in a lab folder. nobs finds the folder as for the other comman
 
 `render --check` writes nothing. It prints `would write <path>` for each file that is missing or differs from what `render` would write. It exits with 1 when it printed a line. When every file is as `render` would write it, it prints nothing and exits with 0.
 
-`deploy` writes the files as `render` does, with the same `wrote` lines. Then it runs containerlab on the topology it just wrote, the same way as `nobs containerlab deploy`. By default it runs `sudo --preserve-env=<names> containerlab deploy -t <lab>/containerlab/lab.clab.yml`. With `--no-sudo` it runs `containerlab deploy -t <lab>/containerlab/lab.clab.yml`. `<names>` are the variables that the written topology uses as `${NAME}`; for the fixture below, the label gives `NOBS_T_LABEL`. The exit code of containerlab is the exit code of nobs. `deploy` never deploys a topology it did not just write.
+`deploy` writes the files as `render` does, with the same `wrote` lines. Then it runs containerlab on the topology it just wrote, the same way as `nobs containerlab deploy`. By default it runs `sudo --preserve-env=<names> containerlab deploy -t <lab>/containerlab/lab.clab.yml`. With `--no-sudo` it runs `containerlab deploy -t <lab>/containerlab/lab.clab.yml`. `<names>` are the variables that the written topology uses as `${NAME}`; for the example project below, the label gives `NOBS_T_LABEL`. The exit code of containerlab is the exit code of nobs. `deploy` never deploys a topology it did not just write.
 
 nobs reads the project file and renders every template before it writes any file. So an error in the project file or in a template leaves the folder as it was.
 
@@ -2050,13 +2048,13 @@ The project file has four parts.
 | `nodes[].labels` | no | labels of the group, a map from a name to a value; each node of the group gets them |
 | `nodes[].nodes` | yes | the names of the nodes of the group, at least one; a name may appear once in the whole file |
 | `links` | no | a map from a node name to a list of entries, each with `port`, `node_b` and `port_b` |
-| `vars` | yes | the whole content of `lab_vars.yml`, written as it is today: `prefixes`, `nodes` with `mgmt-ipv4` and `interfaces` for each node, and `observability_intent` (see [The two files](#the-two-files)); nobs keeps your order |
+| `vars` | yes | the whole content of `lab_vars.yml`: `prefixes`, `nodes` with `mgmt-ipv4` and `interfaces` for each node, and `observability_intent` (see [The two files](#the-two-files)); nobs keeps your order |
 
-Write each link once, under one of its two nodes. An entry gives one link in the topology: one `endpoints` pair, `<node>:<port>` and `<node_b>:<port_b>`. Both nodes must be in `nodes`.
+Write each link once, under one of its two nodes. An entry gives one link in the topology: one `endpoints` pair, `<node>:<port>` and `<node_b>:<port_b>`. Both nodes must be listed in a node group.
 
 A key that is not in the table is an error under `main`, `mgmt`, a node group and a link entry. It is also an error at the top of the file, where only `main`, `nodes`, `links` and `vars` are allowed. So nobs catches a misspelt key, for example `link:` in place of `links:`. `vars` is free: nobs does not check its keys. nobs reads `vars` as YAML values and writes them back in your order, so a plain value that YAML reads as a number or a boolean can change its spelling: `24.10` is written `24.1`, `yes` is written `true` and `0x1F` is written `31`. Put quotes around a value that must stay text, for example a version: `"24.10"`.
 
-This is the project file of `tests/fixtures/project-two-node`, whole:
+This is the project file of the example project in `tests/fixtures/project-two-node` (a test folder of nobs), whole:
 
 ```yaml
 main:
@@ -2113,7 +2111,7 @@ A template is a file in the `templates/` folder of the lab folder. nobs renders 
 | `ceos`, `arista_ceos` | `templates/ceos.j2` |
 | any other kind | `templates/<kind>.j2` |
 
-A template uses the Jinja2 syntax (nobs uses the minijinja engine). The trailing newline of the template stays in the output. The line of a `{% ... %}` tag leaves no blank line in the output.
+A template uses the Jinja2 syntax, a common template language (nobs uses the minijinja engine). `{{ name }}` puts in a value, and `{% for x in list %}` ... `{% endfor %}` repeats the lines between them once for each item. The trailing newline of the template stays in the output. The line of a `{% ... %}` tag leaves no blank line in the output.
 
 A template sees this data for its node:
 
@@ -2132,7 +2130,7 @@ A variable that the template names and the data lacks is an error. The error nam
 nobs: project: templates/srl.j2: undefined value: `hostname` is undefined (in srl.j2:2)
 ```
 
-This is `templates/srl.j2` of the fixture, whole:
+This is `templates/srl.j2` of the example project, whole:
 
 ```
 set / system name host-name {{ name }}
@@ -2220,7 +2218,7 @@ observability_intent:
 
 The other two files are `containerlab/configs/nobs-t-srl1.cfg`, shown above, and `containerlab/configs/nobs-t-srl2.cfg`, made the same way from the data of `nobs-t-srl2`.
 
-nobs writes the files in its own layout, not yours. It does not indent a list under its key, and it may add or drop quotes: `mgmt-ipv4` is in quotes above, and the label is in quotes in the project file only. The content is what matters. The files under `containerlab/` are nobs's: you can delete them, and `render` writes them again, identical. nobs does not remove a file it no longer produces. When you rename a node, the old `.cfg` file stays; delete it by hand.
+nobs writes the files in its own layout, not yours. It does not indent a list under its key, and it may add or drop quotes: `mgmt-ipv4` is in quotes above, and the label is in quotes in the project file only. The content is what matters. `render` replaces these files without asking, so do not edit them by hand and do not keep your own files under these names. You can delete the files `render` writes, and `render` writes them again, identical. nobs does not remove a file it no longer produces. When you rename a node, the old `.cfg` file stays; delete it by hand.
 
 ### Errors of project
 
@@ -2229,14 +2227,14 @@ Each error ends the command with exit 1. nobs prints the line on standard error.
 | Line | When |
 |---|---|
 | `nobs: project: no nobs_project.yml in <lab folder>` | the lab folder has no project file, and `--project` is not given |
-| `nobs: project: no project file at <path>` | the file given with `--project` is missing |
-| `nobs: project: cannot read <file>: <error>` | the project file cannot be read |
-| `nobs: project: <file>: <error from the YAML reader>` | the file is not valid YAML, a required key is missing, or a key is not one of the known keys |
+| `nobs: project: no project file at <file>` | the file given with `--project` is missing |
+| `nobs: project: cannot read <file>: <error>` | the file is there but nobs cannot open it, for example because of its permissions |
+| `nobs: project: <file>: <error from the YAML reader>` | the file is not valid YAML, a required key other than `kind` is missing, or a key is not one of the known keys |
 | `nobs: project: <file>: line <n>: node group without kind` | a node group has no `kind` |
 | `nobs: project: <file>: line <n>: node group without nodes` | a node group has an empty `nodes` list |
 | `nobs: project: <file>: line <n>: duplicate node name <name>` | a node name appears twice in the file |
-| `nobs: project: <file>: line <n>: link from <node> to unknown node <node_b>` | a link names a `node_b` that is not in `nodes` |
-| `nobs: project: <file>: line <n>: link from unknown node <node>` | a link starts at a node that is not in `nodes` |
+| `nobs: project: <file>: line <n>: link from <node> to unknown node <node_b>` | a link names a `node_b` that no node group lists |
+| `nobs: project: <file>: line <n>: link from unknown node <node>` | a link is written under a node name that no node group lists |
 | `nobs: project: no template for kind <kind>: expected templates/<file>` | the template file of a kind is missing |
 | `nobs: project: templates/<file>: <error from the template engine>` | a template is not valid, or names a variable the data lacks |
 | `nobs: project: cannot write <path>: <error>` | nobs cannot write a file; `<path>` is relative to the lab folder |
@@ -2252,9 +2250,9 @@ The four parts of the project file follow the project file of labby. nobs writes
 
 ### Known limits
 
-- Only SR Linux is covered in this version. nobs ships no template: you write `templates/<kind>.j2`, and the fixture has `srl.j2` only. There is no cEOS template yet. A kind with no template file is an error, and nobs writes nothing.
-- nobs does not remove stale files. A file it no longer produces stays until you delete it.
+- nobs ships no template: you write `templates/<kind>.j2` yourself. The example project has an SR Linux template, `srl.j2`, only. A kind with no template file is an error, and nobs writes nothing.
 - `deploy` needs containerlab on the machine where nobs runs, and by default sudo, as `nobs containerlab deploy` does (see [Commands](#commands)).
+- In a lab that also has a hand-written `containerlab/lab.clab.yaml`, `nobs containerlab deploy` takes that file, and `nobs project deploy` takes the `lab.clab.yml` it wrote.
 
 ### Example
 
@@ -2292,7 +2290,7 @@ $ echo $?
 1
 ```
 
-`deploy` writes the four files again, then runs containerlab, which prints its own output:
+`deploy` writes the four files again, then runs containerlab, which prints its own output. Run it inside `clab` with the Linux binary (see [Commands](#commands)):
 
 ```
 $ nobs --dir <lab> project deploy
