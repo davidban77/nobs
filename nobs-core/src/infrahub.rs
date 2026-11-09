@@ -1577,6 +1577,19 @@ mod tests {
         let (line, default) = connect(None, Some("t"), &|_| None);
         assert_eq!(line, None);
         assert_eq!(default.unwrap().address(), DEFAULT_ADDRESS);
+
+        let blank_variables = |name: &str| match name {
+            "INFRAHUB_ADDRESS" | "INFRAHUB_API_TOKEN" => Some("   ".to_string()),
+            _ => None,
+        };
+        let (line, unset) = connect(None, None, &blank_variables);
+        assert_eq!(line, None);
+        assert_eq!(
+            unset.err(),
+            Some("INFRAHUB_API_TOKEN is required (set it in .env or pass --token).".to_string())
+        );
+        let (_, defaulted) = connect(None, Some("t"), &blank_variables);
+        assert_eq!(defaulted.unwrap().address(), DEFAULT_ADDRESS);
     }
 
     #[test]
