@@ -169,6 +169,17 @@ fn the_health_rule_gives_ok_warn_down_and_unknown_from_values() {
     let unintended_peer = health_from(&[peer_sample("10.9.9.9", 1.0)]);
     let unintended_family = health_from(&[other_family]);
     let no_series = health_from(&[interface_sample("interface_oper_state", "lo0", 1.0)]);
+    let srl2_series = sample(
+        &[
+            ("__name__", "bgp_oper_state"),
+            ("device", "srl2"),
+            ("peer_address", "10.1.2.2"),
+            ("afi_safi_name", "ipv4-unicast"),
+            ("name", "default"),
+        ],
+        1.0,
+    );
+    let other_device = health_from(&[srl2_series]);
 
     assert_eq!(ok, Health::Ok);
     assert_eq!(not_up, Health::Warn);
@@ -179,6 +190,7 @@ fn the_health_rule_gives_ok_warn_down_and_unknown_from_values() {
     assert_eq!(unintended_peer, Health::Warn);
     assert_eq!(unintended_family, Health::Warn);
     assert_eq!(no_series, Health::Down);
+    assert_eq!(other_device, Health::Down);
     let words: Vec<&str> = [ok, not_up, missing, down, unknown, none]
         .into_iter()
         .map(Health::text)
