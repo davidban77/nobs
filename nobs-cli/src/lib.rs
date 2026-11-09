@@ -3048,28 +3048,15 @@ fn given(value: Option<String>) -> Option<String> {
 }
 
 fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
-    let defaults = Urls::defaults();
-    let address = |flag: Option<String>, variable: Option<&str>, default: String| {
-        given(flag)
-            .or_else(|| variable.and_then(|name| given(lookup(name))))
-            .unwrap_or(default)
-    };
+    let from = Urls::from_lookup(lookup);
     Urls {
-        grafana: address(flags.grafana_url, None, defaults.grafana),
-        prometheus: address(flags.prom_url, Some("PROMETHEUS_URL"), defaults.prometheus),
-        loki: address(flags.loki_url, Some("LOKI_URL"), defaults.loki),
-        alertmanager: address(
-            flags.am_url,
-            Some("ALERTMANAGER_URL"),
-            defaults.alertmanager,
-        ),
-        infrahub: address(
-            flags.infrahub_url,
-            Some("INFRAHUB_ADDRESS"),
-            defaults.infrahub,
-        ),
-        prefect: address(flags.prefect_url, None, defaults.prefect),
-        sonda: address(flags.sonda_url, None, defaults.sonda),
+        grafana: given(flags.grafana_url).unwrap_or(from.grafana),
+        prometheus: given(flags.prom_url).unwrap_or(from.prometheus),
+        loki: given(flags.loki_url).unwrap_or(from.loki),
+        alertmanager: given(flags.am_url).unwrap_or(from.alertmanager),
+        infrahub: given(flags.infrahub_url).unwrap_or(from.infrahub),
+        prefect: given(flags.prefect_url).unwrap_or(from.prefect),
+        sonda: given(flags.sonda_url).unwrap_or(from.sonda),
     }
 }
 
@@ -4930,14 +4917,59 @@ fn screen_start(
                 ..located
             };
             let workshops = workshop_list(here, given_dir)?;
+            let stacks = nobs_tui::shell::stacks(Some(&located), workshops)?;
+            let lab_env = stacks
+                .iter()
+                .find(|stack| stack.path == located.dir)
+                .map_or(&[][..], |stack| stack.env.as_slice());
+            let lookup = |name: &str| {
+                given(std::env::var(name).ok()).or_else(|| {
+                    given(
+                        lab_env
+                            .iter()
+                            .find(|(key, _)| key == name)
+                            .map(|(_, value)| value.clone()),
+                    )
+                })
+            };
+            let urls = Urls::from_lookup(lookup);
+            let (source, source_error): (Option<std::sync::Arc<dyn SourceOfTruth>>, _) =
+                match &located.kind {
+                    Kind::Workshop(workshop) if workshop.sot == "none" => (None, None),
+                    Kind::Workshop(workshop) => {
+                        match sot::open(workshop, None, None, None, &lookup).1 {
+                            Ok(source) => (Some(std::sync::Arc::from(source)), None),
+                            Err(text) => (None, Some(text)),
+                        }
+                    }
+                    Kind::BookLab(_) => {
+                        let path = located.dir.join("containerlab").join("lab_vars.yml");
+                        match fs::read_to_string(&path)
+                            .map_err(|error| error.to_string())
+                            .and_then(|text| lab_vars::read(&text))
+                        {
+                            Ok(vars) => (
+                                Some(std::sync::Arc::new(sot::Fixed::from_lab_vars(&vars))
+                                    as std::sync::Arc<dyn SourceOfTruth>),
+                                None,
+                            ),
+                            Err(error) => (None, Some(format!("{}: {error}", path.display()))),
+                        }
+                    }
+                    Kind::LabcliLab(_) => (None, None),
+                };
+            let home = match located.kind {
+                Kind::Workshop(_) => nobs_tui::Workbench::Devices,
+                _ => home,
+            };
             Ok(nobs_tui::Start {
-                stacks: nobs_tui::shell::stacks(Some(&located), workshops)?,
+                stacks,
                 lab: Some(located),
                 sonda,
                 home,
-                source: None,
-                source_error: None,
-                urls: nobs_core::status::Urls::from_lookup(|name| std::env::var(name).ok()),
+                source,
+                source_error,
+                urls,
                 chooser: false,
             })
         }
@@ -5823,6 +5855,76 @@ mod tests {
             "{}",
             model.header()
         );
+    }
+
+    fn workshop_scratch(name: &str, sot: Option<&str>, env: Option<&str>) -> Scratch {
+        let scratch = Scratch::new(name);
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/workshop-one");
+        let mut settings = fs::read_to_string(fixture.join("nobs.toml")).unwrap();
+        if let Some(sot) = sot {
+            settings =
+                settings.replace("[image_pins]", &format!("sot = \"{sot}\"\n\n[image_pins]"));
+        }
+        fs::write(scratch.0.join("nobs.toml"), settings).unwrap();
+        fs::copy(fixture.join("lab_vars.yml"), scratch.0.join("lab_vars.yml")).unwrap();
+        if let Some(env) = env {
+            fs::write(scratch.0.join(".env"), env).unwrap();
+        }
+        scratch
+    }
+
+    #[test]
+    fn a_workshop_starts_on_the_devices_workbench_and_the_book_lab_keeps_the_services_one() {
+        let workshop = workshop_scratch(
+            "screen-home-workshop",
+            None,
+            Some("INFRAHUB_API_TOKEN=nobs-t-token\nINFRAHUB_ADDRESS=http://127.0.0.1:1\n"),
+        );
+        let start = screen_start(&workshop.0, None, flags(None), false).unwrap();
+        assert_eq!(start.home, nobs_tui::Workbench::Devices);
+        assert!(start.source.is_some());
+        assert!(start.source_error.is_none());
+        assert_eq!(start.urls.infrahub, "http://127.0.0.1:1");
+        let header = nobs_tui::Shell::new(start).header();
+        assert!(header.ends_with("sot infrahub"), "{header}");
+
+        let book = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/book-lab");
+        let start = screen_start(&book, None, flags(None), false).unwrap();
+        assert_eq!(start.home, nobs_tui::Workbench::Services);
+        assert!(start.source_error.is_none());
+        let names: Vec<_> = start
+            .source
+            .as_ref()
+            .unwrap()
+            .devices()
+            .unwrap()
+            .into_iter()
+            .map(|device| device.name)
+            .collect();
+        assert_eq!(names, ["nobs-t-srl1", "nobs-t-srl2"]);
+        let header = nobs_tui::Shell::new(start).header();
+        assert!(header.ends_with("sot lab_vars"), "{header}");
+
+        let none = workshop_scratch("screen-home-none", Some("none"), None);
+        let start = screen_start(&none.0, None, flags(None), false).unwrap();
+        assert_eq!(start.home, nobs_tui::Workbench::Devices);
+        assert!(start.source.is_none());
+        assert!(start.source_error.is_none());
+        let header = nobs_tui::Shell::new(start).header();
+        assert!(header.ends_with("sot none"), "{header}");
+    }
+
+    #[test]
+    fn a_workshop_without_a_token_opens_with_the_source_error_and_no_source() {
+        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/workshop-one");
+
+        let start = screen_start(&here, None, flags(None), false).unwrap();
+
+        assert_eq!(start.home, nobs_tui::Workbench::Devices);
+        assert!(start.source.is_none());
+        let text = start.source_error.expect("an open failure");
+        assert!(text.contains("INFRAHUB_API_TOKEN"), "{text}");
     }
 
     #[test]

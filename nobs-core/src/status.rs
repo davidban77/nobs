@@ -63,6 +63,7 @@ impl Urls {
             loki: pick("LOKI_URL", defaults.loki),
             alertmanager: pick("ALERTMANAGER_URL", defaults.alertmanager),
             infrahub: pick("INFRAHUB_ADDRESS", defaults.infrahub),
+            prefect: pick("PREFECT_API_URL", defaults.prefect),
             ..defaults
         }
     }
@@ -184,6 +185,21 @@ mod tests {
         });
         assert_eq!(urls.loki, "http://loki:3100");
         assert_eq!(urls.infrahub, Urls::defaults().infrahub);
+    }
+
+    #[test]
+    fn from_lookup_reads_the_prefect_address() {
+        let set = Urls::from_lookup(|name| match name {
+            "PREFECT_API_URL" => Some("http://prefect.test:4200".to_string()),
+            _ => None,
+        });
+        assert_eq!(set.prefect, "http://prefect.test:4200");
+
+        let blank = Urls::from_lookup(|name| match name {
+            "PREFECT_API_URL" => Some(" ".to_string()),
+            _ => None,
+        });
+        assert_eq!(blank.prefect, Urls::defaults().prefect);
     }
 
     #[test]
