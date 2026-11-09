@@ -2185,7 +2185,7 @@ topology:
     - nobs-t-srl2:e1-1
 ```
 
-`containerlab/lab_vars.yml` is the `vars` part, the file that the loaders read:
+`containerlab/lab_vars.yml` is the `vars` part, the lab variables file:
 
 ```yaml
 prefixes:
@@ -2252,7 +2252,7 @@ The four parts of the project file follow the project file of labby. nobs writes
 
 - nobs ships no template: you write `templates/<kind>.j2` yourself. The example project has an SR Linux template, `srl.j2`, only. A kind with no template file is an error, and nobs writes nothing.
 - `deploy` needs containerlab on the machine where nobs runs, and by default sudo, as `nobs containerlab deploy` does (see [Commands](#commands)).
-- In a lab that also has a hand-written `containerlab/lab.clab.yaml`, `nobs containerlab deploy` takes that file, and `nobs project deploy` takes the `lab.clab.yml` it wrote.
+- In a lab that also has a hand-written `containerlab/lab.clab.yaml`, `nobs containerlab deploy` takes that file, and `nobs project deploy` takes the `lab.clab.yml` it wrote. Keep only one of the two files, or use `nobs project deploy` only.
 
 ### Example
 
