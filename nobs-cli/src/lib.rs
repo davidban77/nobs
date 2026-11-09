@@ -27,7 +27,9 @@ use nobs_core::loki::{self, Loki};
 use nobs_core::nautobot::{Error as NautobotError, Load, Nautobot, Outcome};
 use nobs_core::prefect::{self, FlowRun, Prefect};
 use nobs_core::preflight::{preflight, Check, Status};
+use nobs_core::project;
 use nobs_core::prometheus::{self, Prometheus};
+use nobs_core::render::Renderer;
 use nobs_core::reset;
 use nobs_core::runner::Runner;
 use nobs_core::sonda::{
@@ -139,6 +141,15 @@ pub enum Command {
     Utils {
         #[command(subcommand)]
         command: UtilsCommand,
+    },
+    #[command(
+        about = "Write the containerlab files of a lab from nobs_project.yml, and deploy them"
+    )]
+    Project {
+        #[command(flatten)]
+        flags: ProjectFlags,
+        #[command(subcommand)]
+        command: ProjectCommand,
     },
     #[command(about = "Talk to a running sonda-server over HTTP")]
     Sonda {
@@ -1095,6 +1106,46 @@ pub enum ContainerlabCommand {
     },
 }
 
+#[derive(Debug, Args)]
+pub struct ProjectFlags {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Project file to read (default: nobs_project.yml in the lab folder); a relative path starts at the lab folder"
+    )]
+    project: Option<PathBuf>,
+    #[arg(
+        long,
+        overrides_with = "no_sudo",
+        help = "Run containerlab with sudo for deploy; this is on by default"
+    )]
+    sudo: bool,
+    #[arg(
+        long,
+        overrides_with = "sudo",
+        help = "Run containerlab without sudo for deploy; sudo is on by default"
+    )]
+    no_sudo: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommand {
+    #[command(
+        about = "Write the topology, lab_vars.yml and one startup configuration per node under containerlab/"
+    )]
+    Render {
+        #[arg(
+            long,
+            help = "Write nothing; list each file that is missing or different, and exit 1 if there is one"
+        )]
+        check: bool,
+    },
+    #[command(
+        about = "Write the files as render does, then deploy the topology with containerlab"
+    )]
+    Deploy,
+}
+
 const LAB_TOPOLOGY_HELP: &str = "Topology file, a relative path starts at the lab folder; the topology setting of nobs.toml, else containerlab/lab.yml in the lab folder, when none is given";
 
 const LAB_SCENARIO_HELP: &str =
@@ -1456,6 +1507,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         }
         Command::Lab { command } => return run_lab(command, given, runner),
         Command::Utils { command } => return run_utils(command, given),
+        Command::Project { flags, command } => return run_project(flags, command, given, runner),
         Command::Sonda { flags, command } => {
             return with_env(Path::new("."), || run_sonda(flags, command))
         }
@@ -2040,6 +2092,105 @@ fn read_topology(topology: &Path) -> Result<String, i32> {
         );
         1
     })
+}
+
+fn run_project(
+    flags: ProjectFlags,
+    command: ProjectCommand,
+    given: Option<&Path>,
+    runner: &dyn Runner,
+) -> i32 {
+    let sudo = flags.sudo || !flags.no_sudo;
+    in_lab(given, |located| {
+        let outputs = match project_outputs(flags.project.as_deref(), located) {
+            Ok(outputs) => outputs,
+            Err(message) => {
+                eprintln!("nobs: project: {message}");
+                return 1;
+            }
+        };
+        match command {
+            ProjectCommand::Render { check: true } => check_project(&located.dir, &outputs),
+            ProjectCommand::Render { check: false } => write_project(&located.dir, &outputs),
+            ProjectCommand::Deploy => {
+                let code = write_project(&located.dir, &outputs);
+                if code != 0 {
+                    return code;
+                }
+                run_topology(
+                    located.dir.join("containerlab/lab.clab.yml"),
+                    sudo,
+                    runner,
+                    Containerlab::deploy_args,
+                )
+            }
+        }
+    })
+}
+
+fn project_outputs(
+    file: Option<&Path>,
+    located: &Located,
+) -> Result<Vec<(String, String)>, String> {
+    let (name, path) = match file {
+        Some(file) => (file.display().to_string(), located.dir.join(file)),
+        None => (
+            "nobs_project.yml".to_string(),
+            located.dir.join("nobs_project.yml"),
+        ),
+    };
+    if !path.is_file() {
+        return Err(match file {
+            Some(_) => format!("no project file at {name}"),
+            None => format!("no nobs_project.yml in {}", located.dir.display()),
+        });
+    }
+    let text = fs::read_to_string(&path).map_err(|error| format!("cannot read {name}: {error}"))?;
+    let parsed = project::read(&text).map_err(|reason| format!("{name}: {reason}"))?;
+    let renderer = Renderer::new(&located.dir.join("templates"));
+    let mut outputs = vec![
+        (
+            "containerlab/lab.clab.yml".to_string(),
+            parsed.topology_yaml()?,
+        ),
+        (
+            "containerlab/lab_vars.yml".to_string(),
+            parsed.lab_vars_yaml()?,
+        ),
+    ];
+    for node in parsed.node_names() {
+        let config = parsed.startup_config(&node, &renderer)?;
+        outputs.push((format!("containerlab/configs/{node}.cfg"), config));
+    }
+    Ok(outputs)
+}
+
+fn write_project(dir: &Path, outputs: &[(String, String)]) -> i32 {
+    for (relative, text) in outputs {
+        let path = dir.join(relative);
+        let written = path
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&path, text));
+        if let Err(error) = written {
+            eprintln!("nobs: project: cannot write {relative}: {error}");
+            return 1;
+        }
+        println!("wrote {relative}");
+    }
+    0
+}
+
+fn check_project(dir: &Path, outputs: &[(String, String)]) -> i32 {
+    let mut differs = false;
+    for (relative, text) in outputs {
+        let current = fs::read_to_string(dir.join(relative)).ok();
+        if current.as_deref() != Some(text.as_str()) {
+            println!("would write {relative}");
+            differs = true;
+        }
+    }
+    i32::from(differs)
 }
 
 fn run_lab(command: LabCommand, given: Option<&Path>, runner: &dyn Runner) -> i32 {
