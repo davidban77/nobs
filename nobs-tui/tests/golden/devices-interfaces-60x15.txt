@@ -1,0 +1,15 @@
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ [1 devices]  2 services  3 lab              ? keys  q quit
+┌ devices 2 ──────────┐┌ srl1 ─────────────────────────────┐
+│   NAME  HLTH  ALRT  ││overview  IFACES  timeline  logs   │
+│>  srl1  warn     1  ││NAME           ADMIN  OPER  BGP    │
+│ M srl2  ok          ││ethernet-1/1   up     up    up     │
+│                     ││ethernet-1/10  up     up    up     │
+│                     ││ethernet-1/11  up     down         │
+│                     ││lo0            —      —            │
+├ alerts 2 ───────────┤│                                   │
+│srl1  BgpSessionNotUp││                                   │
+│srl1  BgpSessionNotUp││4 interfaces  1 differs            │
+└─────────────────────┘└───────────────────────────────────┘
+ run  none                                           o open
+ Tab focus  [ ] tab  Esc back

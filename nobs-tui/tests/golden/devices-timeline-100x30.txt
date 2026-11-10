@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
+ [1 devices]  2 services  3 lab                                                      ? keys  q quit
+┌ devices 2 ─────────────────────────────┐┌ srl1 ──────────────────────────────────────────────────┐
+│   NAME  KIND  HLTH  SYNC  ALRT         ││overview  interfaces  TIMELINE  logs                    │
+│>  srl1  —     warn  —        1         ││last 30m   alerts 2  flows 3  rca 1  logs 5             │
+│ M srl2  —     ok    —                  ││>13:41:46  alert  BgpSessionNotUp  firing               │
+│                                        ││ 13:41:17  log    chassis|1044|8|00012|Temperature sens…│
+│                                        ││ 13:41:17  log    BGP neighbor 10.1.7.2: state changed …│
+│                                        ││ 13:41:07  log    BGP neighbor 10.1.99.2: connection re…│
+│                                        ││ 13:40:57  log    BGP neighbor 10.1.7.2: state changed …│
+│                                        ││ 13:40:48  rca    AI RCA disabled (set ENABLE_AI_RCA=tr…│
+│                                        ││ 13:40:48  flow   action | srl1:10.1.99.2  COMPLETED    │
+│                                        ││ 13:40:47  flow   policy | srl1:10.1.99.2  COMPLETED    │
+│                                        ││ 13:40:46  flow   evidence | srl1:10.1.99.2  COMPLETED  │
+│                                        ││ 13:40:35  alert  BgpSessionNotUp  silenced             │
+│                                        ││ 13:40:27  log    BGP neighbor 10.1.99.2: TCP session e…│
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+├ alerts 2 ──────────────────────────────┤│                                                        │
+│BgpSessionNotUp  srl1  firing  21s      ││                                                        │
+│BgpSessionNotUp  srl1  silenced  1m32s  ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+ run  none                                                                                   o open
+ j/k move  Enter full text  - + window  [ ] tab  Esc back

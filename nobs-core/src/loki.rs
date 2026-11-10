@@ -28,6 +28,13 @@ pub struct Line {
     pub text: String,
 }
 
+impl Line {
+    pub fn message(&self) -> Option<String> {
+        let record: Value = serde_json::from_str(&self.text).ok()?;
+        record.get("message")?.as_str().map(str::to_string)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     Reach {
@@ -138,6 +145,13 @@ impl Loki {
     }
 }
 
+pub fn rca_selector(device: Option<&str>) -> String {
+    match device {
+        Some(device) => format!(r#"{{source="prefect", ai_rca="true", device="{device}"}}"#),
+        None => r#"{source="prefect", ai_rca="true"}"#.to_string(),
+    }
+}
+
 fn nanoseconds_since_1970(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH).map_or(0, |elapsed| {
         i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX)
@@ -211,6 +225,15 @@ mod tests {
 
     fn texts(lines: &[Line]) -> Vec<&str> {
         lines.iter().map(|line| line.text.as_str()).collect()
+    }
+
+    #[test]
+    fn the_rca_selector_names_the_device_when_given() {
+        assert_eq!(rca_selector(None), r#"{source="prefect", ai_rca="true"}"#);
+        assert_eq!(
+            rca_selector(Some("srl1")),
+            r#"{source="prefect", ai_rca="true", device="srl1"}"#
+        );
     }
 
     #[test]
@@ -390,6 +413,32 @@ mod tests {
             Error::Body("the reply is not JSON".to_string()).to_string(),
             "Loki answered with text nobs cannot read: the reply is not JSON"
         );
+    }
+
+    #[test]
+    fn message_reads_the_message_field_of_both_shapes_and_none_for_plain_text() {
+        let line = |text: &str| Line {
+            nanoseconds: 1,
+            text: text.to_string(),
+        };
+        let nested = line(
+            r#"{"timestamp":"2026-11-09T13:51:07.170Z","severity":"error","message":"BGP neighbor 10.1.99.2: connection refused","labels":{"device":"srl1"},"fields":{}}"#,
+        );
+        let flat = line(
+            r#"{"message":"Interface ethernet-1/11 down","level":"err","hostname":"srl2","sonda":{"scenario":"flap"}}"#,
+        );
+
+        assert_eq!(
+            nested.message().as_deref(),
+            Some("BGP neighbor 10.1.99.2: connection refused")
+        );
+        assert_eq!(
+            flat.message().as_deref(),
+            Some("Interface ethernet-1/11 down")
+        );
+        assert_eq!(line("level=info msg=started").message(), None);
+        assert_eq!(line(r#"{"severity":"info"}"#).message(), None);
+        assert_eq!(line(r#"{"message":5}"#).message(), None);
     }
 
     #[test]

@@ -2,11 +2,11 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen: the services workbench and the chooser work, and the devices workbench and the lab workbench are not built yet and show one line each. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench and the chooser work. The lab workbench is not built yet and shows one line. A workshop opens on the devices workbench, which only reads. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
-Plain `nobs` opens a screen in the terminal. The screen shows the services of a lab or workshop, their health and their logs, and it also shows the test data that Sonda makes (see [Sonda](#sonda)). Every command in the rest of this file does one step without the screen, so a script can call it.
+Plain `nobs` opens a screen in the terminal. The screen shows the devices of a lab or workshop with their health and their alerts, and the services of the lab with their health and their logs. It also shows the test data that Sonda makes (see [Sonda](#sonda)). Every command in the rest of this file does one step without the screen, so a script can call it.
 
 Four words are used in this part:
 
@@ -41,7 +41,7 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 
 | Part | Where | What it shows |
 |---|---|---|
-| header | the first line | `nobs`, the name and the kind of the lab, and `sot infrahub` when the `.env` file of the lab sets `INFRAHUB_ADDRESS`, else `sot none` (`sot` is short for source of truth: the system that holds the intended state of the network, here Infrahub); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address; from 100 columns, also the number of services |
+| header | the first line | `nobs`, the name and the kind of the lab, and the `sot` word (`sot` is short for source of truth: the system that holds the intended state of the network): `sot infrahub` or `sot none` as the `sot` setting of `nobs.toml` says in a workshop, `sot lab_vars` in a book lab, `sot none` in a labcli lab (see [The devices workbench](#the-devices-workbench)); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address; from 100 columns, also the number of services |
 | switcher | the second line | `1 devices`, `2 services` and `3 lab`, with the open workbench in brackets; `? keys  q quit` at the right end; in the chooser `choose a lab, or q to quit` |
 | body | the middle | the open workbench, or the chooser |
 | run line | the line above the last | `run  none`, and at the right end `o open`; when the run pane is open, the pane takes the place of the run line and its top border carries `run  none` and `Esc fold`; the chooser has no run line; nothing runs from the screen yet, and the run pane is an empty frame |
@@ -49,9 +49,115 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 
 When a data call fails, one red line appears between the switcher and the body (see [Errors](#errors)).
 
+### The devices workbench
+
+The devices workbench is workbench `1`. It shows the devices of the lab, one row for each, with their health and their alerts, and four tabs for the device you select. It only reads: it changes nothing in the lab. A workshop opens on it. A book lab, a labcli lab, the chooser and `sonda only` open on the services workbench. This stays so until the lab workbench (`3`) is built.
+
+The data comes from five systems. The first is the source of truth, the `sot` of the header. It holds what the lab should look like: its devices, their interfaces, their BGP sessions and the maintenance flag of each device.
+
+| System | What the workbench takes from it | Name on the red error line |
+|---|---|---|
+| source of truth (here Infrahub, or the file `containerlab/lab_vars.yml` in a book lab) | the devices and what they should look like | `sot` |
+| Prometheus (stores numbers measured over time) | the live state of the BGP sessions and of the interfaces | `prometheus` |
+| Alertmanager (holds the alerts) | the alerts | `alertmanager` |
+| Loki (stores log lines) | the log lines of a device, and its RCA records (the root cause analysis that the automation of the workshop writes into Loki) | `loki` |
+| Prefect (runs the automation flows) | the flow runs, a flow run being one run of a flow | `prefect` |
+
+nobs finds each address the way `status` does: the shell variable, then the `.env` file in the folder of the lab, then the default address (see [status](#status)).
+
+At 60 by 15 the workbench looks like this:
+
+```
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ [1 devices]  2 services  3 lab              ? keys  q quit
+┌ devices 2 ──────────┐┌ srl1 ─────────────────────────────┐
+│   NAME  HLTH  ALRT  ││OVERVIEW  ifaces  timeline  logs   │
+│>  srl1  warn     1  ││kind —   site lab   role edge      │
+│ M srl2  ok          ││maintenance no   sot infrahub   se…│
+│                     ││bgp sessions  3 intended  2 establ…│
+│                     ││ 10.1.2.2   ipv4-unicast  up       │
+│                     ││ 10.1.7.2   ipv4-unicast  up       │
+├ alerts 2 ───────────┤│ 10.1.99.2  ipv4-unicast  active  …│
+│srl1  BgpSessionNotUp││alerts   BgpSessionNotUp  warning …│
+│srl1  BgpSessionNotUp││                                   │
+└─────────────────────┘└───────────────────────────────────┘
+ run  none                                           o open
+ Tab focus  j/k move  / filter  Enter open  r refresh
+```
+
+The left side is the list of devices, titled `devices <n>`, with the alerts box under it. `>` marks the selected device, and the right side shows that device. These are the columns of the list:
+
+| Column | What it shows |
+|---|---|
+| `NAME` | the name of the device; a yellow `M` before it means the device is in maintenance |
+| `KIND` | `srl` or `ceos`, the kind of the device; another kind is shown as the source of truth gives it, cut to 4 characters (`linux` becomes `lin…`); `—` when the source of truth does not say |
+| `HLTH` | the health of the device, from its intended BGP sessions and the live state in Prometheus; see below |
+| `SYNC` | `—` for now; a later version will fill it |
+| `ALRT` | how many alerts of the device are firing; empty when none; red when one of them is critical; `?` when Alertmanager did not answer |
+
+`HLTH` has five values:
+
+| Value | Colour | Meaning |
+|---|---|---|
+| `ok` | green | every intended BGP session is up |
+| `warn` | yellow | an intended session is not up, or Prometheus has no value for it |
+| `down` | red | Prometheus has no value for the device at all |
+| `?` | dim | Prometheus did not answer |
+| `—` | dim | the device has no intended BGP session, so there is nothing to judge |
+
+`KIND` and `SYNC` appear from 100 columns.
+
+The alerts box lists every alert of the lab, newest first. From 100 columns, a row shows the name of the alert, the device, the state (`firing`, `silenced` or `inhibited`) and the age, for example `BgpSessionNotUp  srl1  firing  21s`. At 60 columns, a row shows the device first and then the name, for example `srl1  BgpSessionNotUp`. A silenced or inhibited alert is dim. The title shows the number of alerts, or `?` when Alertmanager did not answer. `j` and `k` walk down the list of devices and then into the alerts box. `Enter` on an alert selects its device and opens the timeline tab of that device.
+
+The right side has four tabs, `overview`, `interfaces`, `timeline` and `logs`, with the open tab in capital letters. `Enter` on a device moves the focus to the tabs, on the overview tab.
+
+The overview tab shows these lines, from the top:
+
+| Line | Example | What it shows |
+|---|---|---|
+| identity | `kind —   site lab   role edge` | the kind, the site and the role of the device; `—` when the source of truth does not say |
+| source | `maintenance no   sot infrahub   seen 2s ago` | the maintenance flag, the `sot` word, and how long ago the source of truth answered |
+| count | `bgp sessions  3 intended  2 established  1 other` | how many BGP sessions the source of truth intends, how many of them are up, and how many are in another state or have no state |
+| one per session | `10.1.99.2  ipv4-unicast  active  ! expected established` | the peer, the address family (the kind of routes the session carries, here IPv4) and the live state |
+| alert | `alerts   BgpSessionNotUp  warning  21s` | the newest firing alert of the device, with its severity and age; `alerts   none` when there is none; `alerts   ?` when Alertmanager did not answer |
+
+The live state of a session comes from Prometheus. It is `up`, `down`, `idle`, `connect` or `active`, or `unknown` for any other value. It is `—` when Prometheus has no value and `?` when Prometheus did not answer. The source of truth calls the up state `established`, so `established` and `up` mean the same.
+
+When the live state is not the intended one, the line ends with `! expected <state>` in yellow. This mark is not shown when the state is `?` or `—`, because those say nothing yet.
+
+The interfaces tab shows one row per interface from the source of truth. A row is yellow when its BGP session is not up, or when its admin state is up and its oper state is down. The last line counts the interfaces and the yellow rows, for example `4 interfaces  1 differs`. These are the columns:
+
+| Column | What it shows |
+|---|---|
+| `NAME` | the name of the interface |
+| `INTENT` | the state the source of truth wants for the interface, for example `up` or `down`; `—` when it does not say; from 100 columns |
+| `ADMIN` | the admin state from Prometheus, which says whether the interface is switched on in its configuration: `up` or `down`; `unknown` for another value; `—` when Prometheus has no value; `?` when it did not answer |
+| `OPER` | the oper state from Prometheus, which says whether the link really works; the same values as `ADMIN` |
+| `PEER` | the peer of the BGP session whose address lies in the subnet of the interface; empty when there is none; from 100 columns |
+| `BGP` | the live state of that session, with the same words as the overview tab; empty when there is no session |
+
+The timeline tab merges what happened to the device in a time window, at first the last 30 minutes, newest first: its alerts, its flow runs, its RCA records and its log lines. The first line counts each kind, for example `last 30m   alerts 2  flows 3  rca 1  logs 5`. Each row shows the time in UTC, the kind (`alert`, `flow`, `rca` or `log`) and the first line of the text. `j` and `k` move the row, `Enter` opens its full text in a box, and `Esc` closes the box. `-` halves the window and `+` doubles it, between 1 minute and 24 hours. The same window sets how far back the logs tab looks.
+
+The logs tab shows the Loki lines of the device, newest first, each with its time in UTC, without the RCA records, which the timeline tab shows as `rca`. nobs asks for the last 200 lines at first, then again every 2 seconds while the log follows, and keeps the last 2,000. At the right end of the tab row it shows `<device>  following` or `<device>  paused`. When the row is too short it shows only `following` or `paused`, and at 60 columns it shows nothing. `f` pauses and resumes, `j` and `k` scroll a paused log, and `/` filters the lines (type the text, then `Enter` keeps the filter and `Esc` clears it). A line in JSON shows its `message` field instead of the whole line.
+
+With `sot = "none"` in `nobs.toml`, the lab has no source of truth. The list and the body of the tab then show one dim line, `no source of truth (sot = "none")`, and the alerts box is still filled, because nobs asks Alertmanager whatever the source is. A labcli lab shows the same line.
+
+The `sot` word of the header is found like this: in a workshop, it is the `sot` setting of `nobs.toml` (`infrahub` or `none`); in a book lab, it is `lab_vars`, and the devices come from `containerlab/lab_vars.yml`, which nobs reads once when the screen opens; in a labcli lab, it is `none`. A workshop that you open from the chooser has no source of truth in the devices workbench, whatever its `nobs.toml` says. Its header shows `sot infrahub` when its `.env` file sets `INFRAHUB_ADDRESS`, else `sot none`. In both cases the workbench shows the dim line `no source of truth (sot = "none")`. To get the devices, start plain `nobs` in the workshop folder.
+
+When nobs cannot open the source of truth, for example because `INFRAHUB_API_TOKEN` is not set or `containerlab/lab_vars.yml` cannot be read, the screen still opens. The red error row under the switcher names it (`sot:` and the reason). The list has no devices. It and the body of the tab show one of these dim lines:
+
+| Dim line | When |
+|---|---|
+| `no source of truth (sot = "none")` | there is no source of truth |
+| `source of truth not opened` | opening the source of truth failed |
+| `no answer yet` | the source of truth has not answered yet |
+| `no devices` | the source of truth answered with no device |
+
+The alerts box is still filled.
+
 ### The services workbench
 
-The services workbench is workbench `2`, and the screen opens on it. It has two sides.
+The services workbench is workbench `2`. The screen opens on it, except in a workshop, which opens on the devices workbench. It has two sides.
 
 The left side is the list of stacks, titled `stacks <n>`. A book lab lists its chapters first and then the workshops nobs finds. `>` marks the selected stack, and the right side shows that stack. The state of each stack comes from `docker compose ps --all --format json`, run for every stack:
 
@@ -88,6 +194,12 @@ The logs tab shows the log of one service. Press `Enter` or `l` on a service in 
 | `HEALTH` (the HTTP check) | every 5 seconds, for the selected stack |
 | the logs | the last 200 lines at first, then new lines every 2 seconds; the last 2,000 lines are kept |
 | the Sonda tab | every second |
+| the devices (the source of truth) | every 10 seconds |
+| the BGP sessions and the interfaces (Prometheus) | every 2 seconds |
+| the alerts (Alertmanager) | every 2 seconds |
+| the log lines of the selected device (Loki) | every 2 seconds, while the timeline tab is open, or while the logs tab is open and follows |
+| the RCA records of the selected device (Loki) | every 2 seconds, while the timeline tab is open |
+| the flow runs (Prefect) | every 5 seconds, while the timeline tab is open |
 
 ### The Sonda tab
 
@@ -125,33 +237,34 @@ When the server stops answering, or no reply comes within 10 seconds, the tab ke
 | Key | What it does |
 |---|---|
 | `1` `2` `3` | open the devices workbench, the services workbench or the lab workbench |
-| `Tab` | move the focus between the stack list and the tabs |
-| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; scroll a paused log |
-| `[` `]` | open the previous or the next tab, when the focus is on the tabs |
-| `Enter` | in the list, move the focus to the tabs; in the overview tab, open the logs of the selected service; in the chooser, open the row; in a question or a filter, confirm it |
-| `/` | filter the stacks by name, or the lines of the log; while you type, `Enter` keeps the filter and `Esc` clears it |
+| `Tab` | move the focus between the stack list and the tabs; in the devices workbench, between the device list and the tabs |
+| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, and the row in the timeline tab; scroll a paused log |
+| `[` `]` | open the previous or the next tab, when the focus is on the tabs; the devices workbench has four tabs |
+| `Enter` | in the list, move the focus to the tabs; in the overview tab, open the logs of the selected service; in the chooser, open the row; in the devices workbench, on a device move the focus to the tabs, on an alert select its device and open the timeline tab, and in the timeline tab open the full text of the row; in a question or a filter, confirm it |
+| `/` | filter the stacks or the devices by name, or the lines of the log; while you type, `Enter` keeps the filter and `Esc` clears it |
 | `r` | ask for new data now; in the sonda tab, ask the server for the list |
 | `l` | open the logs of the selected service; in the sonda tab, ask for the path of a scenario file |
-| `f` | pause the log, or follow it again |
+| `f` | pause the log, or follow it again; this works in the logs tab of the devices workbench too |
+| `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab uses the same window |
 | `o` | open or fold the run pane |
 | `x` | dismiss the red error line |
 | `?` | show the keys, or close them |
-| `Esc` | close the keys, fold the run pane, close a question or clear the filter you are typing; else close the logs, or move the focus back to the stack list |
+| `Esc` | close the keys, fold the run pane, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list |
 | `q` and Ctrl-C | close the screen and give the terminal back as it was |
 
 While a question or a filter is open, `q` is typed or answers the question, and Ctrl-C still closes the screen.
 
-### The devices workbench and the lab workbench
+### The lab workbench
 
-The devices workbench (`1`) and the lab workbench (`3`) are not built yet. Each shows one line, `the device workbench comes with slice 24` or `the lab workbench comes with slice 24`; slice 24 is the later version of nobs that builds them.
+The lab workbench (`3`) is not built yet. It shows one line, `the lab workbench comes with slice 24b`; slice 24b is the later version of nobs that builds it.
 
 ### Errors
 
-When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails (the stack then shows `?`), and `logs <service>` when the log call fails. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda` or `poll`. `x` dismisses the line. A `ps` line also goes away when the next `ps` call of that stack works.
+When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails (the stack then shows `?`), and `logs <service>` when the log call fails. In the devices workbench the source is `sot`, `prometheus`, `alertmanager`, `loki` or `prefect`, the five systems it asks. A value whose source did not answer shows `?` and never its last value: `HLTH` and the live states show `?` when Prometheus failed, and `ALRT` shows `?` when Alertmanager failed. The lists and lines already shown stay on the screen until the next answer. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda`, `poll`, `sot`, `prometheus`, `alertmanager`, `loki` or `prefect`. `x` dismisses the line. A `ps` line also goes away when the next `ps` call of that stack works.
 
 ### Size
 
-The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`.
+The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`. In the devices workbench, the device list grows from 23 to 42 columns and adds the `KIND` and `SYNC` columns. The alerts box puts the name of the alert before the device and adds the state and the age. The tab `ifaces` is written `interfaces`. A line that does not fit is cut and ends with `…`.
 
 ### Exit codes
 
@@ -399,7 +512,7 @@ With `sot = "none"`, three commands change. None of them asks for a token or pri
 | `maintenance` | prints `nobs: this lab has no source of truth` on standard error and exits with 1; it sends nothing to Infrahub or Sonda |
 | `evidence` | prints `Source of truth` and `this lab has no source of truth.` as its first block; it still prints the Prometheus and Loki blocks, and ends with the policy hint `decision: stop` and `reason  : this lab has no source of truth`; exit code 0 |
 
-The setting changes only these three commands. `load-infrahub`, `schema load`, `try-it`, `reset` and `preflight` still talk to Infrahub whatever `sot` says. `status` and the `HEALTH` column of the screen still ask Infrahub whether it is up. The header of the screen does not read `sot` either: it shows `sot infrahub` when the `.env` file of the lab sets `INFRAHUB_ADDRESS`, so a lab with `sot = "none"` can still show `sot infrahub` there.
+The setting changes only these three commands and the devices workbench of the screen. `load-infrahub`, `schema load`, `try-it`, `reset` and `preflight` still talk to Infrahub whatever `sot` says. `status` and the `HEALTH` column of the screen still ask Infrahub whether it is up. The header of the screen shows the setting (see [The five parts of the screen](#the-five-parts-of-the-screen)).
 
 ### status
 
@@ -414,7 +527,7 @@ For each service, nobs sends one HTTP GET request (a request that only reads) to
 | Loki | `/ready` | `--loki-url` | `LOKI_URL` | `http://localhost:3001` |
 | Alertmanager | `/-/ready` | `--am-url` | `ALERTMANAGER_URL` | `http://localhost:9093` |
 | Infrahub | `/health` | `--infrahub-url` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
-| Prefect | `/api/health` | `--prefect-url` | none | `http://localhost:4200` |
+| Prefect | `/api/health` | `--prefect-url` | `PREFECT_API_URL` | `http://localhost:4200` |
 | Sonda | `/health` | `--sonda-url` | none | `http://localhost:8085` |
 
 For each address, nobs looks at the flag, then the variable when there is one, then the default address. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. So an empty shell variable does not hide the value in `.env`. A trailing `/` on an address is dropped. When the Infrahub address names `infrahub-server`, the name the containers use among themselves, nobs probes `http://localhost:8000` instead.
@@ -830,7 +943,7 @@ nobs finds each address in this order: the flag, then the variable, then the def
 | the address of Prefect (`cycle`) | `--prefect-url URL` | `PREFECT_API_URL` | `http://localhost:4200` |
 | the address of the webhook (`cycle`) | `--webhook-url URL` | `WEBHOOK_URL` | `http://localhost:9997/v1/api/webhook` |
 
-A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Alertmanager, Loki or Prefect is dropped, and so is a trailing `/api` on the address of Prefect, so `http://localhost:4200/api` works as well as `http://localhost:4200`. The address of the webhook is used as it is given. `nobs <workshop> status` does not read `PREFECT_API_URL`. Each call waits at most 10 seconds, and the post to the webhook waits at most 15.
+A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Alertmanager, Loki or Prefect is dropped, and so is a trailing `/api` on the address of Prefect, so `http://localhost:4200/api` works as well as `http://localhost:4200`. The address of the webhook is used as it is given. `nobs <workshop> status` reads `PREFECT_API_URL` too, and drops a trailing `/api` from it as `cycle` does. Each call waits at most 10 seconds, and the post to the webhook waits at most 15.
 
 `cycle` prints a blank line, a title line and a body for each of four panels, in the order of the table below. When a call fails, the panel keeps its title and its body is the error. The exit code stays 0 whatever the panels found. For example, with an alert that a silence mutes, and a flow that started three child flows:
 

@@ -1,30 +1,30 @@
  nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
  [1 devices]  2 services  3 lab                                                      ? keys  q quit
- the device workbench comes with slice 24
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+┌ devices 2 ─────────────────────────────┐┌ srl1 ──────────────────────────────────────────────────┐
+│   NAME  KIND  HLTH  SYNC  ALRT         ││OVERVIEW  interfaces  timeline  logs                    │
+│>  srl1  —     warn  —        1         ││kind —   site lab   role edge                           │
+│ M srl2  —     ok    —                  ││maintenance no   sot infrahub   seen 2s ago             │
+│                                        ││bgp sessions  3 intended  2 established  1 other        │
+│                                        ││ 10.1.2.2   ipv4-unicast  up                            │
+│                                        ││ 10.1.7.2   ipv4-unicast  up                            │
+│                                        ││ 10.1.99.2  ipv4-unicast  active  ! expected established│
+│                                        ││alerts   BgpSessionNotUp  warning  21s                  │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+├ alerts 2 ──────────────────────────────┤│                                                        │
+│BgpSessionNotUp  srl1  firing  21s      ││                                                        │
+│BgpSessionNotUp  srl1  silenced  1m32s  ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
  run  none                                                                                   o open
- 1 2 3 switch  ? keys  q quit
+ Tab focus  j/k move  / filter  Enter open  r refresh

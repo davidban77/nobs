@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::http;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+const DASH: &str = "—";
 
 pub struct Alertmanager {
     url: String,
@@ -53,6 +54,22 @@ impl fmt::Display for Error {
                 f,
                 "Alertmanager at {url} answered with a body nobs cannot read: {reason}"
             ),
+        }
+    }
+}
+
+impl Alert {
+    pub fn state_word(&self) -> String {
+        if self.silenced {
+            "silenced".to_string()
+        } else if self.inhibited {
+            "inhibited".to_string()
+        } else {
+            match self.state.to_lowercase().as_str() {
+                "active" => "firing".to_string(),
+                "" => DASH.to_string(),
+                other => other.to_string(),
+            }
         }
     }
 }
@@ -258,6 +275,26 @@ mod tests {
         let alert = &parse_alerts(body).unwrap()[0];
         assert!(alert.silenced);
         assert_eq!(alert.state, "suppressed");
+    }
+
+    #[test]
+    fn state_word_follows_the_alerts_command_rule() {
+        let alert = |state: &str, silenced: bool, inhibited: bool| Alert {
+            labels: BTreeMap::new(),
+            state: state.to_string(),
+            silenced,
+            inhibited,
+            starts_at: String::new(),
+            silenced_by: Vec::new(),
+            annotations: BTreeMap::new(),
+        };
+
+        assert_eq!(alert("active", true, true).state_word(), "silenced");
+        assert_eq!(alert("active", false, true).state_word(), "inhibited");
+        assert_eq!(alert("active", false, false).state_word(), "firing");
+        assert_eq!(alert("Active", false, false).state_word(), "firing");
+        assert_eq!(alert("suppressed", false, false).state_word(), "suppressed");
+        assert_eq!(alert("", false, false).state_word(), "—");
     }
 
     #[test]

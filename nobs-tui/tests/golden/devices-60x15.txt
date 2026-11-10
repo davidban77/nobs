@@ -1,15 +1,15 @@
  nobs  autocon5 workshop  sot infrahub             13:42:07
  [1 devices]  2 services  3 lab              ? keys  q quit
- the device workbench comes with slice 24
-
-
-
-
-
-
-
-
-
-
+┌ devices 2 ──────────┐┌ srl1 ─────────────────────────────┐
+│   NAME  HLTH  ALRT  ││OVERVIEW  ifaces  timeline  logs   │
+│>  srl1  warn     1  ││kind —   site lab   role edge      │
+│ M srl2  ok          ││maintenance no   sot infrahub   se…│
+│                     ││bgp sessions  3 intended  2 establ…│
+│                     ││ 10.1.2.2   ipv4-unicast  up       │
+│                     ││ 10.1.7.2   ipv4-unicast  up       │
+├ alerts 2 ───────────┤│ 10.1.99.2  ipv4-unicast  active  …│
+│srl1  BgpSessionNotUp││alerts   BgpSessionNotUp  warning …│
+│srl1  BgpSessionNotUp││                                   │
+└─────────────────────┘└───────────────────────────────────┘
  run  none                                           o open
- 1 2 3 switch  ? keys  q quit
+ Tab focus  j/k move  / filter  Enter open  r refresh

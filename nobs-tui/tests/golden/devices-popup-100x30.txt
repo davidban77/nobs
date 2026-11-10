@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
+ [1 devices]  2 services  3 lab                                                      ? keys  q quit
+┌ devices 2 ─────────────────────────────┐┌ srl1 ──────────────────────────────────────────────────┐
+│   NAME  KIND  HLTH  SYNC  ALRT         ││overview  interfaces  TIMELINE  logs                    │
+│>  srl1  —     warn  —        1         ││                                                        │
+│ M srl2  —     ok    —                  ││  ┌ alert  13:41:46 ────────────────────── Esc close ┐  │
+│                                        ││  │BgpSessionNotUp  firing                           │  │
+│                                        ││  │alertname=BgpSessionNotUp                         │  │
+│                                        ││  │device=srl1                                       │  │
+│                                        ││  │peer_address=10.1.99.2                            │  │
+│                                        ││  │severity=warning                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+├ alerts 2 ──────────────────────────────┤│  │                                                  │  │
+│BgpSessionNotUp  srl1  firing  21s      ││  │                                                  │  │
+│BgpSessionNotUp  srl1  silenced  1m32s  ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  │                                                  │  │
+│                                        ││  └──────────────────────────────────────────────────┘  │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+ run  none                                                                                   o open
+ Esc close
