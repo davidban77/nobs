@@ -1,5 +1,7 @@
 use std::ffi::OsString;
+use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread;
@@ -16,6 +18,7 @@ use nobs_core::sonda::Sonda;
 use nobs_core::sot::SourceOfTruth;
 use nobs_core::status::{probe_all, State, Urls};
 
+use crate::book;
 use crate::data;
 use crate::shell::{
     env_value, sonda_url, Command, Health, SondaTarget, Stack, StackKind, Tab, Update,
@@ -30,6 +33,7 @@ const METRICS_PERIOD: Duration = Duration::from_secs(2);
 const ALERTS_PERIOD: Duration = Duration::from_secs(2);
 const DEVICE_LOGS_PERIOD: Duration = Duration::from_secs(2);
 const FLOWS_PERIOD: Duration = Duration::from_secs(5);
+const NODES_PERIOD: Duration = Duration::from_secs(5);
 const DEVICE_LOG_LIMIT: u64 = 200;
 const FLOW_RUN_LIMIT: u64 = 100;
 const METRICS_QUERY: &str =
@@ -51,6 +55,7 @@ pub struct Pollers {
     alertmanager: Option<Source>,
     loki: Option<Source>,
     prefect: Option<Source>,
+    nodes: Option<Source>,
 }
 
 enum Wake {
@@ -95,9 +100,18 @@ impl Pollers {
         sonda: SondaTarget,
         source: Option<Arc<dyn SourceOfTruth>>,
         urls: Option<Urls>,
+        topology: Option<PathBuf>,
     ) -> (Pollers, Receiver<Update>) {
         let (updates, out) = mpsc::channel();
         let stacks: Arc<[Stack]> = stacks.into();
+        let nodes = topology.map(|topology| {
+            let runner = Arc::clone(&runner);
+            spawn("nodes", &updates, move |inbox, out| {
+                every(NODES_PERIOD, inbox, out, || {
+                    Update::Nodes(nodes(runner.as_ref(), &topology))
+                })
+            })
+        });
         let ps = {
             let (runner, stacks) = (Arc::clone(&runner), Arc::clone(&stacks));
             spawn("ps", &updates, move |inbox, out| {
@@ -171,6 +185,7 @@ impl Pollers {
                 alertmanager,
                 loki,
                 prefect,
+                nodes,
             },
             out,
         )
@@ -186,6 +201,7 @@ impl Pollers {
                     &self.alertmanager,
                     &self.loki,
                     &self.prefect,
+                    &self.nodes,
                 ],
             ),
             Command::SelectStack(_) => (&[&self.health, &self.sonda], &[]),
@@ -523,9 +539,22 @@ fn compose_of(stack: &Stack) -> Compose {
 
 fn services(runner: &dyn Runner, stack: &Stack) -> Result<Vec<lab::Service>, String> {
     let mut args = compose_of(stack).ps_args(&[]);
+    if stack.kind == StackKind::BookLab {
+        args.push(OsString::from("--orphans=false"));
+    }
     args.extend(["--format", "json"].map(OsString::from));
     answer(runner.output(Compose::PROGRAM, &args), |stdout| {
         lab::services(stdout).map_err(|error| format!("cannot read ps output: {error}"))
+    })
+}
+
+fn nodes(runner: &dyn Runner, topology: &Path) -> Result<Vec<book::NodeRow>, String> {
+    let text = fs::read_to_string(topology)
+        .map_err(|error| format!("cannot read {}: {error}", topology.display()))?;
+    let nodes = lab::topology_nodes(&text)?;
+    let args = ["ps", "-a", "--format", "{{.Names}}\t{{.State}}"].map(OsString::from);
+    answer(runner.output(Compose::PROGRAM, &args), |stdout| {
+        Ok(book::node_rows(&nodes, &book::container_states(stdout)))
     })
 }
 

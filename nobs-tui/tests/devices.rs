@@ -481,6 +481,7 @@ fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
         },
         Some(Arc::new(fixed(WORKSHOP_ONE))),
         Some(urls),
+        None,
     );
     pollers.send(Command::SelectDevice("srl1".to_string()));
     pollers.send(Command::OpenTab(Tab::Timeline));
@@ -565,6 +566,7 @@ fn the_services_follow_does_not_stop_the_device_logs_and_the_device_follow_does(
         },
         Some(Arc::new(fixed(WORKSHOP_ONE))),
         Some(urls),
+        None,
     );
     let device_logs_within = |wait: Duration| {
         let end = Instant::now() + wait;
