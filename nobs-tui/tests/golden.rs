@@ -152,6 +152,7 @@ fn model_with(
         source,
         source_error: None,
         urls: Urls::defaults(),
+        program: PathBuf::from("nobs"),
     });
     if !chooser {
         press(&mut model, KeyCode::Enter);

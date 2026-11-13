@@ -196,6 +196,7 @@ impl Pollers {
             Command::SelectDevice(_) | Command::OpenTab(_) | Command::Window(_) => {
                 (&[], &[&self.loki, &self.prefect])
             }
+            Command::Run { .. } | Command::Stop => (&[], &[]),
         };
         for source in services
             .iter()

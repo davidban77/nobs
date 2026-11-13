@@ -17,6 +17,8 @@ use ratatui::Terminal;
 
 use shell::Model;
 
+pub mod actions;
+pub mod book;
 pub mod data;
 pub mod devices;
 pub mod poll;
@@ -278,6 +280,7 @@ mod tests {
             source: None,
             source_error: None,
             urls: Urls::defaults(),
+            program: PathBuf::from("nobs"),
         }
     }
 
