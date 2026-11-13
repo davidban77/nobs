@@ -18,7 +18,7 @@ pub trait Runner {
 
 pub struct RealRunner;
 
-fn exit_code(status: ExitStatus) -> i32 {
+pub fn exit_code(status: ExitStatus) -> i32 {
     status
         .code()
         .or_else(|| status.signal().map(|signal| 128 + signal))
