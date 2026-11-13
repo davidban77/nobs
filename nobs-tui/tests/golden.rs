@@ -36,6 +36,7 @@ const WORKSHOP_ONE: &str = concat!(
 );
 const BOOK_LAB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/book-lab");
 const ALREADY_EXIST: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
+const LONG_DIR: &str = "/Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt";
 const SIZES: [(u16, u16); 2] = [(60, 15), (100, 30)];
 const WORKSHOP: [(&str, &str, u16, &str); 7] = [
     ("grafana", "running", 3000, "41 seconds ago"),
@@ -124,6 +125,23 @@ fn clock() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(CLOCK_SECONDS)
 }
 
+fn begin(lab: Option<Located>, stacks: Vec<Stack>, home: Workbench) -> Start {
+    Start {
+        lab,
+        stacks,
+        sonda: SondaTarget {
+            server: None,
+            api_key: None,
+        },
+        home,
+        chooser: true,
+        source: None,
+        source_error: None,
+        urls: Urls::defaults(),
+        program: PathBuf::from("nobs"),
+    }
+}
+
 fn model(chooser: bool, packt_failed: bool) -> Shell {
     model_with(chooser, packt_failed, None, None)
 }
@@ -144,18 +162,8 @@ fn model_with(
         stacks.push(sonda_only());
     }
     let mut model = Shell::new(Start {
-        lab,
-        stacks,
-        sonda: SondaTarget {
-            server: None,
-            api_key: None,
-        },
-        home: Workbench::Services,
-        chooser: true,
         source,
-        source_error: None,
-        urls: Urls::defaults(),
-        program: PathBuf::from("nobs"),
+        ..begin(lab, stacks, Workbench::Services)
     });
     if !chooser {
         press(&mut model, KeyCode::Enter);
@@ -420,18 +428,8 @@ fn unpolled_lab_model() -> Shell {
     let lab = locate(&dir, Some(&dir)).unwrap();
     let chapters = stacks(Some(&lab), Vec::new()).unwrap();
     let mut model = Shell::new(Start {
-        lab: Some(lab),
-        stacks: chapters,
-        sonda: SondaTarget {
-            server: None,
-            api_key: None,
-        },
-        home: Workbench::Lab,
         chooser: false,
-        source: None,
-        source_error: None,
-        urls: Urls::defaults(),
-        program: PathBuf::from("nobs"),
+        ..begin(Some(lab), chapters, Workbench::Lab)
     });
     model.tick(Instant::now(), clock(), (80, 24));
     model.apply(Update::Services(
@@ -439,6 +437,28 @@ fn unpolled_lab_model() -> Shell {
         Ok(ps(&[("grafana", "running", 3000, "41 seconds ago")])),
     ));
     model.apply(Update::Services(1, Ok(Vec::new())));
+    model
+}
+
+fn long_question() -> Shell {
+    let packt = Stack {
+        path: PathBuf::from(LONG_DIR),
+        ..stack("nobs-t-packt", &[])
+    };
+    let mut model = Shell::new(begin(None, vec![packt], Workbench::Services));
+    press(&mut model, KeyCode::Enter);
+    model.tick(Instant::now(), clock(), (80, 24));
+    press(&mut model, KeyCode::Char('u'));
+    model
+}
+
+fn refused() -> Shell {
+    let mut model = lab_model();
+    press(&mut model, KeyCode::Char('D'));
+    press(&mut model, KeyCode::Char('y'));
+    model.apply(Update::ActionLine(ALREADY_EXIST.to_string()));
+    later(&mut model, 2);
+    model.apply(Update::ActionEnded(End::Exited(1)));
     model
 }
 
@@ -730,17 +750,7 @@ fn an_action_that_did_not_stop_is_red_on_its_title_and_last_line_and_marks_its_r
 
 #[test]
 fn a_failed_deploy_is_red_on_its_title_and_its_nobs_line_and_marks_its_chapter() {
-    let failed = || {
-        let mut model = lab_model();
-        press(&mut model, KeyCode::Char('D'));
-        press(&mut model, KeyCode::Char('y'));
-        model.apply(Update::ActionLine(ALREADY_EXIST.to_string()));
-        later(&mut model, 2);
-        model.apply(Update::ActionEnded(End::Exited(1)));
-        model
-    };
-
-    let buffer = render(failed(), 100, 30);
+    let buffer = render(refused(), 100, 30);
 
     let (x, y) = position(&buffer, " run  lab deploy -s ch1", "exit 1");
     assert_eq!(buffer[(x, y)].fg, Color::Red);
@@ -793,6 +803,34 @@ fn nodes_show_question_marks_until_a_good_answer_whatever_the_error_row_does() {
     let answered = lines(&render(model, 100, 30));
     assert!(left_of(&answered, "nobs-t-srl1").contains("running"));
     assert!(answered.join("\n").contains("│ nodes     1 of 1 running"));
+}
+
+#[test]
+fn a_long_refusal_wraps_whole_into_the_run_pane_and_is_red_on_every_row() {
+    golden("run-refused", refused);
+
+    let buffer = render(refused(), 100, 30);
+
+    for needle in [
+        "nobs: lab deploy: node containers",
+        "run nobs lab destroy first",
+    ] {
+        let (x, y) = position(&buffer, needle, needle);
+        let start = (0..x)
+            .rev()
+            .find(|x| buffer[(*x, y)].symbol() == "│")
+            .unwrap()
+            + 1;
+        assert!(
+            (start..x + 5).all(|x| buffer[(x, y)].fg == Color::Red),
+            "{needle}"
+        );
+    }
+}
+
+#[test]
+fn a_long_question_wraps_whole_onto_the_bottom_rows() {
+    golden("question-long", long_question);
 }
 
 #[test]

@@ -1,0 +1,30 @@
+ nobs  nobs-t-packt workshop  sot none  0 services                                         13:42:07
+ 1 devices  [2 services]                                                             ? keys  q quit
+┌ stacks 1 ────────────────────┐┌ nobs-t-packt  0 services  no answer yet ─────────────────────────┐
+│>nobs-t-packt  ?              ││OVERVIEW  logs  sonda                                             │
+│                              ││ SERVICE  STATE  HEALTH  PORT  AGE                                │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+└──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
+ run  none                                                                                   o open
+ run nobs --dir /Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt nobs-t-packt
+ up? y/n

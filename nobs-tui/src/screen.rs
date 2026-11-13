@@ -82,18 +82,33 @@ pub fn draw(frame: &mut Frame, model: &Model) {
         return;
     }
     let error = model.error();
+    let keys = key_line(model);
+    let keys = if model.question().is_some() {
+        wrapped(&keys, usize::from(area.width))
+    } else {
+        vec![fit(&keys, usize::from(area.width))]
+    };
+    let key_height = u16::try_from(keys.len()).unwrap_or(u16::MAX);
     let [header_row, switcher_row, error_row, middle, key_row] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(u16::from(error.is_some())),
         Constraint::Min(0),
-        Constraint::Length(1),
+        Constraint::Length(key_height),
     ])
     .areas(area);
     let bottom_height = if model.chooser() {
         0
     } else if model.run_pane() {
-        middle.height.saturating_sub(1) / 3 + 1
+        let last_rows = model
+            .run()
+            .and_then(|run| run.lines.last())
+            .map_or(0, |line| {
+                wrapped(line, usize::from(middle.width.saturating_sub(2))).len()
+            });
+        let needed = u16::try_from(last_rows + 3).unwrap_or(u16::MAX);
+        let third = middle.height.saturating_sub(1) / 3 + 1;
+        third.max(needed.min(middle.height / 2))
     } else {
         1
     };
@@ -116,8 +131,7 @@ pub fn draw(frame: &mut Frame, model: &Model) {
             run_line(frame, bottom, model);
         }
     }
-    let keys = fit(&key_line(model), usize::from(key_row.width));
-    frame.render_widget(Paragraph::new(keys), key_row);
+    frame.render_widget(Paragraph::new(keys.join("\n")), key_row);
     if model.help() {
         help(frame, body, model);
     }
@@ -163,6 +177,17 @@ fn fit(text: &str, width: usize) -> String {
     }
     let kept: String = text.chars().take(width.saturating_sub(1)).collect();
     format!("{kept}…")
+}
+
+fn wrapped(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(width.max(1))
+        .map(|row| row.iter().collect())
+        .collect()
 }
 
 fn highlighted(line: Line<'static>, width: u16) -> Line<'static> {
@@ -1017,16 +1042,23 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
     };
     let width = usize::from(inner.width);
     let room = usize::from(inner.height).saturating_sub(1);
-    let tail = &run.lines[run.lines.len().saturating_sub(room)..];
-    let mut lines = vec![fitted(vec![(format!("$ nobs {}", run.words), DIM)], width)];
-    lines.extend(tail.iter().map(|line| {
+    let mut tail: Vec<Line> = Vec::new();
+    for line in run.lines.iter().rev() {
+        if tail.len() >= room {
+            break;
+        }
         let style = if line.starts_with("nobs:") {
             Style::new().fg(Color::Red)
         } else {
             Style::new()
         };
-        fitted(vec![(line.clone(), style)], width)
-    }));
+        let rows = wrapped(line, width);
+        tail.extend(rows.into_iter().rev().map(|row| Line::styled(row, style)));
+    }
+    tail.truncate(room);
+    tail.reverse();
+    let mut lines = vec![fitted(vec![(format!("$ nobs {}", run.words), DIM)], width)];
+    lines.extend(tail);
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
