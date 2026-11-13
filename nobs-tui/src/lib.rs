@@ -176,7 +176,7 @@ fn turns<B: Backend>(
         drain(updates, model, &mut gone);
         match actions.drain_until_quit(model, pollers, until) {
             Some(End::NotStopped { group }) => {
-                return Err(format!("the action did not stop: a program it started is still running in process group {group}"));
+                return Err(shell::not_stopped(group));
             }
             Some(_) => return Ok(model.exit_code()),
             None => {}

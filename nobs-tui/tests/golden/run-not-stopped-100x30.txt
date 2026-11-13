@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
+ 1 devices  [2 services]                                                             ? keys  q quit
+┌ stacks 3 ────────────────────┐┌ autocon5  7 services  refreshed 9s ago ──────────────────────────┐
+│!autocon5  up 7/7             ││OVERVIEW  logs  sonda                                             │
+│ packt     down               ││ SERVICE       STATE    HEALTH    PORT  AGE                       │
+│ demo      down 0/3           ││ grafana       running  ok        3000  41 seconds                │
+│                              ││ prometheus    running  ok        9090  41 seconds                │
+│                              ││ loki          running  down      3001  40 seconds                │
+│                              ││ alertmanager  running  ok        9093  40 seconds                │
+│                              ││ infrahub      running  http 503  8000  38 seconds                │
+│                              ││ prefect       running  ok        4200  37 seconds                │
+│                              ││ sonda         running  ok        8085  36 seconds                │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+└──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
+┌ run  autocon5 up  not stopped  7s ───────────────────────────────────────────────────── Esc fold ┐
+│$ nobs autocon5 up                                                                                │
+│ Container autocon5-grafana-1  Starting                                                           │
+│ Container autocon5-grafana-1  Started                                                            │
+│nobs: the action did not stop: a program it started is still running in process group 4242        │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ Tab focus  j/k move  / filter  l logs  r refresh  u up  d down

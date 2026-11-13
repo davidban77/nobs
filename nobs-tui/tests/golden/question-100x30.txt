@@ -1,0 +1,30 @@
+ nobs  packt workshop  sot none  0 services                                                13:42:07
+ 1 devices  [2 services]                                                             ? keys  q quit
+┌ stacks 3 ────────────────────┐┌ packt  0 services  no answer yet ────────────────────────────────┐
+│ autocon5  up 7/7             ││OVERVIEW  logs  sonda                                             │
+│>packt     down               ││ SERVICE  STATE  HEALTH  PORT  AGE                                │
+│ demo      down 0/3           ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+│                              ││                                                                  │
+└──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
+ run  none                                                                                   o open
+ run nobs --dir /home/me/ws/packt packt up? y/n

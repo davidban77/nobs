@@ -1,5 +1,5 @@
  nobs  autocon5 workshop  sot none                 13:42:07
- [1 devices]  2 services  3 lab              ? keys  q quit
+ [1 devices]  2 services                     ? keys  q quit
 ┌ devices 0 ──────────┐┌ devices ──────────────────────────┐
 │no source of truth (…││OVERVIEW  ifaces  timeline  logs   │
 │                     ││no source of truth (sot = "none")  │

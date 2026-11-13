@@ -1,5 +1,5 @@
  nobs  autocon5 workshop  sot infrahub             13:42:07
- [1 devices]  2 services  3 lab              ? keys  q quit
+ [1 devices]  2 services                     ? keys  q quit
 ┌ devices 2 ──────────┐┌ srl1 ─────────────────────────────┐
 │   NAME  HLTH  ALRT  ││overview  ifaces  timeline  LOGS   │
 │>  srl1  warn     1  ││13:41:17  chassis|1044|8|00012|Tem…│

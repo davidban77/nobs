@@ -253,6 +253,12 @@ impl Question {
     }
 }
 
+pub fn not_stopped(group: u32) -> String {
+    format!(
+        "the action did not stop: a program it started is still running in process group {group}"
+    )
+}
+
 fn joined(args: &[OsString]) -> String {
     args.iter()
         .map(|arg| arg.to_string_lossy())
@@ -377,6 +383,7 @@ pub struct Model {
     chapter: usize,
     nodes: Vec<book::NodeRow>,
     nodes_at: Option<Instant>,
+    nodes_ok: bool,
     quitting: bool,
 }
 
@@ -472,6 +479,7 @@ impl Model {
             chapter,
             nodes: Vec::new(),
             nodes_at: None,
+            nodes_ok: false,
             quitting: false,
         }
     }
@@ -527,6 +535,7 @@ impl Model {
                     "prometheus" => self.metrics = None,
                     "alertmanager" => self.alerts_ok = false,
                     "loki" => self.logs_following = false,
+                    "nodes" => self.nodes_ok = false,
                     _ => {}
                 }
                 self.error = Some((source, "polling stopped".to_string(), self.now));
@@ -603,9 +612,13 @@ impl Model {
             Update::Nodes(Ok(rows)) => {
                 self.nodes = rows;
                 self.nodes_at = Some(self.now);
+                self.nodes_ok = true;
                 self.clear_error("nodes");
             }
-            Update::Nodes(Err(text)) => self.fail("nodes", text),
+            Update::Nodes(Err(text)) => {
+                self.nodes_ok = false;
+                self.fail("nodes", text);
+            }
         }
     }
 
@@ -616,10 +629,7 @@ impl Model {
         run.state = RunState::Ended(end);
         run.ended = Some(self.now);
         if let End::NotStopped { group } = end {
-            push_line(
-                run,
-                format!("nobs: the action did not stop: a program it started is still running in process group {group}"),
-            );
+            push_line(run, format!("nobs: {}", not_stopped(group)));
         }
         if end == End::Exited(0) {
             self.failed.retain(|held| *held != run.target);
@@ -1093,8 +1103,19 @@ impl Model {
         (&self.nodes, self.nodes_at)
     }
 
+    pub fn nodes_ok(&self) -> bool {
+        self.nodes_ok
+    }
+
     pub(crate) fn located(&self) -> Option<&Located> {
         self.lab.as_ref()
+    }
+
+    pub fn book_lab(&self) -> bool {
+        matches!(
+            self.lab.as_ref().map(|lab| &lab.kind),
+            Some(Kind::BookLab(_))
+        )
     }
 
     fn types_q(&self) -> bool {
@@ -1215,7 +1236,8 @@ impl Model {
         match key.code {
             KeyCode::Char('1') => return self.switch(Workbench::Devices),
             KeyCode::Char('2') => return self.switch(Workbench::Services),
-            KeyCode::Char('3') => return self.switch(Workbench::Lab),
+            KeyCode::Char('3') if self.book_lab() => return self.switch(Workbench::Lab),
+            KeyCode::Char('3') => {}
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('x') => self.error = None,
             KeyCode::Char('o') => self.run_pane = !self.run_pane,
@@ -1568,6 +1590,7 @@ pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     if key.kind != KeyEventKind::Press {
         return Vec::new();
     }
+    model.notice = None;
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let quit = match key.code {
@@ -2046,10 +2069,12 @@ mod tests {
         assert_eq!(model.workbench(), Workbench::Services);
         ch(&mut model, '1');
         assert_eq!(model.workbench(), Workbench::Devices);
-        ch(&mut model, '3');
-        assert_eq!(model.workbench(), Workbench::Lab);
         ch(&mut model, '2');
         assert_eq!(model.workbench(), Workbench::Services);
+        let mut book = book_model();
+        ch(&mut book, '1');
+        ch(&mut book, '3');
+        assert_eq!(book.workbench(), Workbench::Lab);
 
         assert_eq!(model.focus(), Focus::List);
         code(&mut model, KeyCode::Tab);
@@ -2190,23 +2215,39 @@ mod tests {
     }
 
     #[test]
-    fn a_placeholder_workbench_acts_on_the_global_keys_only() {
-        for number in ['3'] {
-            let mut model = opened(&["a", "b"]);
-            ch(&mut model, number);
-            let before = snapshot(&model);
-            for ignored in ['j', 'k', 'l', '/', 'f', '[', ']'] {
-                assert_eq!(ch(&mut model, ignored), [], "{ignored}");
-            }
-            assert_eq!(code(&mut model, KeyCode::Enter), []);
-            assert_eq!(code(&mut model, KeyCode::Down), []);
-            assert_eq!(snapshot(&model), before);
-            assert_eq!(ch(&mut model, 'r'), [Command::Refresh]);
-            ch(&mut model, 'o');
-            assert!(model.run_pane());
-            ch(&mut model, '2');
-            assert_eq!(model.workbench(), Workbench::Services);
+    fn the_lab_workbench_acts_on_its_own_keys_and_the_global_keys_only() {
+        let mut model = book_model();
+        let before = snapshot(&model);
+        for ignored in ['l', '/', 'f', '[', ']', 'u', 'd', 'm'] {
+            assert_eq!(ch(&mut model, ignored), [], "{ignored}");
         }
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+        assert_eq!(snapshot(&model), before);
+        assert_eq!(model.selected_chapter(), Some(0));
+        assert_eq!(model.question(), None);
+        assert_eq!(model.notice(), None);
+        assert_eq!(ch(&mut model, 'r'), [Command::Refresh]);
+        ch(&mut model, 'o');
+        assert!(model.run_pane());
+        ch(&mut model, '2');
+        assert_eq!(model.workbench(), Workbench::Services);
+    }
+
+    #[test]
+    fn three_opens_the_lab_workbench_only_in_a_book_lab() {
+        let mut model = opened(&["a"]);
+        let before = snapshot(&model);
+        assert_eq!(ch(&mut model, '3'), []);
+        assert_eq!(snapshot(&model), before);
+
+        let mut model = devices_model();
+        assert_eq!(ch(&mut model, '3'), []);
+        assert_eq!(model.workbench(), Workbench::Devices);
+
+        let mut model = book_model();
+        ch(&mut model, '2');
+        ch(&mut model, '3');
+        assert_eq!(model.workbench(), Workbench::Lab);
     }
 
     #[test]
@@ -3232,8 +3273,11 @@ mod tests {
         assert_eq!(model.tab(), Tab::Logs);
         assert_eq!(ch(&mut model, '1'), [srl1(), Command::OpenTab(Tab::Logs)]);
 
-        assert_eq!(ch(&mut model, '3'), [Command::OpenTab(Tab::Overview)]);
-        assert_eq!(ch(&mut model, '2'), []);
+        let mut book = book_model();
+        book.apply(Update::Devices(Ok(workshop_source().devices().unwrap())));
+        ch(&mut book, '1');
+        assert_eq!(ch(&mut book, '3'), [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(ch(&mut book, '2'), []);
     }
 
     #[test]
@@ -3513,11 +3557,11 @@ mod tests {
 
         assert_eq!(ch(&mut model, 'd'), []);
         assert_eq!(model.question(), None);
-        assert_eq!(ch(&mut model, 'y'), []);
         assert_eq!(
             model.notice(),
             Some("one action at a time: nobs-t-packt up is running")
         );
+        assert_eq!(ch(&mut model, 'y'), []);
         assert_eq!(model.run().unwrap().words, "nobs-t-packt up");
     }
 
@@ -3571,6 +3615,18 @@ mod tests {
             );
         }
         assert_eq!(ch(&mut model, 'y'), []);
+    }
+
+    #[test]
+    fn a_notice_shows_once_and_the_next_key_clears_it_and_still_acts() {
+        let mut model = opened(&["nobs-t-packt", "other"]);
+        ch(&mut model, 'u');
+        ch(&mut model, 'n');
+        assert_eq!(model.notice(), Some("not run: nobs-t-packt up"));
+
+        assert_eq!(ch(&mut model, 'j'), [Command::SelectStack(1)]);
+
+        assert_eq!(model.notice(), None);
     }
 
     #[test]
