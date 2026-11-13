@@ -20,11 +20,13 @@ use shell::Model;
 pub mod data;
 pub mod devices;
 pub mod poll;
+pub mod run;
 pub mod screen;
 pub mod shell;
 pub mod view;
 
 pub use poll::Pollers;
+pub use run::{End, FakeLauncher, Launcher, Processes, Running};
 pub use screen::draw;
 pub use shell::{
     handle, Command, Focus, Model as Shell, Service, SondaTarget, Stack, StackKind, StackState,

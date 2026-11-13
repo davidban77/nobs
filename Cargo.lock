@@ -917,6 +917,7 @@ name = "nobs-tui"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "libc",
  "nobs-core",
  "ratatui",
 ]

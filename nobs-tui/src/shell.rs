@@ -20,6 +20,7 @@ use nobs_core::time;
 
 use crate::data::{self, Prompt};
 use crate::devices;
+use crate::run;
 
 const LOG_LINES: usize = 2000;
 pub const WINDOW_MINUTES: u64 = 30;
@@ -187,6 +188,8 @@ pub enum Update {
     DeviceLogs(String, Result<Vec<Line>, String>),
     Rcas(String, Result<Vec<Line>, String>),
     FlowRuns(Result<Vec<FlowRun>, String>),
+    ActionLine(String),
+    ActionEnded(run::End),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -512,6 +515,7 @@ impl Model {
                 self.clear_error("prefect");
             }
             Update::FlowRuns(Err(text)) => self.fail("prefect", text),
+            Update::ActionLine(_) | Update::ActionEnded(_) => {}
         }
     }
 
