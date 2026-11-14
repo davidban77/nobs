@@ -101,16 +101,7 @@ pub fn draw(frame: &mut Frame, model: &Model) {
         0
     } else if model.run_pane() {
         let width = usize::from(middle.width.saturating_sub(2));
-        let rows = model.run().map_or(0, |run| {
-            command_rows(run, width).len()
-                + run
-                    .lines
-                    .last()
-                    .map_or(0, |line| wrapped(line, width).len())
-        });
-        let needed = u16::try_from(rows + 2).unwrap_or(u16::MAX);
-        let third = middle.height.saturating_sub(1) / 3 + 1;
-        third.max(needed.min(middle.height / 2))
+        pane_height(model.run(), width, middle.height, workbench_least(model))
     } else {
         1
     };
@@ -137,6 +128,34 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     if model.help() {
         help(frame, body, model);
     }
+}
+
+fn pane_height(run: Option<&Run>, width: usize, middle: u16, least: u16) -> u16 {
+    let rows = |count: usize| u16::try_from(count + 2).unwrap_or(u16::MAX);
+    let command = run.map_or(0, |run| command_rows(run, width).len());
+    let last = run
+        .and_then(|run| run.lines.last())
+        .map_or(0, |line| wrapped(line, width).len());
+    let needed = rows(command + last);
+    let essential = rows(command.min(1) + last);
+    let third = middle.saturating_sub(1) / 3 + 1;
+    third
+        .max(needed.min(middle / 2))
+        .max(essential.min(middle.saturating_sub(least)))
+}
+
+fn workbench_least(model: &Model) -> u16 {
+    let row = match model.workbench() {
+        Workbench::Devices => return 7,
+        Workbench::Services => model
+            .visible_stacks()
+            .iter()
+            .position(|index| *index == model.selected_stack()),
+        Workbench::Lab => model
+            .selected_chapter()
+            .and_then(|chapter| model.chapters().iter().position(|index| *index == chapter)),
+    };
+    u16::try_from(row.unwrap_or(0) + 3).unwrap_or(u16::MAX)
 }
 
 fn too_small(frame: &mut Frame, area: Rect) {
@@ -1400,5 +1419,43 @@ mod tests {
         assert_eq!(taller[..2], command[..2]);
         assert_eq!(taller[2], format!("{}…", &command[2][..57]));
         assert_eq!(taller[3..], refusal[..]);
+    }
+
+    #[test]
+    fn the_run_pane_grows_past_half_only_to_keep_the_first_command_row_and_the_last_line() {
+        let run = |lines: Vec<String>, state| Run {
+            words: "lab deploy -s ch1".to_string(),
+            command: "--dir /home/me/labs/network-observability/book-lab lab deploy -s ch1"
+                .to_string(),
+            target: Target::Chapter(0),
+            lines,
+            started: Instant::now(),
+            ended: None,
+            state,
+        };
+        let refused = run(vec![REFUSAL.to_string()], RunState::Ended(End::Exited(1)));
+        let running = run(
+            (0..10).map(|line| format!("line {line}")).collect(),
+            RunState::Running,
+        );
+        let last_line = |rows: usize| run(vec!["x".repeat(58 * rows)], RunState::Running);
+
+        assert_eq!(command_rows(&refused, 58).len(), 2);
+        assert_eq!(pane_height(Some(&refused), 58, 11, 3), 6);
+        assert_eq!(pane_height(Some(&refused), 58, 12, 3), 6);
+        assert_eq!(pane_height(Some(&running), 58, 11, 3), 5);
+        assert_eq!(pane_height(Some(&refused), 98, 26, 3), 9);
+        assert_eq!(pane_height(Some(&refused), 98, 27, 3), 9);
+        assert_eq!(pane_height(Some(&last_line(5)), 58, 11, 3), 8);
+        assert_eq!(pane_height(Some(&last_line(6)), 58, 11, 3), 8);
+        assert_eq!(pane_height(Some(&last_line(6)), 58, 12, 3), 9);
+        assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 3), 9);
+        let newest: Vec<String> = run_rows(&last_line(7), 58, 7)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(newest.len(), 7);
+        assert!(newest[0].ends_with('…'));
+        assert_eq!(newest[1..], wrapped(&"x".repeat(58 * 7), 58)[1..]);
     }
 }

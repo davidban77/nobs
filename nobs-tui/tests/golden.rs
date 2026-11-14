@@ -36,6 +36,7 @@ const WORKSHOP_ONE: &str = concat!(
 );
 const BOOK_LAB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/book-lab");
 const LAB_DIR: &str = "/home/me/book-lab";
+const LONG_LAB_DIR: &str = "/home/me/labs/network-observability/book-lab";
 const ALREADY_EXIST: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
 const LONG_DIR: &str = "/Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt";
 const SIZES: [(u16, u16); 2] = [(60, 15), (100, 30)];
@@ -865,12 +866,15 @@ fn a_long_refusal_wraps_whole_into_the_run_pane_and_is_red_on_every_row() {
 
 #[test]
 fn a_short_run_pane_cuts_the_command_line_to_keep_the_whole_refusal() {
-    pinned(
-        refused_in("/home/me/labs/network-observability/book-lab"),
-        "run-refused-long",
-        60,
-        15,
-    );
+    pinned(refused_in(LONG_LAB_DIR), "run-refused-long", 60, 15);
+}
+
+#[test]
+fn under_an_error_row_the_run_pane_grows_past_half_to_keep_the_whole_refusal() {
+    let mut model = refused_in(LONG_LAB_DIR);
+    model.apply(Update::Services(1, Err("exit 1".to_string())));
+
+    pinned(model, "run-refused-error", 60, 15);
 }
 
 #[test]
