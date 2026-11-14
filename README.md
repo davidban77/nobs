@@ -281,6 +281,8 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 
 At 100 columns the key line is `j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show  r refresh  o pane`. At 60 columns the last hints do not fit and are left out; `?` lists them. `D`, `X`, `P`, `R`, `U`, `B` and `S` are actions (see [Actions](#actions)).
 
+The lab runs one chapter at a time. So `D`, `U`, `B` and `X` take the services of the other chapters down.
+
 When `LAB_SUDO` (see [Flags and variables](#flags-and-variables)) is on, `D`, `X`, `P`, `R` and `S` run `sudo containerlab`. The screen cannot ask for a password, so these five add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). With it, `sudo` fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
 
 When `sudo` needs a password, the action ends at once with `exit 1`. For `X`, the run pane shows:
@@ -314,12 +316,12 @@ An action is a nobs command that the screen runs for you. There are fourteen:
 | `p` | the same as `u` | `nobs --dir <workshop folder> <workshop> preflight` | asks `y/n` and says `It flaps srl1, leaves it in maintenance and can take 13 minutes.` |
 | `s` | the same as `u` | `nobs --dir <workshop folder> <workshop> status` | runs at once |
 | `m` | the devices workbench of a workshop, with a device selected | `nobs --dir <workshop folder> <workshop> maintenance -d <device> --state`, or `--clear` when the device is in maintenance | asks `y/n` |
-| `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` |
-| `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes and every node.` |
+| `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
+| `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes, every node and the other chapters' services.` |
 | `P` | the lab workbench; it acts on the whole lab, so it needs no chapter | `nobs --dir <lab folder> lab purge --sudo-no-prompt` | asks `y/n` and says `It takes every scenario down and removes their volumes.` |
 | `R` | the same as `D` | `nobs --dir <lab folder> lab prepare --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes every scenario down first.` |
-| `U` | the same as `D`; it acts on every service of the chapter | `nobs --dir <lab folder> lab update -s <chapter>` | asks `y/n` and says `It recreates every service of the chapter and its unnamed volumes.` |
-| `B` | the same as `U` | `nobs --dir <lab folder> lab rebuild -s <chapter>` | asks `y/n` |
+| `U` | the same as `D`; it acts on every service of the chapter | `nobs --dir <lab folder> lab update -s <chapter>` | asks `y/n` and says `It recreates every service of the chapter and its unnamed volumes, and takes the other chapters' services down.` |
+| `B` | the same as `U` | `nobs --dir <lab folder> lab rebuild -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `S` | the same as `D` | `nobs --dir <lab folder> lab show --sudo-no-prompt -s <chapter>` | runs at once |
 
 The screen runs the same nobs program you started, as a separate program, with the same environment variables as the screen. It is the same command you would type yourself (see [Workshops](#workshops), [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) and [Book lab](#book-lab)). The key line shows the hint of an action, for example `u up`, only where the action works. It shows the hints in the order of the table. A hint that does not fit is left out whole, never cut. `?` lists every action of the workbench.
