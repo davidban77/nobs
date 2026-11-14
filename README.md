@@ -281,7 +281,25 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 
 The keys are `j/k move  D deploy  X destroy  r refresh  o pane`. `D` and `X` are actions (see [Actions](#actions)).
 
-When `LAB_SUDO` (see [Flags and variables](#flags-and-variables)) is on, `D` and `X` run `sudo containerlab`. The screen cannot ask for a password, so `D` and `X` run with `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)): `sudo` fails instead of asking. When `sudo` would ask for a password, the action ends at once with `exit 1` and the line `nobs: lab deploy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` (`lab destroy` for `X`). Nothing has changed, and the chapter row gets the mark `!`. So run `sudo -v` in the same terminal before you start `nobs`. `sudo -v` asks for your password once, and by default `sudo` then remembers it in that terminal for a few minutes.
+When `LAB_SUDO` (see [Flags and variables](#flags-and-variables)) is on, `D` and `X` run `sudo containerlab`. The screen cannot ask for a password, so `D` and `X` add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). With it, `sudo` fails instead of asking for a password.
+
+When `sudo` needs a password, the action ends at once with `exit 1`. For `X`, the run pane shows:
+
+```
+sudo: a password is required
+sudo: a password is required
+nobs: lab destroy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again
+```
+
+The `sudo:` lines come from `sudo` itself, and there can be one or two of them. For `D`, the last line says `lab deploy`. Nothing has changed, and the chapter row gets the mark `!`.
+
+To go on:
+
+1. Press `q` to close the screen. `sudo -v` must run in the terminal that the screen uses.
+2. Run `sudo -v`. It asks for your password once. By default, `sudo` then remembers it in that terminal for a few minutes.
+3. Start `nobs` again, select the chapter and press the key again.
+
+When the line comes back later, those minutes have passed. Do the same steps again. To avoid the line, run `sudo -v` before you start `nobs`.
 
 ### Actions
 
@@ -1814,7 +1832,7 @@ Each command runs its steps one after another. nobs builds the path of each file
 
 1. It takes the stack of the scenario down and removes its volumes.
 2. It runs `containerlab destroy -t <topology> --cleanup`. Seen with containerlab 0.77.0: when the network the stacks join is the management network of the topology (`mgmt.network`), this step removes the Docker network too, but only when no running container uses it. The next `deploy` creates the network again. When a running container uses the network, containerlab removes its nodes, keeps the network and prints nothing about it.
-3. It removes the network that `deploy` uses. nobs finds its name as `deploy` does: `LAB_NETWORK_NAME`, else the `network` setting of `nobs.toml`, else `network-observability`. nobs lists the Docker networks. When the network does not exist, for example because step 2 removed it, nobs prints nothing. When a container, running or stopped, is attached to the network, nobs prints `lab destroy: network <network> is still in use, kept` and keeps it. Otherwise nobs prints `lab destroy: removing network <network>` and runs `docker network rm <network>`. nobs removes the network that `deploy` makes; a management network of another name that the topology sets is containerlab's own, and after a stopped deploy it can stay. `destroy` and `purge` take no `--network-name` flag, so a network that was named only by `deploy --network-name` is not known to them; use `LAB_NETWORK_NAME` or the `network` setting of `nobs.toml` to name it for every command.
+3. It removes the network that `deploy` uses. nobs finds its name as `deploy` does: `LAB_NETWORK_NAME`, else the `network` setting of `nobs.toml`, else `network-observability`. nobs lists the Docker networks. When the network does not exist, for example because step 2 removed it, nobs prints nothing. When a container is attached to the network, nobs prints `lab destroy: network <network> is still in use, kept` and keeps the network. This counts a running container, a stopped one and one that was only created. To find it, run `docker ps -a --filter network=<network>`. Remove it, then run `destroy` again. Otherwise nobs prints `lab destroy: removing network <network>` and runs `docker network rm <network>`. Docker then prints the network's name on its own line. nobs removes only the network that `deploy` makes. When the topology sets a management network with another name, that network belongs to containerlab, and nobs does not remove it; after a deploy that was stopped with `Ctrl-C`, it can stay. `destroy` and `purge` take no `--network-name` flag, so they do not know a network that was named only by `deploy --network-name`. To name it for every command, use `LAB_NETWORK_NAME` or the `network` setting of `nobs.toml`.
 
 `nobs lab purge` runs these steps:
 
@@ -1876,7 +1894,7 @@ A blank flag or variable, one that is empty or holds only spaces, counts as not 
 - A relative `--topology` path starts at the lab folder. This differs from `nobs containerlab`, whose `TOPOLOGY` starts at the current folder.
 - `--wait SECONDS` is the time `deploy` and `prepare` wait for the lab to be ready. For `update` and `rebuild`, it is the time they wait for the services only. `0` means no wait.
 
-`--sudo-no-prompt` makes `sudo` fail instead of asking for a password. It works only when sudo is on, with `--sudo` or `LAB_SUDO`; with sudo off, it does nothing. With the flag, nobs gives `-n` to every `sudo` it runs: `-n` is the `sudo` flag that fails when a password is needed. Before any Docker read or change, nobs checks once that `sudo` can run without a password. It runs `sudo -n containerlab version`, with the same `--preserve-env` as the other steps, and when that fails, `sudo -n true`. Only when both fail, nobs prints `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` on standard error and exits with 1. Nothing has changed. Above that line, `sudo` prints its own line, `sudo: a password is required`, once for each check, so it can show twice. When `sudo` needs no password, nothing new prints. When a containerlab step fails later for another reason, nobs prints the normal `failed` line of that step. Without the flag, `sudo` runs as before and may ask for a password in a terminal.
+`--sudo-no-prompt` makes `sudo` fail instead of asking for a password. It works only when sudo is on, with `--sudo` or `LAB_SUDO`; with sudo off, it does nothing. With the flag, nobs gives `-n` to every `sudo` it runs: `-n` is the `sudo` flag that fails when a password is needed. Before any Docker read or change, nobs checks once that `sudo` can run without a password. It runs `sudo -n containerlab version`, with the same `--preserve-env` as the other steps, and when that fails, `sudo -n true`. Only when both fail, nobs prints `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` on standard error and exits with 1. Nothing has changed. Above that line, `sudo` prints its own line, `sudo: a password is required`, once for each check, so it can show twice. When `sudo` needs no password, nothing new prints. When a containerlab step fails later for another reason, nobs prints the normal `failed` line of that step. Without the flag, `sudo` may ask for a password in the terminal.
 
 ### The clash check
 
