@@ -373,6 +373,147 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
 }
 
 #[test]
+fn sudo_no_prompt_puts_n_first_in_every_sudo_call_of_destroy_and_deploy() {
+    let lab = Lab::new("sudo-n");
+    let mut deploy = vec![(0, "")];
+    deploy.extend(ready(&[]));
+    let cases: [(Flags, Vec<Step>, usize); 2] = [
+        (&["destroy", "-s", "ch1"], vec![], 2),
+        (&["deploy", "-s", "ch1"], deploy, 3),
+    ];
+
+    for (command, steps, count) in cases {
+        lab.script(&steps);
+        let mut args = vec!["lab"];
+        args.extend(command);
+        args.extend(["--sudo", "--sudo-no-prompt"]);
+
+        let run = lab.run(&args, &[]);
+
+        assert_eq!(run.code, 0, "{command:?}: {}", run.stderr);
+        let sudo: Vec<Call> = lab
+            .calls()
+            .into_iter()
+            .filter(|call| call[0] == "sudo")
+            .collect();
+        assert_eq!(sudo.len(), count, "{command:?}: {sudo:?}");
+        assert!(
+            sudo.iter().all(|call| call[1] == "-n"),
+            "{command:?}: {sudo:?}"
+        );
+    }
+}
+
+#[test]
+fn a_sudo_that_needs_a_password_stops_destroy_and_deploy_before_docker_with_exit_1() {
+    let lab = Lab::new("sudo-password");
+    let sudo = lab.bin().join("sudo");
+    fs::write(
+        &sudo,
+        "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then\n  echo 'sudo: a password is required' >&2\n  exit 1\nfi\n: > \"${0%/*}/marker\"\nexit 97\n",
+    )
+    .unwrap();
+    fs::set_permissions(&sudo, fs::Permissions::from_mode(0o755)).unwrap();
+
+    for command in ["destroy", "deploy"] {
+        lab.script(&[]);
+
+        let run = lab.run(
+            &["lab", command, "-s", "ch1", "--sudo", "--sudo-no-prompt"],
+            &[],
+        );
+
+        assert_eq!(run.code, 1, "{command}: {}", run.stderr);
+        assert!(lab.calls().is_empty(), "{command}: {:?}", lab.calls());
+        assert!(!lab.bin().join("marker").exists(), "{command}");
+        assert_eq!(
+            run.stderr,
+            format!(
+                "sudo: a password is required\n\
+                 sudo: a password is required\n\
+                 nobs: lab {command}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again\n"
+            )
+        );
+    }
+}
+
+#[test]
+fn a_containerlab_step_that_fails_after_a_passed_check_reports_its_own_exit() {
+    let lab = Lab::new("sudo-step-fails");
+    lab.script(&[(0, ""), (0, ""), (3, "")]);
+
+    let run = lab.run(
+        &["lab", "destroy", "-s", "ch1", "--sudo", "--sudo-no-prompt"],
+        &[],
+    );
+
+    assert_eq!(run.code, 3);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab destroy: containerlab destroy failed (exit 3)\n"
+    );
+}
+
+#[test]
+fn a_failed_check_with_a_sudo_that_needs_no_password_goes_on_with_destroy() {
+    let lab = Lab::new("sudo-check-fails");
+    lab.script(&[(1, ""), (0, "")]);
+    let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
+    let mut destroy = sudo_containerlab(&topology, "destroy", &["--cleanup"]);
+    destroy.insert(1, "-n".to_string());
+
+    let run = lab.run(
+        &["lab", "destroy", "-s", "ch1", "--sudo", "--sudo-no-prompt"],
+        &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stderr, "");
+    assert_eq!(
+        lab.calls(),
+        [
+            call(&[
+                "sudo",
+                "-n",
+                "--preserve-env=NOBS_T_LABEL",
+                "containerlab",
+                "version"
+            ]),
+            call(&["sudo", "-n", "true"]),
+            docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]),
+            destroy,
+        ]
+    );
+}
+
+#[test]
+fn sudo_no_prompt_without_sudo_changes_nothing() {
+    let lab = Lab::new("no-sudo-n");
+    let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
+
+    let run = lab.run(
+        &[
+            "lab",
+            "destroy",
+            "-s",
+            "ch1",
+            "--no-sudo",
+            "--sudo-no-prompt",
+        ],
+        &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]),
+            containerlab(&topology, "destroy", &["--cleanup"]),
+        ]
+    );
+}
+
+#[test]
 fn network_and_subnet_come_from_the_flag_then_the_variable_then_the_setting_then_the_default() {
     let lab = Lab::new("network");
     lab.file("nobs.toml", "kind = \"lab\"\nnetwork = \"settingnet\"\n");
@@ -1074,6 +1215,7 @@ fn the_deploy_help_names_every_flag_and_the_default_wait() {
         "--subnet",
         "--sudo",
         "--no-sudo",
+        "--sudo-no-prompt",
         "--wait",
         "[default: 300]",
     ] {
@@ -1807,6 +1949,7 @@ fn the_prepare_help_names_every_flag_of_a_deploy_and_a_purge() {
         "--network-name",
         "--subnet",
         "--no-sudo",
+        "--sudo-no-prompt",
         "--wait",
         "[default: 300]",
     ] {

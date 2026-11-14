@@ -1173,12 +1173,16 @@ const LAB_SUDO_HELP: &str = "Run containerlab with sudo; off by default, LAB_SUD
 
 const LAB_NO_SUDO_HELP: &str = "Run containerlab without sudo; this is the default";
 
+const LAB_SUDO_NO_PROMPT_HELP: &str = "With sudo, never ask for a password: fail instead";
+
 #[derive(Debug, Args)]
 pub struct SudoFlags {
     #[arg(long, overrides_with = "no_sudo", help = LAB_SUDO_HELP)]
     sudo: bool,
     #[arg(long, overrides_with = "sudo", help = LAB_NO_SUDO_HELP)]
     no_sudo: bool,
+    #[arg(long, help = LAB_SUDO_NO_PROMPT_HELP)]
+    sudo_no_prompt: bool,
 }
 
 #[derive(Debug, Args)]
@@ -2511,15 +2515,40 @@ impl<'a> LabRun<'a, Topology> {
             None => located.topology(),
         };
         let text = read_topology(&file)?;
+        let no_prompt = flags.sudo.sudo_no_prompt;
         let containerlab = Containerlab::new(file)
             .sudo(sudo)
+            .no_prompt(no_prompt)
             .preserve_env(env_names(&text));
-        Ok(Self {
+        let run = Self {
             command,
             located,
             runner,
             topology: Topology { containerlab, text },
-        })
+        };
+        if sudo && no_prompt {
+            run.refuse_sudo_prompt()?;
+        }
+        Ok(run)
+    }
+
+    fn refuse_sudo_prompt(&self) -> Result<(), i32> {
+        let fails = |program: &str, args: &[OsString]| {
+            self.runner
+                .output(program, args)
+                .is_ok_and(|output| output.code != 0)
+        };
+        let containerlab = &self.topology.containerlab;
+        if fails(containerlab.program(), &containerlab.version_args())
+            && fails(Containerlab::SUDO, &os_strings(&["-n", "true"]))
+        {
+            eprintln!(
+                "nobs: lab {}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again",
+                self.command
+            );
+            return Err(1);
+        }
+        Ok(())
     }
 }
 
