@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. After you answer `y` to a `y/n` question, the screen runs five actions: up, down, maintenance, deploy and destroy. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run five actions: up, down, maintenance, deploy and destroy. Each action runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -281,7 +281,7 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 
 The keys are `j/k move  D deploy  X destroy  r refresh  o pane`. `D` and `X` are actions (see [Actions](#actions)).
 
-When `LAB_SUDO` is on, `D` and `X` run `sudo containerlab`. The screen cannot ask for a password, so `sudo` must be able to run without asking for one.
+When `LAB_SUDO` (see [Flags and variables](#flags-and-variables)) is on, `D` and `X` run `sudo containerlab`. The screen cannot ask for a password, so `sudo` must be able to run without asking for one.
 
 ### Actions
 
@@ -308,9 +308,10 @@ Only `y` runs it. Any other key runs nothing, and the line says `not run: packt 
 Some keys refuse:
 
 - `u` or `d` on a chapter, on a labcli lab or on `sonda only` shows `u and d are for a workshop; a chapter is deployed from the lab workbench`.
-- In the sonda tab, with the focus on the tabs, `d` still asks to delete a scenario (see [The Sonda tab](#the-sonda-tab)).
 - `m` does nothing in a book lab, nor when the device list is empty.
 - Only one action runs at a time. A second action key shows `one action at a time: <action> is running`.
+
+In the sonda tab, with the focus on the tabs, `d` does not take the stack down. It asks to delete the selected scenario (see [The Sonda tab](#the-sonda-tab)).
 
 When the action starts, the run pane opens by itself. The title of the pane shows the command without its `--dir` folder, and its state: `running 12s` while it runs, then the end and how long it took:
 
@@ -321,14 +322,14 @@ When the action starts, the run pane opens by itself. The title of the pane show
 | `stopped` | yellow | you stopped it with Ctrl-C |
 | `not stopped` | red | you stopped it, but a program it started still runs (see below) |
 
-The pane starts with the whole command, `$ nobs --dir <folder> …`. Under it come the lines the command prints, as they come. A line that starts with `nobs:` is red. A long line wraps. `o` opens and folds the pane, and `Esc` folds it. The pane keeps the last 2,000 lines, and only those of the last action. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
+The pane starts with the whole command, `$ nobs --dir <folder> …`. Under it come the lines the command prints, as they come. A line that starts with `nobs:` is red. A long line wraps. The pane shows the newest lines that fit. It cannot scroll back, so the first lines of a long action go out of view. To read them all, run the command of the `$` line yourself. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
 
 An action that worked, at 100 columns:
 
 ```
-┌ run  nobs-t-packt up  exit 0  39s ───────────────────────────────────────────────────── Esc fold ┐
-│$ nobs --dir /Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt nobs-t-packt │
-│up                                                                                                │
+┌ run  packt up  exit 0  39s ──────────────────────────────────────────────────────────── Esc fold ┐
+│$ nobs --dir /home/me/ws/packt packt up                                                           │
+│Prometheus    http://localhost:9090                                                               │
 │Alertmanager  http://localhost:9093                                                               │
 │Loki          http://localhost:3001                                                               │
 │Infrahub      http://localhost:8000                                                               │
@@ -341,17 +342,17 @@ An action that failed:
 
 ```
 ┌ run  lab deploy -s ch1  exit 1  0s ──────────────────────────────────────────────────── Esc fold ┐
-│$ nobs --dir /Users/netpanda/projects/nobs/target/slice-24b-lab lab deploy -s ch1                 │
+│$ nobs --dir /home/me/book-lab lab deploy -s ch1                                                  │
 │nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-no│
 │bs-t-srl2); run nobs lab destroy first                                                            │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. The mark stays until an action on that row ends with `exit 0`. It lasts while the screen is open.
+When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`. It lasts while the screen is open.
 
 Ctrl-C while an action runs stops it. The title shows `stopping`. The screen starts each action in its own process group: a process group is a program together with every program it starts. The screen sends an interrupt to the whole group. If the group has not ended 5 seconds later, the screen kills it. When the whole group has ended, the title shows `stopped`. Ctrl-C when no action runs closes the screen.
 
-A program started with `sudo` runs as another user, so it can ignore the interrupt, and the screen cannot kill it. When a program of the group still runs 2 seconds after the kill, the title shows `not stopped`, and the pane shows a red line with the number of the group:
+A program started with `sudo` runs as root, another user, so the screen's interrupt and kill may not reach it. When a program of the group still runs 2 seconds after the kill, the title shows `not stopped`, and the pane shows a red line with the number of the group:
 
 ```
 nobs: the action did not stop: a program it started is still running in process group <group>
@@ -375,7 +376,7 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `l` | open the logs of the selected service; in the sonda tab, ask for the path of a scenario file |
 | `f` | pause the log, or follow it again; this works in the logs tab of the devices workbench too |
 | `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab uses the same window |
-| `u` `d` | ask to start or stop the selected workshop stack (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
+| `u` `d` | ask to run `nobs <workshop> up` or `nobs <workshop> down` on the selected workshop stack; `down` removes the containers and keeps the volumes (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
 | `m` | ask to set or clear the maintenance flag of the selected device |
 | `D` `X` | in the lab workbench, ask to deploy or destroy the selected chapter |
 | `y` | answer yes to the open question; any other key answers no |
