@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub struct Containerlab {
     topology: PathBuf,
     sudo: bool,
+    no_prompt: bool,
     names: Vec<String>,
 }
 
@@ -16,6 +17,7 @@ impl Containerlab {
         Self {
             topology: topology.into(),
             sudo: false,
+            no_prompt: false,
             names: Vec::new(),
         }
     }
@@ -26,6 +28,11 @@ impl Containerlab {
 
     pub fn sudo(mut self, on: bool) -> Self {
         self.sudo = on;
+        self
+    }
+
+    pub fn no_prompt(mut self, on: bool) -> Self {
+        self.no_prompt = on;
         self
     }
 
@@ -54,14 +61,28 @@ impl Containerlab {
         self.args("inspect", &[])
     }
 
-    fn args(&self, action: &str, after_file: &[&str]) -> Vec<OsString> {
+    pub fn version_args(&self) -> Vec<OsString> {
+        let mut args = self.sudo_prefix();
+        args.push("version".into());
+        args
+    }
+
+    fn sudo_prefix(&self) -> Vec<OsString> {
         let mut args = Vec::new();
         if self.sudo {
+            if self.no_prompt {
+                args.push("-n".into());
+            }
             if !self.names.is_empty() {
                 args.push(format!("--preserve-env={}", self.names.join(",")).into());
             }
             args.push(Self::PROGRAM.into());
         }
+        args
+    }
+
+    fn args(&self, action: &str, after_file: &[&str]) -> Vec<OsString> {
+        let mut args = self.sudo_prefix();
         args.push(action.into());
         args.push("-t".into());
         args.push(self.topology.clone().into_os_string());
@@ -170,6 +191,90 @@ mod tests {
         assert_eq!(
             containerlab.deploy_args(),
             ["containerlab", "deploy", "-t", FILE]
+        );
+    }
+
+    #[test]
+    fn with_sudo_and_no_prompt_each_list_starts_with_n_then_preserve_env() {
+        let containerlab = Containerlab::new(FILE)
+            .sudo(true)
+            .no_prompt(true)
+            .preserve_env(names(&["A"]));
+        assert_eq!(
+            containerlab.deploy_args(),
+            [
+                "-n",
+                "--preserve-env=A",
+                "containerlab",
+                "deploy",
+                "-t",
+                FILE
+            ]
+        );
+        assert_eq!(
+            containerlab.destroy_args(),
+            [
+                "-n",
+                "--preserve-env=A",
+                "containerlab",
+                "destroy",
+                "-t",
+                FILE,
+                "--cleanup"
+            ]
+        );
+        assert_eq!(
+            containerlab.inspect_args(),
+            [
+                "-n",
+                "--preserve-env=A",
+                "containerlab",
+                "inspect",
+                "-t",
+                FILE
+            ]
+        );
+        assert_eq!(
+            containerlab.version_args(),
+            ["-n", "--preserve-env=A", "containerlab", "version"]
+        );
+    }
+
+    #[test]
+    fn with_sudo_and_no_prompt_and_no_names_the_list_starts_with_n_then_containerlab() {
+        let containerlab = Containerlab::new(FILE).sudo(true).no_prompt(true);
+        assert_eq!(
+            containerlab.deploy_args(),
+            ["-n", "containerlab", "deploy", "-t", FILE]
+        );
+        assert_eq!(
+            containerlab.version_args(),
+            ["-n", "containerlab", "version"]
+        );
+    }
+
+    #[test]
+    fn with_no_prompt_but_no_sudo_the_lists_are_plain() {
+        let containerlab = Containerlab::new(FILE)
+            .no_prompt(true)
+            .preserve_env(names(&["A"]));
+        assert_eq!(containerlab.deploy_args(), ["deploy", "-t", FILE]);
+        assert_eq!(
+            containerlab.destroy_args(),
+            ["destroy", "-t", FILE, "--cleanup"]
+        );
+        assert_eq!(containerlab.inspect_args(), ["inspect", "-t", FILE]);
+        assert_eq!(containerlab.version_args(), ["version"]);
+    }
+
+    #[test]
+    fn with_sudo_the_version_list_is_preserve_env_then_containerlab_version() {
+        let containerlab = Containerlab::new(FILE)
+            .sudo(true)
+            .preserve_env(names(&["A"]));
+        assert_eq!(
+            containerlab.version_args(),
+            ["--preserve-env=A", "containerlab", "version"]
         );
     }
 
