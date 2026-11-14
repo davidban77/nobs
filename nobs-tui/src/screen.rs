@@ -1438,7 +1438,10 @@ mod tests {
             (0..10).map(|line| format!("line {line}")).collect(),
             RunState::Running,
         );
-        let last_line = |rows: usize| run(vec!["x".repeat(58 * rows)], RunState::Running);
+        let last_line = |rows: usize| {
+            let line = (0..rows).map(|row| row.to_string().repeat(58)).collect();
+            run(vec![line], RunState::Running)
+        };
 
         assert_eq!(command_rows(&refused, 58).len(), 2);
         assert_eq!(pane_height(Some(&refused), 58, 11, 3), 6);
@@ -1456,6 +1459,7 @@ mod tests {
             .collect();
         assert_eq!(newest.len(), 7);
         assert!(newest[0].ends_with('…'));
-        assert_eq!(newest[1..], wrapped(&"x".repeat(58 * 7), 58)[1..]);
+        let newest_six: Vec<String> = (1..7).map(|row| row.to_string().repeat(58)).collect();
+        assert_eq!(newest[1..], newest_six[..]);
     }
 }
