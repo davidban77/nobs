@@ -1898,6 +1898,63 @@ fn prepare_checks_the_image_purges_every_scenario_then_deploys_and_says_so() {
 }
 
 #[test]
+fn prepare_purges_and_creates_the_network_its_network_name_flag_names() {
+    let lab = Lab::new("prepare-network-name");
+    let mut steps = vec![(0, ""); 13];
+    steps[4] = (0, "network-observability\nnobs-t-net\n");
+    lab.script(&steps);
+    let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
+
+    let run = lab.run(
+        &[
+            "lab",
+            "prepare",
+            "-s",
+            "ch1",
+            "--network-name",
+            "nobs-t-net",
+            "--wait",
+            "0",
+        ],
+        &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            call(CONTAINERS),
+            inspect(SRLINUX),
+            docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]),
+            call(CONTAINERS),
+            call(NETWORKS),
+            attached("nobs-t-net"),
+            network_rm("nobs-t-net"),
+            call(CONTAINERS),
+            call(PROJECT_CONTAINERS),
+            call(NETWORKS),
+            call(&[
+                "docker",
+                "network",
+                "create",
+                "--driver=bridge",
+                "--subnet=198.51.100.0/24",
+                "nobs-t-net",
+            ]),
+            containerlab(&topology, "deploy", &[]),
+            docker_compose("netobs", &ch1, &["up", "-d", "--remove-orphans"]),
+        ]
+    );
+    assert!(run
+        .stdout
+        .contains("lab purge: removing network nobs-t-net\n"));
+    assert!(run
+        .stdout
+        .contains("lab deploy: creating network nobs-t-net (198.51.100.0/24)\n"));
+    assert_eq!(run.stderr, "");
+}
+
+#[test]
 fn prepare_with_a_missing_image_refuses_before_any_down() {
     let lab = Lab::new("prepare-image");
     lab.script(&[(0, ""), (1, "")]);
