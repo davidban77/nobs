@@ -865,6 +865,9 @@ fn a_long_command_wraps_whole_onto_the_first_rows_of_the_run_pane() {
     golden("run-long", || {
         let mut model = long_question();
         press(&mut model, KeyCode::Char('y'));
+        model.apply(Update::ActionLine(
+            " Container nobs-t-packt-sonda-1  Starting".to_string(),
+        ));
         model
     });
 }

@@ -100,13 +100,15 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     let bottom_height = if model.chooser() {
         0
     } else if model.run_pane() {
-        let last_rows = model
-            .run()
-            .and_then(|run| run.lines.last())
-            .map_or(0, |line| {
-                wrapped(line, usize::from(middle.width.saturating_sub(2))).len()
-            });
-        let needed = u16::try_from(last_rows + 3).unwrap_or(u16::MAX);
+        let width = usize::from(middle.width.saturating_sub(2));
+        let rows = model.run().map_or(0, |run| {
+            command_rows(run, width).len()
+                + run
+                    .lines
+                    .last()
+                    .map_or(0, |line| wrapped(line, width).len())
+        });
+        let needed = u16::try_from(rows + 2).unwrap_or(u16::MAX);
         let third = middle.height.saturating_sub(1) / 3 + 1;
         third.max(needed.min(middle.height / 2))
     } else {
@@ -1041,7 +1043,7 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     };
     let width = usize::from(inner.width);
-    let mut lines: Vec<Line> = wrapped(&format!("$ nobs {}", run.command), width)
+    let mut lines: Vec<Line> = command_rows(run, width)
         .into_iter()
         .map(|row| Line::styled(row, DIM))
         .collect();
@@ -1063,6 +1065,10 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
     tail.reverse();
     lines.extend(tail);
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn command_rows(run: &Run, width: usize) -> Vec<String> {
+    wrapped(&format!("$ nobs {}", run.command), width)
 }
 
 fn lab(frame: &mut Frame, area: Rect, model: &Model) {
