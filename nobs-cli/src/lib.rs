@@ -4914,6 +4914,8 @@ fn screen_start_with(
     chooser: bool,
     process: &dyn Fn(&str) -> Option<String>,
 ) -> Result<nobs_tui::Start, String> {
+    let program = std::env::current_exe()
+        .map_err(|error| format!("cannot find the running program: {error}"))?;
     let sonda = nobs_tui::SondaTarget {
         server: given(flags.server).or_else(|| given(process("SONDA_SERVER_URL"))),
         api_key: given(flags.api_key).or_else(|| given(process("SONDA_API_KEY"))),
@@ -4969,6 +4971,7 @@ fn screen_start_with(
                 };
             let home = match located.kind {
                 Kind::Workshop(_) => nobs_tui::Workbench::Devices,
+                Kind::BookLab(_) => nobs_tui::Workbench::Lab,
                 _ => home,
             };
             Ok(nobs_tui::Start {
@@ -4980,6 +4983,7 @@ fn screen_start_with(
                 source_error,
                 urls,
                 chooser: false,
+                program,
             })
         }
         Err(LocateError::NotFound) if chooser => {
@@ -4995,6 +4999,7 @@ fn screen_start_with(
                 source_error: None,
                 urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
                 chooser: true,
+                program,
             })
         }
         Err(LocateError::NotFound) => Ok(nobs_tui::Start {
@@ -5006,6 +5011,7 @@ fn screen_start_with(
             source_error: None,
             urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
             chooser: false,
+            program,
         }),
         Err(error) => Err(error.to_string()),
     }
@@ -5021,7 +5027,7 @@ fn open_screen(given_dir: Option<&Path>, flags: SondaFlags, chooser: bool) -> i3
             }
         };
         let runner = std::sync::Arc::new(nobs_core::runner::CapturedRunner);
-        match nobs_tui::run(start, runner) {
+        match nobs_tui::run(start, runner, std::sync::Arc::new(nobs_tui::Processes)) {
             Ok(1) => {
                 eprintln!("nobs: {}", LocateError::NotFound);
                 1
@@ -5874,7 +5880,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workshop_starts_on_the_devices_workbench_and_the_book_lab_keeps_the_services_one() {
+    fn a_workshop_starts_on_the_devices_workbench_and_the_book_lab_on_the_lab_one() {
         let workshop = workshop_scratch(
             "screen-home-workshop",
             None,
@@ -5890,7 +5896,7 @@ mod tests {
 
         let book = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/book-lab");
         let start = screen_start_with(&book, None, flags(None), false, &|_| None).unwrap();
-        assert_eq!(start.home, nobs_tui::Workbench::Services);
+        assert_eq!(start.home, nobs_tui::Workbench::Lab);
         assert!(start.source_error.is_none());
         let names: Vec<_> = start
             .source
@@ -5912,6 +5918,15 @@ mod tests {
         assert!(start.source_error.is_none());
         let header = nobs_tui::Shell::new(start).header();
         assert!(header.ends_with("sot none"), "{header}");
+    }
+
+    #[test]
+    fn the_screen_starts_actions_with_the_running_program() {
+        let here = Scratch::new("screen-program");
+
+        let start = screen_start(&here.0, None, flags(None), false).unwrap();
+
+        assert_eq!(start.program, std::env::current_exe().unwrap());
     }
 
     #[test]

@@ -14,9 +14,10 @@ use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
 use nobs_core::sot::{Fixed, SourceOfTruth};
 use nobs_core::status::Urls;
-use nobs_tui::shell::Health;
+use nobs_tui::book::NodeRow;
+use nobs_tui::shell::{stacks, Health};
 use nobs_tui::{
-    data, draw, handle, view, Shell, SondaTarget, Stack, StackKind, Start, Update, Workbench,
+    data, draw, handle, view, End, Shell, SondaTarget, Stack, StackKind, Start, Update, Workbench,
 };
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -33,6 +34,11 @@ const WORKSHOP_ONE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../tests/fixtures/workshop-one/lab_vars.yml"
 );
+const BOOK_LAB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/book-lab");
+const LAB_DIR: &str = "/home/me/book-lab";
+const LONG_LAB_DIR: &str = "/home/me/labs/network-observability/book-lab";
+const ALREADY_EXIST: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
+const LONG_DIR: &str = "/Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt";
 const SIZES: [(u16, u16); 2] = [(60, 15), (100, 30)];
 const WORKSHOP: [(&str, &str, u16, &str); 7] = [
     ("grafana", "running", 3000, "41 seconds ago"),
@@ -121,6 +127,23 @@ fn clock() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(CLOCK_SECONDS)
 }
 
+fn begin(lab: Option<Located>, stacks: Vec<Stack>, home: Workbench) -> Start {
+    Start {
+        lab,
+        stacks,
+        sonda: SondaTarget {
+            server: None,
+            api_key: None,
+        },
+        home,
+        chooser: true,
+        source: None,
+        source_error: None,
+        urls: Urls::defaults(),
+        program: PathBuf::from("nobs"),
+    }
+}
+
 fn model(chooser: bool, packt_failed: bool) -> Shell {
     model_with(chooser, packt_failed, None, None)
 }
@@ -141,17 +164,8 @@ fn model_with(
         stacks.push(sonda_only());
     }
     let mut model = Shell::new(Start {
-        lab,
-        stacks,
-        sonda: SondaTarget {
-            server: None,
-            api_key: None,
-        },
-        home: Workbench::Services,
-        chooser: true,
         source,
-        source_error: None,
-        urls: Urls::defaults(),
+        ..begin(lab, stacks, Workbench::Services)
     });
     if !chooser {
         press(&mut model, KeyCode::Enter);
@@ -394,6 +408,135 @@ fn pressed(key: char) -> Shell {
     model
 }
 
+fn node(name: &str, state: Option<&str>) -> NodeRow {
+    NodeRow {
+        name: name.to_string(),
+        kind: "nokia_srlinux".to_string(),
+        state: state.map(str::to_string),
+    }
+}
+
+fn lab_model() -> Shell {
+    lab_model_in(LAB_DIR)
+}
+
+fn lab_model_in(dir: &str) -> Shell {
+    let mut model = unpolled_lab_model(dir);
+    model.apply(Update::Nodes(Ok(vec![
+        node("nobs-t-srl2", None),
+        node("nobs-t-srl1", Some("running")),
+    ])));
+    model
+}
+
+fn unpolled_lab_model(lab_dir: &str) -> Shell {
+    let dir = PathBuf::from(BOOK_LAB);
+    let lab = locate(&dir, Some(&dir)).unwrap();
+    let mut chapters = stacks(Some(&lab), Vec::new()).unwrap();
+    for chapter in &mut chapters {
+        chapter.path = PathBuf::from(lab_dir);
+    }
+    let mut model = Shell::new(Start {
+        chooser: false,
+        ..begin(Some(lab), chapters, Workbench::Lab)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
+    model.apply(Update::Services(
+        0,
+        Ok(ps(&[("grafana", "running", 3000, "41 seconds ago")])),
+    ));
+    model.apply(Update::Services(1, Ok(Vec::new())));
+    model
+}
+
+fn long_question() -> Shell {
+    let packt = Stack {
+        path: PathBuf::from(LONG_DIR),
+        ..stack("nobs-t-packt", &[])
+    };
+    let mut model = Shell::new(begin(None, vec![packt], Workbench::Services));
+    press(&mut model, KeyCode::Enter);
+    model.tick(Instant::now(), clock(), (80, 24));
+    press(&mut model, KeyCode::Char('u'));
+    model
+}
+
+fn refused() -> Shell {
+    refused_in(LAB_DIR)
+}
+
+fn refused_in(dir: &str) -> Shell {
+    let mut model = lab_model_in(dir);
+    press(&mut model, KeyCode::Char('D'));
+    press(&mut model, KeyCode::Char('y'));
+    model.apply(Update::ActionLine(ALREADY_EXIST.to_string()));
+    later(&mut model, 2);
+    model.apply(Update::ActionEnded(End::Exited(1)));
+    model
+}
+
+fn later(model: &mut Shell, seconds: u64) {
+    let now = model.now() + Duration::from_secs(seconds);
+    model.tick(now, clock(), (80, 24));
+}
+
+fn deployed(end: End) -> Shell {
+    let mut model = lab_model();
+    press(&mut model, KeyCode::Char('D'));
+    press(&mut model, KeyCode::Char('y'));
+    later(&mut model, 41);
+    model.apply(Update::ActionEnded(end));
+    model
+}
+
+fn ran(end: Option<End>, folded: bool) -> Shell {
+    let mut model = model(false, false);
+    press(&mut model, KeyCode::Char('u'));
+    press(&mut model, KeyCode::Char('y'));
+    for line in [
+        " Container autocon5-grafana-1  Starting",
+        " Container autocon5-grafana-1  Started",
+    ] {
+        model.apply(Update::ActionLine(line.to_string()));
+    }
+    if let Some(end) = end {
+        if end != End::Exited(0) {
+            model.apply(Update::ActionLine(
+                "nobs: up: compose up failed".to_string(),
+            ));
+        }
+        later(&mut model, 41);
+        model.apply(Update::ActionEnded(end));
+    }
+    if folded {
+        press(&mut model, KeyCode::Esc);
+    }
+    model
+}
+
+fn not_stopped() -> Shell {
+    let mut model = ran(None, false);
+    handle(
+        &mut model,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    );
+    later(&mut model, 7);
+    model.apply(Update::ActionEnded(End::NotStopped { group: 4242 }));
+    model
+}
+
+fn pinned(model: Shell, name: &str, width: u16, height: u16) {
+    let actual = lines(&render(model, width, height));
+
+    let failure = mismatch(name, width, height, &actual);
+
+    assert!(failure.is_none(), "{}", failure.unwrap_or_default());
+}
+
+fn row_has_no_green(buffer: &Buffer, y: u16) -> bool {
+    (0..buffer.area.width).all(|x| buffer[(x, y)].fg != Color::Green)
+}
+
 fn render(mut model: Shell, width: u16, height: u16) -> Buffer {
     let now = model.now() + Duration::from_secs(2);
     model.tick(now, clock(), (width, height));
@@ -502,14 +645,12 @@ fn the_help_frame_is_pinned() {
 }
 
 #[test]
-fn the_lab_placeholder_help_frame_is_pinned() {
-    let mut model = pressed('3');
-    press(&mut model, KeyCode::Char('?'));
-    let actual = lines(&render(model, 60, 15));
-
-    let failure = mismatch("help-lab", 60, 15, &actual);
-
-    assert!(failure.is_none(), "{}", failure.unwrap_or_default());
+fn the_lab_help_frame_is_pinned() {
+    golden("help-lab", || {
+        let mut model = lab_model();
+        press(&mut model, KeyCode::Char('?'));
+        model
+    });
 }
 
 #[test]
@@ -577,7 +718,11 @@ fn the_devices_without_a_source_frame_is_pinned() {
 
 #[test]
 fn the_lab_frame_is_pinned() {
-    golden("lab", || pressed('3'));
+    golden("lab", || {
+        let mut model = deployed(End::Exited(0));
+        press(&mut model, KeyCode::Esc);
+        model
+    });
 }
 
 #[test]
@@ -586,12 +731,280 @@ fn the_run_pane_frame_is_pinned() {
 }
 
 #[test]
+fn the_running_action_frames_are_pinned() {
+    golden("run-running", || ran(None, false));
+    golden("run-running-folded", || ran(None, true));
+}
+
+#[test]
+fn the_finished_action_frames_are_pinned() {
+    golden("run-exit-0", || ran(Some(End::Exited(0)), false));
+    golden("run-exit-0-folded", || ran(Some(End::Exited(0)), true));
+}
+
+#[test]
+fn the_failed_action_frames_are_pinned() {
+    golden("run-exit-1", || ran(Some(End::Exited(1)), false));
+    golden("run-exit-1-folded", || ran(Some(End::Exited(1)), true));
+}
+
+#[test]
+fn an_action_that_did_not_stop_is_red_on_its_title_and_last_line_and_marks_its_row() {
+    pinned(not_stopped(), "run-not-stopped", 100, 30);
+
+    let buffer = render(not_stopped(), 100, 30);
+    let (x, y) = position(&buffer, " run  autocon5 up", "not stopped");
+    assert_eq!(buffer[(x, y)].fg, Color::Red);
+    assert!(row_has_no_green(&buffer, y));
+    let (x, y) = position(&buffer, "nobs: the action did not stop", "nobs:");
+    assert_eq!(buffer[(x, y)].fg, Color::Red);
+    assert!(lines(&buffer).iter().any(|line| line.contains("!autocon5")));
+}
+
+#[test]
+fn a_failed_deploy_is_red_on_its_title_and_its_nobs_line_and_marks_its_chapter() {
+    let buffer = render(refused(), 100, 30);
+
+    let (x, y) = position(&buffer, " run  lab deploy -s ch1", "exit 1");
+    assert_eq!(buffer[(x, y)].fg, Color::Red);
+    assert!(row_has_no_green(&buffer, y));
+    let (x, y) = position(&buffer, "nobs: lab deploy: node containers", "nobs:");
+    assert_eq!(buffer[(x, y)].fg, Color::Red);
+    assert!(lines(&buffer).iter().any(|line| line.contains("!ch1")));
+}
+
+fn maintained(packt_failed: bool) -> Shell {
+    let source =
+        Fixed::from_lab_vars(&lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap());
+    let devices = source.devices().unwrap();
+    let dir = PathBuf::from(WORKSHOP_DIR);
+    let lab = locate(&dir, Some(&dir)).unwrap();
+    let mut model = model_with(false, packt_failed, Some(Arc::new(source)), Some(lab));
+    press(&mut model, KeyCode::Char('1'));
+    model.apply(Update::Devices(Ok(devices)));
+    press(&mut model, KeyCode::Char('m'));
+    press(&mut model, KeyCode::Char('y'));
+    model
+}
+
+#[test]
+fn a_failed_maintenance_marks_its_device_row() {
+    let mut model = maintained(false);
+    model.apply(Update::ActionEnded(End::Exited(1)));
+
+    let screen = lines(&render(model, 100, 30));
+
+    assert!(
+        screen.iter().any(|line| line.starts_with("│!  srl1")),
+        "{}",
+        screen.join("\n")
+    );
+}
+
+#[test]
+fn nodes_show_question_marks_until_a_good_answer_whatever_the_error_row_does() {
+    let left_of = |screen: &[String], name: &str| {
+        let line = screen.iter().find(|line| line.contains(name)).unwrap();
+        line.split("││").next().unwrap().to_string()
+    };
+    let unknown = |screen: &[String]| {
+        let text = screen.join("\n");
+        assert!(text.contains("│ nodes     ?"), "{text}");
+        for name in ["nobs-t-srl1", "nobs-t-srl2"] {
+            let row = left_of(screen, name);
+            assert!(row.contains('?') && !row.contains("running"), "{row}");
+        }
+    };
+    let waiting = lines(&render(unpolled_lab_model(LAB_DIR), 100, 30)).join("\n");
+    assert!(waiting.contains("│ nodes     ?"), "{waiting}");
+
+    let mut model = lab_model();
+    model.apply(Update::Nodes(Err("docker is gone".to_string())));
+    press(&mut model, KeyCode::Char('x'));
+    let failed = lines(&render(model, 100, 30));
+    unknown(&failed);
+    assert!(!failed.join("\n").contains("docker is gone"));
+
+    let mut model = lab_model();
+    model.apply(Update::Nodes(Err("docker is gone".to_string())));
+    model.apply(Update::Services(1, Err("exit 1".to_string())));
+    unknown(&lines(&render(model, 100, 30)));
+
+    let mut model = lab_model();
+    model.apply(Update::Stopped("nodes".to_string()));
+    press(&mut model, KeyCode::Char('x'));
+    unknown(&lines(&render(model, 100, 30)));
+
+    let mut model = lab_model();
+    model.apply(Update::Nodes(Err("docker is gone".to_string())));
+    model.apply(Update::Nodes(Ok(vec![node(
+        "nobs-t-srl1",
+        Some("running"),
+    )])));
+    let answered = lines(&render(model, 100, 30));
+    assert!(left_of(&answered, "nobs-t-srl1").contains("running"));
+    assert!(answered.join("\n").contains("│ nodes     1 of 1 running"));
+}
+
+#[test]
+fn a_long_refusal_wraps_whole_into_the_run_pane_and_is_red_on_every_row() {
+    golden("run-refused", refused);
+
+    let buffer = render(refused(), 100, 30);
+
+    for needle in [
+        "nobs: lab deploy: node containers",
+        "run nobs lab destroy first",
+    ] {
+        let (x, y) = position(&buffer, needle, needle);
+        let start = (0..x)
+            .rev()
+            .find(|x| buffer[(*x, y)].symbol() == "│")
+            .unwrap()
+            + 1;
+        assert!(
+            (start..x + 5).all(|x| buffer[(x, y)].fg == Color::Red),
+            "{needle}"
+        );
+    }
+}
+
+#[test]
+fn a_short_run_pane_cuts_the_command_line_to_keep_the_whole_refusal() {
+    pinned(refused_in(LONG_LAB_DIR), "run-refused-long", 60, 15);
+}
+
+#[test]
+fn under_an_error_row_the_run_pane_grows_past_half_to_keep_the_whole_refusal() {
+    let mut model = refused_in(LONG_LAB_DIR);
+    model.apply(Update::Services(1, Err("exit 1".to_string())));
+
+    pinned(model, "run-refused-error", 60, 15);
+}
+
+fn long_refusal() -> String {
+    let names: Vec<String> = (1..=10)
+        .map(|node| format!("clab-nobs-t-book-nobs-t-srl{node}"))
+        .collect();
+    format!(
+        "nobs: lab deploy: node containers already exist ({}); run nobs lab destroy first",
+        names.join(", ")
+    )
+}
+
+fn with_long_refusal(mut model: Shell) -> Shell {
+    model.apply(Update::ActionLine(long_refusal()));
+    model.apply(Update::ActionEnded(End::Exited(1)));
+    model
+}
+
+fn chapter_two_refused() -> Shell {
+    let mut model = lab_model();
+    press(&mut model, KeyCode::Char('j'));
+    press(&mut model, KeyCode::Char('D'));
+    press(&mut model, KeyCode::Char('y'));
+    let mut model = with_long_refusal(model);
+    model.apply(Update::Services(1, Err("exit 1".to_string())));
+    model
+}
+
+fn second_stack_refused() -> Shell {
+    let mut model = model(false, true);
+    press(&mut model, KeyCode::Char('j'));
+    press(&mut model, KeyCode::Char('u'));
+    press(&mut model, KeyCode::Char('y'));
+    with_long_refusal(model)
+}
+
+fn pane_rows(model: Shell, width: u16, height: u16) -> usize {
+    let screen = lines(&render(model, width, height));
+    let top = screen
+        .iter()
+        .position(|line| line.starts_with("┌ run"))
+        .unwrap();
+    screen.len() - 1 - top
+}
+
+#[test]
+fn the_run_pane_stops_growing_where_the_selected_chapter_would_go_out_of_view() {
+    pinned(chapter_two_refused(), "run-least-lab", 60, 15);
+}
+
+#[test]
+fn the_run_pane_grows_past_half_only_up_to_each_workbench_minimum() {
+    let heights = vec![
+        ("lab", pane_rows(chapter_two_refused(), 60, 15)),
+        ("services", pane_rows(second_stack_refused(), 60, 15)),
+        (
+            "devices",
+            pane_rows(with_long_refusal(maintained(true)), 60, 20),
+        ),
+    ];
+
+    assert_eq!(heights, [("lab", 7), ("services", 7), ("devices", 9)]);
+}
+
+#[test]
+fn a_long_question_wraps_whole_onto_the_bottom_rows() {
+    golden("question-long", long_question);
+}
+
+#[test]
+fn a_long_command_wraps_whole_onto_the_first_rows_of_the_run_pane() {
+    golden("run-long", || {
+        let mut model = long_question();
+        press(&mut model, KeyCode::Char('y'));
+        model.apply(Update::ActionLine(
+            " Container nobs-t-packt-sonda-1  Starting".to_string(),
+        ));
+        model
+    });
+}
+
+#[test]
+fn the_question_frame_is_pinned() {
+    let mut model = model(false, false);
+    press(&mut model, KeyCode::Char('j'));
+    press(&mut model, KeyCode::Char('u'));
+
+    pinned(model, "question", 100, 30);
+}
+
+#[test]
+fn three_and_the_lab_switcher_entry_exist_only_in_a_book_lab() {
+    let workshop = pressed('3');
+    let book = || {
+        let mut model = lab_model();
+        model.apply(Update::Devices(Ok(Fixed::from_lab_vars(
+            &lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap(),
+        )
+        .devices()
+        .unwrap())));
+        press(&mut model, KeyCode::Char('1'));
+        model
+    };
+
+    assert_eq!(workshop.workbench(), Workbench::Services);
+    let screen = lines(&render(workshop, 100, 30));
+    assert!(!screen[1].contains("3 lab"), "{}", screen[1]);
+    assert!(
+        screen[1].starts_with(" 1 devices  [2 services]"),
+        "{}",
+        screen[1]
+    );
+    let screen = lines(&render(book(), 100, 30));
+    assert!(screen[1].contains("3 lab"), "{}", screen[1]);
+    assert!(
+        screen[29].starts_with(" Tab focus  j/k move"),
+        "{}",
+        screen[29]
+    );
+    assert!(!screen[29].contains("m maintenance"), "{}", screen[29]);
+}
+
+#[test]
 fn the_too_small_frame_is_pinned() {
-    let actual = lines(&render(model(false, false), 59, 15));
-
-    let failure = mismatch("too-small", 59, 15, &actual);
-
-    assert!(failure.is_none(), "{}", failure.unwrap_or_default());
+    pinned(model(false, false), "too-small", 59, 15);
 }
 
 #[test]

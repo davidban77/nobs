@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ 1 devices  2 services  [3 lab]              ? keys  q quit
+ ps ch2: exit 1  2s ago
+┌ chapters 2 ─────────┐┌ ch2 ──────────────────────────────┐
+│ ch1  up 1/1         ││OVERVIEW                           │
+│!ch2  ?              ││ topology  containerlab/lab.yml    │
+└─────────────────────┘└───────────────────────────────────┘
+┌ run  lab deploy -s ch2  exit 1  0s ──────────── Esc fold ┐
+│$ nobs --dir /home/me/book-lab lab deploy -s ch2          │
+│nobs-t-book-nobs-t-srl5, clab-nobs-t-book-nobs-t-srl6, cla│
+│b-nobs-t-book-nobs-t-srl7, clab-nobs-t-book-nobs-t-srl8, c│
+│lab-nobs-t-book-nobs-t-srl9, clab-nobs-t-book-nobs-t-srl10│
+│); run nobs lab destroy first                             │
+└──────────────────────────────────────────────────────────┘
+ j/k move  D deploy  X destroy  r refresh  o pane

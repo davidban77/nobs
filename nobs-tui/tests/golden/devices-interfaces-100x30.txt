@@ -1,5 +1,5 @@
  nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
- [1 devices]  2 services  3 lab                                                      ? keys  q quit
+ [1 devices]  2 services                                                             ? keys  q quit
 ┌ devices 2 ─────────────────────────────┐┌ srl1 ──────────────────────────────────────────────────┐
 │   NAME  KIND  HLTH  SYNC  ALRT         ││overview  INTERFACES  timeline  logs                    │
 │>  srl1  —     warn  —        1         ││NAME           INTENT  ADMIN  OPER  PEER      BGP       │

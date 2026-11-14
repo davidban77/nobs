@@ -45,20 +45,46 @@ struct Settings {
     image: Option<String>,
 }
 
-pub fn node_containers(topology_text: &str) -> Result<Vec<String>, String> {
+fn node_kind<'a>(settings: &'a Option<Settings>, section: &'a Nodes) -> &'a str {
+    settings
+        .as_ref()
+        .and_then(|own| own.kind.as_deref())
+        .or_else(|| section.defaults.as_ref().and_then(|d| d.kind.as_deref()))
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyNode {
+    pub name: String,
+    pub kind: String,
+    pub container: String,
+}
+
+pub fn topology_nodes(topology_text: &str) -> Result<Vec<TopologyNode>, String> {
     let topology: Topology =
         serde_saphyr::from_str(topology_text).map_err(|error| error.to_string())?;
     let lab = &topology.name;
-    let mut names: Vec<String> = topology
-        .topology
+    let section = &topology.topology;
+    Ok(section
         .nodes
-        .keys()
-        .map(|node| match topology.prefix.as_deref() {
-            None => format!("clab-{lab}-{node}"),
-            Some("") => node.clone(),
-            Some("__lab-name") => format!("{lab}-{node}"),
-            Some(prefix) => format!("{prefix}-{lab}-{node}"),
+        .iter()
+        .map(|(node, settings)| TopologyNode {
+            name: node.clone(),
+            kind: node_kind(settings, section).to_string(),
+            container: match topology.prefix.as_deref() {
+                None => format!("clab-{lab}-{node}"),
+                Some("") => node.clone(),
+                Some("__lab-name") => format!("{lab}-{node}"),
+                Some(prefix) => format!("{prefix}-{lab}-{node}"),
+            },
         })
+        .collect())
+}
+
+pub fn node_containers(topology_text: &str) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = topology_nodes(topology_text)?
+        .into_iter()
+        .map(|node| node.container)
         .collect();
     names.sort();
     Ok(names)
@@ -156,11 +182,7 @@ pub fn node_images(
     let section = &topology.topology;
     let mut images: BTreeMap<String, NodeImage> = BTreeMap::new();
     for (node, settings) in &section.nodes {
-        let kind = settings
-            .as_ref()
-            .and_then(|own| own.kind.as_deref())
-            .or_else(|| section.defaults.as_ref().and_then(|d| d.kind.as_deref()))
-            .unwrap_or_default();
+        let kind = node_kind(settings, section);
         let Some(raw) = settings
             .as_ref()
             .and_then(|own| own.image.as_deref())
@@ -448,6 +470,26 @@ mod tests {
         assert!(node_containers("a: [b").is_err());
         assert!(node_containers("name: lab\n").is_err());
         assert!(node_containers("topology:\n  nodes:\n    a: {}\n").is_err());
+    }
+
+    #[test]
+    fn topology_nodes_give_each_node_its_own_kind_else_the_kind_of_defaults_and_its_container() {
+        let text = "name: lab\ntopology:\n  defaults:\n    kind: ceos\n  nodes:\n    b: {}\n    a:\n      kind: linux\n";
+        assert_eq!(
+            topology_nodes(text),
+            Ok(vec![
+                TopologyNode {
+                    name: "a".to_string(),
+                    kind: "linux".to_string(),
+                    container: "clab-lab-a".to_string(),
+                },
+                TopologyNode {
+                    name: "b".to_string(),
+                    kind: "ceos".to_string(),
+                    container: "clab-lab-b".to_string(),
+                },
+            ])
+        );
     }
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {

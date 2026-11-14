@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,8 +19,11 @@ use nobs_core::sot::{Device, Session, SourceOfTruth};
 use nobs_core::status::Urls;
 use nobs_core::time;
 
+use crate::actions::{arguments, Row, Target, ACTIONS};
+use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
+use crate::run::{self, End};
 
 const LOG_LINES: usize = 2000;
 pub const WINDOW_MINUTES: u64 = 30;
@@ -44,6 +48,7 @@ pub struct Start {
     pub source: Option<Arc<dyn SourceOfTruth>>,
     pub source_error: Option<String>,
     pub urls: Urls,
+    pub program: PathBuf,
 }
 
 impl fmt::Debug for Start {
@@ -57,6 +62,7 @@ impl fmt::Debug for Start {
             .field("source", &self.source.as_ref().map(|_| ".."))
             .field("source_error", &self.source_error)
             .field("urls", &self.urls)
+            .field("program", &self.program)
             .finish()
     }
 }
@@ -187,6 +193,9 @@ pub enum Update {
     DeviceLogs(String, Result<Vec<Line>, String>),
     Rcas(String, Result<Vec<Line>, String>),
     FlowRuns(Result<Vec<FlowRun>, String>),
+    ActionLine(String),
+    ActionEnded(run::End),
+    Nodes(Result<Vec<book::NodeRow>, String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +203,10 @@ pub enum Command {
     Quit,
     Refresh,
     SelectStack(usize),
-    OpenLogs { stack: usize, service: String },
+    OpenLogs {
+        stack: usize,
+        service: String,
+    },
     Follow(bool),
     FollowDevice(bool),
     CloseLogs,
@@ -202,6 +214,61 @@ pub enum Command {
     SelectDevice(String),
     OpenTab(Tab),
     Window(u64),
+    Run {
+        program: PathBuf,
+        args: Vec<OsString>,
+    },
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunState {
+    Running,
+    Stopping,
+    Ended(End),
+}
+
+#[derive(Debug)]
+pub struct Run {
+    pub words: String,
+    pub command: String,
+    pub target: Target,
+    pub lines: Vec<String>,
+    pub started: Instant,
+    pub ended: Option<Instant>,
+    pub state: RunState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Question {
+    Pending { args: Vec<OsString>, target: Target },
+    Quit,
+}
+
+impl Question {
+    pub fn text(&self) -> String {
+        match self {
+            Question::Pending { args, .. } => format!("run nobs {}? y/n", joined(args)),
+            Question::Quit => "an action is running: stop it and quit? y/n".to_string(),
+        }
+    }
+}
+
+pub fn not_stopped(group: u32) -> String {
+    format!(
+        "the action did not stop: a program it started is still running in process group {group}"
+    )
+}
+
+fn joined(args: &[OsString]) -> String {
+    args.iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn words(args: &[OsString]) -> String {
+    joined(args.get(2..).unwrap_or_default())
 }
 
 #[derive(Default)]
@@ -309,6 +376,15 @@ pub struct Model {
     window: u64,
     timeline_row: usize,
     popup: bool,
+    program: PathBuf,
+    run: Option<Run>,
+    question: Option<Question>,
+    notice: Option<String>,
+    failed: Vec<Target>,
+    chapter: usize,
+    nodes: Vec<book::NodeRow>,
+    nodes_ok: bool,
+    quitting: bool,
 }
 
 impl Model {
@@ -322,7 +398,12 @@ impl Model {
             source,
             source_error,
             urls: _,
+            program,
         } = start;
+        let chapter = stacks
+            .iter()
+            .position(|stack| stack.kind == StackKind::BookLab)
+            .unwrap_or(0);
         let sonda_only_start = lab.is_none() && !chooser;
         let selected = match &lab {
             Some(lab) => stacks.iter().position(|stack| stack.path == lab.dir),
@@ -390,6 +471,15 @@ impl Model {
             window: WINDOW_MINUTES,
             timeline_row: 0,
             popup: false,
+            program,
+            run: None,
+            question: None,
+            notice: None,
+            failed: Vec::new(),
+            chapter,
+            nodes: Vec::new(),
+            nodes_ok: false,
+            quitting: false,
         }
     }
 
@@ -432,8 +522,7 @@ impl Model {
                 };
                 logs.lines
                     .extend(lines.iter().map(|line| untimed(line).to_string()));
-                let extra = logs.lines.len().saturating_sub(LOG_LINES);
-                logs.lines.drain(..extra);
+                keep_last(&mut logs.lines);
             }
             Update::Logs(_, service, Err(text)) => {
                 self.error = Some((format!("logs {service}"), text, self.now));
@@ -445,6 +534,7 @@ impl Model {
                     "prometheus" => self.metrics = None,
                     "alertmanager" => self.alerts_ok = false,
                     "loki" => self.logs_following = false,
+                    "nodes" => self.nodes_ok = false,
                     _ => {}
                 }
                 self.error = Some((source, "polling stopped".to_string(), self.now));
@@ -512,7 +602,153 @@ impl Model {
                 self.clear_error("prefect");
             }
             Update::FlowRuns(Err(text)) => self.fail("prefect", text),
+            Update::ActionLine(line) => {
+                if let Some(run) = self.run.as_mut() {
+                    push_line(run, line);
+                }
+            }
+            Update::ActionEnded(end) => self.end_run(end),
+            Update::Nodes(Ok(rows)) => {
+                self.nodes = rows;
+                self.nodes_ok = true;
+                self.clear_error("nodes");
+            }
+            Update::Nodes(Err(text)) => {
+                self.nodes_ok = false;
+                self.fail("nodes", text);
+            }
         }
+    }
+
+    fn end_run(&mut self, end: End) {
+        let Some(run) = self.run.as_mut() else {
+            return;
+        };
+        run.state = RunState::Ended(end);
+        run.ended = Some(self.now);
+        if let End::NotStopped { group } = end {
+            push_line(run, format!("nobs: {}", not_stopped(group)));
+        }
+        if end == End::Exited(0) {
+            self.failed.retain(|held| *held != run.target);
+        } else if !self.failed.contains(&run.target) {
+            self.failed.push(run.target.clone());
+        }
+        if self.quitting {
+            self.quit = true;
+        }
+    }
+
+    fn active(&self) -> Option<&Run> {
+        self.run
+            .as_ref()
+            .filter(|run| !matches!(run.state, RunState::Ended(_)))
+    }
+
+    fn stop(&mut self) -> Vec<Command> {
+        self.question = None;
+        if let Some(run) = self.run.as_mut() {
+            run.state = RunState::Stopping;
+        }
+        vec![Command::Stop]
+    }
+
+    fn answer(&mut self, question: Question, key: KeyEvent) -> Vec<Command> {
+        let yes = key.code == KeyCode::Char('y')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match question {
+            Question::Pending { args, target } if yes => {
+                self.run = Some(Run {
+                    words: words(&args),
+                    command: joined(&args),
+                    target,
+                    lines: Vec::new(),
+                    started: self.now,
+                    ended: None,
+                    state: RunState::Running,
+                });
+                self.run_pane = true;
+                vec![Command::Run {
+                    program: self.program.clone(),
+                    args,
+                }]
+            }
+            Question::Pending { args, .. } => {
+                self.notice = Some(format!("not run: {}", words(&args)));
+                Vec::new()
+            }
+            Question::Quit if yes && self.active().is_some() => {
+                self.quitting = true;
+                self.stop()
+            }
+            Question::Quit if yes => {
+                self.quit = true;
+                vec![Command::Quit]
+            }
+            Question::Quit => Vec::new(),
+        }
+    }
+
+    fn action_key(&mut self, code: KeyCode) -> Option<Vec<Command>> {
+        let KeyCode::Char(typed) = code else {
+            return None;
+        };
+        let action = ACTIONS
+            .iter()
+            .find(|action| action.key == typed && action.workbench == self.workbench)?;
+        let target = match action.row {
+            Row::Stack
+                if self.focus == Focus::List || matches!(self.tab, Tab::Overview | Tab::Logs) =>
+            {
+                Some(Target::Stack(self.selected))
+            }
+            Row::Stack => return None,
+            Row::Device => self
+                .selected_device()
+                .map(|device| Target::Device(device.name.clone())),
+            Row::Chapter => self.selected_chapter().map(Target::Chapter),
+        };
+        if let Some(run) = self.active() {
+            self.notice = Some(format!("one action at a time: {} is running", run.words));
+            return Some(Vec::new());
+        }
+        let Some(target) = target else {
+            return Some(Vec::new());
+        };
+        match arguments(action, &target, self) {
+            Some(args) => {
+                self.notice = None;
+                self.question = Some(Question::Pending { args, target });
+            }
+            None if action.row == Row::Stack => {
+                self.notice = Some(
+                    "u and d are for a workshop; a chapter is deployed from the lab workbench"
+                        .to_string(),
+                );
+            }
+            None => {}
+        }
+        Some(Vec::new())
+    }
+
+    fn lab_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let chapters = self.chapters();
+        let next = match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                chapters.into_iter().find(|index| *index > self.chapter)
+            }
+            KeyCode::Char('k') | KeyCode::Up => chapters
+                .into_iter()
+                .rev()
+                .find(|index| *index < self.chapter),
+            _ => None,
+        };
+        if let Some(index) = next {
+            self.chapter = index;
+        }
+        Vec::new()
     }
 
     fn fail(&mut self, source: &str, text: String) {
@@ -833,6 +1069,54 @@ impl Model {
         self.exit_code
     }
 
+    pub fn run(&self) -> Option<&Run> {
+        self.run.as_ref()
+    }
+
+    pub fn question(&self) -> Option<&Question> {
+        self.question.as_ref()
+    }
+
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    pub fn failed(&self, target: &Target) -> bool {
+        self.failed.contains(target)
+    }
+
+    pub fn chapters(&self) -> Vec<usize> {
+        (0..self.stacks.len())
+            .filter(|index| self.stacks[*index].kind == StackKind::BookLab)
+            .collect()
+    }
+
+    pub fn selected_chapter(&self) -> Option<usize> {
+        self.stacks
+            .get(self.chapter)
+            .filter(|stack| stack.kind == StackKind::BookLab)
+            .map(|_| self.chapter)
+    }
+
+    pub fn nodes(&self) -> &[book::NodeRow] {
+        &self.nodes
+    }
+
+    pub fn nodes_ok(&self) -> bool {
+        self.nodes_ok
+    }
+
+    pub(crate) fn located(&self) -> Option<&Located> {
+        self.lab.as_ref()
+    }
+
+    pub fn book_lab(&self) -> bool {
+        matches!(
+            self.lab.as_ref().map(|lab| &lab.kind),
+            Some(Kind::BookLab(_))
+        )
+    }
+
     fn types_q(&self) -> bool {
         !self.too_small() && (self.typing() || self.asking())
     }
@@ -945,10 +1229,14 @@ impl Model {
         if sonda_keys && self.sonda.prompt() != &Prompt::None && key.code != KeyCode::Esc {
             return self.sonda_key(key);
         }
+        if let Some(commands) = self.action_key(key.code) {
+            return commands;
+        }
         match key.code {
             KeyCode::Char('1') => return self.switch(Workbench::Devices),
             KeyCode::Char('2') => return self.switch(Workbench::Services),
-            KeyCode::Char('3') => return self.switch(Workbench::Lab),
+            KeyCode::Char('3') if self.book_lab() => return self.switch(Workbench::Lab),
+            KeyCode::Char('3') => {}
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('x') => self.error = None,
             KeyCode::Char('o') => self.run_pane = !self.run_pane,
@@ -962,6 +1250,7 @@ impl Model {
             KeyCode::Char('r') if !sonda_keys => return vec![Command::Refresh],
             _ if self.workbench == Workbench::Services => return self.services_key(key),
             _ if self.workbench == Workbench::Devices => return self.devices_key(key),
+            _ if self.workbench == Workbench::Lab => return self.lab_key(key.code),
             _ => {}
         }
         Vec::new()
@@ -1300,6 +1589,7 @@ pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     if key.kind != KeyEventKind::Press {
         return Vec::new();
     }
+    model.notice = None;
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let quit = match key.code {
@@ -1307,6 +1597,19 @@ pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         KeyCode::Char('q') => !control && !alt && !model.types_q(),
         _ => false,
     };
+    let ctrl_c = quit && control;
+    if ctrl_c && model.active().is_some() {
+        return model.stop();
+    }
+    if !ctrl_c {
+        if let Some(question) = model.question.take() {
+            return model.answer(question, key);
+        }
+    }
+    if quit && model.active().is_some() {
+        model.question = Some(Question::Quit);
+        return Vec::new();
+    }
     if quit {
         model.quit = true;
         model.exit_code = i32::from(model.chooser);
@@ -1458,6 +1761,16 @@ fn health_of(health: &[Health], name: &str) -> Option<String> {
         .map(|entry| entry.state.clone())
 }
 
+fn keep_last(lines: &mut Vec<String>) {
+    let extra = lines.len().saturating_sub(LOG_LINES);
+    lines.drain(..extra);
+}
+
+fn push_line(run: &mut Run, line: String) {
+    run.lines.push(line);
+    keep_last(&mut run.lines);
+}
+
 fn untimed(line: &str) -> &str {
     line.split_once(' ').map_or(line, |(_, text)| text)
 }
@@ -1544,6 +1857,7 @@ mod tests {
             source: None,
             source_error: None,
             urls: Urls::defaults(),
+            program: PathBuf::from("/bin/nobs"),
         }
     }
 
@@ -1754,10 +2068,12 @@ mod tests {
         assert_eq!(model.workbench(), Workbench::Services);
         ch(&mut model, '1');
         assert_eq!(model.workbench(), Workbench::Devices);
-        ch(&mut model, '3');
-        assert_eq!(model.workbench(), Workbench::Lab);
         ch(&mut model, '2');
         assert_eq!(model.workbench(), Workbench::Services);
+        let mut book = book_model();
+        ch(&mut book, '1');
+        ch(&mut book, '3');
+        assert_eq!(book.workbench(), Workbench::Lab);
 
         assert_eq!(model.focus(), Focus::List);
         code(&mut model, KeyCode::Tab);
@@ -1898,23 +2214,39 @@ mod tests {
     }
 
     #[test]
-    fn a_placeholder_workbench_acts_on_the_global_keys_only() {
-        for number in ['3'] {
-            let mut model = opened(&["a", "b"]);
-            ch(&mut model, number);
-            let before = snapshot(&model);
-            for ignored in ['j', 'k', 'l', '/', 'f', '[', ']'] {
-                assert_eq!(ch(&mut model, ignored), [], "{ignored}");
-            }
-            assert_eq!(code(&mut model, KeyCode::Enter), []);
-            assert_eq!(code(&mut model, KeyCode::Down), []);
-            assert_eq!(snapshot(&model), before);
-            assert_eq!(ch(&mut model, 'r'), [Command::Refresh]);
-            ch(&mut model, 'o');
-            assert!(model.run_pane());
-            ch(&mut model, '2');
-            assert_eq!(model.workbench(), Workbench::Services);
+    fn the_lab_workbench_acts_on_its_own_keys_and_the_global_keys_only() {
+        let mut model = book_model();
+        let before = snapshot(&model);
+        for ignored in ['l', '/', 'f', '[', ']', 'u', 'd', 'm'] {
+            assert_eq!(ch(&mut model, ignored), [], "{ignored}");
         }
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+        assert_eq!(snapshot(&model), before);
+        assert_eq!(model.selected_chapter(), Some(0));
+        assert_eq!(model.question(), None);
+        assert_eq!(model.notice(), None);
+        assert_eq!(ch(&mut model, 'r'), [Command::Refresh]);
+        ch(&mut model, 'o');
+        assert!(model.run_pane());
+        ch(&mut model, '2');
+        assert_eq!(model.workbench(), Workbench::Services);
+    }
+
+    #[test]
+    fn three_opens_the_lab_workbench_only_in_a_book_lab() {
+        let mut model = opened(&["a"]);
+        let before = snapshot(&model);
+        assert_eq!(ch(&mut model, '3'), []);
+        assert_eq!(snapshot(&model), before);
+
+        let mut model = devices_model();
+        assert_eq!(ch(&mut model, '3'), []);
+        assert_eq!(model.workbench(), Workbench::Devices);
+
+        let mut model = book_model();
+        ch(&mut model, '2');
+        ch(&mut model, '3');
+        assert_eq!(model.workbench(), Workbench::Lab);
     }
 
     #[test]
@@ -2940,8 +3272,11 @@ mod tests {
         assert_eq!(model.tab(), Tab::Logs);
         assert_eq!(ch(&mut model, '1'), [srl1(), Command::OpenTab(Tab::Logs)]);
 
-        assert_eq!(ch(&mut model, '3'), [Command::OpenTab(Tab::Overview)]);
-        assert_eq!(ch(&mut model, '2'), []);
+        let mut book = book_model();
+        book.apply(Update::Devices(Ok(workshop_source().devices().unwrap())));
+        ch(&mut book, '1');
+        assert_eq!(ch(&mut book, '3'), [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(ch(&mut book, '2'), []);
     }
 
     #[test]
@@ -3104,5 +3439,324 @@ mod tests {
             Ok(vec![log_line(5, "late")]),
         ));
         assert!(model.device_logs().unwrap().1.is_empty());
+    }
+
+    fn os(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    fn nobs(args: &[&str]) -> Command {
+        Command::Run {
+            program: PathBuf::from("/bin/nobs"),
+            args: os(args),
+        }
+    }
+
+    fn book_model() -> Model {
+        let dir = fixture("book-lab");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        let stacks = stacks(Some(&located), vec![]).unwrap();
+        Model::new(Start {
+            lab: Some(located),
+            home: Workbench::Lab,
+            chooser: false,
+            ..start(stacks)
+        })
+    }
+
+    fn book_dir() -> String {
+        fixture("book-lab").to_string_lossy().into_owned()
+    }
+
+    fn running(model: &mut Model) {
+        ch(model, 'u');
+        ch(model, 'y');
+    }
+
+    fn state(model: &Model) -> RunState {
+        model.run().unwrap().state
+    }
+
+    #[test]
+    fn y_after_each_action_key_runs_nobs_with_the_folder_and_the_words() {
+        let ws = "/ws/nobs-t-packt";
+        for (typed, word) in [('u', "up"), ('d', "down")] {
+            let mut model = opened(&["nobs-t-packt"]);
+            assert_eq!(ch(&mut model, typed), []);
+            assert_eq!(
+                model.question().unwrap().text(),
+                format!("run nobs --dir {ws} nobs-t-packt {word}? y/n")
+            );
+            assert_eq!(
+                ch(&mut model, 'y'),
+                [nobs(&["--dir", ws, "nobs-t-packt", word])]
+            );
+            assert!(model.run_pane());
+            assert_eq!(model.question(), None);
+            assert_eq!(model.run().unwrap().words, format!("nobs-t-packt {word}"));
+            assert_eq!(state(&model), RunState::Running);
+        }
+
+        let one = fixture("workshop-one").to_string_lossy().into_owned();
+        let mut model = devices_model();
+        ch(&mut model, 'm');
+        assert_eq!(
+            ch(&mut model, 'y'),
+            [nobs(&[
+                "--dir",
+                &one,
+                "nobs-t-one",
+                "maintenance",
+                "-d",
+                "srl1",
+                "--state"
+            ])]
+        );
+
+        let lab = book_dir();
+        for (typed, word) in [('D', "deploy"), ('X', "destroy")] {
+            let mut model = book_model();
+            ch(&mut model, typed);
+            assert_eq!(
+                ch(&mut model, 'y'),
+                [nobs(&["--dir", &lab, "lab", word, "-s", "ch1"])]
+            );
+            assert_eq!(model.run().unwrap().words, format!("lab {word} -s ch1"));
+        }
+    }
+
+    #[test]
+    fn any_answer_but_y_runs_nothing_and_leaves_one_notice() {
+        for answer in [
+            KeyCode::Char('n'),
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Char('q'),
+        ] {
+            let mut model = opened(&["nobs-t-packt"]);
+            ch(&mut model, 'u');
+
+            assert_eq!(code(&mut model, answer), [], "{answer:?}");
+
+            assert_eq!(model.question(), None, "{answer:?}");
+            assert!(model.run().is_none(), "{answer:?}");
+            assert!(!model.quit(), "{answer:?}");
+            assert_eq!(
+                model.notice(),
+                Some("not run: nobs-t-packt up"),
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_action_key_while_one_runs_starts_nothing_and_says_which_runs() {
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+
+        assert_eq!(ch(&mut model, 'd'), []);
+        assert_eq!(model.question(), None);
+        assert_eq!(
+            model.notice(),
+            Some("one action at a time: nobs-t-packt up is running")
+        );
+        assert_eq!(ch(&mut model, 'y'), []);
+        assert_eq!(model.run().unwrap().words, "nobs-t-packt up");
+    }
+
+    #[test]
+    fn m_builds_clear_or_state_by_the_flag_and_nothing_in_the_book_lab_or_without_devices() {
+        let mut model = devices_model();
+        let mut devices = workshop_source().devices().unwrap();
+        devices[0].maintenance = true;
+        model.apply(Update::Devices(Ok(devices)));
+        ch(&mut model, 'm');
+        assert_eq!(
+            model.question().unwrap().text(),
+            format!(
+                "run nobs --dir {} nobs-t-one maintenance -d srl1 --clear? y/n",
+                fixture("workshop-one").display()
+            )
+        );
+        code(&mut model, KeyCode::Esc);
+        ch(&mut model, 'j');
+        ch(&mut model, 'm');
+        assert!(model
+            .question()
+            .unwrap()
+            .text()
+            .ends_with("maintenance -d srl2 --state? y/n"));
+
+        let mut model = book_model();
+        model.apply(Update::Devices(Ok(workshop_source().devices().unwrap())));
+        ch(&mut model, '1');
+        assert_eq!(ch(&mut model, 'm'), []);
+        assert_eq!(model.question(), None);
+        assert_eq!(ch(&mut model, 'y'), []);
+
+        let mut model = devices_model();
+        model.apply(Update::Devices(Ok(Vec::new())));
+        assert_eq!(ch(&mut model, 'm'), []);
+        assert_eq!(model.question(), None);
+        assert_eq!(ch(&mut model, 'y'), []);
+    }
+
+    #[test]
+    fn u_and_d_on_a_stack_that_is_not_a_workshop_run_nothing_and_say_why() {
+        let mut model = book_model();
+        ch(&mut model, '2');
+        for typed in ['u', 'd'] {
+            assert_eq!(ch(&mut model, typed), []);
+            assert_eq!(model.question(), None);
+            assert_eq!(
+                model.notice(),
+                Some("u and d are for a workshop; a chapter is deployed from the lab workbench")
+            );
+        }
+        assert_eq!(ch(&mut model, 'y'), []);
+    }
+
+    #[test]
+    fn a_notice_shows_once_and_the_next_key_clears_it_and_still_acts() {
+        let mut model = opened(&["nobs-t-packt", "other"]);
+        ch(&mut model, 'u');
+        ch(&mut model, 'n');
+        assert_eq!(model.notice(), Some("not run: nobs-t-packt up"));
+
+        assert_eq!(ch(&mut model, 'j'), [Command::SelectStack(1)]);
+
+        assert_eq!(model.notice(), None);
+    }
+
+    #[test]
+    fn a_stopped_action_ends_stopped_and_keeps_the_mark_on_its_row() {
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+        let ctrl_c = with(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(handle(&mut model, ctrl_c), [Command::Stop]);
+        assert_eq!(state(&model), RunState::Stopping);
+        assert!(!model.quit());
+
+        model.apply(Update::ActionEnded(End::Stopped));
+
+        assert_eq!(state(&model), RunState::Ended(End::Stopped));
+        assert!(model.failed(&Target::Stack(0)));
+        assert!(model.run().unwrap().ended.is_some());
+        assert_eq!(handle(&mut model, ctrl_c), [Command::Quit]);
+    }
+
+    #[test]
+    fn an_action_that_did_not_stop_says_so_on_its_last_line() {
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+        model.apply(Update::ActionLine("pulling".to_string()));
+
+        model.apply(Update::ActionEnded(End::NotStopped { group: 4242 }));
+
+        assert_eq!(
+            state(&model),
+            RunState::Ended(End::NotStopped { group: 4242 })
+        );
+        assert!(model.failed(&Target::Stack(0)));
+        assert_eq!(
+            model.run().unwrap().lines,
+            [
+                "pulling",
+                "nobs: the action did not stop: a program it started is still running in process group 4242"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_lines_keep_coming_after_the_end_and_only_a_clean_exit_clears_the_mark() {
+        let mut model = opened(&["nobs-t-packt", "other"]);
+        running(&mut model);
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        assert!(model.failed(&Target::Stack(0)));
+        model.apply(Update::ActionLine("late".to_string()));
+        assert_eq!(model.run().unwrap().lines, ["late"]);
+        assert_eq!(state(&model), RunState::Ended(End::Exited(1)));
+
+        ch(&mut model, 'j');
+        running(&mut model);
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        assert!(model.failed(&Target::Stack(0)));
+        assert!(!model.failed(&Target::Stack(1)));
+
+        ch(&mut model, 'k');
+        running(&mut model);
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        assert!(!model.failed(&Target::Stack(0)));
+    }
+
+    #[test]
+    fn q_while_an_action_runs_asks_and_y_stops_it_and_quits_when_it_ends() {
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+
+        assert_eq!(ch(&mut model, 'q'), []);
+        assert_eq!(model.question(), Some(&Question::Quit));
+        assert_eq!(
+            model.question().unwrap().text(),
+            "an action is running: stop it and quit? y/n"
+        );
+        assert_eq!(ch(&mut model, 'n'), []);
+        assert_eq!(model.notice(), None);
+        assert!(!model.quit());
+
+        ch(&mut model, 'q');
+        assert_eq!(ch(&mut model, 'y'), [Command::Stop]);
+        assert_eq!(state(&model), RunState::Stopping);
+        assert!(!model.quit());
+        model.apply(Update::ActionEnded(End::Stopped));
+        assert!(model.quit());
+
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+        ch(&mut model, 'q');
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        assert_eq!(ch(&mut model, 'y'), [Command::Quit]);
+        assert!(model.quit());
+    }
+
+    #[test]
+    fn j_and_k_move_between_the_chapters_of_the_lab_workbench() {
+        let mut model = book_model();
+        assert_eq!(model.workbench(), Workbench::Lab);
+        assert_eq!(model.chapters(), [0, 1]);
+        assert_eq!(model.selected_chapter(), Some(0));
+
+        assert_eq!(ch(&mut model, 'j'), []);
+        assert_eq!(model.selected_chapter(), Some(1));
+        ch(&mut model, 'j');
+        assert_eq!(model.selected_chapter(), Some(1));
+        code(&mut model, KeyCode::Up);
+        assert_eq!(model.selected_chapter(), Some(0));
+
+        ch(&mut model, 'j');
+        ch(&mut model, 'D');
+        assert!(model.question().unwrap().text().ends_with("-s ch2? y/n"));
+        assert_eq!(opened(&["a"]).selected_chapter(), None);
+    }
+
+    #[test]
+    fn nodes_arrive_and_a_failure_goes_to_the_error_row_and_keeps_them() {
+        let mut model = book_model();
+        let at = Instant::now();
+        model.tick(at, UNIX_EPOCH, (80, 24));
+        let rows = vec![book::NodeRow {
+            name: "srl1".to_string(),
+            kind: "nokia_srlinux".to_string(),
+            state: Some("running".to_string()),
+        }];
+
+        model.apply(Update::Nodes(Ok(rows.clone())));
+        assert_eq!(model.nodes(), rows);
+
+        model.apply(Update::Nodes(Err("docker is gone".to_string())));
+        assert_eq!(model.error(), Some(("nodes", "docker is gone", at)));
+        assert_eq!(model.nodes(), rows);
+        model.apply(Update::Nodes(Ok(rows)));
+        assert_eq!(model.error(), None);
     }
 }

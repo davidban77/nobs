@@ -8,3 +8,4 @@ publish = false
 nobs-core = { path = "../nobs-core" }
 ratatui.workspace = true
 crossterm.workspace = true
+libc.workspace = true

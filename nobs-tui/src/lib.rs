@@ -1,7 +1,9 @@
+use std::ffi::OsString;
 use std::fmt::Display;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::panic::{self, PanicHookInfo};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant, SystemTime};
@@ -11,20 +13,25 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::{cursor, execute};
+use nobs_core::locate::{Kind, Located};
 use nobs_core::runner::Runner;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::Terminal;
 
 use shell::Model;
 
+pub mod actions;
+pub mod book;
 pub mod data;
 pub mod devices;
 pub mod poll;
+pub mod run;
 pub mod screen;
 pub mod shell;
 pub mod view;
 
 pub use poll::Pollers;
+pub use run::{End, FakeLauncher, Launcher, Processes, Running};
 pub use screen::draw;
 pub use shell::{
     handle, Command, Focus, Model as Shell, Service, SondaTarget, Stack, StackKind, StackState,
@@ -33,17 +40,27 @@ pub use shell::{
 
 const PERIOD: Duration = Duration::from_secs(1);
 const KEY_WAIT: Duration = Duration::from_millis(100);
+const DRAIN_LIMIT: Duration = Duration::from_millis(50);
 
-pub fn run(start: Start, runner: Arc<dyn Runner + Send + Sync>) -> Result<i32, String> {
+pub fn run(
+    start: Start,
+    runner: Arc<dyn Runner + Send + Sync>,
+    launcher: Arc<dyn Launcher>,
+) -> Result<i32, String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the screen needs a terminal".to_string());
     }
     let sonda = start.sonda.clone();
     let source = start.source.clone();
     let urls = start.lab.is_some().then(|| start.urls.clone());
+    let topology = start
+        .lab
+        .as_ref()
+        .filter(|lab| matches!(lab.kind, Kind::BookLab(_)))
+        .map(Located::topology);
     let mut model = Model::new(start);
     panic::set_hook(panic_hook(thread::current().id(), panic::take_hook()));
-    let screen = Screen::open()?;
+    let screen = Screen::open(io::stdout(), raw_mode)?;
     let (pollers, updates) = Pollers::start(
         runner,
         model.stacks().to_vec(),
@@ -51,13 +68,87 @@ pub fn run(start: Start, runner: Arc<dyn Runner + Send + Sync>) -> Result<i32, S
         sonda,
         source,
         urls,
+        topology,
     );
+    let mut actions = Actions::new(launcher);
     let result = Terminal::new(CrosstermBackend::new(io::stdout()))
         .map_err(failed)
-        .and_then(|mut terminal| turns(&mut terminal, &mut model, &pollers, &updates, read_key));
+        .and_then(|mut terminal| {
+            turns(
+                &mut terminal,
+                &mut model,
+                &pollers,
+                &updates,
+                &mut actions,
+                read_key,
+            )
+        });
     drop(screen);
     pollers.send(Command::Quit);
     result
+}
+
+struct Actions {
+    launcher: Arc<dyn Launcher>,
+    sender: Sender<Update>,
+    updates: Receiver<Update>,
+    running: Option<Box<dyn Running>>,
+}
+
+impl Actions {
+    fn new(launcher: Arc<dyn Launcher>) -> Actions {
+        let (sender, updates) = mpsc::channel();
+        Actions {
+            launcher,
+            sender,
+            updates,
+            running: None,
+        }
+    }
+
+    fn start(&mut self, program: &Path, args: &[OsString]) {
+        match self.launcher.start(program, args, self.sender.clone()) {
+            Ok(running) => self.running = Some(running),
+            Err(error) => {
+                let _ = self.sender.send(Update::ActionLine(format!(
+                    "nobs: cannot run nobs: {error}"
+                )));
+                let _ = self.sender.send(Update::ActionEnded(End::Exited(1)));
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        if let Some(running) = self.running.as_mut() {
+            running.stop();
+        }
+    }
+
+    fn drain_until_quit(
+        &mut self,
+        model: &mut Model,
+        pollers: &Pollers,
+        until: Instant,
+    ) -> Option<End> {
+        while Instant::now() < until {
+            let Ok(update) = self.updates.try_recv() else {
+                return None;
+            };
+            let ended = match update {
+                Update::ActionEnded(end) => Some(end),
+                _ => None,
+            };
+            model.apply(update);
+            if let Some(end) = ended {
+                self.running = None;
+                pollers.send(Command::Refresh);
+                if model.quit() {
+                    return Some(end);
+                }
+            }
+        }
+        None
+    }
 }
 
 type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync>;
@@ -65,7 +156,7 @@ type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync>;
 fn panic_hook(main: ThreadId, previous: Hook) -> Hook {
     Box::new(move |info| {
         if thread::current().id() == main {
-            restore();
+            restore(&mut io::stdout(), &mut raw_mode);
             previous(info);
         }
     })
@@ -76,16 +167,30 @@ fn turns<B: Backend>(
     model: &mut Model,
     pollers: &Pollers,
     updates: &Receiver<Update>,
+    actions: &mut Actions,
     mut next_key: impl FnMut(Duration) -> Result<Option<KeyEvent>, String>,
 ) -> Result<i32, String> {
     let mut gone = false;
     loop {
+        let until = Instant::now() + DRAIN_LIMIT;
         drain(updates, model, &mut gone);
+        match actions.drain_until_quit(model, pollers, until) {
+            Some(End::NotStopped { group }) => {
+                return Err(shell::not_stopped(group));
+            }
+            Some(_) => return Ok(model.exit_code()),
+            None => {}
+        }
         let size = terminal.size().map_err(failed)?;
         model.tick(Instant::now(), SystemTime::now(), (size.width, size.height));
         terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         if let Some(key) = next_key(KEY_WAIT)? {
             for command in handle(model, key) {
+                match &command {
+                    Command::Run { program, args } => actions.start(program, args),
+                    Command::Stop => actions.stop(),
+                    _ => {}
+                }
                 pollers.send(command);
             }
         }
@@ -96,7 +201,8 @@ fn turns<B: Backend>(
 }
 
 fn drain(updates: &Receiver<Update>, model: &mut Model, gone: &mut bool) {
-    while !*gone {
+    let until = Instant::now() + DRAIN_LIMIT;
+    while !*gone && Instant::now() < until {
         match updates.try_recv() {
             Ok(update) => model.apply(update),
             Err(TryRecvError::Empty) => return,
@@ -122,25 +228,36 @@ fn failed(error: impl Display) -> String {
     format!("the screen failed: {error}")
 }
 
-fn restore() {
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, cursor::Show);
-    let _ = disable_raw_mode();
+fn raw_mode(on: bool) -> io::Result<()> {
+    if on {
+        enable_raw_mode()
+    } else {
+        disable_raw_mode()
+    }
 }
 
-struct Screen;
+fn restore(out: &mut impl Write, raw: &mut impl FnMut(bool) -> io::Result<()>) {
+    let _ = execute!(out, LeaveAlternateScreen, cursor::Show);
+    let _ = raw(false);
+}
 
-impl Screen {
-    fn open() -> Result<Screen, String> {
-        enable_raw_mode().map_err(failed)?;
-        let screen = Screen;
-        execute!(io::stdout(), EnterAlternateScreen).map_err(failed)?;
+struct Screen<W: Write, R: FnMut(bool) -> io::Result<()>> {
+    out: W,
+    raw: R,
+}
+
+impl<W: Write, R: FnMut(bool) -> io::Result<()>> Screen<W, R> {
+    fn open(out: W, mut raw: R) -> Result<Screen<W, R>, String> {
+        raw(true).map_err(failed)?;
+        let mut screen = Screen { out, raw };
+        execute!(screen.out, EnterAlternateScreen).map_err(failed)?;
         Ok(screen)
     }
 }
 
-impl Drop for Screen {
+impl<W: Write, R: FnMut(bool) -> io::Result<()>> Drop for Screen<W, R> {
     fn drop(&mut self) {
-        restore();
+        restore(&mut self.out, &mut self.raw);
     }
 }
 
@@ -153,15 +270,18 @@ mod tests {
     use std::sync::Mutex;
 
     use crossterm::event::{KeyCode, KeyModifiers};
+    use nobs_core::compose::Compose;
     use nobs_core::lab;
-    use nobs_core::locate::{Kind, Located};
+    use nobs_core::locate::{locate, Kind, Located};
     use nobs_core::runner::Output;
     use nobs_core::sot::{self, Device, Maintenance, SourceOfTruth};
     use nobs_core::status::Urls;
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::book::NodeRow;
     use crate::data::stub::Stub;
+    use crate::shell::RunState;
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");
     const TWO: &str = "{\"Service\":\"grafana\",\"State\":\"running\"}\n{\"Service\":\"loki\",\"State\":\"exited\"}\n";
@@ -276,6 +396,7 @@ mod tests {
             source: None,
             source_error: None,
             urls: Urls::defaults(),
+            program: PathBuf::from("nobs"),
         }
     }
 
@@ -287,7 +408,12 @@ mod tests {
             target(),
             None,
             None,
+            None,
         )
+    }
+
+    fn actions() -> Actions {
+        Actions::new(Arc::new(FakeLauncher::new()))
     }
 
     fn terminal(width: u16, height: u16) -> Terminal<TestBackend> {
@@ -333,6 +459,7 @@ mod tests {
             &mut model,
             &pollers,
             &updates,
+            &mut actions(),
             |wait| {
                 waits.push(wait);
                 Ok((waits.len() == 2).then(q))
@@ -351,16 +478,23 @@ mod tests {
         let mut terminal = terminal(80, 24);
         let mut turn = 0;
 
-        turns(&mut terminal, &mut model, &pollers, &updates, |_| {
-            turn += 1;
-            if turn == 1 {
-                sender
-                    .send(Update::Services(0, Ok(lab::services(TWO).unwrap())))
-                    .unwrap();
-                return Ok(None);
-            }
-            Ok(Some(q()))
-        })
+        turns(
+            &mut terminal,
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            |_| {
+                turn += 1;
+                if turn == 1 {
+                    sender
+                        .send(Update::Services(0, Ok(lab::services(TWO).unwrap())))
+                        .unwrap();
+                    return Ok(None);
+                }
+                Ok(Some(q()))
+            },
+        )
         .unwrap();
 
         let screen = text(&terminal);
@@ -395,11 +529,17 @@ mod tests {
             target(),
             None,
             None,
+            None,
         );
 
-        let result = turns(&mut terminal, &mut model, &pollers, &updates, |_| {
-            Ok(Some(q()))
-        });
+        let result = turns(
+            &mut terminal,
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            |_| Ok(Some(q())),
+        );
         let elapsed = started.elapsed();
 
         assert_eq!(result, Ok(0));
@@ -477,11 +617,17 @@ mod tests {
             target(),
             source,
             urls,
+            None,
         );
 
-        let result = turns(&mut terminal, &mut model, &pollers, &updates, |_| {
-            Ok(Some(keys.next().unwrap_or_else(q)))
-        });
+        let result = turns(
+            &mut terminal,
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            |_| Ok(Some(keys.next().unwrap_or_else(q))),
+        );
         let elapsed = started.elapsed();
 
         assert_eq!(result, Ok(0));
@@ -512,6 +658,7 @@ mod tests {
             target(),
             None,
             None,
+            None,
         );
         let mut terminal = terminal(100, 30);
         let mut gone = false;
@@ -521,9 +668,14 @@ mod tests {
             drain(&updates, &mut model, &mut gone);
         }
 
-        turns(&mut terminal, &mut model, &pollers, &updates, |_| {
-            Ok(Some(q()))
-        })
+        turns(
+            &mut terminal,
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            |_| Ok(Some(q())),
+        )
         .unwrap();
 
         let screen = text(&terminal);
@@ -549,7 +701,8 @@ mod tests {
         model.apply(Update::Services(0, Ok(lab::services(LOKI).unwrap())));
         let mut polled = model.stacks().to_vec();
         polled[0].kind = StackKind::Sonda;
-        let (pollers, updates) = Pollers::start(runner.clone(), polled, 0, target(), None, None);
+        let (pollers, updates) =
+            Pollers::start(runner.clone(), polled, 0, target(), None, None, None);
 
         for command in [KeyCode::Tab, KeyCode::Char('l')]
             .into_iter()
@@ -662,6 +815,7 @@ mod tests {
             target(),
             None,
             None,
+            None,
         );
 
         let source = next(&updates, Duration::from_secs(2), |update| match update {
@@ -683,6 +837,7 @@ mod tests {
                 &mut model,
                 &pollers,
                 &updates,
+                &mut actions(),
                 |_| Ok(Some(q())),
             );
 
@@ -729,13 +884,20 @@ mod tests {
         let mut terminal = terminal(80, 24);
         let mut turn = 0;
 
-        turns(&mut terminal, &mut model, &pollers, &updates, |_| {
-            turn += 1;
-            Ok(Some(match turn {
-                1 => key(KeyCode::Char('x')),
-                _ => q(),
-            }))
-        })
+        turns(
+            &mut terminal,
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            |_| {
+                turn += 1;
+                Ok(Some(match turn {
+                    1 => key(KeyCode::Char('x')),
+                    _ => q(),
+                }))
+            },
+        )
         .unwrap();
 
         assert_eq!(turn, 2);
@@ -754,12 +916,408 @@ mod tests {
             &mut model,
             &pollers,
             &updates,
+            &mut actions(),
             |_| Ok(Some(q())),
         )
         .unwrap();
 
         let (source, text, _) = model.error().unwrap();
         assert_eq!((source, text), ("poll", "polling stopped"));
+    }
+
+    const PAUSED: &str = "paused";
+
+    fn ch(typed: char) -> KeyEvent {
+        key(KeyCode::Char(typed))
+    }
+
+    fn acting(launcher: &Arc<FakeLauncher>) -> (Model, Actions) {
+        let model = Model::new(start(vec![stack(&[CLOSED])], false));
+        (model, Actions::new(launcher.clone()))
+    }
+
+    fn press(model: &mut Model, actions: &mut Actions, keys: &[KeyEvent]) -> Result<i32, String> {
+        let (pollers, updates) = launch(&scripted(Vec::new()), model);
+        let mut keys = keys.iter().copied();
+        turns(
+            &mut terminal(80, 24),
+            model,
+            &pollers,
+            &updates,
+            actions,
+            |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
+        )
+    }
+
+    fn run_state(model: &Model) -> RunState {
+        model.run().unwrap().state
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures")
+            .join(name)
+    }
+
+    fn devices_model() -> Model {
+        let dir = fixture("workshop-one");
+        let mut model = Model::new(Start {
+            lab: Some(locate(&dir, Some(&dir)).unwrap()),
+            source: Some(Arc::new(Holding)),
+            home: Workbench::Devices,
+            ..start(vec![stack(&[CLOSED])], false)
+        });
+        model.apply(Update::Devices(Ok(vec![device("srl1")])));
+        model
+    }
+
+    fn lab_model() -> Model {
+        let dir = fixture("book-lab");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        let chapters = shell::stacks(Some(&located), Vec::new()).unwrap();
+        Model::new(Start {
+            lab: Some(located),
+            home: Workbench::Lab,
+            ..start(chapters, false)
+        })
+    }
+
+    #[test]
+    fn y_after_an_action_key_starts_the_command_the_model_built() {
+        let one = fixture("workshop-one").to_string_lossy().into_owned();
+        let book = fixture("book-lab").to_string_lossy().into_owned();
+        let workshop = || Model::new(start(vec![stack(&[CLOSED])], false));
+        let cases: [(Model, char, Vec<&str>); 5] = [
+            (workshop(), 'u', vec!["--dir", "/ws", "ws", "up"]),
+            (workshop(), 'd', vec!["--dir", "/ws", "ws", "down"]),
+            (
+                devices_model(),
+                'm',
+                vec![
+                    "--dir",
+                    &one,
+                    "nobs-t-one",
+                    "maintenance",
+                    "-d",
+                    "srl1",
+                    "--state",
+                ],
+            ),
+            (
+                lab_model(),
+                'D',
+                vec!["--dir", &book, "lab", "deploy", "-s", "ch1"],
+            ),
+            (
+                lab_model(),
+                'X',
+                vec!["--dir", &book, "lab", "destroy", "-s", "ch1"],
+            ),
+        ];
+
+        let mut seen = Vec::new();
+        let mut wanted = Vec::new();
+
+        for (mut model, typed, words) in cases {
+            let launcher = Arc::new(FakeLauncher::new());
+            let mut actions = Actions::new(launcher.clone());
+            let result = press(&mut model, &mut actions, &[ch(typed), ch('y')]);
+            seen.push((typed, result, launcher.calls()));
+            wanted.push((
+                typed,
+                Err(PAUSED.to_string()),
+                vec![(PathBuf::from("nobs"), args(&words))],
+            ));
+        }
+
+        assert_eq!(seen, wanted);
+    }
+
+    #[test]
+    fn the_end_of_an_action_asks_the_pollers_to_refresh() {
+        let runner = scripted(Vec::new());
+        let (pollers, updates) = Pollers::start(
+            runner,
+            Vec::new(),
+            0,
+            target(),
+            None,
+            None,
+            Some(fixture("book-lab/containerlab/lab.yml")),
+        );
+        let nodes = |limit: Duration| {
+            next(&updates, limit, |update| {
+                matches!(update, Update::Nodes(_)).then_some(())
+            })
+        };
+        nodes(Duration::from_secs(5));
+        let launcher = Arc::new(FakeLauncher::new());
+        let (mut model, mut actions) = acting(&launcher);
+        press(&mut model, &mut actions, &[ch('u'), ch('y')]).unwrap_err();
+        launcher
+            .sender()
+            .unwrap()
+            .send(Update::ActionEnded(End::Exited(0)))
+            .unwrap();
+        let (_alive, quiet) = mpsc::channel();
+
+        turns(
+            &mut terminal(80, 24),
+            &mut model,
+            &pollers,
+            &quiet,
+            &mut actions,
+            |_| Err(PAUSED.to_string()),
+        )
+        .unwrap_err();
+
+        nodes(Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_lines_of_an_action_show_in_order_while_it_runs_and_after_its_end() {
+        let launcher = Arc::new(FakeLauncher::new());
+        let (mut model, mut actions) = acting(&launcher);
+        press(&mut model, &mut actions, &[ch('u'), ch('y')]).unwrap_err();
+        let sender = launcher.sender().unwrap();
+        let line = |text: &str| sender.send(Update::ActionLine(text.to_string())).unwrap();
+
+        line("one");
+        line("two");
+        press(&mut model, &mut actions, &[]).unwrap_err();
+        assert_eq!(model.run().unwrap().lines, ["one", "two"]);
+        assert_eq!(run_state(&model), RunState::Running);
+
+        sender.send(Update::ActionEnded(End::Exited(0))).unwrap();
+        press(&mut model, &mut actions, &[]).unwrap_err();
+        assert_eq!(run_state(&model), RunState::Ended(End::Exited(0)));
+
+        line("three");
+        press(&mut model, &mut actions, &[]).unwrap_err();
+        assert_eq!(model.run().unwrap().lines, ["one", "two", "three"]);
+        assert_eq!(run_state(&model), RunState::Ended(End::Exited(0)));
+    }
+
+    #[test]
+    fn ctrl_c_stops_the_action_once_and_the_next_key_is_still_handled() {
+        let launcher = Arc::new(FakeLauncher::new());
+        let (mut model, mut actions) = acting(&launcher);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        press(&mut model, &mut actions, &[ch('u'), ch('y'), ctrl_c]).unwrap_err();
+
+        assert_eq!(launcher.stops(), 1);
+        assert_eq!(run_state(&model), RunState::Ended(End::Stopped));
+        assert_eq!(press(&mut model, &mut actions, &[q()]), Ok(0));
+    }
+
+    #[test]
+    fn q_and_y_while_an_action_runs_stop_it_before_the_loop_returns() {
+        let launcher = Arc::new(FakeLauncher::new());
+        let (mut model, mut actions) = acting(&launcher);
+
+        let result = press(&mut model, &mut actions, &[ch('u'), ch('y'), q(), ch('y')]);
+
+        assert_eq!(result, Ok(0));
+        assert_eq!(launcher.stops(), 1);
+    }
+
+    #[test]
+    fn an_action_that_did_not_stop_after_q_and_y_makes_the_loop_fail_with_its_group() {
+        let launcher = Arc::new(FakeLauncher::new());
+        let (mut model, mut actions) = acting(&launcher);
+        press(&mut model, &mut actions, &[ch('u'), ch('y')]).unwrap_err();
+        let sender = launcher.sender().unwrap();
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let mut keys = [q(), ch('y')].into_iter();
+
+        let result = turns(
+            &mut terminal(80, 24),
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions,
+            |_| {
+                let key = keys.next().ok_or_else(|| PAUSED.to_string())?;
+                if key == ch('y') {
+                    sender
+                        .send(Update::ActionEnded(End::NotStopped { group: 4242 }))
+                        .unwrap();
+                }
+                Ok(Some(key))
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err("the action did not stop: a program it started is still running in process group 4242".to_string())
+        );
+    }
+
+    #[test]
+    fn a_command_that_cannot_start_ends_with_its_error_and_exit_1() {
+        let launcher = Arc::new(FakeLauncher::failing());
+        let (mut model, mut actions) = acting(&launcher);
+
+        press(&mut model, &mut actions, &[ch('u'), ch('y')]).unwrap_err();
+
+        assert_eq!(
+            model.run().unwrap().lines,
+            ["nobs: cannot run nobs: fake launcher failure"]
+        );
+        assert_eq!(run_state(&model), RunState::Ended(End::Exited(1)));
+    }
+
+    #[test]
+    fn a_command_that_prints_without_end_never_delays_a_key() {
+        let launcher = Arc::new(FakeLauncher::new());
+        let (mut model, mut actions) = acting(&launcher);
+        press(&mut model, &mut actions, &[ch('u'), ch('y')]).unwrap_err();
+        let mut flood = launcher.sender();
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let mut keys = [ch('j'), ch('k'), q(), ch('y')].into_iter();
+        let mut sent: Option<Instant> = None;
+        let mut gaps = Vec::new();
+
+        let result = turns(
+            &mut terminal(80, 24),
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions,
+            |_| {
+                if let Some(at) = sent {
+                    gaps.push(at.elapsed());
+                }
+                if let Some(sender) = flood.take() {
+                    thread::spawn(move || {
+                        let end = Instant::now() + Duration::from_secs(1);
+                        while Instant::now() < end
+                            && sender.send(Update::ActionLine("more".to_string())).is_ok()
+                        {
+                        }
+                    });
+                }
+                let key = keys.next().ok_or_else(|| PAUSED.to_string())?;
+                sent = Some(Instant::now());
+                Ok(Some(key))
+            },
+        );
+
+        assert!(
+            gaps.iter().all(|gap| *gap < Duration::from_millis(100)),
+            "{gaps:?}"
+        );
+        assert_eq!(result, Err(PAUSED.to_string()));
+        assert_eq!(gaps.len(), 4);
+        assert_eq!(launcher.stops(), 1);
+    }
+
+    #[test]
+    fn closing_the_screen_leaves_the_alternate_screen_and_turns_raw_mode_off() {
+        let mut written = Vec::new();
+        let mut raw = Vec::new();
+
+        drop(
+            Screen::open(&mut written, |on| {
+                raw.push(on);
+                Ok(())
+            })
+            .unwrap(),
+        );
+
+        let mut leave = Vec::new();
+        execute!(leave, LeaveAlternateScreen).unwrap();
+        assert!(
+            written.windows(leave.len()).any(|part| part == leave),
+            "{:?}",
+            String::from_utf8_lossy(&written)
+        );
+        assert_eq!(raw, [true, false]);
+    }
+
+    #[test]
+    fn the_nodes_thread_gives_each_node_the_state_of_its_container() {
+        let runner = scripted(vec![answer(
+            0,
+            "clab-nobs-t-book-nobs-t-srl1\texited\ngrafana\trunning\n",
+            "",
+        )]);
+        let topology = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/book-lab/containerlab/lab.yml");
+        let (_pollers, updates) = Pollers::start(
+            runner.clone(),
+            Vec::new(),
+            0,
+            target(),
+            None,
+            None,
+            Some(topology),
+        );
+
+        let rows = next(&updates, Duration::from_secs(5), |update| match update {
+            Update::Nodes(result) => Some(result),
+            _ => None,
+        });
+
+        let row = |name: &str, state: Option<&str>| NodeRow {
+            name: name.to_string(),
+            kind: "nokia_srlinux".to_string(),
+            state: state.map(str::to_string),
+        };
+        assert_eq!(
+            rows,
+            Ok(vec![
+                row("nobs-t-srl1", Some("exited")),
+                row("nobs-t-srl2", None)
+            ])
+        );
+        assert_eq!(
+            runner.calls(),
+            [(
+                Compose::PROGRAM.to_string(),
+                args(&["ps", "-a", "--format", "{{.Names}}\t{{.State}}"])
+            )]
+        );
+    }
+
+    #[test]
+    fn the_ps_of_a_book_lab_chapter_leaves_out_the_other_chapters_and_a_workshop_keeps_them() {
+        let runner = scripted(Vec::new());
+        let chapter = Stack {
+            name: "ch1".to_string(),
+            kind: StackKind::BookLab,
+            ..stack(&[CLOSED])
+        };
+        let (_pollers, updates) = Pollers::start(
+            runner.clone(),
+            vec![stack(&[CLOSED]), chapter],
+            0,
+            target(),
+            None,
+            None,
+            None,
+        );
+
+        next(&updates, Duration::from_secs(5), |update| {
+            matches!(update, Update::Services(1, _)).then_some(())
+        });
+
+        let ps = |extra: &[&str]| {
+            let mut words = vec![
+                "compose",
+                "--project-name",
+                "p",
+                "-f",
+                "/ws/compose.yml",
+                "ps",
+                "--all",
+            ];
+            words.extend(extra);
+            words.extend(["--format", "json"]);
+            (Compose::PROGRAM.to_string(), args(&words))
+        };
+        assert_eq!(runner.calls()[..2], [ps(&[]), ps(&["--orphans=false"])]);
     }
 
     #[test]

@@ -1,15 +1,15 @@
  nobs  autocon5 workshop  sot infrahub             13:42:07
- [1 devices]  2 services  3 lab              ? keys  q quit
+ [1 devices]  2 services                     ? keys  q quit
   ┌ keys  devices workbench ─────────────────────────────┐
-  │1 2 3    switch workbench  Enter     open / pick alert│
-  │Tab      focus list/tabs   /         filter           │
-  │j k ↑ ↓  move              r         refresh now      │
-  │[ ]      other tab         f         follow/pause logs│
-  │- +      timeline window   o         run pane         │
-  │x        dismiss the error ?         close            │
-  │Esc      close/clear/back  q Ctrl-C  quit             │
-  │alerts box: Enter selects the device and opens the    │
-  │timeline                                              │
+  │1 2 3    switch workbench  /       filter             │
+  │Tab      focus list/tabs   r       refresh now        │
+  │j k ↑ ↓  move              f       follow/pause logs  │
+  │[ ]      other tab         o       run pane           │
+  │- +      timeline window   ?       close              │
+  │x        dismiss the error q       quit; asks in a run│
+  │Esc      close/clear/back  Ctrl-C  stop a run, or quit│
+  │Enter    open / pick alert                            │
+  │alerts box: Enter picks the device, opens its timeline│
   └──────────────────────────────────────────────────────┘
  run  none                                           o open
  Tab focus  j/k move  / filter  Enter open  r refresh

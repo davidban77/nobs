@@ -1,0 +1,15 @@
+ nobs  nobs-t-packt workshop  sot none             13:42:07
+ 1 devices  [2 services]                     ? keys  q quit
+┌ stacks 1 ───────────┐┌ nobs-t-packt  no answer yet ──────┐
+│>nobs-t-pa…  ?       ││OVERVIEW  logs  sonda              │
+│                     ││ SERVICE  STATE  HLTH  PORT        │
+│                     ││                                   │
+│                     ││                                   │
+│                     ││                                   │
+│                     ││                                   │
+│                     ││                                   │
+│                     ││                                   │
+└─────────────────────┘└───────────────────────────────────┘
+ run  none                                           o open
+ run nobs --dir /Users/netpanda/projects/nobs/target/slice-2
+1-workshops/workshops/packt nobs-t-packt up? y/n
