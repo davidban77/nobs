@@ -416,7 +416,11 @@ fn node(name: &str, state: Option<&str>) -> NodeRow {
 }
 
 fn lab_model() -> Shell {
-    let mut model = unpolled_lab_model();
+    lab_model_in(LAB_DIR)
+}
+
+fn lab_model_in(dir: &str) -> Shell {
+    let mut model = unpolled_lab_model(dir);
     model.apply(Update::Nodes(Ok(vec![
         node("nobs-t-srl2", None),
         node("nobs-t-srl1", Some("running")),
@@ -424,12 +428,12 @@ fn lab_model() -> Shell {
     model
 }
 
-fn unpolled_lab_model() -> Shell {
+fn unpolled_lab_model(lab_dir: &str) -> Shell {
     let dir = PathBuf::from(BOOK_LAB);
     let lab = locate(&dir, Some(&dir)).unwrap();
     let mut chapters = stacks(Some(&lab), Vec::new()).unwrap();
     for chapter in &mut chapters {
-        chapter.path = PathBuf::from(LAB_DIR);
+        chapter.path = PathBuf::from(lab_dir);
     }
     let mut model = Shell::new(Start {
         chooser: false,
@@ -457,7 +461,11 @@ fn long_question() -> Shell {
 }
 
 fn refused() -> Shell {
-    let mut model = lab_model();
+    refused_in(LAB_DIR)
+}
+
+fn refused_in(dir: &str) -> Shell {
+    let mut model = lab_model_in(dir);
     press(&mut model, KeyCode::Char('D'));
     press(&mut model, KeyCode::Char('y'));
     model.apply(Update::ActionLine(ALREADY_EXIST.to_string()));
@@ -801,7 +809,7 @@ fn nodes_show_question_marks_until_a_good_answer_whatever_the_error_row_does() {
             assert!(row.contains('?') && !row.contains("running"), "{row}");
         }
     };
-    let waiting = lines(&render(unpolled_lab_model(), 100, 30)).join("\n");
+    let waiting = lines(&render(unpolled_lab_model(LAB_DIR), 100, 30)).join("\n");
     assert!(waiting.contains("│ nodes     ?"), "{waiting}");
 
     let mut model = lab_model();
@@ -853,6 +861,16 @@ fn a_long_refusal_wraps_whole_into_the_run_pane_and_is_red_on_every_row() {
             "{needle}"
         );
     }
+}
+
+#[test]
+fn a_short_run_pane_cuts_the_command_line_to_keep_the_whole_refusal() {
+    pinned(
+        refused_in("/home/me/labs/network-observability/book-lab"),
+        "run-refused-long",
+        60,
+        15,
+    );
 }
 
 #[test]

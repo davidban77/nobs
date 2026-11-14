@@ -1042,12 +1042,27 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
     let Some(run) = model.run() else {
         return;
     };
-    let width = usize::from(inner.width);
-    let mut lines: Vec<Line> = command_rows(run, width)
+    let lines = run_rows(run, usize::from(inner.width), usize::from(inner.height));
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn run_rows(run: &Run, width: usize, height: usize) -> Vec<Line<'static>> {
+    let mut command = command_rows(run, width);
+    let output: usize = run
+        .lines
+        .iter()
+        .map(|line| wrapped(line, width).len())
+        .sum();
+    let keep = height.saturating_sub(output).clamp(1, command.len());
+    if keep < command.len() {
+        let rest = command.split_off(keep - 1).concat();
+        command.push(fit(&rest, width));
+    }
+    let mut lines: Vec<Line> = command
         .into_iter()
         .map(|row| Line::styled(row, DIM))
         .collect();
-    let room = usize::from(inner.height).saturating_sub(lines.len());
+    let room = height.saturating_sub(lines.len());
     let mut tail: Vec<Line> = Vec::new();
     for line in run.lines.iter().rev() {
         if tail.len() >= room {
@@ -1064,7 +1079,7 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
     tail.truncate(room);
     tail.reverse();
     lines.extend(tail);
-    frame.render_widget(Paragraph::new(lines), inner);
+    lines
 }
 
 fn command_rows(run: &Run, width: usize) -> Vec<String> {
@@ -1345,4 +1360,45 @@ fn help_column(entries: &[(&str, &str)]) -> String {
         .map(|(key, meaning)| format!("{key:<key_width$}{meaning}"))
         .collect();
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REFUSAL: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
+
+    #[test]
+    fn a_long_command_line_gives_its_rows_to_the_output_down_to_one() {
+        let run = Run {
+            words: "lab deploy -s ch1".to_string(),
+            command: format!(
+                "--dir /home/me/{}book-lab lab deploy -s ch1",
+                "labs/".repeat(40)
+            ),
+            target: Target::Chapter(0),
+            lines: vec![REFUSAL.to_string()],
+            started: Instant::now(),
+            ended: None,
+            state: RunState::Running,
+        };
+        let command = command_rows(&run, 58);
+        let refusal = wrapped(REFUSAL, 58);
+        let rows = |height| -> Vec<String> {
+            run_rows(&run, 58, height)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+
+        assert!(command.len() >= 4);
+        assert_eq!(refusal.len(), 3);
+        let short = rows(4);
+        assert_eq!(short[0], format!("{}…", &command[0][..57]));
+        assert_eq!(short[1..], refusal[..]);
+        let taller = rows(6);
+        assert_eq!(taller[..2], command[..2]);
+        assert_eq!(taller[2], format!("{}…", &command[2][..57]));
+        assert_eq!(taller[3..], refusal[..]);
+    }
 }
