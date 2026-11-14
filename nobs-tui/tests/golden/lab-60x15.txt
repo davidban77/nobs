@@ -11,5 +11,5 @@
 │>ch1  up 1/1         ││                                   │
 │ ch2  down           ││                                   │
 └─────────────────────┘└───────────────────────────────────┘
- run  lab deploy --sudo-no-prompt -s ch1  exit 0  41so open
+ run  lab deploy --sudo-no-prompt -s c…  exit 0  41s o open
  j/k move  D deploy  X destroy  r refresh  o pane

@@ -481,10 +481,14 @@ fn later(model: &mut Shell, seconds: u64) {
 }
 
 fn deployed(end: End) -> Shell {
+    deployed_after(41, end)
+}
+
+fn deployed_after(seconds: u64, end: End) -> Shell {
     let mut model = lab_model();
     press(&mut model, KeyCode::Char('D'));
     press(&mut model, KeyCode::Char('y'));
-    later(&mut model, 41);
+    later(&mut model, seconds);
     model.apply(Update::ActionEnded(end));
     model
 }
@@ -723,6 +727,15 @@ fn the_lab_frame_is_pinned() {
         press(&mut model, KeyCode::Esc);
         model
     });
+}
+
+#[test]
+fn a_narrow_run_title_cuts_its_command_to_keep_its_time_whole_and_a_gap_before_the_hint() {
+    let mut folded = deployed_after(120, End::Exited(0));
+    press(&mut folded, KeyCode::Esc);
+
+    pinned(deployed_after(120, End::Exited(0)), "run-long-time", 60, 15);
+    pinned(folded, "run-long-time-folded", 60, 15);
 }
 
 #[test]

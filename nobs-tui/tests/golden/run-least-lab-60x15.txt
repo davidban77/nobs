@@ -5,7 +5,7 @@
 │ ch1  up 1/1         ││OVERVIEW                           │
 │!ch2  ?              ││ topology  containerlab/lab.yml    │
 └─────────────────────┘└───────────────────────────────────┘
-┌ run  lab deploy --sudo-no-prompt -s ch2  exit 1 Esc fold ┐
+┌ run  lab deploy --sudo-no-prompt …  exit 1  0s  Esc fold ┐
 │$ nobs --dir /home/me/book-lab lab deploy --sudo-no-promp…│
 │nobs-t-book-nobs-t-srl5, clab-nobs-t-book-nobs-t-srl6, cla│
 │b-nobs-t-book-nobs-t-srl7, clab-nobs-t-book-nobs-t-srl8, c│
