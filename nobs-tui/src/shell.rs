@@ -3519,9 +3519,20 @@ mod tests {
             ch(&mut model, typed);
             assert_eq!(
                 ch(&mut model, 'y'),
-                [nobs(&["--dir", &lab, "lab", word, "-s", "ch1"])]
+                [nobs(&[
+                    "--dir",
+                    &lab,
+                    "lab",
+                    word,
+                    "--sudo-no-prompt",
+                    "-s",
+                    "ch1"
+                ])]
             );
-            assert_eq!(model.run().unwrap().words, format!("lab {word} -s ch1"));
+            assert_eq!(
+                model.run().unwrap().words,
+                format!("lab {word} --sudo-no-prompt -s ch1")
+            );
         }
     }
 

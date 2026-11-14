@@ -765,12 +765,39 @@ fn an_action_that_did_not_stop_is_red_on_its_title_and_last_line_and_marks_its_r
 fn a_failed_deploy_is_red_on_its_title_and_its_nobs_line_and_marks_its_chapter() {
     let buffer = render(refused(), 100, 30);
 
-    let (x, y) = position(&buffer, " run  lab deploy -s ch1", "exit 1");
+    let (x, y) = position(
+        &buffer,
+        " run  lab deploy --sudo-no-prompt -s ch1",
+        "exit 1",
+    );
     assert_eq!(buffer[(x, y)].fg, Color::Red);
     assert!(row_has_no_green(&buffer, y));
     let (x, y) = position(&buffer, "nobs: lab deploy: node containers", "nobs:");
     assert_eq!(buffer[(x, y)].fg, Color::Red);
     assert!(lines(&buffer).iter().any(|line| line.contains("!ch1")));
+}
+
+#[test]
+fn the_question_and_the_run_pane_show_each_lab_command_with_the_sudo_flag() {
+    for (key, word) in [('D', "deploy"), ('X', "destroy")] {
+        let command = format!("nobs --dir {LAB_DIR} lab {word} --sudo-no-prompt -s ch1");
+        let asking = || {
+            let mut model = lab_model();
+            press(&mut model, KeyCode::Char(key));
+            model
+        };
+        let mut running = asking();
+        press(&mut running, KeyCode::Char('y'));
+
+        let question = lines(&render(asking(), 100, 30)).join("\n");
+        let pane = lines(&render(running, 100, 30)).join("\n");
+
+        assert!(
+            question.contains(&format!("run {command}? y/n")),
+            "{question}"
+        );
+        assert!(pane.contains(&format!("$ {command}")), "{pane}");
+    }
 }
 
 fn maintained(packt_failed: bool) -> Shell {
