@@ -1006,12 +1006,28 @@ mod tests {
             (
                 lab_model(),
                 'D',
-                vec!["--dir", &book, "lab", "deploy", "-s", "ch1"],
+                vec![
+                    "--dir",
+                    &book,
+                    "lab",
+                    "deploy",
+                    "--sudo-no-prompt",
+                    "-s",
+                    "ch1",
+                ],
             ),
             (
                 lab_model(),
                 'X',
-                vec!["--dir", &book, "lab", "destroy", "-s", "ch1"],
+                vec![
+                    "--dir",
+                    &book,
+                    "lab",
+                    "destroy",
+                    "--sudo-no-prompt",
+                    "-s",
+                    "ch1",
+                ],
             ),
         ];
 

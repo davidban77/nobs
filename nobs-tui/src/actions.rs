@@ -42,13 +42,13 @@ pub const ACTIONS: [Action; 5] = [
         key: 'D',
         workbench: Workbench::Lab,
         row: Row::Chapter,
-        words: &["lab", "deploy"],
+        words: &["lab", "deploy", "--sudo-no-prompt"],
     },
     Action {
         key: 'X',
         workbench: Workbench::Lab,
         row: Row::Chapter,
-        words: &["lab", "destroy"],
+        words: &["lab", "destroy", "--sudo-no-prompt"],
     },
 ];
 

@@ -6,10 +6,10 @@
 │ nobs-t-srl2  —      ││ project   netobs                  │
 │                     ││ nodes     1 of 2 running          │
 │                     ││ services  1 of 1 running          │
-└─────────────────────┘│ last      lab deploy -s ch1  exit…│
+└─────────────────────┘│ last      lab deploy --sudo-no-pr…│
 ┌ chapters 2 ─────────┐│                                   │
 │>ch1  up 1/1         ││                                   │
 │ ch2  down           ││                                   │
 └─────────────────────┘└───────────────────────────────────┘
- run  lab deploy -s ch1  exit 0  41s                 o open
+ run  lab deploy --sudo-no-prompt -s c…  exit 0  41s o open
  j/k move  D deploy  X destroy  r refresh  o pane

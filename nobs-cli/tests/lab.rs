@@ -327,6 +327,7 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
             vec![
                 down.clone(),
                 sudo_containerlab(&topology, "destroy", &["--cleanup"]),
+                call(NETWORKS),
             ],
         ),
         (
@@ -346,6 +347,7 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
                 down.clone(),
                 call(CONTAINERS),
                 sudo_containerlab(&topology, "destroy", &["--cleanup"]),
+                call(NETWORKS),
             ],
         ),
         (
@@ -356,6 +358,7 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
                 down,
                 call(CONTAINERS),
                 containerlab(&topology, "destroy", &["--cleanup"]),
+                call(NETWORKS),
             ],
         ),
     ];
@@ -370,6 +373,149 @@ fn sudo_reaches_the_containerlab_calls_of_destroy_show_and_purge() {
         assert_eq!(run.code, 0, "{command:?} {env:?}: {}", run.stderr);
         assert_eq!(lab.calls(), expected, "{command:?} {env:?}");
     }
+}
+
+#[test]
+fn sudo_no_prompt_puts_n_first_in_every_sudo_call_of_destroy_and_deploy() {
+    let lab = Lab::new("sudo-n");
+    let mut deploy = vec![(0, "")];
+    deploy.extend(ready(&[]));
+    let cases: [(Flags, Vec<Step>, usize); 2] = [
+        (&["destroy", "-s", "ch1"], vec![], 2),
+        (&["deploy", "-s", "ch1"], deploy, 3),
+    ];
+
+    for (command, steps, count) in cases {
+        lab.script(&steps);
+        let mut args = vec!["lab"];
+        args.extend(command);
+        args.extend(["--sudo", "--sudo-no-prompt"]);
+
+        let run = lab.run(&args, &[]);
+
+        assert_eq!(run.code, 0, "{command:?}: {}", run.stderr);
+        let sudo: Vec<Call> = lab
+            .calls()
+            .into_iter()
+            .filter(|call| call[0] == "sudo")
+            .collect();
+        assert_eq!(sudo.len(), count, "{command:?}: {sudo:?}");
+        assert!(
+            sudo.iter().all(|call| call[1] == "-n"),
+            "{command:?}: {sudo:?}"
+        );
+    }
+}
+
+#[test]
+fn a_sudo_that_needs_a_password_stops_destroy_and_deploy_before_docker_with_exit_1() {
+    let lab = Lab::new("sudo-password");
+    let sudo = lab.bin().join("sudo");
+    fs::write(
+        &sudo,
+        "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then\n  echo 'sudo: a password is required' >&2\n  exit 1\nfi\n: > \"${0%/*}/marker\"\nexit 97\n",
+    )
+    .unwrap();
+    fs::set_permissions(&sudo, fs::Permissions::from_mode(0o755)).unwrap();
+
+    for command in ["destroy", "deploy"] {
+        lab.script(&[]);
+
+        let run = lab.run(
+            &["lab", command, "-s", "ch1", "--sudo", "--sudo-no-prompt"],
+            &[],
+        );
+
+        assert_eq!(run.code, 1, "{command}: {}", run.stderr);
+        assert!(lab.calls().is_empty(), "{command}: {:?}", lab.calls());
+        assert!(!lab.bin().join("marker").exists(), "{command}");
+        assert_eq!(
+            run.stderr,
+            format!(
+                "sudo: a password is required\n\
+                 sudo: a password is required\n\
+                 nobs: lab {command}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again\n"
+            )
+        );
+    }
+}
+
+#[test]
+fn a_containerlab_step_that_fails_after_a_passed_check_reports_its_own_exit() {
+    let lab = Lab::new("sudo-step-fails");
+    lab.script(&[(0, ""), (0, ""), (3, "")]);
+
+    let run = lab.run(
+        &["lab", "destroy", "-s", "ch1", "--sudo", "--sudo-no-prompt"],
+        &[],
+    );
+
+    assert_eq!(run.code, 3);
+    assert_eq!(
+        run.stderr,
+        "nobs: lab destroy: containerlab destroy failed (exit 3)\n"
+    );
+}
+
+#[test]
+fn a_failed_check_with_a_sudo_that_needs_no_password_goes_on_with_destroy() {
+    let lab = Lab::new("sudo-check-fails");
+    lab.script(&[(1, ""), (0, "")]);
+    let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
+    let mut destroy = sudo_containerlab(&topology, "destroy", &["--cleanup"]);
+    destroy.insert(1, "-n".to_string());
+
+    let run = lab.run(
+        &["lab", "destroy", "-s", "ch1", "--sudo", "--sudo-no-prompt"],
+        &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stderr, "");
+    assert_eq!(
+        lab.calls(),
+        [
+            call(&[
+                "sudo",
+                "-n",
+                "--preserve-env=NOBS_T_LABEL",
+                "containerlab",
+                "version"
+            ]),
+            call(&["sudo", "-n", "true"]),
+            docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]),
+            destroy,
+            call(NETWORKS),
+        ]
+    );
+}
+
+#[test]
+fn sudo_no_prompt_without_sudo_changes_nothing() {
+    let lab = Lab::new("no-sudo-n");
+    let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
+
+    let run = lab.run(
+        &[
+            "lab",
+            "destroy",
+            "-s",
+            "ch1",
+            "--no-sudo",
+            "--sudo-no-prompt",
+        ],
+        &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]),
+            containerlab(&topology, "destroy", &["--cleanup"]),
+            call(NETWORKS),
+        ]
+    );
 }
 
 #[test]
@@ -755,7 +901,8 @@ fn wait_0_makes_no_poll_and_still_says_deployed() {
 }
 
 #[test]
-fn destroy_takes_the_stack_down_with_its_volumes_then_the_topology_and_runs_no_network_command() {
+fn destroy_takes_the_stack_down_with_its_volumes_then_the_topology_and_leaves_a_missing_network_alone(
+) {
     let lab = Lab::new("destroy");
     let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
 
@@ -767,6 +914,7 @@ fn destroy_takes_the_stack_down_with_its_volumes_then_the_topology_and_runs_no_n
         [
             docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]),
             containerlab(&topology, "destroy", &["--cleanup"]),
+            call(NETWORKS),
         ]
     );
     assert_eq!(
@@ -778,6 +926,105 @@ fn destroy_takes_the_stack_down_with_its_volumes_then_the_topology_and_runs_no_n
             topology.display()
         )
     );
+}
+
+fn attached(network: &str) -> Call {
+    call(&[
+        "docker",
+        "ps",
+        "-a",
+        "--filter",
+        &format!("network={network}"),
+        "--format",
+        "{{.Names}}",
+    ])
+}
+
+fn network_rm(network: &str) -> Call {
+    call(&["docker", "network", "rm", network])
+}
+
+#[test]
+fn destroy_removes_a_network_no_container_uses_keeps_one_in_use_and_stops_on_a_failed_rm() {
+    let lab = Lab::new("destroy-network");
+    let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
+    let lab_net = "network-observability";
+    let removing = "lab destroy: removing network network-observability\n";
+    let destroyed = "lab destroyed: scenario ch1\n";
+    type Case<'a> = (Env<'a>, Vec<Step>, i32, Vec<Call>, String, &'a str);
+    let cases: [Case; 4] = [
+        (
+            &[],
+            vec![(0, ""), (0, ""), (0, "network-observability\n")],
+            0,
+            vec![attached(lab_net), network_rm(lab_net)],
+            format!("{removing}{destroyed}"),
+            "",
+        ),
+        (
+            &[("LAB_NETWORK_NAME", "nobs-t-net")],
+            vec![(0, ""), (0, ""), (0, "network-observability\nnobs-t-net\n")],
+            0,
+            vec![attached("nobs-t-net"), network_rm("nobs-t-net")],
+            format!("lab destroy: removing network nobs-t-net\n{destroyed}"),
+            "",
+        ),
+        (
+            &[],
+            vec![
+                (0, ""),
+                (0, ""),
+                (0, "network-observability\n"),
+                (0, "stopped-client\n"),
+            ],
+            0,
+            vec![attached(lab_net)],
+            format!(
+                "lab destroy: network network-observability is still in use, kept\n{destroyed}"
+            ),
+            "",
+        ),
+        (
+            &[],
+            vec![
+                (0, ""),
+                (0, ""),
+                (0, "network-observability\n"),
+                (0, ""),
+                (1, ""),
+            ],
+            1,
+            vec![attached(lab_net), network_rm(lab_net)],
+            removing.to_string(),
+            "nobs: lab destroy: network rm failed (exit 1)\n",
+        ),
+    ];
+
+    for (env, steps, code, tail, stdout, stderr) in cases {
+        lab.script(&steps);
+
+        let run = lab.run(&["lab", "destroy", "-s", "ch1"], env);
+
+        assert_eq!(run.code, code, "{env:?} {steps:?}: {}", run.stderr);
+        let mut expected = vec![
+            docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]),
+            containerlab(&topology, "destroy", &["--cleanup"]),
+            call(NETWORKS),
+        ];
+        expected.extend(tail);
+        assert_eq!(lab.calls(), expected, "{env:?} {steps:?}");
+        assert_eq!(
+            run.stdout,
+            format!(
+                "lab destroy: stopping ch1 (project netobs)\n\
+                 lab destroy: destroying topology {}\n\
+                 {stdout}",
+                topology.display()
+            ),
+            "{env:?} {steps:?}"
+        );
+        assert_eq!(run.stderr, stderr, "{env:?} {steps:?}");
+    }
 }
 
 #[test]
@@ -857,18 +1104,28 @@ fn purge_goes_on_after_a_failing_down_and_destroys_the_topology_once() {
 }
 
 #[test]
-fn purge_without_a_node_present_says_so_and_then_says_purged() {
+fn purge_without_a_node_present_says_so_removes_the_empty_network_and_then_says_purged() {
     let lab = purge_lab("purge-clean");
+    lab.script(&[
+        (0, ""),
+        (0, ""),
+        (0, ""),
+        (0, ""),
+        (0, "network-observability\n"),
+    ]);
 
     let run = lab.run(&["lab", "purge"], &[]);
 
     assert_eq!(run.code, 0, "{}", run.stderr);
     let mut expected = purge_downs(&lab);
     expected.push(call(CONTAINERS));
+    expected.push(call(NETWORKS));
+    expected.push(attached("network-observability"));
+    expected.push(network_rm("network-observability"));
     assert_eq!(lab.calls(), expected);
     assert_eq!(
         run.stdout,
-        "lab purge: ch1\nlab purge: ch2\nlab purge: ch3\nlab purge: no lab nodes to destroy\nlab purged: 3 scenarios\n"
+        "lab purge: ch1\nlab purge: ch2\nlab purge: ch3\nlab purge: no lab nodes to destroy\nlab purge: removing network network-observability\nlab purged: 3 scenarios\n"
     );
 }
 
@@ -1057,7 +1314,7 @@ fn a_topology_that_is_not_a_lab_stops_deploy_and_purge_but_not_destroy() {
         &[],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(lab.calls().len(), 2);
+    assert_eq!(lab.calls().len(), 3);
 }
 
 #[test]
@@ -1074,6 +1331,7 @@ fn the_deploy_help_names_every_flag_and_the_default_wait() {
         "--subnet",
         "--sudo",
         "--no-sudo",
+        "--sudo-no-prompt",
         "--wait",
         "[default: 300]",
     ] {
@@ -1580,11 +1838,11 @@ fn a_poll_that_fails_stops_the_services_wait_at_once() {
 fn prepare_checks_the_image_purges_every_scenario_then_deploys_and_says_so() {
     let lab = ch2_lab("prepare");
     let node = "clab-nobs-t-book-nobs-t-srl1\n";
-    let mut steps = vec![(0, ""); 14];
+    let mut steps = vec![(0, ""); 15];
     steps[0] = (0, node);
     steps[4] = (0, node);
-    steps[12] = (0, BUILDER_UP);
-    steps[13] = (0, NODES_UP);
+    steps[13] = (0, BUILDER_UP);
+    steps[14] = (0, NODES_UP);
     lab.script(&steps);
     let (topology, ch2) = (lab.topology(), lab.compose("ch2"));
     let down = |scenario: &str| {
@@ -1607,6 +1865,7 @@ fn prepare_checks_the_image_purges_every_scenario_then_deploys_and_says_so() {
             down("ch2"),
             call(CONTAINERS),
             containerlab(&topology, "destroy", &["--cleanup"]),
+            call(NETWORKS),
             call(CONTAINERS),
             call(PROJECT_CONTAINERS),
             call(NETWORKS),
@@ -1635,6 +1894,63 @@ fn prepare_checks_the_image_purges_every_scenario_then_deploys_and_says_so() {
             topology.display()
         )
     );
+    assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn prepare_purges_and_creates_the_network_its_network_name_flag_names() {
+    let lab = Lab::new("prepare-network-name");
+    let mut steps = vec![(0, ""); 13];
+    steps[4] = (0, "network-observability\nnobs-t-net\n");
+    lab.script(&steps);
+    let (topology, ch1) = (lab.topology(), lab.compose("ch1"));
+
+    let run = lab.run(
+        &[
+            "lab",
+            "prepare",
+            "-s",
+            "ch1",
+            "--network-name",
+            "nobs-t-net",
+            "--wait",
+            "0",
+        ],
+        &[],
+    );
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        lab.calls(),
+        [
+            call(CONTAINERS),
+            inspect(SRLINUX),
+            docker_compose("netobs", &ch1, &["down", "--volumes", "--remove-orphans"]),
+            call(CONTAINERS),
+            call(NETWORKS),
+            attached("nobs-t-net"),
+            network_rm("nobs-t-net"),
+            call(CONTAINERS),
+            call(PROJECT_CONTAINERS),
+            call(NETWORKS),
+            call(&[
+                "docker",
+                "network",
+                "create",
+                "--driver=bridge",
+                "--subnet=198.51.100.0/24",
+                "nobs-t-net",
+            ]),
+            containerlab(&topology, "deploy", &[]),
+            docker_compose("netobs", &ch1, &["up", "-d", "--remove-orphans"]),
+        ]
+    );
+    assert!(run
+        .stdout
+        .contains("lab purge: removing network nobs-t-net\n"));
+    assert!(run
+        .stdout
+        .contains("lab deploy: creating network nobs-t-net (198.51.100.0/24)\n"));
     assert_eq!(run.stderr, "");
 }
 
@@ -1708,8 +2024,8 @@ fn prepare_with_a_failing_first_listing_exits_1_and_checks_no_image() {
 #[test]
 fn a_failing_deploy_step_in_prepare_is_named_deploy_and_there_is_no_prepared_line() {
     let lab = Lab::new("prepare-deploy-fails");
-    let mut steps = vec![(0, ""); 9];
-    steps[8] = (3, "");
+    let mut steps = vec![(0, ""); 10];
+    steps[9] = (3, "");
     lab.script(&steps);
 
     let run = lab.run(&["lab", "prepare", "-s", "ch1", "--wait", "0"], &[]);
@@ -1719,7 +2035,7 @@ fn a_failing_deploy_step_in_prepare_is_named_deploy_and_there_is_no_prepared_lin
         run.stderr,
         "nobs: lab deploy: containerlab deploy failed (exit 3)\n"
     );
-    assert_eq!(lab.calls().len(), 9);
+    assert_eq!(lab.calls().len(), 10);
     assert!(!run.stdout.contains("lab prepared"), "{}", run.stdout);
 }
 
@@ -1807,6 +2123,7 @@ fn the_prepare_help_names_every_flag_of_a_deploy_and_a_purge() {
         "--network-name",
         "--subnet",
         "--no-sudo",
+        "--sudo-no-prompt",
         "--wait",
         "[default: 300]",
     ] {

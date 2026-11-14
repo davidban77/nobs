@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ 1 devices  2 services  [3 lab]              ? keys  q quit
+┌ nodes 2 ────────────┐┌ ch1 ──────────────────────────────┐
+│ NAME         STATE  ││OVERVIEW                           │
+│ nobs-t-srl1  running││ topology  containerlab/lab.yml    │
+└─────────────────────┘│ project   netobs                  │
+┌ chapters 2 ─────────┐│ nodes     1 of 2 running          │
+│>ch1  up 1/1         ││ services  1 of 1 running          │
+│ ch2  down           ││ last      lab deploy --sudo-no-pr…│
+└─────────────────────┘└───────────────────────────────────┘
+┌ run  lab deploy --sudo-no-promp…  exit 0  120s  Esc fold ┐
+│$ nobs --dir /home/me/book-lab lab deploy --sudo-no-prompt│
+│ -s ch1                                                   │
+└──────────────────────────────────────────────────────────┘
+ j/k move  D deploy  X destroy  r refresh  o pane

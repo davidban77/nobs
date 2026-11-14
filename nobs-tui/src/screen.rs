@@ -1026,7 +1026,7 @@ fn run_end(run: &Run) -> (String, Style) {
     }
 }
 
-fn run_title(model: &Model) -> Vec<Span<'static>> {
+fn run_title(model: &Model, before_hint: usize) -> Vec<Span<'static>> {
     let Some(run) = model.run() else {
         return vec![Span::raw(" run  none")];
     };
@@ -1039,23 +1039,36 @@ fn run_title(model: &Model) -> Vec<Span<'static>> {
         }
         (_, None) => format!("{end} {}s", seconds(model, run.started)),
     };
+    let room = before_hint.saturating_sub(" run  ".len() + "  ".len() + state.chars().count() + 1);
+    let words = if run.words.chars().count() > room {
+        fit(&run.words, room)
+    } else {
+        run.words.clone()
+    };
     vec![
-        Span::raw(format!(" run  {}  ", run.words)),
+        Span::raw(format!(" run  {words}  ")),
         Span::styled(state, style),
     ]
 }
 
 fn run_line(frame: &mut Frame, area: Rect, model: &Model) {
-    frame.render_widget(Paragraph::new(Line::from(run_title(model))), area);
-    right(frame, area, Line::from("o open"), 1);
+    let hint = Line::from("o open");
+    let before_hint = usize::from(area.width).saturating_sub(hint.width() + 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(run_title(model, before_hint))),
+        area,
+    );
+    right(frame, area, hint, 1);
 }
 
 fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
-    let mut title = run_title(model);
+    let hint = Line::from(" Esc fold ").right_aligned();
+    let before_hint = usize::from(area.width).saturating_sub(hint.width() + 2);
+    let mut title = run_title(model, before_hint);
     title.push(Span::raw(" "));
     let block = Block::bordered()
         .title_top(Line::from(title))
-        .title_top(Line::from(" Esc fold ").right_aligned());
+        .title_top(hint);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(run) = model.run() else {

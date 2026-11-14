@@ -6,7 +6,7 @@
 │!ch1  up 1/1         ││ topology  containerlab/lab.yml    │
 │ ch2  ?              ││ project   netobs                  │
 └─────────────────────┘└───────────────────────────────────┘
-┌ run  lab deploy -s ch1  exit 1  2s ──────────── Esc fold ┐
+┌ run  lab deploy --sudo-no-prompt …  exit 1  2s  Esc fold ┐
 │$ nobs --dir /home/me/labs/network-observability/book-lab…│
 │nobs: lab deploy: node containers already exist (clab-nobs│
 │-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run no│
