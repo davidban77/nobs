@@ -24,7 +24,6 @@ use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
 use crate::run::{self, End};
-use crate::screen;
 
 const LOG_LINES: usize = 2000;
 pub const WINDOW_MINUTES: u64 = 30;
@@ -363,6 +362,7 @@ pub struct Model {
     error: Option<(String, String, Instant)>,
     help: bool,
     help_scroll: usize,
+    help_overflow: usize,
     run_pane: bool,
     size: (u16, u16),
     now: Instant,
@@ -459,6 +459,7 @@ impl Model {
             error,
             help: false,
             help_scroll: 0,
+            help_overflow: 0,
             run_pane: false,
             size: (80, 24),
             now,
@@ -906,8 +907,8 @@ impl Model {
         self.help_scroll
     }
 
-    pub(crate) fn size(&self) -> (u16, u16) {
-        self.size
+    pub(crate) fn set_help_overflow(&mut self, rows: usize) {
+        self.help_overflow = rows;
     }
 
     pub fn run_pane(&self) -> bool {
@@ -1666,7 +1667,7 @@ pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         match key.code {
             KeyCode::Char('?') | KeyCode::Esc => model.help = false,
             KeyCode::Char('j') => {
-                model.help_scroll = (model.help_scroll + 1).min(screen::help_overflow(model));
+                model.help_scroll = (model.help_scroll + 1).min(model.help_overflow);
             }
             KeyCode::Char('k') => model.help_scroll = model.help_scroll.saturating_sub(1),
             _ => {}
@@ -3715,9 +3716,67 @@ mod tests {
         }
     }
 
+    const CLAUSES: [(Workbench, char, &str); 9] = [
+        (Workbench::Services, 'X', "removes the stack's volumes"),
+        (
+            Workbench::Services,
+            'R',
+            "clears silences, maintenance and cascade scenarios",
+        ),
+        (
+            Workbench::Services,
+            'p',
+            "flaps srl1, leaves it in maintenance and can take 13 minutes",
+        ),
+        (
+            Workbench::Lab,
+            'D',
+            "takes the other chapters' services down",
+        ),
+        (
+            Workbench::Lab,
+            'X',
+            "removes the chapter's volumes, every node and the other chapters' services",
+        ),
+        (
+            Workbench::Lab,
+            'P',
+            "takes every scenario down and removes their volumes",
+        ),
+        (Workbench::Lab, 'R', "takes every scenario down first"),
+        (
+            Workbench::Lab,
+            'U',
+            "recreates every service of the chapter and its unnamed volumes, and takes the other chapters' services down",
+        ),
+        (
+            Workbench::Lab,
+            'B',
+            "takes the other chapters' services down",
+        ),
+    ];
+
+    fn agreed_clause(action: &Action) -> Option<&'static str> {
+        CLAUSES
+            .iter()
+            .find(|(workbench, key, _)| *workbench == action.workbench && *key == action.key)
+            .map(|(.., clause)| *clause)
+    }
+
     #[test]
     fn a_changing_action_asks_with_its_whole_command_and_a_reading_one_runs_at_once() {
+        for (workbench, key, _) in &CLAUSES {
+            let named = ACTIONS
+                .iter()
+                .any(|action| action.workbench == *workbench && action.key == *key);
+            assert!(named, "{workbench:?} {key}");
+        }
         for action in &ACTIONS {
+            let saying = match action.ask {
+                Ask::Saying(saying) => Some(saying),
+                Ask::No | Ask::Yes => None,
+            };
+            assert_eq!(saying, agreed_clause(action), "{}", action.key);
             let mut model = on_its_row(action.row);
             let target = model.action_target(action.row).unwrap();
             let args = arguments(action, &target, &model).unwrap();
@@ -3735,10 +3794,8 @@ mod tests {
                 assert_eq!(model.question(), None, "{}", action.key);
                 continue;
             }
-            let clause = match action.ask {
-                Ask::Saying(saying) => format!(" It {saying}."),
-                Ask::No | Ask::Yes => String::new(),
-            };
+            let clause =
+                agreed_clause(action).map_or(String::new(), |clause| format!(" It {clause}."));
             assert_eq!(commands, [], "{}", action.key);
             assert_eq!(
                 model.question().unwrap().text(),
@@ -3962,7 +4019,11 @@ mod tests {
 
         ch(&mut model, 'j');
         ch(&mut model, 'D');
-        assert!(model.question().unwrap().text().ends_with("-s ch2? y/n"));
+        assert!(model
+            .question()
+            .unwrap()
+            .text()
+            .ends_with("-s ch2? It takes the other chapters' services down. y/n"));
         assert_eq!(opened(&["a"]).selected_chapter(), None);
     }
 

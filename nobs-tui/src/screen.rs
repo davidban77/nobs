@@ -1417,9 +1417,8 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
     }
 }
 
-pub(crate) fn help_overflow(model: &Model) -> usize {
-    let (width, height) = model.size();
-    let (_, [_, _, _, body, _, _]) = regions(model, Rect::new(0, 0, width, height));
+pub(crate) fn help_overflow(model: &Model, area: Rect) -> usize {
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
     let layout = help_layout(model, body);
     usize::from(layout.rows - layout.room)
 }

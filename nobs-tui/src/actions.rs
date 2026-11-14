@@ -30,6 +30,8 @@ pub struct Action {
     pub sudo: bool,
 }
 
+const OTHER_CHAPTERS_DOWN: &str = "takes the other chapters' services down";
+
 pub const ACTIONS: [Action; 14] = [
     Action {
         key: 'u',
@@ -100,7 +102,7 @@ pub const ACTIONS: [Action; 14] = [
         row: Row::Chapter,
         words: &["lab", "deploy"],
         hint: "deploy",
-        ask: Ask::Yes,
+        ask: Ask::Saying(OTHER_CHAPTERS_DOWN),
         sudo: true,
     },
     Action {
@@ -109,7 +111,7 @@ pub const ACTIONS: [Action; 14] = [
         row: Row::Chapter,
         words: &["lab", "destroy"],
         hint: "destroy",
-        ask: Ask::Saying("removes the chapter's volumes and every node"),
+        ask: Ask::Saying("removes the chapter's volumes, every node and the other chapters' services"),
         sudo: true,
     },
     Action {
@@ -136,7 +138,9 @@ pub const ACTIONS: [Action; 14] = [
         row: Row::Chapter,
         words: &["lab", "update"],
         hint: "update",
-        ask: Ask::Saying("recreates every service of the chapter and its unnamed volumes"),
+        ask: Ask::Saying(
+            "recreates every service of the chapter and its unnamed volumes, and takes the other chapters' services down",
+        ),
         sudo: false,
     },
     Action {
@@ -145,7 +149,7 @@ pub const ACTIONS: [Action; 14] = [
         row: Row::Chapter,
         words: &["lab", "rebuild"],
         hint: "rebuild",
-        ask: Ask::Yes,
+        ask: Ask::Saying(OTHER_CHAPTERS_DOWN),
         sudo: false,
     },
     Action {

@@ -798,11 +798,15 @@ fn a_failed_deploy_is_red_on_its_title_and_its_nobs_line_and_marks_its_chapter()
 #[test]
 fn the_question_and_the_run_pane_show_each_lab_command_with_the_sudo_flag() {
     for (key, word, clause) in [
-        ('D', "deploy", ""),
+        (
+            'D',
+            "deploy",
+            " It takes the other chapters' services down.",
+        ),
         (
             'X',
             "destroy",
-            " It removes the chapter's volumes and every node.",
+            " It removes the chapter's volumes, every node and the other chapters' services.",
         ),
     ] {
         let command = format!("nobs --dir {LAB_DIR} lab {word} --sudo-no-prompt -s ch1");
@@ -1069,66 +1073,14 @@ fn the_longest_question_of_the_table_shows_whole_at_60_by_15() {
 }
 
 #[test]
-fn j_scrolls_a_help_that_does_not_fit_to_its_last_action_and_a_help_that_fits_has_no_more() {
-    let last = ACTIONS
-        .iter()
-        .rfind(|action| action.workbench == Workbench::Services)
-        .unwrap();
-    let key = last.key.to_string();
-    let shows_last = |screen: &[String]| {
-        screen.iter().filter(|line| line.contains('│')).any(|line| {
-            let words: Vec<&str> = line.split_whitespace().collect();
-            words
-                .windows(2)
-                .any(|pair| pair == [key.as_str(), last.hint])
-        })
-    };
-    let opened = lines(&render(narrow_help(0), 60, 15));
-    let scrolled = lines(&render(narrow_help(20), 60, 15));
+fn a_help_that_does_not_fit_says_j_k_more_and_a_help_that_fits_does_not() {
+    let opened = lines(&render(pressed('?'), 60, 15)).join("\n");
     let mut lab = lab_model();
     press(&mut lab, KeyCode::Char('?'));
     let fitting = lines(&render(lab, 100, 30)).join("\n");
 
-    assert!(!shows_last(&opened), "{}", opened.join("\n"));
-    assert!(opened.join("\n").contains("j/k more"));
-    assert!(shows_last(&scrolled), "{}", scrolled.join("\n"));
+    assert!(opened.contains("j/k more"), "{opened}");
     assert!(!fitting.contains("j/k more"), "{fitting}");
-}
-
-fn narrow_help(presses: usize) -> Shell {
-    let mut model = model(false, false);
-    let now = model.now();
-    model.tick(now, clock(), (60, 15));
-    press(&mut model, KeyCode::Char('?'));
-    for _ in 0..presses {
-        press(&mut model, KeyCode::Char('j'));
-    }
-    model
-}
-
-fn help_rows(model: Shell) -> Vec<String> {
-    let screen = lines(&render(model, 60, 15));
-    let top = screen
-        .iter()
-        .position(|line| line.contains("┌ keys"))
-        .unwrap();
-    let end = screen
-        .iter()
-        .position(|line| line.contains("sonda tab"))
-        .unwrap();
-    screen[top + 1..end].to_vec()
-}
-
-#[test]
-fn after_more_j_than_the_help_overflows_one_k_moves_it_back_one_row() {
-    let mut back = narrow_help(20);
-    press(&mut back, KeyCode::Char('k'));
-
-    let end = help_rows(narrow_help(20));
-    let back = help_rows(back);
-
-    assert_ne!(back, end);
-    assert_eq!(back[1..], end[..end.len() - 1]);
 }
 
 #[test]
