@@ -2377,7 +2377,8 @@ fn run_lab_command(command: LabCommand, located: &Located, runner: &dyn Runner) 
         }
         LabCommand::Destroy { flags } => {
             let scenario = lab_scenario(flags.scenario.as_deref(), located, "destroy")?;
-            LabRun::new("destroy", located, runner, &flags)?.destroy(&scenario)
+            LabRun::new("destroy", located, runner, &flags)?
+                .destroy(&scenario, &lab_network_name(None, located))
         }
         LabCommand::Purge { topology, sudo } => {
             let flags = LabFlags {
@@ -2385,7 +2386,7 @@ fn run_lab_command(command: LabCommand, located: &Located, runner: &dyn Runner) 
                 topology,
                 sudo,
             };
-            LabRun::new("purge", located, runner, &flags)?.purge()
+            LabRun::new("purge", located, runner, &flags)?.purge(&lab_network_name(None, located))
         }
         LabCommand::Show { flags } => {
             let scenario = lab_scenario(flags.scenario.as_deref(), located, "show")?;
@@ -2424,10 +2425,14 @@ fn lab_variable(name: &str) -> Option<String> {
     given(std::env::var(name).ok())
 }
 
-fn lab_network(flags: &DeployFlags, located: &Located) -> (String, String) {
-    let network = given(flags.network_name.clone())
+fn lab_network_name(flag: Option<String>, located: &Located) -> String {
+    given(flag)
         .or_else(|| lab_variable("LAB_NETWORK_NAME"))
-        .unwrap_or_else(|| located.network().unwrap_or(lab::NETWORK).to_string());
+        .unwrap_or_else(|| located.network().unwrap_or(lab::NETWORK).to_string())
+}
+
+fn lab_network(flags: &DeployFlags, located: &Located) -> (String, String) {
+    let network = lab_network_name(flags.network_name.clone(), located);
     let subnet = given(flags.subnet.clone())
         .or_else(|| lab_variable("LAB_SUBNET"))
         .unwrap_or_else(|| lab::SUBNET.to_string());
@@ -2639,6 +2644,13 @@ impl<'a, Topo> LabRun<'a, Topo> {
         )
     }
 
+    fn containers_where(&self, filter: &str, what: &str) -> Result<Vec<String>, i32> {
+        self.list(
+            &os_strings(&["ps", "-a", "--filter", filter, "--format", "{{.Names}}"]),
+            what,
+        )
+    }
+
     fn wait(
         &self,
         limit: Duration,
@@ -2847,10 +2859,7 @@ impl<'a> LabRun<'a, Topology> {
         }
         let project = self.project();
         let label = format!("label=com.docker.compose.project={project}");
-        let held = self.list(
-            &os_strings(&["ps", "-a", "--filter", &label, "--format", "{{.Names}}"]),
-            &format!("containers of project {project}"),
-        )?;
+        let held = self.containers_where(&label, &format!("containers of project {project}"))?;
         if !held.is_empty() {
             eprintln!(
                 "nobs: lab {}: project {project} already has containers ({}); run nobs lab destroy -s {scenario} first, or nobs lab purge",
@@ -2869,6 +2878,29 @@ impl<'a> LabRun<'a, Topology> {
             .list(&args, "networks")?
             .iter()
             .any(|name| name == network))
+    }
+
+    fn remove_network(&self, network: &str) -> Result<(), i32> {
+        if !self.network_exists(network)? {
+            return Ok(());
+        }
+        let attached = self.containers_where(
+            &format!("network={network}"),
+            &format!("containers of network {network}"),
+        )?;
+        if !attached.is_empty() {
+            println!(
+                "lab {}: network {network} is still in use, kept",
+                self.command
+            );
+            return Ok(());
+        }
+        println!("lab {}: removing network {network}", self.command);
+        self.step(
+            Compose::PROGRAM,
+            &network_args(NetworkAction::Rm, Some(network), None, None),
+            "network rm",
+        )
     }
 
     fn deploy(
@@ -2896,7 +2928,7 @@ impl<'a> LabRun<'a, Topology> {
         self.refuse_missing_images()?;
         println!("lab prepare: scenario {scenario}");
         self.command = "purge";
-        self.purge()?;
+        self.purge(network)?;
         self.command = "deploy";
         self.refuse_clashes(&nodes, scenario)?;
         self.start(&nodes, scenario, network, subnet, wait)?;
@@ -2986,7 +3018,7 @@ impl<'a> LabRun<'a, Topology> {
         self.wait(limit, poll)
     }
 
-    fn destroy(&self, scenario: &str) -> Result<(), i32> {
+    fn destroy(&self, scenario: &str, network: &str) -> Result<(), i32> {
         let compose = compose_in(self.located, Some(scenario));
         println!(
             "lab destroy: stopping {scenario} (project {})",
@@ -3006,11 +3038,12 @@ impl<'a> LabRun<'a, Topology> {
             &self.topology.containerlab.destroy_args(),
             "containerlab destroy",
         )?;
+        self.remove_network(network)?;
         println!("lab destroyed: scenario {scenario}");
         Ok(())
     }
 
-    fn purge(&self) -> Result<(), i32> {
+    fn purge(&self, network: &str) -> Result<(), i32> {
         let nodes = self.node_containers()?;
         let scenarios = lab::scenarios(&self.located.dir).map_err(|error| {
             eprintln!("nobs: lab {}: cannot list scenarios: {error}", self.command);
@@ -3030,6 +3063,7 @@ impl<'a> LabRun<'a, Topology> {
         match results.into_iter().find_map(Result::err) {
             Some(code) => Err(code),
             None => {
+                self.remove_network(network)?;
                 println!("lab purged: {} scenarios", scenarios.len());
                 Ok(())
             }
