@@ -5,17 +5,18 @@
 
 
 
-
-
   ┌ keys  services workbench ────────────────────────────────────────────────────────────────────┐
-  │1 2 3    switch workbench                      f       follow/pause logs                      │
-  │Tab      focus list/tabs                       o       run pane                               │
-  │j k ↑ ↓  move                                  x       dismiss the error                      │
-  │[ ]      other tab                             ?       close                                  │
-  │Enter    open the row                          Esc     close/clear/back                       │
-  │/        filter                                u d     stack up / down                        │
-  │r        refresh now                           q       quit; asks in a run                    │
-  │l        service logs                          Ctrl-C  stop a run, or quit                    │
+  │1 2 3    switch workbench                      ?       close                                  │
+  │Tab      focus list/tabs                       Esc     close/clear/back                       │
+  │j k ↑ ↓  move                                  u       up                                     │
+  │[ ]      other tab                             d       down                                   │
+  │Enter    open the row                          X       destroy                                │
+  │/        filter                                R       reset                                  │
+  │r        refresh now                           p       preflight                              │
+  │l        service logs                          s       status                                 │
+  │f        follow/pause logs                     q       quit; asks in a run                    │
+  │o        run pane                              Ctrl-C  stop a run, or quit                    │
+  │x        dismiss the error                                                                    │
   │                                                                                              │
   │sonda tab: l load  d delete  r refresh                                                        │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -25,6 +26,5 @@
 
 
 
-
  run  none                                                                                   o open
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d down
+ Tab focus  j/k move  / filter  l logs  r refresh  u up  d down  X destroy  R reset  p preflight

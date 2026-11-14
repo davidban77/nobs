@@ -6,9 +6,9 @@
   │j k ↑ ↓  move              f       follow/pause logs  │
   │[ ]      other tab         o       run pane           │
   │- +      timeline window   ?       close              │
-  │x        dismiss the error q       quit; asks in a run│
-  │Esc      close/clear/back  Ctrl-C  stop a run, or quit│
-  │Enter    open / pick alert                            │
+  │x        dismiss the error m       maintenance        │
+  │Esc      close/clear/back  q       quit; asks in a run│
+  │Enter    open / pick alert Ctrl-C  stop a run, or quit│
   │alerts box: Enter picks the device, opens its timeline│
   └──────────────────────────────────────────────────────┘
  run  none                                           o open

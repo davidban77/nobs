@@ -14,6 +14,7 @@ use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
 use nobs_core::sot::{Fixed, SourceOfTruth};
 use nobs_core::status::Urls;
+use nobs_tui::actions::{Action, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
 use nobs_tui::shell::{stacks, Health};
 use nobs_tui::{
@@ -559,6 +560,10 @@ fn lines(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
+fn flat(buffer: &Buffer) -> String {
+    buffer.content().iter().map(|cell| cell.symbol()).collect()
+}
+
 fn mismatch(name: &str, width: u16, height: u16, actual: &[String]) -> Option<String> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/golden/{name}-{width}x{height}.txt"));
@@ -792,7 +797,14 @@ fn a_failed_deploy_is_red_on_its_title_and_its_nobs_line_and_marks_its_chapter()
 
 #[test]
 fn the_question_and_the_run_pane_show_each_lab_command_with_the_sudo_flag() {
-    for (key, word) in [('D', "deploy"), ('X', "destroy")] {
+    for (key, word, clause) in [
+        ('D', "deploy", ""),
+        (
+            'X',
+            "destroy",
+            " It removes the chapter's volumes and every node.",
+        ),
+    ] {
         let command = format!("nobs --dir {LAB_DIR} lab {word} --sudo-no-prompt -s ch1");
         let asking = || {
             let mut model = lab_model();
@@ -802,18 +814,18 @@ fn the_question_and_the_run_pane_show_each_lab_command_with_the_sudo_flag() {
         let mut running = asking();
         press(&mut running, KeyCode::Char('y'));
 
-        let question = lines(&render(asking(), 100, 30)).join("\n");
+        let question = flat(&render(asking(), 100, 30));
         let pane = lines(&render(running, 100, 30)).join("\n");
 
         assert!(
-            question.contains(&format!("run {command}? y/n")),
+            question.contains(&format!("run {command}?{clause} y/n")),
             "{question}"
         );
         assert!(pane.contains(&format!("$ {command}")), "{pane}");
     }
 }
 
-fn maintained(packt_failed: bool) -> Shell {
+fn maintenance_model(packt_failed: bool) -> Shell {
     let source =
         Fixed::from_lab_vars(&lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap());
     let devices = source.devices().unwrap();
@@ -822,6 +834,11 @@ fn maintained(packt_failed: bool) -> Shell {
     let mut model = model_with(false, packt_failed, Some(Arc::new(source)), Some(lab));
     press(&mut model, KeyCode::Char('1'));
     model.apply(Update::Devices(Ok(devices)));
+    model
+}
+
+fn maintained(packt_failed: bool) -> Shell {
+    let mut model = maintenance_model(packt_failed);
     press(&mut model, KeyCode::Char('m'));
     press(&mut model, KeyCode::Char('y'));
     model
@@ -1008,6 +1025,110 @@ fn the_question_frame_is_pinned() {
     press(&mut model, KeyCode::Char('u'));
 
     pinned(model, "question", 100, 30);
+}
+
+fn services_model() -> Shell {
+    model(false, false)
+}
+
+#[test]
+fn a_narrow_key_line_ends_in_a_whole_hint() {
+    for build in [services_model as fn() -> Shell, lab_model] {
+        let wide = lines(&render(build(), 200, 30)).pop().unwrap();
+        let narrow = lines(&render(build(), 60, 15)).pop().unwrap();
+
+        assert!(!narrow.contains('…'), "{narrow}");
+        assert!(
+            wide.strip_prefix(narrow.as_str())
+                .is_some_and(|rest| rest.starts_with("  ")),
+            "{narrow}\n{wide}"
+        );
+    }
+}
+
+fn asked(action: &Action) -> Shell {
+    let mut model = match action.row {
+        Row::Stack => services_model(),
+        Row::Device => maintenance_model(false),
+        Row::Chapter | Row::Lab => lab_model(),
+    };
+    press(&mut model, KeyCode::Char(action.key));
+    model
+}
+
+#[test]
+fn the_longest_question_of_the_table_shows_whole_at_60_by_15() {
+    let length = |model: &Shell| model.question().map_or(0, |question| question.text().len());
+    let longest = ACTIONS.iter().map(asked).max_by_key(length).unwrap();
+    let text = longest.question().unwrap().text();
+
+    let screen = flat(&render(longest, 60, 15));
+
+    assert!(text.contains(". y/n"), "{text}");
+    assert!(screen.contains(&text), "{text}\n{screen}");
+}
+
+#[test]
+fn j_scrolls_a_help_that_does_not_fit_to_its_last_action_and_a_help_that_fits_has_no_more() {
+    let last = ACTIONS
+        .iter()
+        .rfind(|action| action.workbench == Workbench::Services)
+        .unwrap();
+    let key = last.key.to_string();
+    let shows_last = |screen: &[String]| {
+        screen.iter().filter(|line| line.contains('│')).any(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            words
+                .windows(2)
+                .any(|pair| pair == [key.as_str(), last.hint])
+        })
+    };
+    let opened = lines(&render(narrow_help(0), 60, 15));
+    let scrolled = lines(&render(narrow_help(20), 60, 15));
+    let mut lab = lab_model();
+    press(&mut lab, KeyCode::Char('?'));
+    let fitting = lines(&render(lab, 100, 30)).join("\n");
+
+    assert!(!shows_last(&opened), "{}", opened.join("\n"));
+    assert!(opened.join("\n").contains("j/k more"));
+    assert!(shows_last(&scrolled), "{}", scrolled.join("\n"));
+    assert!(!fitting.contains("j/k more"), "{fitting}");
+}
+
+fn narrow_help(presses: usize) -> Shell {
+    let mut model = model(false, false);
+    let now = model.now();
+    model.tick(now, clock(), (60, 15));
+    press(&mut model, KeyCode::Char('?'));
+    for _ in 0..presses {
+        press(&mut model, KeyCode::Char('j'));
+    }
+    model
+}
+
+fn help_rows(model: Shell) -> Vec<String> {
+    let screen = lines(&render(model, 60, 15));
+    let top = screen
+        .iter()
+        .position(|line| line.contains("┌ keys"))
+        .unwrap();
+    let end = screen
+        .iter()
+        .position(|line| line.contains("sonda tab"))
+        .unwrap();
+    screen[top + 1..end].to_vec()
+}
+
+#[test]
+fn after_more_j_than_the_help_overflows_one_k_moves_it_back_one_row() {
+    let mut back = narrow_help(20);
+    press(&mut back, KeyCode::Char('k'));
+
+    let end = help_rows(narrow_help(20));
+    let back = help_rows(back);
+
+    assert_ne!(back, end);
+    assert_eq!(back[1..], end[..end.len() - 1]);
 }
 
 #[test]

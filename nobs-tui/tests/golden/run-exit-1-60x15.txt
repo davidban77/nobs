@@ -12,4 +12,4 @@
 │$ nobs --dir /home/me/ws/autocon5 autocon5 up             │
 │nobs: up: compose up failed                               │
 └──────────────────────────────────────────────────────────┘
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d …
+ Tab focus  j/k move  / filter  l logs  r refresh  u up

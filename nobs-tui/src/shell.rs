@@ -19,11 +19,12 @@ use nobs_core::sot::{Device, Session, SourceOfTruth};
 use nobs_core::status::Urls;
 use nobs_core::time;
 
-use crate::actions::{arguments, Row, Target, ACTIONS};
+use crate::actions::{arguments, Ask, Row, Target, ACTIONS};
 use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
 use crate::run::{self, End};
+use crate::screen;
 
 const LOG_LINES: usize = 2000;
 pub const WINDOW_MINUTES: u64 = 30;
@@ -241,14 +242,25 @@ pub struct Run {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Question {
-    Pending { args: Vec<OsString>, target: Target },
+    Pending {
+        args: Vec<OsString>,
+        target: Target,
+        saying: Option<&'static str>,
+    },
     Quit,
 }
 
 impl Question {
     pub fn text(&self) -> String {
         match self {
-            Question::Pending { args, .. } => format!("run nobs {}? y/n", joined(args)),
+            Question::Pending {
+                args, saying: None, ..
+            } => format!("run nobs {}? y/n", joined(args)),
+            Question::Pending {
+                args,
+                saying: Some(saying),
+                ..
+            } => format!("run nobs {}? It {saying}. y/n", joined(args)),
             Question::Quit => "an action is running: stop it and quit? y/n".to_string(),
         }
     }
@@ -350,6 +362,7 @@ pub struct Model {
     sonda: data::Model,
     error: Option<(String, String, Instant)>,
     help: bool,
+    help_scroll: usize,
     run_pane: bool,
     size: (u16, u16),
     now: Instant,
@@ -445,6 +458,7 @@ impl Model {
             sonda: data::Model::new(url),
             error,
             help: false,
+            help_scroll: 0,
             run_pane: false,
             size: (80, 24),
             now,
@@ -659,22 +673,7 @@ impl Model {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match question {
-            Question::Pending { args, target } if yes => {
-                self.run = Some(Run {
-                    words: words(&args),
-                    command: joined(&args),
-                    target,
-                    lines: Vec::new(),
-                    started: self.now,
-                    ended: None,
-                    state: RunState::Running,
-                });
-                self.run_pane = true;
-                vec![Command::Run {
-                    program: self.program.clone(),
-                    args,
-                }]
-            }
+            Question::Pending { args, target, .. } if yes => self.start_run(args, target),
             Question::Pending { args, .. } => {
                 self.notice = Some(format!("not run: {}", words(&args)));
                 Vec::new()
@@ -691,6 +690,39 @@ impl Model {
         }
     }
 
+    fn start_run(&mut self, args: Vec<OsString>, target: Target) -> Vec<Command> {
+        self.run = Some(Run {
+            words: words(&args),
+            command: joined(&args),
+            target,
+            lines: Vec::new(),
+            started: self.now,
+            ended: None,
+            state: RunState::Running,
+        });
+        self.run_pane = true;
+        vec![Command::Run {
+            program: self.program.clone(),
+            args,
+        }]
+    }
+
+    pub(crate) fn action_target(&self, row: Row) -> Option<Target> {
+        match row {
+            Row::Stack
+                if self.focus == Focus::List || matches!(self.tab, Tab::Overview | Tab::Logs) =>
+            {
+                Some(Target::Stack(self.selected))
+            }
+            Row::Stack => None,
+            Row::Device => self
+                .selected_device()
+                .map(|device| Target::Device(device.name.clone())),
+            Row::Chapter => self.selected_chapter().map(Target::Chapter),
+            Row::Lab => self.book_lab().then_some(Target::Lab),
+        }
+    }
+
     fn action_key(&mut self, code: KeyCode) -> Option<Vec<Command>> {
         let KeyCode::Char(typed) = code else {
             return None;
@@ -698,18 +730,10 @@ impl Model {
         let action = ACTIONS
             .iter()
             .find(|action| action.key == typed && action.workbench == self.workbench)?;
-        let target = match action.row {
-            Row::Stack
-                if self.focus == Focus::List || matches!(self.tab, Tab::Overview | Tab::Logs) =>
-            {
-                Some(Target::Stack(self.selected))
-            }
-            Row::Stack => return None,
-            Row::Device => self
-                .selected_device()
-                .map(|device| Target::Device(device.name.clone())),
-            Row::Chapter => self.selected_chapter().map(Target::Chapter),
-        };
+        let target = self.action_target(action.row);
+        if action.row == Row::Stack && target.is_none() {
+            return None;
+        }
         if let Some(run) = self.active() {
             self.notice = Some(format!("one action at a time: {} is running", run.words));
             return Some(Vec::new());
@@ -720,13 +744,22 @@ impl Model {
         match arguments(action, &target, self) {
             Some(args) => {
                 self.notice = None;
-                self.question = Some(Question::Pending { args, target });
+                let saying = match action.ask {
+                    Ask::No => return Some(self.start_run(args, target)),
+                    Ask::Yes => None,
+                    Ask::Saying(saying) => Some(saying),
+                };
+                self.question = Some(Question::Pending {
+                    args,
+                    target,
+                    saying,
+                });
             }
             None if action.row == Row::Stack => {
-                self.notice = Some(
-                    "u and d are for a workshop; a chapter is deployed from the lab workbench"
-                        .to_string(),
-                );
+                self.notice = Some(format!(
+                    "{} {} is for a workshop; a chapter has its actions in the lab workbench",
+                    action.key, action.hint
+                ));
             }
             None => {}
         }
@@ -867,6 +900,14 @@ impl Model {
 
     pub fn help(&self) -> bool {
         self.help
+    }
+
+    pub(crate) fn help_scroll(&self) -> usize {
+        self.help_scroll
+    }
+
+    pub(crate) fn size(&self) -> (u16, u16) {
+        self.size
     }
 
     pub fn run_pane(&self) -> bool {
@@ -1237,7 +1278,10 @@ impl Model {
             KeyCode::Char('2') => return self.switch(Workbench::Services),
             KeyCode::Char('3') if self.book_lab() => return self.switch(Workbench::Lab),
             KeyCode::Char('3') => {}
-            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('?') => {
+                self.help = true;
+                self.help_scroll = 0;
+            }
             KeyCode::Char('x') => self.error = None,
             KeyCode::Char('o') => self.run_pane = !self.run_pane,
             KeyCode::Tab => {
@@ -1619,8 +1663,13 @@ pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         return Vec::new();
     }
     if model.help {
-        if matches!(key.code, KeyCode::Char('?') | KeyCode::Esc) {
-            model.help = false;
+        match key.code {
+            KeyCode::Char('?') | KeyCode::Esc => model.help = false,
+            KeyCode::Char('j') => {
+                model.help_scroll = (model.help_scroll + 1).min(screen::help_overflow(model));
+            }
+            KeyCode::Char('k') => model.help_scroll = model.help_scroll.saturating_sub(1),
+            _ => {}
         }
         return Vec::new();
     }
@@ -1798,6 +1847,8 @@ mod tests {
     use nobs_core::sot::Fixed;
 
     use super::*;
+    use crate::actions::Action;
+    use crate::screen::{help_entries, key_line};
 
     const TWO: &str = r#"{"scenarios":[{"id":"a1","name":"cpu","state":"running"},{"id":"b2","name":"mem","state":"paused"}]}"#;
 
@@ -3616,15 +3667,180 @@ mod tests {
     fn u_and_d_on_a_stack_that_is_not_a_workshop_run_nothing_and_say_why() {
         let mut model = book_model();
         ch(&mut model, '2');
-        for typed in ['u', 'd'] {
+        for (typed, hint) in [('u', "up"), ('d', "down")] {
             assert_eq!(ch(&mut model, typed), []);
             assert_eq!(model.question(), None);
             assert_eq!(
                 model.notice(),
-                Some("u and d are for a workshop; a chapter is deployed from the lab workbench")
+                Some(
+                    format!(
+                        "{typed} {hint} is for a workshop; a chapter has its actions in the lab workbench"
+                    )
+                    .as_str()
+                )
             );
         }
         assert_eq!(ch(&mut model, 'y'), []);
+    }
+
+    const READING: [&str; 2] = ["status", "show"];
+
+    fn on_its_row(row: Row) -> Model {
+        match row {
+            Row::Stack => opened(&["nobs-t-packt"]),
+            Row::Device => devices_model(),
+            Row::Chapter | Row::Lab => book_model(),
+        }
+    }
+
+    fn on_another_row(row: Row) -> Model {
+        match row {
+            Row::Stack => {
+                let mut model = book_model();
+                ch(&mut model, '2');
+                model
+            }
+            Row::Device => {
+                let mut model = book_model();
+                model.apply(Update::Devices(Ok(workshop_source().devices().unwrap())));
+                ch(&mut model, '1');
+                model
+            }
+            Row::Chapter | Row::Lab => Model::new(Start {
+                lab: Some(workshop_located("infrahub")),
+                home: Workbench::Lab,
+                chooser: false,
+                ..start(vec![stack("a", &[])])
+            }),
+        }
+    }
+
+    #[test]
+    fn a_changing_action_asks_with_its_whole_command_and_a_reading_one_runs_at_once() {
+        for action in &ACTIONS {
+            let mut model = on_its_row(action.row);
+            let target = model.action_target(action.row).unwrap();
+            let args = arguments(action, &target, &model).unwrap();
+            let run = Command::Run {
+                program: PathBuf::from("/bin/nobs"),
+                args: args.clone(),
+            };
+            let commands = ch(&mut model, action.key);
+            if action
+                .words
+                .last()
+                .is_some_and(|word| READING.contains(word))
+            {
+                assert_eq!(commands, [run], "{}", action.key);
+                assert_eq!(model.question(), None, "{}", action.key);
+                continue;
+            }
+            let clause = match action.ask {
+                Ask::Saying(saying) => format!(" It {saying}."),
+                Ask::No | Ask::Yes => String::new(),
+            };
+            assert_eq!(commands, [], "{}", action.key);
+            assert_eq!(
+                model.question().unwrap().text(),
+                format!("run nobs {}?{clause} y/n", joined(&args))
+            );
+
+            let mut refused = on_its_row(action.row);
+            ch(&mut refused, action.key);
+            assert_eq!(ch(&mut refused, 'n'), [], "{}", action.key);
+            assert!(refused.run().is_none(), "{}", action.key);
+            assert_eq!(
+                refused.notice(),
+                Some(format!("not run: {}", words(&args)).as_str())
+            );
+
+            assert_eq!(ch(&mut model, 'y'), [run], "{}", action.key);
+        }
+    }
+
+    #[test]
+    fn an_action_key_on_a_row_of_another_kind_runs_nothing_and_asks_nothing() {
+        for action in &ACTIONS {
+            let mut model = on_another_row(action.row);
+            assert_eq!(ch(&mut model, action.key), [], "{}", action.key);
+            assert_eq!(model.question(), None, "{}", action.key);
+            assert!(model.run().is_none(), "{}", action.key);
+        }
+    }
+
+    fn offered(action: &Action, model: &Model) -> bool {
+        model
+            .action_target(action.row)
+            .is_some_and(|target| arguments(action, &target, model).is_some())
+    }
+
+    #[test]
+    fn every_action_shows_its_hint_once_where_it_is_offered_and_once_in_its_help() {
+        for action in &ACTIONS {
+            let hint = format!("{} {}", action.key, action.hint);
+            let mut model = on_its_row(action.row);
+            assert!(offered(action, &model), "{hint}");
+            let line = key_line(&model, 200).concat();
+            assert_eq!(line.matches(&hint).count(), 1, "{hint}: {line}");
+            let steps: &[KeyCode] = match action.row {
+                Row::Stack => &[KeyCode::Tab, KeyCode::Char(']'), KeyCode::Char(']')],
+                Row::Device => &[
+                    KeyCode::Char('j'),
+                    KeyCode::Enter,
+                    KeyCode::Char(']'),
+                    KeyCode::Char(']'),
+                    KeyCode::Enter,
+                    KeyCode::Esc,
+                    KeyCode::Char(']'),
+                ],
+                Row::Chapter | Row::Lab => &[],
+            };
+            model.tick(
+                Instant::now(),
+                UNIX_EPOCH + Duration::from_secs(1_794_232_500),
+                (80, 24),
+            );
+            let mut popup = false;
+            for step in steps {
+                code(&mut model, *step);
+                popup |= model.popup();
+                let line = key_line(&model, 200).concat();
+                let shown = usize::from(offered(action, &model));
+                assert_eq!(
+                    line.matches(&hint).count(),
+                    shown,
+                    "{hint} {step:?}: {line}"
+                );
+            }
+            assert_eq!(popup, action.row == Row::Device, "{hint}");
+
+            let elsewhere = on_another_row(action.row);
+            assert!(!offered(action, &elsewhere), "{hint}");
+            let line = key_line(&elsewhere, 200).concat();
+            assert!(!line.contains(&hint), "{hint}: {line}");
+
+            let entries = help_entries(action.workbench);
+            let entry = (action.key.to_string(), action.hint);
+            assert_eq!(entries.iter().filter(|seen| **seen == entry).count(), 1);
+            let key = action.key.to_string();
+            let naming = entries
+                .iter()
+                .filter(|(keys, _)| keys.split_whitespace().any(|seen| seen == key))
+                .count();
+            assert_eq!(naming, 1, "{hint}: {entries:?}");
+        }
+    }
+
+    #[test]
+    fn an_action_hint_is_absent_from_the_key_line_on_a_row_of_another_kind() {
+        for action in &ACTIONS {
+            let line = key_line(&on_another_row(action.row), 200).concat();
+            assert!(
+                !line.split_whitespace().any(|word| word == action.hint),
+                "{}: {line}",
+                action.hint
+            );
+        }
     }
 
     #[test]

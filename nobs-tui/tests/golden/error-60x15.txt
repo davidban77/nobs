@@ -12,4 +12,4 @@
 │                     ││ prefect    running  ok        4200│
 └─────────────────────┘└───────────────────────────────────┘
  run  none                                           o open
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d …
+ Tab focus  j/k move  / filter  l logs  r refresh  u up
