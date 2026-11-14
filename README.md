@@ -45,7 +45,7 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 | header | the first line | `nobs`, the name and the kind of the lab, and the `sot` word (`sot` is short for source of truth: the system that holds the intended state of the network): `sot infrahub` or `sot none` as the `sot` setting of `nobs.toml` says in a workshop, `sot lab_vars` in a book lab, `sot none` in a labcli lab (see [The devices workbench](#the-devices-workbench)); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address; from 100 columns, also the number of services |
 | switcher | the second line | `1 devices` and `2 services`, and `3 lab` in a book lab, with the open workbench in brackets; `? keys  q quit` at the right end; in the chooser `choose a lab, or q to quit` |
 | body | the middle | the open workbench, or the chooser |
-| run line | the line above the last | `run  none` before the first action, else the last action and its state, for example `run  lab deploy -s ch1  exit 0  41s`; `o open` at the right end; when the run pane is open, the pane takes the place of the run line (see [Actions](#actions)); the chooser has no run line |
+| run line | the line above the last | `run  none` before the first action, else the last action and its state, for example `run  lab deploy --sudo-no-prompt -s ch1  exit 0  41s`; `o open` at the right end; when the run pane is open, the pane takes the place of the run line (see [Actions](#actions)); the chooser has no run line |
 | key line | the last line | the keys that work now; while you type a filter, `filter: <text>  Enter keep  Esc clear`; the question or the note of an action |
 
 When a data call fails, one red line appears between the switcher and the body (see [Errors](#errors)).
@@ -281,9 +281,9 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 
 At 100 columns the key line is `j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show  r refresh  o pane`. At 60 columns the last hints do not fit and are left out; `?` lists them. `D`, `X`, `P`, `R`, `U`, `B` and `S` are actions (see [Actions](#actions)).
 
-The lab runs one chapter at a time. So `D`, `U`, `B` and `X` take the services of the other chapters down.
+The lab runs one chapter at a time. So `D`, `U`, `B` and `X` take the services of the other chapters down. `R` and `P` take every chapter down. Their questions say "scenario". In the book lab, a scenario is a chapter: the folder under `chapters/` that holds its compose file (see [Book lab](#book-lab)). It is not a Sonda scenario.
 
-When `LAB_SUDO` (see [Flags and variables](#flags-and-variables)) is on, `D`, `X`, `P`, `R` and `S` run `sudo containerlab`. The screen cannot ask for a password, so these five add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). With it, `sudo` fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
+`D`, `X`, `P`, `R` and `S` always add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). When `LAB_SUDO` is on, they run `sudo containerlab`. The screen cannot ask for a password, so with the flag `sudo` fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
 
 When `sudo` needs a password, the action ends at once with `exit 1`. For `X`, the run pane shows:
 
@@ -324,6 +324,8 @@ An action is a nobs command that the screen runs for you. There are fourteen:
 | `B` | the same as `U` | `nobs --dir <lab folder> lab rebuild -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `S` | the same as `D` | `nobs --dir <lab folder> lab show --sudo-no-prompt -s <chapter>` | runs at once |
 
+In the questions of `P` and `R`, a scenario is a chapter of the book lab, not a Sonda scenario (see [The lab workbench](#the-lab-workbench)).
+
 The screen runs the same nobs program you started, as a separate program, with the same environment variables as the screen. It is the same command you would type yourself (see [Workshops](#workshops), [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) and [Book lab](#book-lab)). The key line shows the hint of an action, for example `u up`, only where the action works. It shows the hints in the order of the table. A hint that does not fit is left out whole, never cut. `?` lists every action of the workbench.
 
 An action that changes something runs only after you say yes. The key line first shows the whole command as a question, for example:
@@ -344,7 +346,7 @@ Only `y` runs it. Any other key runs nothing, and the line says `not run:` and t
 
 Some keys refuse:
 
-- `u`, `d`, `X`, `R`, `p` or `s` in the services workbench, on a chapter, on a labcli lab or on `sonda only`, shows `<key> <name> is for a workshop; a chapter has its actions in the lab workbench`, for example `u up is for a workshop; a chapter has its actions in the lab workbench`.
+- `u`, `d`, `X`, `R`, `p` or `s` in the services workbench, on a chapter, on a labcli lab or on `sonda only`, shows `<key> <hint> is for a workshop; a chapter has its actions in the lab workbench`, for example `u up is for a workshop; a chapter has its actions in the lab workbench`.
 - `m` does nothing in a book lab, nor when the device list is empty.
 - Only one action runs at a time. A second action key shows `one action at a time: <action> is running`.
 
