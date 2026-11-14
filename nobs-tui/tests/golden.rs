@@ -773,18 +773,23 @@ fn a_failed_deploy_is_red_on_its_title_and_its_nobs_line_and_marks_its_chapter()
     assert!(lines(&buffer).iter().any(|line| line.contains("!ch1")));
 }
 
-#[test]
-fn a_failed_maintenance_marks_its_device_row() {
+fn maintained(packt_failed: bool) -> Shell {
     let source =
         Fixed::from_lab_vars(&lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap());
     let devices = source.devices().unwrap();
     let dir = PathBuf::from(WORKSHOP_DIR);
     let lab = locate(&dir, Some(&dir)).unwrap();
-    let mut model = model_with(false, false, Some(Arc::new(source)), Some(lab));
+    let mut model = model_with(false, packt_failed, Some(Arc::new(source)), Some(lab));
     press(&mut model, KeyCode::Char('1'));
     model.apply(Update::Devices(Ok(devices)));
     press(&mut model, KeyCode::Char('m'));
     press(&mut model, KeyCode::Char('y'));
+    model
+}
+
+#[test]
+fn a_failed_maintenance_marks_its_device_row() {
+    let mut model = maintained(false);
     model.apply(Update::ActionEnded(End::Exited(1)));
 
     let screen = lines(&render(model, 100, 30));
@@ -887,41 +892,56 @@ fn long_refusal() -> String {
     )
 }
 
-#[test]
-fn the_run_pane_stops_growing_where_the_selected_chapter_would_go_out_of_view() {
+fn with_long_refusal(mut model: Shell) -> Shell {
+    model.apply(Update::ActionLine(long_refusal()));
+    model.apply(Update::ActionEnded(End::Exited(1)));
+    model
+}
+
+fn chapter_two_refused() -> Shell {
     let mut model = lab_model();
     press(&mut model, KeyCode::Char('j'));
     press(&mut model, KeyCode::Char('D'));
     press(&mut model, KeyCode::Char('y'));
-    model.apply(Update::ActionLine(long_refusal()));
-    model.apply(Update::ActionEnded(End::Exited(1)));
+    let mut model = with_long_refusal(model);
     model.apply(Update::Services(1, Err("exit 1".to_string())));
-
-    pinned(model, "run-least-lab", 60, 15);
+    model
 }
 
-#[test]
-fn on_the_devices_workbench_the_run_pane_leaves_seven_rows_to_the_devices() {
-    let source =
-        Fixed::from_lab_vars(&lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap());
-    let devices = source.devices().unwrap();
-    let dir = PathBuf::from(WORKSHOP_DIR);
-    let lab = locate(&dir, Some(&dir)).unwrap();
-    let mut model = model_with(false, true, Some(Arc::new(source)), Some(lab));
-    press(&mut model, KeyCode::Char('1'));
-    model.apply(Update::Devices(Ok(devices)));
-    press(&mut model, KeyCode::Char('m'));
+fn second_stack_refused() -> Shell {
+    let mut model = model(false, true);
+    press(&mut model, KeyCode::Char('j'));
+    press(&mut model, KeyCode::Char('u'));
     press(&mut model, KeyCode::Char('y'));
-    model.apply(Update::ActionLine(long_refusal()));
-    model.apply(Update::ActionEnded(End::Exited(1)));
+    with_long_refusal(model)
+}
 
-    let screen = lines(&render(model, 60, 15));
-
+fn pane_rows(model: Shell, width: u16, height: u16) -> usize {
+    let screen = lines(&render(model, width, height));
     let top = screen
         .iter()
         .position(|line| line.starts_with("┌ run"))
         .unwrap();
-    assert_eq!(screen.len() - 1 - top, 5, "{}", screen.join("\n"));
+    screen.len() - 1 - top
+}
+
+#[test]
+fn the_run_pane_stops_growing_where_the_selected_chapter_would_go_out_of_view() {
+    pinned(chapter_two_refused(), "run-least-lab", 60, 15);
+}
+
+#[test]
+fn the_run_pane_grows_past_half_only_up_to_each_workbench_minimum() {
+    let heights = vec![
+        ("lab", pane_rows(chapter_two_refused(), 60, 15)),
+        ("services", pane_rows(second_stack_refused(), 60, 15)),
+        (
+            "devices",
+            pane_rows(with_long_refusal(maintained(true)), 60, 20),
+        ),
+    ];
+
+    assert_eq!(heights, [("lab", 7), ("services", 7), ("devices", 9)]);
 }
 
 #[test]
