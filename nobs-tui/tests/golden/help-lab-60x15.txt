@@ -1,15 +1,15 @@
  nobs  book-lab book lab  sot lab_vars             13:42:07
  1 devices  2 services  [3 lab]              ? keys  q quit
-
   ┌ keys  lab workbench ─────────────────────────────────┐
-  │1 2 3    switch workbench  x       dismiss the error  │
-  │j k ↑ ↓  move              ?       close              │
-  │D        deploy chapter    Esc     close/fold         │
-  │X        destroy chapter   q       quit; asks in a run│
-  │r        refresh now       Ctrl-C  stop a run, or quit│
-  │o        run pane                                     │
+  │1 2 3    switch workbench  X       destroy            │
+  │j k ↑ ↓  move              P       purge              │
+  │r        refresh now       R       prepare            │
+  │o        run pane          U       update             │
+  │x        dismiss the error B       rebuild            │
+  │?        close             S       show               │
+  │Esc      close/fold        q       quit; asks in a run│
+  │D        deploy            Ctrl-C  stop a run, or quit│
   └──────────────────────────────────────────────────────┘
 
-
  run  none                                           o open
- j/k move  D deploy  X destroy  r refresh  o pane
+ j/k move  D deploy  X destroy  P purge  R prepare  U update

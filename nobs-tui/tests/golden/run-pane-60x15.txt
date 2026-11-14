@@ -12,4 +12,4 @@
 │                                                          │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d …
+ Tab focus  j/k move  / filter  l logs  r refresh  u up

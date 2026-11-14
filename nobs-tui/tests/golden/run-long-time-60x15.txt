@@ -12,4 +12,4 @@
 │$ nobs --dir /home/me/book-lab lab deploy --sudo-no-prompt│
 │ -s ch1                                                   │
 └──────────────────────────────────────────────────────────┘
- j/k move  D deploy  X destroy  r refresh  o pane
+ j/k move  D deploy  X destroy  P purge  R prepare  U update

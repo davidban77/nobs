@@ -12,4 +12,4 @@
 │$ nobs --dir /home/me/ws/autocon5 autocon5 up             │
 │ Container autocon5-grafana-1  Started                    │
 └──────────────────────────────────────────────────────────┘
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d …
+ Tab focus  j/k move  / filter  l logs  r refresh  u up
