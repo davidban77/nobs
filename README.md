@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run five actions: up, down, maintenance, deploy and destroy. Each action runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run fourteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -13,7 +13,7 @@ Five words are used in this part:
 | Word | Meaning |
 |---|---|
 | workbench | one view of the screen for one kind of work: `1 devices`, `2 services` and, in a book lab only, `3 lab`; the keys `1`, `2` and `3` switch between them |
-| action | a nobs command that the screen runs for you, after you answer `y` (see [Actions](#actions)) |
+| action | a nobs command that the screen runs for you when you press its key; an action that changes something asks `y/n` first (see [Actions](#actions)) |
 | stack | one group of containers that Docker Compose starts together: a workshop, one chapter of the book lab, or a labcli lab; the row `sonda only` is listed as a stack too, but it has no containers |
 | focus | the part of the screen that gets your keys, the stack list or the tabs; `Tab` moves it |
 | chooser | the list of labs that plain `nobs` shows when it finds no lab |
@@ -249,13 +249,13 @@ At 60 by 15 it looks like this:
 │ nobs-t-srl2  —      ││ project   netobs                  │
 │                     ││ nodes     1 of 2 running          │
 │                     ││ services  1 of 1 running          │
-└─────────────────────┘│ last      lab deploy -s ch1  exit…│
+└─────────────────────┘│ last      lab deploy --sudo-no-pr…│
 ┌ chapters 2 ─────────┐│                                   │
 │>ch1  up 1/1         ││                                   │
 │ ch2  down           ││                                   │
 └─────────────────────┘└───────────────────────────────────┘
- run  lab deploy -s ch1  exit 0  41s                 o open
- j/k move  D deploy  X destroy  r refresh  o pane
+ run  lab deploy --sudo-no-prompt -s c…  exit 0  41s o open
+ j/k move  D deploy  X destroy  P purge  R prepare  U update
 ```
 
 The left side has two boxes. The `nodes` box lists the nodes of the topology file (the containerlab file that names the network devices of the lab), with the columns `NAME`, `KIND` and `STATE`. `KIND` appears from 100 columns. The state comes from `docker ps -a`, which the screen runs as you, without `sudo`:
@@ -279,9 +279,9 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 | `services` | how many services of the chapter run; `?` when not known |
 | `last` | the last action on this chapter and how it ended, for example `lab deploy --sudo-no-prompt -s ch1  exit 0`; `—` when there was none |
 
-The keys are `j/k move  D deploy  X destroy  r refresh  o pane`. `D` and `X` are actions (see [Actions](#actions)).
+At 100 columns the key line is `j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show  r refresh  o pane`. At 60 columns the last hints do not fit and are left out; `?` lists them. `D`, `X`, `P`, `R`, `U`, `B` and `S` are actions (see [Actions](#actions)).
 
-When `LAB_SUDO` (see [Flags and variables](#flags-and-variables)) is on, `D` and `X` run `sudo containerlab`. The screen cannot ask for a password, so `D` and `X` add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). With it, `sudo` fails instead of asking for a password.
+When `LAB_SUDO` (see [Flags and variables](#flags-and-variables)) is on, `D`, `X`, `P`, `R` and `S` run `sudo containerlab`. The screen cannot ask for a password, so these five add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). With it, `sudo` fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
 
 When `sudo` needs a password, the action ends at once with `exit 1`. For `X`, the run pane shows:
 
@@ -291,7 +291,7 @@ sudo: a password is required
 nobs: lab destroy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again
 ```
 
-The `sudo:` lines come from `sudo` itself, and there can be one or two of them. For `D`, the last line says `lab deploy`. Nothing has changed, and the chapter row gets the mark `!`.
+The `sudo:` lines come from `sudo` itself, and there can be one or two of them. For the other keys, the last line names their command, for example `lab deploy` for `D`. Nothing has changed. The chapter row gets the mark `!`, except after `P`, which acts on the whole lab.
 
 To go on:
 
@@ -303,29 +303,46 @@ When the line comes back later, those minutes have passed. Do the same steps aga
 
 ### Actions
 
-An action is a nobs command that the screen runs for you. There are five:
+An action is a nobs command that the screen runs for you. There are fourteen:
 
-| Key | Where it works | Command it runs |
-|---|---|---|
-| `u` | the services workbench, on a workshop stack, with the focus on the stack list or on the overview or logs tab | `nobs --dir <workshop folder> <workshop> up` |
-| `d` | the same as `u` | `nobs --dir <workshop folder> <workshop> down` |
-| `m` | the devices workbench of a workshop, with a device selected | `nobs --dir <workshop folder> <workshop> maintenance -d <device> --state`, or `--clear` when the device is in maintenance |
-| `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` |
-| `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` |
+| Key | Where it works | Command it runs | When you press the key |
+|---|---|---|---|
+| `u` | the services workbench, on a workshop stack, with the focus on the stack list or on the overview or logs tab | `nobs --dir <workshop folder> <workshop> up` | asks `y/n` |
+| `d` | the same as `u` | `nobs --dir <workshop folder> <workshop> down` | asks `y/n` |
+| `X` | the same as `u` | `nobs --dir <workshop folder> <workshop> destroy` | asks `y/n` and says `It removes the stack's volumes.` |
+| `R` | the same as `u` | `nobs --dir <workshop folder> <workshop> reset` | asks `y/n` and says `It clears silences, maintenance and cascade scenarios.` |
+| `p` | the same as `u` | `nobs --dir <workshop folder> <workshop> preflight` | asks `y/n` and says `It flaps srl1, leaves it in maintenance and can take 13 minutes.` |
+| `s` | the same as `u` | `nobs --dir <workshop folder> <workshop> status` | runs at once |
+| `m` | the devices workbench of a workshop, with a device selected | `nobs --dir <workshop folder> <workshop> maintenance -d <device> --state`, or `--clear` when the device is in maintenance | asks `y/n` |
+| `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` |
+| `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes and every node.` |
+| `P` | the lab workbench; it acts on the whole lab, so it needs no chapter | `nobs --dir <lab folder> lab purge --sudo-no-prompt` | asks `y/n` and says `It takes every scenario down and removes their volumes.` |
+| `R` | the same as `D` | `nobs --dir <lab folder> lab prepare --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes every scenario down first.` |
+| `U` | the same as `D`; it acts on every service of the chapter | `nobs --dir <lab folder> lab update -s <chapter>` | asks `y/n` and says `It recreates every service of the chapter and its unnamed volumes.` |
+| `B` | the same as `U` | `nobs --dir <lab folder> lab rebuild -s <chapter>` | asks `y/n` |
+| `S` | the same as `D` | `nobs --dir <lab folder> lab show --sudo-no-prompt -s <chapter>` | runs at once |
 
-The screen runs the same nobs program you started, as a separate program, with the same environment variables as the screen. It is the same command you would type yourself (see [Workshops](#workshops), [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) and [Book lab](#book-lab)). The key line shows `u up  d down` or `m maintenance` only where the key works.
+The screen runs the same nobs program you started, as a separate program, with the same environment variables as the screen. It is the same command you would type yourself (see [Workshops](#workshops), [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance) and [Book lab](#book-lab)). The key line shows the hint of an action, for example `u up`, only where the action works. It shows the hints in the order of the table. A hint that does not fit is left out whole, never cut. `?` lists every action of the workbench.
 
-Nothing runs before you say yes. The key line first shows the whole command as a question, for example:
+An action that changes something runs only after you say yes. The key line first shows the whole command as a question, for example:
 
 ```
 run nobs --dir /home/me/ws/packt packt up? y/n
 ```
 
-Only `y` runs it. Any other key runs nothing, and the line says `not run: packt up`.
+When the action does more than its name says, the question adds one sentence about it, for example:
+
+```
+run nobs --dir /home/me/ws/packt packt destroy? It removes the stack's volumes. y/n
+```
+
+Only `y` runs it. Any other key runs nothing, and the line says `not run:` and the command without its `--dir` folder, for example `not run: packt up`.
+
+`s` and `S` only read, so they ask nothing. They start at once, and their output shows in the run pane.
 
 Some keys refuse:
 
-- `u` or `d` on a chapter, on a labcli lab or on `sonda only` shows `u and d are for a workshop; a chapter is deployed from the lab workbench`.
+- `u`, `d`, `X`, `R`, `p` or `s` in the services workbench, on a chapter, on a labcli lab or on `sonda only`, shows `<key> <name> is for a workshop; a chapter has its actions in the lab workbench`, for example `u up is for a workshop; a chapter has its actions in the lab workbench`.
 - `m` does nothing in a book lab, nor when the device list is empty.
 - Only one action runs at a time. A second action key shows `one action at a time: <action> is running`.
 
@@ -340,7 +357,7 @@ When the action starts, the run pane opens by itself. The title of the pane show
 | `stopped` | yellow | you stopped it with Ctrl-C |
 | `not stopped` | red | you stopped it, but a program it started still runs (see below) |
 
-The pane starts with the command line, `$ nobs --dir <folder> …`. A long command line wraps onto more than one row. Under it come the lines the action prints, as they come. A line that starts with `nobs:` is red. A long line wraps. When the pane has too few rows for all of this, the command line is cut first, one row at a time from its end, until only its first row is left. When the command line is cut, its last row ends with `…`. Only then do output lines go out of view: the pane shows the newest rows that fit, so the oldest line in view may show only its end. It cannot scroll back, so the first lines of a long action go out of view. To see every line of an action, run the same command in a terminal instead of from the screen. The `y/n` question before the action shows the whole command. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
+The pane starts with the command line, `$ nobs --dir <folder> …`. A long command line wraps onto more than one row. Under it come the lines the action prints, as they come. A line that starts with `nobs:` is red. A long line wraps. When the pane has too few rows for all of this, the command line is cut first, one row at a time from its end, until only its first row is left. When the command line is cut, its last row ends with `…`. Only then do output lines go out of view: the pane shows the newest rows that fit, so the oldest line in view may show only its end. It cannot scroll back, so the first lines of a long action go out of view. To see every line of an action, run the same command in a terminal instead of from the screen. The `y/n` question before an action that changes something shows the whole command. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
 
 An action that worked, at 100 columns:
 
@@ -366,7 +383,7 @@ An action that failed:
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`. It lasts while the screen is open.
+When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P` acts on the whole lab, so it marks no row. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`. It lasts while the screen is open.
 
 Ctrl-C while an action runs stops it. The title shows `stopping`. The screen starts each action in its own process group: a process group is a program together with every program it starts. The screen sends an interrupt to the whole group. If the group has not ended 5 seconds later, the screen kills it. When the whole group has ended, the title shows `stopped`. Ctrl-C when no action runs closes the screen.
 
@@ -394,13 +411,13 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `l` | open the logs of the selected service; in the sonda tab, ask for the path of a scenario file |
 | `f` | pause the log, or follow it again; this works in the logs tab of the devices workbench too |
 | `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab uses the same window |
-| `u` `d` | ask to run `nobs <workshop> up` or `nobs <workshop> down` on the selected workshop stack; `down` removes the containers and keeps the volumes (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
+| `u` `d` `X` `R` `p` `s` | in the services workbench, on the selected workshop stack: ask to run `nobs <workshop> up`, `down`, `destroy`, `reset` or `preflight`, or run `status` at once; `down` removes the containers and keeps the volumes (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
 | `m` | ask to set or clear the maintenance flag of the selected device |
-| `D` `X` | in the lab workbench, ask to deploy or destroy the selected chapter |
+| `D` `X` `P` `R` `U` `B` `S` | in the lab workbench: ask to deploy, destroy, prepare, update or rebuild the selected chapter, or to purge the whole lab; `S` shows the chapter at once (see [Actions](#actions)) |
 | `y` | answer yes to the open question; any other key answers no |
 | `o` | open or fold the run pane |
 | `x` | dismiss the red error line |
-| `?` | show the keys, or close them |
+| `?` | show the keys and every action of the workbench, or close them; when they do not fit, `j` and `k` scroll them, and the last row says `j/k more` |
 | `Esc` | close the keys, fold the run pane, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list |
 | `q` and Ctrl-C | close the screen and give the terminal back as it was; while an action runs, Ctrl-C stops it and `q` asks first |
 
@@ -412,7 +429,7 @@ When a data call fails, the screen keeps the last good data and shows one red li
 
 ### Size
 
-The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`. In the devices workbench, the device list grows from 23 to 42 columns and adds the `KIND` and `SYNC` columns. The alerts box puts the name of the alert before the device and adds the state and the age. The tab `ifaces` is written `interfaces`. A line that does not fit is cut and ends with `…`.
+The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`. In the devices workbench, the device list grows from 23 to 42 columns and adds the `KIND` and `SYNC` columns. The alerts box puts the name of the alert before the device and adds the state and the age. The tab `ifaces` is written `interfaces`. A line that does not fit is cut and ends with `…`. A key hint is never cut: the key line leaves out the hints that do not fit.
 
 ### Exit codes
 
@@ -446,7 +463,7 @@ This is the test frame of the screen at 60 columns and 15 rows, with made-up dat
 │                     ││ sonda      running  ok        8085│
 └─────────────────────┘└───────────────────────────────────┘
  run  none                                           o open
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d …
+ Tab focus  j/k move  / filter  l logs  r refresh  u up
 ```
 
 ## Commands
