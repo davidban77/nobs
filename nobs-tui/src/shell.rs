@@ -231,6 +231,7 @@ pub enum RunState {
 #[derive(Debug)]
 pub struct Run {
     pub words: String,
+    pub command: String,
     pub target: Target,
     pub lines: Vec<String>,
     pub started: Instant,
@@ -382,7 +383,6 @@ pub struct Model {
     failed: Vec<Target>,
     chapter: usize,
     nodes: Vec<book::NodeRow>,
-    nodes_at: Option<Instant>,
     nodes_ok: bool,
     quitting: bool,
 }
@@ -478,7 +478,6 @@ impl Model {
             failed: Vec::new(),
             chapter,
             nodes: Vec::new(),
-            nodes_at: None,
             nodes_ok: false,
             quitting: false,
         }
@@ -611,7 +610,6 @@ impl Model {
             Update::ActionEnded(end) => self.end_run(end),
             Update::Nodes(Ok(rows)) => {
                 self.nodes = rows;
-                self.nodes_at = Some(self.now);
                 self.nodes_ok = true;
                 self.clear_error("nodes");
             }
@@ -664,6 +662,7 @@ impl Model {
             Question::Pending { args, target } if yes => {
                 self.run = Some(Run {
                     words: words(&args),
+                    command: joined(&args),
                     target,
                     lines: Vec::new(),
                     started: self.now,
@@ -1099,8 +1098,8 @@ impl Model {
             .map(|_| self.chapter)
     }
 
-    pub fn nodes(&self) -> (&[book::NodeRow], Option<Instant>) {
-        (&self.nodes, self.nodes_at)
+    pub fn nodes(&self) -> &[book::NodeRow] {
+        &self.nodes
     }
 
     pub fn nodes_ok(&self) -> bool {
@@ -3741,7 +3740,7 @@ mod tests {
     }
 
     #[test]
-    fn nodes_arrive_with_their_age_and_a_failure_goes_to_the_error_row() {
+    fn nodes_arrive_and_a_failure_goes_to_the_error_row_and_keeps_them() {
         let mut model = book_model();
         let at = Instant::now();
         model.tick(at, UNIX_EPOCH, (80, 24));
@@ -3752,11 +3751,11 @@ mod tests {
         }];
 
         model.apply(Update::Nodes(Ok(rows.clone())));
-        assert_eq!(model.nodes(), (&rows[..], Some(at)));
+        assert_eq!(model.nodes(), rows);
 
         model.apply(Update::Nodes(Err("docker is gone".to_string())));
         assert_eq!(model.error(), Some(("nodes", "docker is gone", at)));
-        assert_eq!(model.nodes().0, rows);
+        assert_eq!(model.nodes(), rows);
         model.apply(Update::Nodes(Ok(rows)));
         assert_eq!(model.error(), None);
     }

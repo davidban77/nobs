@@ -1041,7 +1041,11 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     };
     let width = usize::from(inner.width);
-    let room = usize::from(inner.height).saturating_sub(1);
+    let mut lines: Vec<Line> = wrapped(&format!("$ nobs {}", run.command), width)
+        .into_iter()
+        .map(|row| Line::styled(row, DIM))
+        .collect();
+    let room = usize::from(inner.height).saturating_sub(lines.len());
     let mut tail: Vec<Line> = Vec::new();
     for line in run.lines.iter().rev() {
         if tail.len() >= room {
@@ -1057,7 +1061,6 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
     }
     tail.truncate(room);
     tail.reverse();
-    let mut lines = vec![fitted(vec![(format!("$ nobs {}", run.words), DIM)], width)];
     lines.extend(tail);
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -1086,7 +1089,7 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
-    let (rows, _) = model.nodes();
+    let rows = model.nodes();
     let block = Block::bordered().title_top(format!(" nodes {} ", rows.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1141,7 +1144,7 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
             .display()
             .to_string()
     });
-    let (nodes, _) = model.nodes();
+    let nodes = model.nodes();
     let running = nodes
         .iter()
         .filter(|node| node.state.as_deref() == Some("running"))

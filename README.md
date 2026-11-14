@@ -281,6 +281,8 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 
 The keys are `j/k move  D deploy  X destroy  r refresh  o pane`. `D` and `X` are actions (see [Actions](#actions)).
 
+When `LAB_SUDO` is on, `D` and `X` run `sudo containerlab`. The screen cannot ask for a password, so `sudo` must be able to run without asking for one.
+
 ### Actions
 
 An action is a nobs command that the screen runs for you. There are five:
@@ -319,14 +321,14 @@ When the action starts, the run pane opens by itself. The title of the pane show
 | `stopped` | yellow | you stopped it with Ctrl-C |
 | `not stopped` | red | you stopped it, but a program it started still runs (see below) |
 
-The first line of the pane is `$ nobs …`, the command. Under it come the lines the command prints, as they come. A line that starts with `nobs:` is red. A long line wraps. `o` opens and folds the pane, and `Esc` folds it. The pane keeps the last 2,000 lines, and only those of the last action. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
+The pane starts with the whole command, `$ nobs --dir <folder> …`. Under it come the lines the command prints, as they come. A line that starts with `nobs:` is red. A long line wraps. `o` opens and folds the pane, and `Esc` folds it. The pane keeps the last 2,000 lines, and only those of the last action. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
 
 An action that worked, at 100 columns:
 
 ```
 ┌ run  nobs-t-packt up  exit 0  39s ───────────────────────────────────────────────────── Esc fold ┐
-│$ nobs nobs-t-packt up                                                                            │
-│Prometheus    http://localhost:9090                                                               │
+│$ nobs --dir /Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt nobs-t-packt │
+│up                                                                                                │
 │Alertmanager  http://localhost:9093                                                               │
 │Loki          http://localhost:3001                                                               │
 │Infrahub      http://localhost:8000                                                               │
@@ -339,7 +341,7 @@ An action that failed:
 
 ```
 ┌ run  lab deploy -s ch1  exit 1  0s ──────────────────────────────────────────────────── Esc fold ┐
-│$ nobs lab deploy -s ch1                                                                          │
+│$ nobs --dir /Users/netpanda/projects/nobs/target/slice-24b-lab lab deploy -s ch1                 │
 │nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-no│
 │bs-t-srl2); run nobs lab destroy first                                                            │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘

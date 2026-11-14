@@ -35,6 +35,7 @@ const WORKSHOP_ONE: &str = concat!(
     "/../tests/fixtures/workshop-one/lab_vars.yml"
 );
 const BOOK_LAB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/book-lab");
+const LAB_DIR: &str = "/home/me/book-lab";
 const ALREADY_EXIST: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
 const LONG_DIR: &str = "/Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt";
 const SIZES: [(u16, u16); 2] = [(60, 15), (100, 30)];
@@ -426,7 +427,10 @@ fn lab_model() -> Shell {
 fn unpolled_lab_model() -> Shell {
     let dir = PathBuf::from(BOOK_LAB);
     let lab = locate(&dir, Some(&dir)).unwrap();
-    let chapters = stacks(Some(&lab), Vec::new()).unwrap();
+    let mut chapters = stacks(Some(&lab), Vec::new()).unwrap();
+    for chapter in &mut chapters {
+        chapter.path = PathBuf::from(LAB_DIR);
+    }
     let mut model = Shell::new(Start {
         chooser: false,
         ..begin(Some(lab), chapters, Workbench::Lab)
@@ -761,6 +765,29 @@ fn a_failed_deploy_is_red_on_its_title_and_its_nobs_line_and_marks_its_chapter()
 }
 
 #[test]
+fn a_failed_maintenance_marks_its_device_row() {
+    let source =
+        Fixed::from_lab_vars(&lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap());
+    let devices = source.devices().unwrap();
+    let dir = PathBuf::from(WORKSHOP_DIR);
+    let lab = locate(&dir, Some(&dir)).unwrap();
+    let mut model = model_with(false, false, Some(Arc::new(source)), Some(lab));
+    press(&mut model, KeyCode::Char('1'));
+    model.apply(Update::Devices(Ok(devices)));
+    press(&mut model, KeyCode::Char('m'));
+    press(&mut model, KeyCode::Char('y'));
+    model.apply(Update::ActionEnded(End::Exited(1)));
+
+    let screen = lines(&render(model, 100, 30));
+
+    assert!(
+        screen.iter().any(|line| line.starts_with("│!  srl1")),
+        "{}",
+        screen.join("\n")
+    );
+}
+
+#[test]
 fn nodes_show_question_marks_until_a_good_answer_whatever_the_error_row_does() {
     let left_of = |screen: &[String], name: &str| {
         let line = screen.iter().find(|line| line.contains(name)).unwrap();
@@ -831,6 +858,15 @@ fn a_long_refusal_wraps_whole_into_the_run_pane_and_is_red_on_every_row() {
 #[test]
 fn a_long_question_wraps_whole_onto_the_bottom_rows() {
     golden("question-long", long_question);
+}
+
+#[test]
+fn a_long_command_wraps_whole_onto_the_first_rows_of_the_run_pane() {
+    golden("run-long", || {
+        let mut model = long_question();
+        press(&mut model, KeyCode::Char('y'));
+        model
+    });
 }
 
 #[test]

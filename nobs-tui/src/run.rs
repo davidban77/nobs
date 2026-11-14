@@ -58,23 +58,32 @@ impl Launcher for Processes {
         args: &[OsString],
         out: Sender<Update>,
     ) -> io::Result<Box<dyn Running>> {
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn()?;
-        let readers = [
-            read(child.stdout.take().expect("stdout is piped"), out.clone()),
-            read(child.stderr.take().expect("stderr is piped"), out.clone()),
-        ];
-        let group = child.id();
-        let state = Arc::new(Mutex::new(State::default()));
-        let watched = Arc::clone(&state);
-        thread::spawn(move || watch(child, readers, &watched, &out));
-        Ok(Box::new(Process { group, state }))
+        launch(program, args, out, |group| signal(group, 0))
     }
+}
+
+fn launch(
+    program: &Path,
+    args: &[OsString],
+    out: Sender<Update>,
+    probe: fn(u32) -> io::Result<()>,
+) -> io::Result<Box<dyn Running>> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()?;
+    let readers = [
+        read(child.stdout.take().expect("stdout is piped"), out.clone()),
+        read(child.stderr.take().expect("stderr is piped"), out.clone()),
+    ];
+    let group = child.id();
+    let state = Arc::new(Mutex::new(State::default()));
+    let watched = Arc::clone(&state);
+    thread::spawn(move || watch(child, readers, &watched, &out, probe));
+    Ok(Box::new(Process { group, state }))
 }
 
 impl Running for Process {
@@ -112,6 +121,7 @@ fn watch(
     readers: [JoinHandle<()>; 2],
     state: &Mutex<State>,
     out: &Sender<Update>,
+    probe: fn(u32) -> io::Result<()>,
 ) {
     let group = child.id();
     let mut exited: Option<(i32, Instant)> = None;
@@ -132,7 +142,7 @@ fn watch(
                     readers.iter().all(JoinHandle::is_finished) || at.elapsed() >= PIPES_GRACE
                 })
                 .map(|(code, _)| End::Exited(code)),
-            Some(_) if exited.is_some() && group_gone(signal(group, 0)) => Some(End::Stopped),
+            Some(_) if exited.is_some() && group_gone(probe(group)) => Some(End::Stopped),
             Some(_) if killed.is_some_and(|at| at.elapsed() >= KILL_GRACE) => {
                 Some(End::NotStopped { group })
             }
@@ -287,6 +297,10 @@ mod tests {
         let end = updates.recv_timeout(Duration::from_secs(15)).unwrap();
 
         assert!(matches!(end, Update::ActionEnded(End::Stopped)), "{end:?}");
+        assert!(gone(pid), "process {pid} is still there");
+    }
+
+    fn gone(pid: libc::pid_t) -> bool {
         let gone = || {
             (unsafe { libc::kill(pid, 0) }) != 0
                 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
@@ -295,7 +309,7 @@ mod tests {
         while !gone() && Instant::now() < deadline {
             thread::sleep(TICK);
         }
-        assert!(gone(), "process {pid} is still there");
+        gone()
     }
 
     #[test]
@@ -305,5 +319,48 @@ mod tests {
         assert!(group_gone(error(libc::ESRCH)));
         assert!(!group_gone(error(libc::EPERM)));
         assert!(!group_gone(Ok(())));
+    }
+
+    #[test]
+    fn a_group_the_probe_never_sees_gone_ends_not_stopped_with_its_group() {
+        let (out, updates) = mpsc::channel();
+        let args = ["-c", "echo $$; sleep 300"].map(OsString::from);
+        let mut running = launch(Path::new("sh"), &args, out, |_| {
+            Err(io::Error::from_raw_os_error(libc::EPERM))
+        })
+        .unwrap();
+        let printed = updates.recv_timeout(Duration::from_secs(5)).unwrap();
+        let Update::ActionLine(group) = &printed else {
+            panic!("{printed:?}");
+        };
+        let group: u32 = group.parse().unwrap();
+
+        running.stop();
+        let end = updates.recv_timeout(Duration::from_secs(15)).unwrap();
+
+        assert!(
+            matches!(end, Update::ActionEnded(End::NotStopped { group: ended }) if ended == group),
+            "{end:?}"
+        );
+    }
+
+    #[test]
+    fn a_background_job_holding_the_pipes_does_not_hold_back_the_end() {
+        let (_running, updates) = shell("sleep 300 & echo $!; exit 0");
+        let printed = updates.recv_timeout(Duration::from_secs(5)).unwrap();
+        let Update::ActionLine(pid) = &printed else {
+            panic!("{printed:?}");
+        };
+        let pid: libc::pid_t = pid.parse().unwrap();
+
+        let end = updates.recv_timeout(Duration::from_secs(10));
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let killed = gone(pid);
+
+        assert!(
+            matches!(end, Ok(Update::ActionEnded(End::Exited(0)))),
+            "{end:?}"
+        );
+        assert!(killed, "process {pid} is still there");
     }
 }

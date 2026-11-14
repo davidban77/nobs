@@ -9,7 +9,7 @@
 │                     ││ alertman…  running  ok        9093│
 └─────────────────────┘└───────────────────────────────────┘
 ┌ run  autocon5 up  exit 0  41s ───────────────── Esc fold ┐
-│$ nobs autocon5 up                                        │
+│$ nobs --dir /home/me/ws/autocon5 autocon5 up             │
 │ Container autocon5-grafana-1  Started                    │
 └──────────────────────────────────────────────────────────┘
  Tab focus  j/k move  / filter  l logs  r refresh  u up  d …

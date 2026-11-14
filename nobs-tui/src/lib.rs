@@ -272,7 +272,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use nobs_core::compose::Compose;
     use nobs_core::lab;
-    use nobs_core::locate::{Kind, Located};
+    use nobs_core::locate::{locate, Kind, Located};
     use nobs_core::runner::Output;
     use nobs_core::sot::{self, Device, Maintenance, SourceOfTruth};
     use nobs_core::status::Urls;
@@ -953,18 +953,125 @@ mod tests {
         model.run().unwrap().state
     }
 
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures")
+            .join(name)
+    }
+
+    fn devices_model() -> Model {
+        let dir = fixture("workshop-one");
+        let mut model = Model::new(Start {
+            lab: Some(locate(&dir, Some(&dir)).unwrap()),
+            source: Some(Arc::new(Holding)),
+            home: Workbench::Devices,
+            ..start(vec![stack(&[CLOSED])], false)
+        });
+        model.apply(Update::Devices(Ok(vec![device("srl1")])));
+        model
+    }
+
+    fn lab_model() -> Model {
+        let dir = fixture("book-lab");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        let chapters = shell::stacks(Some(&located), Vec::new()).unwrap();
+        Model::new(Start {
+            lab: Some(located),
+            home: Workbench::Lab,
+            ..start(chapters, false)
+        })
+    }
+
     #[test]
     fn y_after_an_action_key_starts_the_command_the_model_built() {
+        let one = fixture("workshop-one").to_string_lossy().into_owned();
+        let book = fixture("book-lab").to_string_lossy().into_owned();
+        let workshop = || Model::new(start(vec![stack(&[CLOSED])], false));
+        let cases: [(Model, char, Vec<&str>); 5] = [
+            (workshop(), 'u', vec!["--dir", "/ws", "ws", "up"]),
+            (workshop(), 'd', vec!["--dir", "/ws", "ws", "down"]),
+            (
+                devices_model(),
+                'm',
+                vec![
+                    "--dir",
+                    &one,
+                    "nobs-t-one",
+                    "maintenance",
+                    "-d",
+                    "srl1",
+                    "--state",
+                ],
+            ),
+            (
+                lab_model(),
+                'D',
+                vec!["--dir", &book, "lab", "deploy", "-s", "ch1"],
+            ),
+            (
+                lab_model(),
+                'X',
+                vec!["--dir", &book, "lab", "destroy", "-s", "ch1"],
+            ),
+        ];
+
+        let mut seen = Vec::new();
+        let mut wanted = Vec::new();
+
+        for (mut model, typed, words) in cases {
+            let launcher = Arc::new(FakeLauncher::new());
+            let mut actions = Actions::new(launcher.clone());
+            let result = press(&mut model, &mut actions, &[ch(typed), ch('y')]);
+            seen.push((typed, result, launcher.calls()));
+            wanted.push((
+                typed,
+                Err(PAUSED.to_string()),
+                vec![(PathBuf::from("nobs"), args(&words))],
+            ));
+        }
+
+        assert_eq!(seen, wanted);
+    }
+
+    #[test]
+    fn the_end_of_an_action_asks_the_pollers_to_refresh() {
+        let runner = scripted(Vec::new());
+        let (pollers, updates) = Pollers::start(
+            runner,
+            Vec::new(),
+            0,
+            target(),
+            None,
+            None,
+            Some(fixture("book-lab/containerlab/lab.yml")),
+        );
+        let nodes = |limit: Duration| {
+            next(&updates, limit, |update| {
+                matches!(update, Update::Nodes(_)).then_some(())
+            })
+        };
+        nodes(Duration::from_secs(5));
         let launcher = Arc::new(FakeLauncher::new());
         let (mut model, mut actions) = acting(&launcher);
+        press(&mut model, &mut actions, &[ch('u'), ch('y')]).unwrap_err();
+        launcher
+            .sender()
+            .unwrap()
+            .send(Update::ActionEnded(End::Exited(0)))
+            .unwrap();
+        let (_alive, quiet) = mpsc::channel();
 
-        let result = press(&mut model, &mut actions, &[ch('u'), ch('y')]);
+        turns(
+            &mut terminal(80, 24),
+            &mut model,
+            &pollers,
+            &quiet,
+            &mut actions,
+            |_| Err(PAUSED.to_string()),
+        )
+        .unwrap_err();
 
-        assert_eq!(result, Err(PAUSED.to_string()));
-        assert_eq!(
-            launcher.calls(),
-            [(PathBuf::from("nobs"), args(&["--dir", "/ws", "ws", "up"]))]
-        );
+        nodes(Duration::from_secs(2));
     }
 
     #[test]

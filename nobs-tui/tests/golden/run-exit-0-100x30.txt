@@ -19,7 +19,7 @@
 │                              ││                                                                  │
 └──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
 ┌ run  autocon5 up  exit 0  41s ───────────────────────────────────────────────────────── Esc fold ┐
-│$ nobs autocon5 up                                                                                │
+│$ nobs --dir /home/me/ws/autocon5 autocon5 up                                                     │
 │ Container autocon5-grafana-1  Starting                                                           │
 │ Container autocon5-grafana-1  Started                                                            │
 │                                                                                                  │
