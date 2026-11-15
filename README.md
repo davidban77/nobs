@@ -170,13 +170,13 @@ The left side is the list of stacks, titled `stacks <n>`. A book lab lists its c
 
 The right side is titled with the name of the stack and `refreshed <n>s ago`, or `no answer yet`. At 100 columns and wider, the title also shows, after the name, how many services the stack defines, for example `22 services`, or `?` when this is not known. Under the title are three tabs, `overview`, `logs` and `sonda`, with the open tab in capital letters.
 
-The overview tab is a table with one row for each container that Docker Compose lists for the selected stack. After these rows comes one row for each defined service that has no container, with `—` under `STATE`, `PORT` and `AGE`. A cell shows `—` when there is no value.
+The overview tab is a table with one row for each container that Docker Compose lists for the selected stack. After these rows comes one row for each defined service that has no container, with `—` under `STATE`, `HEALTH`, `PORT` and `AGE`. A cell shows `—` when there is no value.
 
 | Column | What it shows | Where it comes from |
 |---|---|---|
 | `SERVICE` | the name of the service | `docker compose ps --all --format json`; for a row with no container, `docker compose config --services` |
 | `STATE` | `running`, `exited` and so on, as Docker reports it; `—` for a row with no container | `docker compose ps --all --format json` |
-| `HEALTH` | `ok`, `http <code>` or `down` | an HTTP check of the service (see below) |
+| `HEALTH` | `ok`, `http <code>` or `down` when the container is `running`; `—` for any other state and for a row with no container | an HTTP check of the service (see below) |
 | `PORT` | the first published port | `docker compose ps --all --format json` |
 | `AGE` | how long the container has run | the same call |
 

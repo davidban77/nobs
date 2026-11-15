@@ -35,6 +35,7 @@ const MIN_SIZE: (u16, u16) = (60, 15);
 const STACK_SONDA_URL: &str = "http://localhost:8085";
 const SONDA_ENV: &str = "SONDA_SERVER_URL";
 const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
+const RUNNING: &str = "running";
 
 pub type ShownDeviceLogs<'a> = (&'a str, Vec<(i64, &'a str)>, bool, usize);
 
@@ -176,7 +177,7 @@ impl StackState {
             .filter(|name| {
                 listed
                     .iter()
-                    .any(|row| row.name == **name && row.state == "running")
+                    .any(|row| row.name == **name && row.state == RUNNING)
             })
             .count();
         if running > 0 {
@@ -547,7 +548,7 @@ impl Model {
                 }
                 self.health = list;
                 for service in &mut self.services {
-                    service.health = health_of(&self.health, &service.name);
+                    service.health = health_of(&self.health, &service.name, &service.state);
                 }
             }
             Update::Logs(index, service, Ok(lines)) => {
@@ -1240,7 +1241,7 @@ impl Model {
         let mut services: Vec<Service> = rows
             .into_iter()
             .map(|row| Service {
-                health: health_of(&self.health, &row.name),
+                health: health_of(&self.health, &row.name, &row.state),
                 name: row.name,
                 state: row.state,
                 port: row.port,
@@ -1248,7 +1249,7 @@ impl Model {
             })
             .collect();
         services.extend(without_row.into_iter().map(|name| Service {
-            health: health_of(&self.health, &name),
+            health: health_of(&self.health, &name, "—"),
             name,
             state: "—".to_string(),
             port: None,
@@ -1857,7 +1858,10 @@ pub(crate) fn sonda_url(flag: Option<&str>, stack: Option<&Stack>) -> String {
     }
 }
 
-fn health_of(health: &[Health], name: &str) -> Option<String> {
+fn health_of(health: &[Health], name: &str, state: &str) -> Option<String> {
+    if state != RUNNING {
+        return None;
+    }
     health
         .iter()
         .find(|entry| entry.service == name)
@@ -2601,7 +2605,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_defined_service_without_a_container_shows_the_health_its_probe_gave() {
+    fn a_defined_service_without_a_container_shows_no_health() {
         let mut model = opened(&["autocon5"]);
         model.apply(Update::Health(0, vec![health("grafana", "down")]));
         model.apply(Update::Services(0, defined(&["grafana"]), Ok(Vec::new())));
@@ -2611,7 +2615,31 @@ pub(crate) mod tests {
             (service.name.as_str(), service.state.as_str()),
             ("grafana", "—")
         );
-        assert_eq!(service.health.as_deref(), Some("down"));
+        assert_eq!(service.health, None);
+    }
+
+    #[test]
+    fn a_stopped_container_shows_no_health_and_a_running_one_the_probe_s_answer() {
+        let mut model = opened(&["autocon5"]);
+        let probed = vec![health("grafana", "down"), health("loki", "ok")];
+        let listed = vec![row("grafana", "exited"), row("loki", "running")];
+
+        model.apply(Update::Health(0, probed.clone()));
+        model.apply(listing(0, Ok(listed)));
+        let before: Vec<Option<&str>> = model
+            .services()
+            .iter()
+            .map(|service| service.health.as_deref())
+            .collect();
+        assert_eq!(before, [None, Some("ok")]);
+
+        model.apply(Update::Health(0, probed));
+        let after: Vec<Option<&str>> = model
+            .services()
+            .iter()
+            .map(|service| service.health.as_deref())
+            .collect();
+        assert_eq!(after, [None, Some("ok")]);
     }
 
     #[test]
