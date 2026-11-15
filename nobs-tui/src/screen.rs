@@ -479,7 +479,9 @@ fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let line = Line::from(spans);
     let room = usize::from(area.width).saturating_sub(line.width() + 2);
     frame.render_widget(Paragraph::new(line), area);
-    let logs = if on_devices {
+    let logs = if model.tab() != Tab::Logs {
+        None
+    } else if on_devices {
         model
             .device_logs()
             .map(|(device, _, following, _)| (device, following))
@@ -488,7 +490,7 @@ fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .logs()
             .map(|(service, _, following, _)| (service, following))
     };
-    if let (Tab::Logs, Some((service, following))) = (model.tab(), logs) {
+    if let Some((service, following)) = logs {
         let mode = if following { "following" } else { "paused" };
         let both = format!("{service}  {mode}");
         let status = [both, mode.to_string()]
@@ -1528,6 +1530,9 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
 }
 
 pub(crate) fn help_overflow(model: &Model, area: Rect) -> usize {
+    if !model.help() {
+        return 0;
+    }
     let (_, [_, _, _, body, bottom, _]) = regions(model, area);
     let layout = help_layout(model, body.union(bottom));
     usize::from(layout.rows - layout.room)
@@ -2133,6 +2138,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_closed_help_has_no_overflow_at_a_size_where_the_open_help_overflows() {
+        let area = Rect::new(0, 0, 60, 15);
+        let mut model = services_bench();
+
+        assert_eq!(help_overflow(&model, area), 0);
+        press(&mut model, '?');
+        assert!(help_overflow(&model, area) > 0);
     }
 
     #[test]
