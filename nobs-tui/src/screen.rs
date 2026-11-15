@@ -479,7 +479,9 @@ fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let line = Line::from(spans);
     let room = usize::from(area.width).saturating_sub(line.width() + 2);
     frame.render_widget(Paragraph::new(line), area);
-    let logs = if on_devices {
+    let logs = if model.tab() != Tab::Logs {
+        None
+    } else if on_devices {
         model
             .device_logs()
             .map(|(device, _, following, _)| (device, following))
@@ -488,7 +490,7 @@ fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .logs()
             .map(|(service, _, following, _)| (service, following))
     };
-    if let (Tab::Logs, Some((service, following))) = (model.tab(), logs) {
+    if let Some((service, following)) = logs {
         let mode = if following { "following" } else { "paused" };
         let both = format!("{service}  {mode}");
         let status = [both, mode.to_string()]
@@ -1528,6 +1530,9 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
 }
 
 pub(crate) fn help_overflow(model: &Model, area: Rect) -> usize {
+    if !model.help() {
+        return 0;
+    }
     let (_, [_, _, _, body, bottom, _]) = regions(model, area);
     let layout = help_layout(model, body.union(bottom));
     usize::from(layout.rows - layout.room)
@@ -2136,6 +2141,16 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_help_has_no_overflow_at_a_size_where_the_open_help_overflows() {
+        let area = Rect::new(0, 0, 60, 15);
+        let mut model = services_bench();
+
+        assert_eq!(help_overflow(&model, area), 0);
+        press(&mut model, '?');
+        assert!(help_overflow(&model, area) > 0);
+    }
+
+    #[test]
     fn the_help_names_the_lab_switch_key_only_in_the_book_lab() {
         let mut book_services = lab_bench(2);
         press(&mut book_services, '2');
@@ -2317,5 +2332,20 @@ mod tests {
         });
 
         assert_eq!(rows[9], "4 interfaces …");
+    }
+
+    #[test]
+    fn the_interfaces_footer_of_a_device_with_one_interface_says_1_interface() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let mut list = model.devices().to_vec();
+        list[0].interfaces.truncate(1);
+        model.apply(Update::Devices(Ok(list)));
+        assert_eq!(model.interfaces().len(), 1);
+
+        let rows = painted(30, 10, |frame| {
+            device_interfaces(frame, frame.area(), &model, false)
+        });
+
+        assert_eq!(rows[9], "1 interface  0 differs");
     }
 }

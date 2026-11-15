@@ -1273,7 +1273,7 @@ impl Model {
         let sonda_keys = self.workbench == Workbench::Services
             && self.focus == Focus::Tabs
             && self.tab == Tab::Sonda;
-        if sonda_keys && self.sonda.prompt() != &Prompt::None && key.code != KeyCode::Esc {
+        if self.asking() && key.code != KeyCode::Esc {
             return self.sonda_key(key);
         }
         if let Some(commands) = self.action_key(key.code) {
@@ -2989,6 +2989,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_logs_answer_for_a_stack_not_selected_adds_no_line_and_removes_its_error() {
+        let mut model = opened(&["a", "b"]);
+        with_services(&mut model, &["grafana"]);
+        ch(&mut model, 'l');
+        model.apply(Update::Logs(
+            0,
+            "grafana".to_string(),
+            Err("gone".to_string()),
+        ));
+        assert_eq!(model.selected_stack(), 0);
+        assert_eq!(model.error().unwrap().0, "logs grafana");
+
+        model.apply(Update::Logs(
+            1,
+            "grafana".to_string(),
+            Ok(timed(&["other"])),
+        ));
+
+        assert_eq!(shown(&model), Vec::<String>::new());
+        assert_eq!(model.error(), None);
+    }
+
+    #[test]
     fn too_small_is_true_below_60_columns_or_15_rows_and_blocks_every_key_but_quit() {
         for (columns, rows) in [(59, 15), (60, 14)] {
             let mut model = opened(&["a", "b"]);
@@ -3542,6 +3565,19 @@ pub(crate) mod tests {
         model.apply(Update::Rcas("srl2".to_string(), Ok(vec![])));
 
         assert_eq!(model.error(), None);
+    }
+
+    #[test]
+    fn rcas_for_a_device_that_is_not_selected_are_not_held() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        assert_eq!(model.selected_device().unwrap().name, "srl1");
+
+        model.apply(Update::Rcas(
+            "srl2".to_string(),
+            Ok(vec![log_line(1, "other")]),
+        ));
+
+        assert!(model.rcas.is_empty());
     }
 
     fn os(list: &[&str]) -> Vec<OsString> {
