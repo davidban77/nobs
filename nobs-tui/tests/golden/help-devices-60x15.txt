@@ -9,7 +9,7 @@
   │x        dismiss the error m       maintenance        │
   │Esc      close/clear/back  q       quit; asks in a run│
   │Enter    open / pick alert Ctrl-C  stop a run, or quit│
+  │                                                      │
   │alerts box: Enter picks the device, opens its timeline│
   └──────────────────────────────────────────────────────┘
- run  none                                           o open
  Tab focus  j/k move  / filter  Enter open  r refresh

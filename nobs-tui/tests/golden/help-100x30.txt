@@ -5,6 +5,7 @@
 
 
 
+
   ┌ keys  services workbench ────────────────────────────────────────────────────────────────────┐
   │1 2 3    switch workbench                      ?       close                                  │
   │Tab      focus list/tabs                       Esc     close/clear/back                       │
@@ -26,5 +27,4 @@
 
 
 
- run  none                                                                                   o open
  Tab focus  j/k move  / filter  l logs  r refresh  u up  d down  X destroy  R reset  p preflight

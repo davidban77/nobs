@@ -909,6 +909,7 @@ impl Model {
 
     pub(crate) fn set_help_overflow(&mut self, rows: usize) {
         self.help_overflow = rows;
+        self.help_scroll = self.help_scroll.min(rows);
     }
 
     pub fn run_pane(&self) -> bool {
@@ -1839,7 +1840,7 @@ fn clock(wall: SystemTime) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
@@ -1871,13 +1872,13 @@ mod tests {
         }
     }
 
-    fn fixture(relative: &str) -> PathBuf {
+    pub(crate) fn fixture(relative: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures")
             .join(relative)
     }
 
-    fn stack(name: &str, env: &[(&str, &str)]) -> Stack {
+    pub(crate) fn stack(name: &str, env: &[(&str, &str)]) -> Stack {
         let path = PathBuf::from("/ws").join(name);
         Stack {
             name: name.to_string(),
@@ -1899,7 +1900,7 @@ mod tests {
         }
     }
 
-    fn start(stacks: Vec<Stack>) -> Start {
+    pub(crate) fn start(stacks: Vec<Stack>) -> Start {
         Start {
             lab: None,
             stacks,
@@ -3114,12 +3115,12 @@ mod tests {
         assert_eq!(model.focus(), Focus::List);
     }
 
-    fn workshop_source() -> Arc<dyn SourceOfTruth> {
+    pub(crate) fn workshop_source() -> Arc<dyn SourceOfTruth> {
         let text = fs::read_to_string(fixture("workshop-one/lab_vars.yml")).unwrap();
         Arc::new(Fixed::from_lab_vars(&lab_vars::read(&text).unwrap()))
     }
 
-    fn workshop_located(sot: &str) -> Located {
+    pub(crate) fn workshop_located(sot: &str) -> Located {
         let dir = fixture("workshop-one");
         let mut located = locate(&dir, Some(&dir)).unwrap();
         if let Kind::Workshop(workshop) = &mut located.kind {
@@ -3135,7 +3136,7 @@ mod tests {
             .collect()
     }
 
-    fn alert(device: &str, name: &str, starts_at: &str) -> Alert {
+    pub(crate) fn alert(device: &str, name: &str, starts_at: &str) -> Alert {
         Alert {
             labels: map(&[("alertname", name), ("device", device)]),
             state: "active".to_string(),

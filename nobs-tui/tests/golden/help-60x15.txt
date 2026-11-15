@@ -8,8 +8,8 @@
   │Enter    open the row      X       destroy            │
   │/        filter            R       reset              │
   │r        refresh now       p       preflight          │
+  │l        service logs      s       status             │
   │sonda tab: l load  d delete  r refresh                │
   │j/k more                                              │
   └──────────────────────────────────────────────────────┘
- run  none                                           o open
  Tab focus  j/k move  / filter  l logs  r refresh  u up

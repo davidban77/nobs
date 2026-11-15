@@ -27,4 +27,4 @@
 └──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
  run  none                                                                                   o open
  run nobs --dir /Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt nobs-t-packt
- up? y/n
+up? y/n

@@ -360,7 +360,7 @@ When the action starts, the run pane opens by itself. The title of the pane show
 | `stopped` | yellow | you stopped it with Ctrl-C |
 | `not stopped` | red | you stopped it, but a program it started still runs (see below) |
 
-The pane starts with the command line, `$ nobs --dir <folder> …`. A long command line wraps onto more than one row. Under it come the lines the action prints, as they come. A line that starts with `nobs:` is red. A long line wraps. When the pane has too few rows for all of this, the command line is cut first, one row at a time from its end, until only its first row is left. When the command line is cut, its last row ends with `…`. Only then do output lines go out of view: the pane shows the newest rows that fit, so the oldest line in view may show only its end. It cannot scroll back, so the first lines of a long action go out of view. To see every line of an action, run the same command in a terminal instead of from the screen. The `y/n` question before an action that changes something shows the whole command. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
+The pane starts with the command line, `$ nobs --dir <folder> …`. A long command line wraps onto more than one row. Under it come the lines the action prints, as they come. A line that starts with `nobs:` is red. A long line, and a long command line, breaks between words; only a word longer than the row breaks at the row's end. The pane shows the whole command line, and under it the newest output, when the whole command line and the newest output line fit together. When they do not, the pane shows only the newest output rows, so the oldest line in view may show only its end. The pane gives way to the workbench: it takes only the rows the workbench does not need to show its selected row, and with fewer than 3 rows it folds to the one run line. It cannot scroll back, so the first lines of a long action go out of view. To see every line of an action, run the same command in a terminal instead of from the screen. The `y/n` question before an action that changes something shows the whole command. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
 
 An action that worked, at 100 columns:
 
@@ -381,8 +381,8 @@ An action that failed:
 ```
 ┌ run  lab deploy --sudo-no-prompt -s ch1  exit 1  0s ─────────────────────────────────── Esc fold ┐
 │$ nobs --dir /home/me/book-lab lab deploy --sudo-no-prompt -s ch1                                 │
-│nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-no│
-│bs-t-srl2); run nobs lab destroy first                                                            │
+│nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1,                    │
+│clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first                                         │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -420,7 +420,7 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `y` | answer yes to the open question; any other key answers no |
 | `o` | open or fold the run pane |
 | `x` | dismiss the red error line |
-| `?` | show the keys and every action of the workbench, or close them; when they do not fit, `j` and `k` scroll them, and the last row says `j/k more` |
+| `?` | show the keys and every action of the workbench, or close them; while they are open they cover the run pane too, a running action keeps going, and the pane is back when they close; when they do not fit, `j` and `k` scroll them, also after the terminal changes size, and the last row says `j/k more` |
 | `Esc` | close the keys, fold the run pane, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list |
 | `q` and Ctrl-C | close the screen and give the terminal back as it was; while an action runs, Ctrl-C stops it and `q` asks first |
 

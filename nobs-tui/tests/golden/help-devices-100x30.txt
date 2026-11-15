@@ -26,5 +26,5 @@
 
 
 
- run  none                                                                                   o open
+
  Tab focus  j/k move  / filter  Enter open  r refresh

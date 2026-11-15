@@ -1366,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn j_scrolls_the_help_to_its_last_action_and_no_further() {
+    fn j_scrolls_the_help_to_its_last_entry_and_no_further() {
         let shows = |rows: &[String], pair: [&str; 2]| {
             rows.iter().any(|row| {
                 let words: Vec<&str> = row.split_whitespace().collect();
@@ -1377,10 +1377,113 @@ mod tests {
         let end = help_after(20, false);
         let back = help_after(20, true);
 
-        assert!(!shows(&opened, ["s", "status"]), "{opened:?}");
-        assert!(shows(&end, ["s", "status"]), "{end:?}");
+        assert!(!shows(&opened, ["Ctrl-C", "stop"]), "{opened:?}");
+        assert!(shows(&end, ["Ctrl-C", "stop"]), "{end:?}");
         assert_ne!(back, end);
         assert_eq!(back[1..], end[..end.len() - 1]);
+    }
+
+    const HELP_SIZES: [(u16, u16); 3] = [(60, 15), (80, 24), (100, 30)];
+
+    fn help_turn(model: &mut Model, (width, height): (u16, u16), keys: &[KeyEvent]) -> Vec<String> {
+        let (pollers, updates) = launch(&scripted(Vec::new()), model);
+        let mut terminal = terminal(width, height);
+        let mut keys = keys.iter().copied();
+        turns(
+            &mut terminal,
+            model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
+        )
+        .unwrap_err();
+        let screen: Vec<char> = text(&terminal).replace('│', " ").chars().collect();
+        screen
+            .chunks(usize::from(width))
+            .map(String::from_iter)
+            .collect()
+    }
+
+    fn shows_entry(rows: &[String], (key, meaning): &(String, &str)) -> bool {
+        let wanted: Vec<&str> = key
+            .split_whitespace()
+            .chain(meaning.split_whitespace())
+            .collect();
+        rows.iter().any(|row| {
+            let words: Vec<&str> = row.split_whitespace().collect();
+            words.windows(wanted.len()).any(|seen| seen == wanted)
+        })
+    }
+
+    fn services_help_model() -> Model {
+        Model::new(start(vec![stack(&[CLOSED])], false))
+    }
+
+    fn limit(model: &Model, (width, height): (u16, u16)) -> usize {
+        screen::help_overflow(model, Rect::new(0, 0, width, height))
+    }
+
+    #[test]
+    fn j_reaches_the_last_help_entry_at_every_size_with_the_pane_open_or_closed() {
+        let builds: [fn() -> Model; 3] = [services_help_model, devices_model, lab_model];
+        for build in builds {
+            for size in HELP_SIZES {
+                for pane in [false, true] {
+                    let mut model = build();
+                    let mut keys: Vec<KeyEvent> = pane.then(|| ch('o')).into_iter().collect();
+                    keys.push(ch('?'));
+                    keys.extend(std::iter::repeat_n(ch('j'), 20));
+
+                    let rows = help_turn(&mut model, size, &keys);
+
+                    let entries = screen::help_entries(model.workbench());
+                    let last = entries.last().unwrap();
+                    assert!(
+                        shows_entry(&rows, last),
+                        "{:?} {size:?} pane {pane}\n{}",
+                        model.workbench(),
+                        rows.join("\n")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn after_a_shrink_a_grow_and_a_shrink_the_help_scroll_stays_in_its_limit_and_one_k_moves_it() {
+        let mut model = services_help_model();
+        help_turn(&mut model, (100, 30), &[ch('?')]);
+        help_turn(&mut model, (60, 15), &[ch('j'); 20]);
+        assert_eq!(model.help_scroll(), limit(&model, (60, 15)));
+
+        for size in [(60, 16), (60, 15)] {
+            let before = help_turn(&mut model, size, &[]);
+            assert!(
+                model.help_scroll() <= limit(&model, size),
+                "{size:?}: scroll {} limit {}",
+                model.help_scroll(),
+                limit(&model, size)
+            );
+            let after = help_turn(&mut model, size, &[ch('k')]);
+            assert_ne!(before, after, "{size:?}\n{}", after.join("\n"));
+        }
+    }
+
+    #[test]
+    fn the_lab_help_covers_the_open_pane_and_shows_all_sixteen_entries_at_60_by_15() {
+        let mut model = lab_model();
+
+        let rows = help_turn(&mut model, (60, 15), &[ch('o'), ch('?')]);
+
+        let entries = screen::help_entries(Workbench::Lab);
+        let screen = rows.join("\n");
+        assert!(model.run_pane());
+        assert_eq!(entries.len(), 16);
+        for entry in &entries {
+            assert!(shows_entry(&rows, entry), "{entry:?}\n{screen}");
+        }
+        assert!(!screen.contains("j/k more"), "{screen}");
     }
 
     #[test]

@@ -71,6 +71,8 @@ const HELP_LAB: [(&str, &str); 7] = [
     ("Esc", "close/fold"),
 ];
 const HELP_MORE: &str = "j/k more";
+const PANE_LEAST: u16 = 3;
+const NODES_LEAST: u16 = 4;
 const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 
@@ -84,23 +86,23 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     header(frame, header_row, model);
     switcher(frame, switcher_row, model);
     if let Some((source, text, at)) = model.error() {
-        let line = format!(" {source}: {text}  {}s ago", seconds(model, at));
+        let age = format!("  {}s ago", seconds(model, at));
+        let room = usize::from(error_row.width).saturating_sub(1 + age.chars().count());
+        let line = format!(" {}{age}", cut_words(&format!("{source}: {text}"), room));
         frame.render_widget(
             Paragraph::new(line).style(Style::new().fg(Color::Red)),
             error_row,
         );
     }
     workbench(frame, body, model);
-    if !model.chooser() {
-        if model.run_pane() {
-            run_pane(frame, bottom, model);
-        } else {
-            run_line(frame, bottom, model);
-        }
+    match bottom.height {
+        0 => {}
+        1 => run_line(frame, bottom, model),
+        _ => run_pane(frame, bottom, model),
     }
     frame.render_widget(Paragraph::new(keys.join("\n")), key_row);
     if model.help() {
-        help(frame, body, model);
+        help(frame, body.union(bottom), model);
     }
 }
 
@@ -115,13 +117,20 @@ fn regions(model: &Model, area: Rect) -> (Vec<String>, [Rect; 6]) {
         Constraint::Length(key_height),
     ])
     .areas(area);
+    let least = workbench_least(model);
+    let run_line = middle.height.saturating_sub(least).min(1);
     let bottom_height = if model.chooser() {
         0
     } else if model.run_pane() {
         let width = usize::from(middle.width.saturating_sub(2));
-        pane_height(model.run(), width, middle.height, workbench_least(model))
+        let pane = pane_height(model.run(), width, middle.height, least);
+        if pane < PANE_LEAST {
+            run_line
+        } else {
+            pane
+        }
     } else {
-        1
+        run_line
     };
     let [body, bottom] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(bottom_height)]).areas(middle);
@@ -138,25 +147,19 @@ fn pane_height(run: Option<&Run>, width: usize, middle: u16, least: u16) -> u16 
         .and_then(|run| run.lines.last())
         .map_or(0, |line| wrapped(line, width).len());
     let needed = rows(command + last);
-    let essential = rows(command.min(1) + last);
+    let essential = rows(last);
     let third = middle.saturating_sub(1) / 3 + 1;
     third
         .max(needed.min(middle / 2))
-        .max(essential.min(middle.saturating_sub(least)))
+        .max(essential)
+        .min(middle.saturating_sub(least))
 }
 
 fn workbench_least(model: &Model) -> u16 {
-    let row = match model.workbench() {
-        Workbench::Devices => return 7,
-        Workbench::Services => model
-            .visible_stacks()
-            .iter()
-            .position(|index| *index == model.selected_stack()),
-        Workbench::Lab => model
-            .selected_chapter()
-            .and_then(|chapter| model.chapters().iter().position(|index| *index == chapter)),
-    };
-    u16::try_from(row.unwrap_or(0) + 3).unwrap_or(u16::MAX)
+    match model.workbench() {
+        Workbench::Devices | Workbench::Lab => 7,
+        Workbench::Services => 5,
+    }
 }
 
 fn too_small(frame: &mut Frame, area: Rect) {
@@ -202,14 +205,55 @@ fn fit(text: &str, width: usize) -> String {
 }
 
 fn wrapped(text: &str, width: usize) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return vec![String::new()];
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    for (index, word) in text.split(' ').enumerate() {
+        let gap = if index == 0 { "" } else { " " };
+        let used = row.chars().count() + gap.len();
+        let length = word.chars().count();
+        if used + length <= width {
+            row.push_str(gap);
+            row.push_str(word);
+            continue;
+        }
+        let mut letters: Vec<char> = word.chars().collect();
+        if length > width && used < width {
+            row.push_str(gap);
+            row.extend(letters.drain(..width - used));
+        }
+        if !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+        }
+        let mut pieces: Vec<String> = letters.chunks(width).map(String::from_iter).collect();
+        row = pieces.pop().unwrap_or_default();
+        rows.extend(pieces);
     }
-    chars
-        .chunks(width.max(1))
-        .map(|row| row.iter().collect())
-        .collect()
+    rows.push(row);
+    rows
+}
+
+fn cut_words(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut kept = String::new();
+    for word in text.split(' ') {
+        let longer = if kept.is_empty() {
+            word.to_string()
+        } else {
+            format!("{kept} {word}")
+        };
+        if longer.chars().count() + " …".chars().count() > width {
+            break;
+        }
+        kept = longer;
+    }
+    if kept.is_empty() {
+        "…".chars().take(width).collect()
+    } else {
+        format!("{kept} …")
+    }
 }
 
 fn highlighted(line: Line<'static>, width: u16) -> Line<'static> {
@@ -330,8 +374,13 @@ fn stack_list(
         .max()
         .unwrap_or(0);
     let name_width = longest.min(usize::from(inner.width).saturating_sub(11));
+    let at = indices
+        .iter()
+        .position(|index| Some(*index) == selected)
+        .unwrap_or(0);
     let lines: Vec<Line> = indices
         .iter()
+        .skip(first_row(at, usize::from(inner.height)))
         .map(|&index| {
             let state = model.stack_state(index);
             let selected = Some(index) == selected;
@@ -1041,11 +1090,7 @@ fn run_title(model: &Model, before_hint: usize) -> Vec<Span<'static>> {
         (_, None) => format!("{end} {}s", seconds(model, run.started)),
     };
     let room = before_hint.saturating_sub(" run  ".len() + "  ".len() + state.chars().count() + 1);
-    let words = if run.words.chars().count() > room {
-        fit(&run.words, room)
-    } else {
-        run.words.clone()
-    };
+    let words = cut_words(&run.words, room);
     vec![
         Span::raw(format!(" run  {words}  ")),
         Span::styled(state, style),
@@ -1080,18 +1125,17 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn run_rows(run: &Run, width: usize, height: usize) -> Vec<Line<'static>> {
-    let mut command = command_rows(run, width);
-    let output: usize = run
+    let command = command_rows(run, width);
+    let last = run
         .lines
-        .iter()
-        .map(|line| wrapped(line, width).len())
-        .sum();
-    let keep = height.saturating_sub(output).clamp(1, command.len());
-    if keep < command.len() {
-        let rest = command.split_off(keep - 1).concat();
-        command.push(fit(&rest, width));
-    }
-    let mut lines: Vec<Line> = command
+        .last()
+        .map_or(0, |line| wrapped(line, width).len());
+    let shown = if command.len() + last <= height {
+        command
+    } else {
+        Vec::new()
+    };
+    let mut lines: Vec<Line> = shown
         .into_iter()
         .map(|row| Line::styled(row, DIM))
         .collect();
@@ -1126,8 +1170,11 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
         Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area);
     let chapters = model.chapters();
     let chapters_height = u16::try_from(chapters.len() + 2).unwrap_or(u16::MAX);
-    let [top, bottom] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(chapters_height)]).areas(left);
+    let [top, bottom] = Layout::vertical([
+        Constraint::Min(NODES_LEAST),
+        Constraint::Length(chapters_height),
+    ])
+    .areas(left);
     node_list(frame, top, model, wide);
     let selected = model.selected_chapter();
     stack_list(
@@ -1213,18 +1260,20 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         StackState::Down { listed } => format!("0 of {listed} running"),
         StackState::Unknown | StackState::Failed => "?".to_string(),
     };
+    let width = usize::from(content.width);
+    let row = |label: &str, value: String| format!(" {label:<8}  {value}");
     let last = model
         .run()
         .filter(|run| run.target == Target::Chapter(chapter));
     let (last, end) = match last {
         Some(run) => {
             let (end, style) = run_end(run);
-            (format!("{}  ", run.words), (end, style))
+            let used = row("last", String::new()).chars().count() + "  ".len();
+            let room = width.saturating_sub(used + end.chars().count());
+            (format!("{}  ", cut_words(&run.words, room)), (end, style))
         }
         None => ("—".to_string(), (String::new(), Style::new())),
     };
-    let width = usize::from(content.width);
-    let row = |label: &str, value: String| format!(" {label:<8}  {value}");
     let plain = |label: &str, value: String| fitted(vec![(row(label, value), Style::new())], width);
     let lines = vec![
         plain("topology", topology),
@@ -1254,16 +1303,13 @@ fn action_hints(model: &Model) -> Vec<String> {
 
 pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
     if let Some(text) = model.typed_filter() {
-        return vec![fit(
-            &format!(" filter: {text}  Enter keep  Esc clear"),
-            width,
-        )];
+        return wrapped(&format!(" filter: {text}  Enter keep  Esc clear"), width);
     }
     if let Some(question) = model.question() {
         return wrapped(&format!(" {}", question.text()), width);
     }
     if let Some(notice) = model.notice() {
-        return vec![fit(&format!(" {notice}"), width)];
+        return wrapped(&format!(" {notice}"), width);
     }
     vec![whole_hints(&key_hints(model), width)]
 }
@@ -1418,12 +1464,12 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
 }
 
 pub(crate) fn help_overflow(model: &Model, area: Rect) -> usize {
-    let (_, [_, _, _, body, _, _]) = regions(model, area);
-    let layout = help_layout(model, body);
+    let (_, [_, _, _, body, bottom, _]) = regions(model, area);
+    let layout = help_layout(model, body.union(bottom));
     usize::from(layout.rows - layout.room)
 }
 
-fn help(frame: &mut Frame, body: Rect, model: &Model) {
+fn help(frame: &mut Frame, area: Rect, model: &Model) {
     let HelpLayout {
         entries,
         note,
@@ -1434,8 +1480,8 @@ fn help(frame: &mut Frame, body: Rect, model: &Model) {
         note_rows,
         note_row,
         fits,
-    } = help_layout(model, body);
-    frame.render_widget(Clear, body);
+    } = help_layout(model, area);
+    frame.render_widget(Clear, area);
     let name = match model.workbench() {
         Workbench::Devices => "devices",
         Workbench::Services => "services",
@@ -1489,12 +1535,410 @@ fn help_column(entries: &[(String, &str)]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use nobs_core::locate::locate;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
     use super::*;
+    use crate::book::NodeRow;
+    use crate::shell::tests::{alert, fixture, stack, start, workshop_located, workshop_source};
+    use crate::shell::{handle, stacks, Stack, Start, Update};
 
     const REFUSAL: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
+    const LAB_DIR: &str = "/home/me/My Labs/network observability/the book lab/second edition/chapter files/copy for the screen";
+    const LONG_ERROR: &str = "cannot reach the Docker daemon at unix:///var/run/docker.sock while it asks for the newest lines of loki";
+    const SIZES: [(u16, u16); 3] = [(60, 15), (80, 24), (100, 30)];
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Keys {
+        Hints,
+        Filter,
+        Question,
+    }
+
+    struct Bench {
+        build: fn() -> Model,
+        selected: &'static str,
+        run: char,
+        question: char,
+        filter: Option<&'static str>,
+    }
+
+    struct Walked {
+        label: String,
+        selected: &'static str,
+        model: Model,
+        width: u16,
+        height: u16,
+        rows: Vec<String>,
+    }
+
+    fn press(model: &mut Model, key: char) {
+        handle(model, KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+    }
+
+    fn devices_bench() -> Model {
+        let mut lab = workshop_located("infrahub");
+        lab.dir = PathBuf::from(LAB_DIR);
+        let source = workshop_source();
+        let mut model = Model::new(Start {
+            lab: Some(lab),
+            source: Some(source.clone()),
+            home: Workbench::Devices,
+            chooser: false,
+            ..start(vec![stack("a", &[])])
+        });
+        model.apply(Update::Devices(Ok(source.devices().unwrap())));
+        model.apply(Update::Alerts(Ok(vec![alert(
+            "srl2",
+            "BgpSessionNotUp",
+            "2026-11-09T13:53:32Z",
+        )])));
+        model
+    }
+
+    fn services_bench() -> Model {
+        let stacks = (1..=12)
+            .map(|index| Stack {
+                path: PathBuf::from(LAB_DIR),
+                ..stack(&format!("stack-{index:02}"), &[])
+            })
+            .collect();
+        let mut model = Model::new(start(stacks));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        for _ in 1..12 {
+            press(&mut model, 'j');
+        }
+        model
+    }
+
+    fn lab_bench(count: usize) -> Model {
+        let dir = fixture("book-lab");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        let first = stacks(Some(&located), Vec::new()).unwrap().remove(0);
+        let chapters = (1..=count)
+            .map(|index| Stack {
+                name: format!("ch{index}"),
+                path: PathBuf::from(LAB_DIR),
+                ..first.clone()
+            })
+            .collect();
+        let mut model = Model::new(Start {
+            lab: Some(located),
+            home: Workbench::Lab,
+            chooser: false,
+            ..start(chapters)
+        });
+        for _ in 1..count {
+            press(&mut model, 'j');
+        }
+        model.apply(Update::Nodes(Ok(vec![NodeRow {
+            name: "nobs-t-srl1".to_string(),
+            kind: "nokia_srlinux".to_string(),
+            state: Some("running".to_string()),
+        }])));
+        model
+    }
+
+    fn benches() -> [Bench; 4] {
+        let lab = |build: fn() -> Model, selected| Bench {
+            build,
+            selected,
+            run: 'X',
+            question: 'U',
+            filter: None,
+        };
+        [
+            Bench {
+                build: devices_bench,
+                selected: ">  srl1",
+                run: 'm',
+                question: 'm',
+                filter: Some("srl"),
+            },
+            Bench {
+                build: services_bench,
+                selected: ">stack-12",
+                run: 'u',
+                question: 'p',
+                filter: Some("stack"),
+            },
+            lab(|| lab_bench(2), ">ch2"),
+            lab(|| lab_bench(10), ">ch10"),
+        ]
+    }
+
+    fn staged(bench: &Bench, error: bool, keys: Keys, pane: bool) -> Model {
+        let mut model = (bench.build)();
+        press(&mut model, bench.run);
+        press(&mut model, 'y');
+        for line in ["pulling", "created", REFUSAL] {
+            model.apply(Update::ActionLine(line.to_string()));
+        }
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        if !pane {
+            press(&mut model, 'o');
+        }
+        if error {
+            model.apply(Update::Logs(
+                0,
+                "loki".to_string(),
+                Err(LONG_ERROR.to_string()),
+            ));
+        }
+        match (keys, bench.filter) {
+            (Keys::Hints, _) => {}
+            (Keys::Filter, Some(filter)) => {
+                press(&mut model, '/');
+                filter.chars().for_each(|typed| press(&mut model, typed));
+            }
+            (Keys::Filter, None) => unreachable!(),
+            (Keys::Question, _) => press(&mut model, bench.question),
+        }
+        model
+    }
+
+    fn drawn(model: &mut Model, width: u16, height: u16) -> Vec<String> {
+        model.tick(model.now(), UNIX_EPOCH, (width, height));
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, model)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    fn walk() -> Vec<Walked> {
+        let mut walked = Vec::new();
+        for bench in benches() {
+            for (width, height) in SIZES {
+                for error in [false, true] {
+                    for keys in [Keys::Hints, Keys::Filter, Keys::Question] {
+                        if keys == Keys::Filter && bench.filter.is_none() {
+                            continue;
+                        }
+                        for pane in [false, true] {
+                            let mut model = staged(&bench, error, keys, pane);
+                            let rows = drawn(&mut model, width, height);
+                            walked.push(Walked {
+                                label: format!(
+                                    "{} {width}x{height} error {error} {keys:?} pane {pane}",
+                                    bench.selected
+                                ),
+                                selected: bench.selected,
+                                model,
+                                width,
+                                height,
+                                rows,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        walked
+    }
+
+    fn pane_inside(rows: &[String]) -> Option<Vec<String>> {
+        let top = rows.iter().position(|row| row.starts_with("┌ run"))?;
+        let inside = rows[top + 1..]
+            .iter()
+            .take_while(|row| !row.starts_with('└'))
+            .map(|row| {
+                let row = row.strip_prefix('│').unwrap_or(row);
+                row.strip_suffix('│').unwrap_or(row).trim_end().to_string()
+            })
+            .collect();
+        Some(inside)
+    }
+
+    fn cut_at_a_word(shown: &str, full: &str) -> bool {
+        shown == full
+            || shown
+                .strip_suffix(" …")
+                .is_some_and(|kept| full.starts_with(&format!("{kept} ")))
+    }
 
     #[test]
-    fn a_long_command_line_gives_its_rows_to_the_output_down_to_one() {
+    fn the_walk_runs_a_three_row_command_and_a_three_row_last_line_at_60_columns() {
+        for bench in benches() {
+            let model = staged(&bench, false, Keys::Hints, true);
+            let run = model.run().unwrap();
+
+            assert_eq!(command_rows(run, 58).len(), 3, "{}", bench.selected);
+            assert_eq!(wrapped(REFUSAL, 58).len(), 3, "{}", bench.selected);
+        }
+    }
+
+    #[test]
+    fn every_frame_of_the_walk_shows_the_selected_row_a_node_row_every_question_row_and_the_key_line(
+    ) {
+        for walked in walk() {
+            let Walked {
+                label,
+                selected,
+                model,
+                width,
+                rows,
+                ..
+            } = &walked;
+            let screen = rows.join("\n");
+            let keys: Vec<String> = key_line(model, usize::from(*width))
+                .iter()
+                .map(|row| row.trim_end().to_string())
+                .collect();
+
+            assert!(
+                rows.iter().any(|row| row.contains(selected)),
+                "{label}\n{screen}"
+            );
+            if model.workbench() == Workbench::Lab {
+                assert!(screen.contains("nobs-t-srl1"), "{label}\n{screen}");
+            }
+            assert_eq!(
+                rows[rows.len() - keys.len()..],
+                keys[..],
+                "{label}\n{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_question_of_the_walk_shows_whole_with_y_n_in_one_row() {
+        for Walked {
+            label,
+            model,
+            width,
+            ..
+        } in walk()
+        {
+            let Some(question) = model.question() else {
+                continue;
+            };
+            let rows = key_line(&model, usize::from(width));
+            let joined: Vec<&str> = rows.iter().map(|row| row.trim()).collect();
+
+            assert_eq!(joined.join(" "), question.text(), "{label}");
+            assert!(rows.iter().any(|row| row.contains("y/n")), "{label}");
+        }
+    }
+
+    #[test]
+    fn the_run_pane_shows_the_whole_command_above_the_newest_output_or_only_the_newest_output() {
+        for Walked {
+            label,
+            model,
+            width,
+            height,
+            rows,
+            ..
+        } in walk()
+        {
+            let large = width >= 80 && height >= 24;
+            let screen = rows.join("\n");
+            let Some(inside) = pane_inside(&rows) else {
+                assert!(!(large && model.run_pane()), "{label}\n{screen}");
+                continue;
+            };
+            let run = model.run().unwrap();
+            let inner = usize::from(width) - 2;
+            let command = format!("$ nobs {}", run.command);
+            let command_rows = wrapped(&command, inner).len();
+            let last = wrapped(REFUSAL, inner).len();
+            let both_fit = command_rows + last <= inside.len();
+            let output: Vec<String> = run
+                .lines
+                .iter()
+                .flat_map(|line| wrapped(line, inner))
+                .collect();
+
+            assert!(both_fit || !large, "{label}\n{screen}");
+            if both_fit {
+                assert_eq!(
+                    inside[..command_rows].join(" "),
+                    command,
+                    "{label}\n{screen}"
+                );
+            } else {
+                assert_eq!(
+                    inside[..],
+                    output[output.len() - inside.len()..],
+                    "{label}\n{screen}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_run_title_the_error_row_and_the_last_row_end_at_a_whole_word() {
+        for Walked {
+            label, model, rows, ..
+        } in walk()
+        {
+            let screen = rows.join("\n");
+            let words = &model.run().unwrap().words;
+            let shown_after = |anchor: &str| {
+                rows.iter()
+                    .find_map(|row| row.split_once(anchor))
+                    .and_then(|(_, rest)| rest.split("  ").next())
+            };
+            if let Some(title) = shown_after("run  ") {
+                assert!(cut_at_a_word(title, words), "{label}\n{screen}");
+            }
+            if let Some(last) = shown_after("│ last      ") {
+                assert!(cut_at_a_word(last, words), "{label}\n{screen}");
+            }
+            if let Some((source, text, _)) = model.error() {
+                let (shown, age) = rows[2].rsplit_once("  ").unwrap();
+                let seconds = age.strip_suffix("s ago").unwrap_or(age);
+                assert!(seconds.parse::<u64>().is_ok(), "{label}\n{screen}");
+                let full = format!("{source}: {text}");
+                assert!(
+                    cut_at_a_word(shown.trim_start(), &full),
+                    "{label}\n{screen}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_switcher_row_ends_with_its_keys_and_quit_hint_at_every_width() {
+        for Walked { label, rows, .. } in walk() {
+            assert!(rows[1].ends_with("? keys  q quit"), "{label}\n{}", rows[1]);
+        }
+    }
+
+    #[test]
+    fn a_long_notice_wraps_whole_onto_the_key_rows() {
+        for (width, height) in SIZES {
+            let mut model = lab_bench(2);
+            press(&mut model, 'X');
+            press(&mut model, 'y');
+            press(&mut model, 'U');
+            let notice = model.notice().unwrap().to_string();
+
+            let rows = drawn(&mut model, width, height);
+
+            let keys = key_line(&model, usize::from(width));
+            let shown: Vec<&str> = rows[rows.len() - keys.len()..]
+                .iter()
+                .map(|row| row.trim())
+                .collect();
+            assert_eq!(shown.join(" "), notice, "{width}x{height}");
+        }
+    }
+
+    #[test]
+    fn a_long_command_line_shows_whole_above_the_last_line_or_leaves_the_pane_to_the_output() {
         let run = Run {
             words: "lab deploy -s ch1".to_string(),
             command: format!(
@@ -1518,17 +1962,16 @@ mod tests {
 
         assert!(command.len() >= 4);
         assert_eq!(refusal.len(), 3);
-        let short = rows(4);
-        assert_eq!(short[0], format!("{}…", &command[0][..57]));
-        assert_eq!(short[1..], refusal[..]);
-        let taller = rows(6);
-        assert_eq!(taller[..2], command[..2]);
-        assert_eq!(taller[2], format!("{}…", &command[2][..57]));
-        assert_eq!(taller[3..], refusal[..]);
+        let short = rows(command.len() + 2);
+        assert_eq!(short[..], refusal[..]);
+        let tall = rows(command.len() + 3);
+        assert_eq!(tall[..command.len()], command[..]);
+        assert_eq!(tall[command.len()..], refusal[..]);
     }
 
     #[test]
-    fn the_run_pane_grows_past_half_only_to_keep_the_first_command_row_and_the_last_line() {
+    fn the_run_pane_grows_past_half_only_to_keep_the_last_line_and_leaves_the_workbench_its_least()
+    {
         let run = |lines: Vec<String>, state| Run {
             words: "lab deploy -s ch1".to_string(),
             command: "--dir /home/me/labs/network-observability/book-lab lab deploy -s ch1"
@@ -1550,22 +1993,24 @@ mod tests {
         };
 
         assert_eq!(command_rows(&refused, 58).len(), 2);
-        assert_eq!(pane_height(Some(&refused), 58, 11, 3), 6);
+        assert_eq!(pane_height(Some(&refused), 58, 11, 3), 5);
         assert_eq!(pane_height(Some(&refused), 58, 12, 3), 6);
         assert_eq!(pane_height(Some(&running), 58, 11, 3), 5);
         assert_eq!(pane_height(Some(&refused), 98, 26, 3), 9);
         assert_eq!(pane_height(Some(&refused), 98, 27, 3), 9);
-        assert_eq!(pane_height(Some(&last_line(5)), 58, 11, 3), 8);
+        assert_eq!(pane_height(Some(&last_line(5)), 58, 11, 3), 7);
         assert_eq!(pane_height(Some(&last_line(6)), 58, 11, 3), 8);
-        assert_eq!(pane_height(Some(&last_line(6)), 58, 12, 3), 9);
+        assert_eq!(pane_height(Some(&last_line(6)), 58, 12, 3), 8);
         assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 3), 9);
+        assert_eq!(pane_height(Some(&refused), 58, 11, 7), 4);
+        assert_eq!(pane_height(Some(&running), 98, 26, 7), 9);
+        assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 7), 5);
+        assert_eq!(pane_height(None, 58, 11, 9), 2);
         let newest: Vec<String> = run_rows(&last_line(7), 58, 7)
             .iter()
             .map(ToString::to_string)
             .collect();
-        assert_eq!(newest.len(), 7);
-        assert!(newest[0].ends_with('…'));
-        let newest_six: Vec<String> = (1..7).map(|row| row.to_string().repeat(58)).collect();
-        assert_eq!(newest[1..], newest_six[..]);
+        let seven: Vec<String> = (0..7).map(|row| row.to_string().repeat(58)).collect();
+        assert_eq!(newest, seven);
     }
 }
