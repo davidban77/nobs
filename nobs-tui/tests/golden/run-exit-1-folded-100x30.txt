@@ -27,4 +27,4 @@
 │                              ││                                                                  │
 └──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
  run  autocon5 up  exit 1  41s                                                               o open
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d down
+ Tab focus  j/k move  / filter  l logs  r refresh  u up  d down  X destroy  R reset  p preflight

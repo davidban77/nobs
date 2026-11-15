@@ -12,4 +12,4 @@
 │                     ││ sonda      running  ok        8085│
 └─────────────────────┘└───────────────────────────────────┘
  run  autocon5 up  exit 1  41s                       o open
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d …
+ Tab focus  j/k move  / filter  l logs  r refresh  u up

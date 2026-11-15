@@ -61,17 +61,16 @@ const HELP_DEVICES: [(&str, &str); 13] = [
     ("o", "run pane"),
     ("?", "close"),
 ];
-const HELP_LAB: [(&str, &str); 9] = [
+const HELP_LAB: [(&str, &str); 7] = [
     ("1 2 3", "switch workbench"),
     ("j k ↑ ↓", "move"),
-    ("D", "deploy chapter"),
-    ("X", "destroy chapter"),
     ("r", "refresh now"),
     ("o", "run pane"),
     ("x", "dismiss the error"),
     ("?", "close"),
     ("Esc", "close/fold"),
 ];
+const HELP_MORE: &str = "j/k more";
 const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 
@@ -81,35 +80,10 @@ pub fn draw(frame: &mut Frame, model: &Model) {
         too_small(frame, area);
         return;
     }
-    let error = model.error();
-    let keys = key_line(model);
-    let keys = if model.question().is_some() {
-        wrapped(&keys, usize::from(area.width))
-    } else {
-        vec![fit(&keys, usize::from(area.width))]
-    };
-    let key_height = u16::try_from(keys.len()).unwrap_or(u16::MAX);
-    let [header_row, switcher_row, error_row, middle, key_row] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(u16::from(error.is_some())),
-        Constraint::Min(0),
-        Constraint::Length(key_height),
-    ])
-    .areas(area);
-    let bottom_height = if model.chooser() {
-        0
-    } else if model.run_pane() {
-        let width = usize::from(middle.width.saturating_sub(2));
-        pane_height(model.run(), width, middle.height, workbench_least(model))
-    } else {
-        1
-    };
-    let [body, bottom] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(bottom_height)]).areas(middle);
+    let (keys, [header_row, switcher_row, error_row, body, bottom, key_row]) = regions(model, area);
     header(frame, header_row, model);
     switcher(frame, switcher_row, model);
-    if let Some((source, text, at)) = error {
+    if let Some((source, text, at)) = model.error() {
         let line = format!(" {source}: {text}  {}s ago", seconds(model, at));
         frame.render_widget(
             Paragraph::new(line).style(Style::new().fg(Color::Red)),
@@ -128,6 +102,33 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     if model.help() {
         help(frame, body, model);
     }
+}
+
+fn regions(model: &Model, area: Rect) -> (Vec<String>, [Rect; 6]) {
+    let keys = key_line(model, usize::from(area.width));
+    let key_height = u16::try_from(keys.len()).unwrap_or(u16::MAX);
+    let [header_row, switcher_row, error_row, middle, key_row] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(u16::from(model.error().is_some())),
+        Constraint::Min(0),
+        Constraint::Length(key_height),
+    ])
+    .areas(area);
+    let bottom_height = if model.chooser() {
+        0
+    } else if model.run_pane() {
+        let width = usize::from(middle.width.saturating_sub(2));
+        pane_height(model.run(), width, middle.height, workbench_least(model))
+    } else {
+        1
+    };
+    let [body, bottom] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(bottom_height)]).areas(middle);
+    (
+        keys,
+        [header_row, switcher_row, error_row, body, bottom, key_row],
+    )
 }
 
 fn pane_height(run: Option<&Run>, width: usize, middle: u16, least: u16) -> u16 {
@@ -1238,101 +1239,146 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
     frame.render_widget(Paragraph::new(lines), content);
 }
 
-fn offers(model: &Model, key: char, target: Target) -> bool {
+fn action_hints(model: &Model) -> Vec<String> {
     ACTIONS
         .iter()
-        .find(|action| action.key == key)
-        .is_some_and(|action| arguments(action, &target, model).is_some())
+        .filter(|action| action.workbench == model.workbench())
+        .filter(|action| {
+            model
+                .action_target(action.row)
+                .is_some_and(|target| arguments(action, &target, model).is_some())
+        })
+        .map(|action| format!("{} {}", action.key, action.hint))
+        .collect()
 }
 
-fn offers_up_down(model: &Model) -> bool {
-    offers(model, 'u', Target::Stack(model.selected_stack()))
-}
-
-fn offers_maintenance(model: &Model) -> bool {
-    model
-        .selected_device()
-        .is_some_and(|device| offers(model, 'm', Target::Device(device.name.clone())))
-}
-
-fn key_line(model: &Model) -> String {
+pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
     if let Some(text) = model.typed_filter() {
-        return format!(" filter: {text}  Enter keep  Esc clear");
+        return vec![fit(
+            &format!(" filter: {text}  Enter keep  Esc clear"),
+            width,
+        )];
     }
     if let Some(question) = model.question() {
-        return format!(" {}", question.text());
+        return wrapped(&format!(" {}", question.text()), width);
     }
     if let Some(notice) = model.notice() {
-        return format!(" {notice}");
+        return vec![fit(&format!(" {notice}"), width)];
     }
-    let keys = if model.chooser() {
-        " j/k select  Enter open  q quit"
-    } else if model.workbench() == Workbench::Lab {
-        " j/k move  D deploy  X destroy  r refresh  o pane"
-    } else if model.workbench() == Workbench::Devices {
-        return device_keys(model);
-    } else {
-        let up_down = if offers_up_down(model) {
-            "  u up  d down"
-        } else {
-            ""
-        };
-        match (model.focus(), model.tab()) {
-            (Focus::List, _) => {
-                return format!(" Tab focus  j/k move  / filter  l logs  r refresh{up_down}");
-            }
-            (Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Timeline) => {
-                return format!(" Tab focus  j/k move  [ ] tab  Enter logs  Esc back{up_down}");
-            }
-            (Focus::Tabs, Tab::Logs) => match model.logs() {
-                Some((_, _, false, _)) => {
-                    " f follow  / filter  j/k scroll  [ ] tab  Esc back to list"
-                }
-                _ => " f pause  / filter  j/k scroll  [ ] tab  Esc back to list",
-            },
-            (Focus::Tabs, Tab::Sonda) => " Tab focus  [ ] tab  Esc back",
-        }
-    };
-    keys.to_string()
+    vec![whole_hints(&key_hints(model), width)]
 }
 
-fn device_keys(model: &Model) -> String {
-    let maintenance = if offers_maintenance(model) {
-        "  m maintenance"
-    } else {
-        ""
-    };
-    let keys = match (model.focus(), model.tab()) {
-        (Focus::List, _) => {
-            return format!(" Tab focus  j/k move  / filter  Enter open  r refresh{maintenance}");
+fn key_hints(model: &Model) -> Vec<String> {
+    let listed = |fixed: Vec<&'static str>| fixed.into_iter().map(ToString::to_string);
+    if model.chooser() {
+        return listed(vec!["j/k select", "Enter open", "q quit"]).collect();
+    }
+    let actions = action_hints(model);
+    let fixed = match (model.workbench(), model.focus(), model.tab()) {
+        (Workbench::Lab, ..) => {
+            return listed(vec!["j/k move"])
+                .chain(actions)
+                .chain(listed(vec!["r refresh", "o pane"]))
+                .collect();
         }
-        (Focus::Tabs, Tab::Timeline) if model.popup() => " Esc close",
-        (Focus::Tabs, Tab::Timeline) => " j/k move  Enter full text  - + window  [ ] tab  Esc back",
-        (Focus::Tabs, Tab::Logs) => match model.device_logs() {
-            Some((_, _, false, _)) => " f follow  / filter  j/k scroll  [ ] tab  Esc back to list",
-            _ => " f pause  / filter  j/k scroll  [ ] tab  Esc back to list",
-        },
-        (Focus::Tabs, _) => {
-            return format!(" Tab focus  [ ] tab  Esc back{maintenance}");
+        (Workbench::Services, Focus::List, _) => {
+            vec!["Tab focus", "j/k move", "/ filter", "l logs", "r refresh"]
         }
+        (Workbench::Services, Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Timeline) => {
+            vec!["Tab focus", "j/k move", "[ ] tab", "Enter logs", "Esc back"]
+        }
+        (Workbench::Services, Focus::Tabs, Tab::Logs) => {
+            log_hints(matches!(model.logs(), Some((_, _, false, _))))
+        }
+        (Workbench::Services, Focus::Tabs, Tab::Sonda) => vec!["Tab focus", "[ ] tab", "Esc back"],
+        (Workbench::Devices, Focus::List, _) => {
+            vec![
+                "Tab focus",
+                "j/k move",
+                "/ filter",
+                "Enter open",
+                "r refresh",
+            ]
+        }
+        (Workbench::Devices, Focus::Tabs, Tab::Timeline) if model.popup() => vec!["Esc close"],
+        (Workbench::Devices, Focus::Tabs, Tab::Timeline) => vec![
+            "j/k move",
+            "Enter full text",
+            "- + window",
+            "[ ] tab",
+            "Esc back",
+        ],
+        (Workbench::Devices, Focus::Tabs, Tab::Logs) => {
+            log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
+        }
+        (Workbench::Devices, Focus::Tabs, _) => vec!["Tab focus", "[ ] tab", "Esc back"],
     };
-    keys.to_string()
+    listed(fixed).chain(actions).collect()
 }
 
-fn help(frame: &mut Frame, body: Rect, model: &Model) {
+fn log_hints(paused: bool) -> Vec<&'static str> {
+    let follow = if paused { "f follow" } else { "f pause" };
+    vec![
+        follow,
+        "/ filter",
+        "j/k scroll",
+        "[ ] tab",
+        "Esc back to list",
+    ]
+}
+
+fn whole_hints(hints: &[String], width: usize) -> String {
+    let mut line = String::new();
+    for hint in hints {
+        let gap = if line.is_empty() { " " } else { "  " };
+        if line.chars().count() + gap.len() + hint.chars().count() > width {
+            break;
+        }
+        line.push_str(gap);
+        line.push_str(hint);
+    }
+    line
+}
+
+pub(crate) fn help_entries(workbench: Workbench) -> Vec<(String, &'static str)> {
+    let fixed: &[(&str, &str)] = match workbench {
+        Workbench::Devices => &HELP_DEVICES,
+        Workbench::Services => &HELP,
+        Workbench::Lab => &HELP_LAB,
+    };
+    let actions = ACTIONS
+        .iter()
+        .filter(|action| action.workbench == workbench)
+        .map(|action| (action.key.to_string(), action.hint));
+    let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
+    fixed
+        .iter()
+        .map(owned)
+        .chain(actions)
+        .chain(HELP_QUIT.iter().map(owned))
+        .collect()
+}
+
+struct HelpLayout {
+    entries: Vec<(String, &'static str)>,
+    note: Option<&'static str>,
+    popup: Rect,
+    inner: Rect,
+    rows: u16,
+    room: u16,
+    note_rows: u16,
+    note_row: u16,
+    fits: bool,
+}
+
+fn help_layout(model: &Model, body: Rect) -> HelpLayout {
     let workbench = model.workbench();
-    let (mut entries, note): (Vec<(&str, &str)>, Option<&str>) = match workbench {
-        Workbench::Devices => (HELP_DEVICES.to_vec(), Some(HELP_DEVICES_NOTE)),
-        Workbench::Services => (HELP.to_vec(), Some(HELP_SONDA)),
-        Workbench::Lab => (HELP_LAB.to_vec(), None),
+    let entries = help_entries(workbench);
+    let note = match workbench {
+        Workbench::Devices => Some(HELP_DEVICES_NOTE),
+        Workbench::Services => Some(HELP_SONDA),
+        Workbench::Lab => None,
     };
-    if workbench == Workbench::Services && offers_up_down(model) {
-        entries.push(("u d", "stack up / down"));
-    }
-    if workbench == Workbench::Devices && offers_maintenance(model) {
-        entries.push(("m", "maintenance on/off"));
-    }
-    entries.extend(HELP_QUIT);
     let width = body.width.saturating_sub(4);
     let note_rows = note.map_or(0, |note| {
         let note = u16::try_from(note.chars().count()).unwrap_or(u16::MAX);
@@ -1340,6 +1386,7 @@ fn help(frame: &mut Frame, body: Rect, model: &Model) {
     });
     let rows = u16::try_from(entries.len().div_ceil(2)).unwrap_or(u16::MAX);
     let note_height = if note.is_some() { note_rows + 1 } else { 0 };
+    let fits = rows + note_rows + 2 <= body.height;
     let height = body.height.min(rows + 2 + note_height);
     let popup = Rect::new(
         body.x + (body.width - width) / 2,
@@ -1347,40 +1394,86 @@ fn help(frame: &mut Frame, body: Rect, model: &Model) {
         width,
         height,
     );
+    let inner = Block::bordered().inner(popup);
+    let (room, note_row) = if fits {
+        let note_row = (rows + 1)
+            .min(inner.height.saturating_sub(note_rows))
+            .max(rows);
+        (rows, note_row)
+    } else {
+        let room = inner.height.saturating_sub(note_rows + 1);
+        (room, room)
+    };
+    HelpLayout {
+        entries,
+        note,
+        popup,
+        inner,
+        rows,
+        room,
+        note_rows,
+        note_row,
+        fits,
+    }
+}
+
+pub(crate) fn help_overflow(model: &Model, area: Rect) -> usize {
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let layout = help_layout(model, body);
+    usize::from(layout.rows - layout.room)
+}
+
+fn help(frame: &mut Frame, body: Rect, model: &Model) {
+    let HelpLayout {
+        entries,
+        note,
+        popup,
+        inner,
+        rows,
+        room,
+        note_rows,
+        note_row,
+        fits,
+    } = help_layout(model, body);
     frame.render_widget(Clear, body);
-    let name = match workbench {
+    let name = match model.workbench() {
         Workbench::Devices => "devices",
         Workbench::Services => "services",
         Workbench::Lab => "lab",
     };
     let block = Block::bordered().title_top(format!(" keys  {name} workbench "));
-    let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let column = |x: u16, y: u16, width: u16, height: u16| {
         Rect::new(inner.x + x, inner.y + y, width, height).intersection(inner)
     };
+    let top = u16::try_from(model.help_scroll())
+        .unwrap_or(u16::MAX)
+        .min(rows - room);
     let (first, second) = entries.split_at(usize::from(rows));
     let middle = inner.width / 2;
     frame.render_widget(
-        Paragraph::new(help_column(first)),
-        column(0, 0, middle, rows),
+        Paragraph::new(help_column(first)).scroll((top, 0)),
+        column(0, 0, middle, room),
     );
     frame.render_widget(
-        Paragraph::new(help_column(second)),
-        column(middle, 0, inner.width - middle, rows),
+        Paragraph::new(help_column(second)).scroll((top, 0)),
+        column(middle, 0, inner.width - middle, room),
     );
     if let Some(note) = note {
-        let note_row = (rows + 1)
-            .min(inner.height.saturating_sub(note_rows))
-            .max(rows);
         frame.render_widget(
             Paragraph::new(note).wrap(Wrap { trim: false }),
             column(0, note_row, inner.width, note_rows),
         );
     }
+    if !fits {
+        frame.render_widget(
+            Paragraph::new(HELP_MORE),
+            column(0, inner.height.saturating_sub(1), inner.width, 1),
+        );
+    }
 }
 
-fn help_column(entries: &[(&str, &str)]) -> String {
+fn help_column(entries: &[(String, &str)]) -> String {
     let key_width = entries
         .iter()
         .map(|(key, _)| key.chars().count())

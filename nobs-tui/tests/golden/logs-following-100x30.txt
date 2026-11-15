@@ -27,4 +27,4 @@
 │                              ││                                                                  │
 └──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
  run  none                                                                                   o open
- f pause  / filter  j/k scroll  [ ] tab  Esc back to list
+ f pause  / filter  j/k scroll  [ ] tab  Esc back to list  u up  d down  X destroy  R reset

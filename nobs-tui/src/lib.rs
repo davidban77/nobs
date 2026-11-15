@@ -16,6 +16,7 @@ use crossterm::{cursor, execute};
 use nobs_core::locate::{Kind, Located};
 use nobs_core::runner::Runner;
 use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use shell::Model;
@@ -184,6 +185,8 @@ fn turns<B: Backend>(
         let size = terminal.size().map_err(failed)?;
         model.tick(Instant::now(), SystemTime::now(), (size.width, size.height));
         terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        model.set_help_overflow(screen::help_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
             for command in handle(model, key) {
                 match &command {
@@ -1334,6 +1337,50 @@ mod tests {
             (Compose::PROGRAM.to_string(), args(&words))
         };
         assert_eq!(runner.calls()[..2], [ps(&[]), ps(&["--orphans=false"])]);
+    }
+
+    fn help_after(presses: usize, back: bool) -> Vec<String> {
+        let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let mut terminal = terminal(60, 15);
+        let mut keys = std::iter::once(ch('?'))
+            .chain(std::iter::repeat_n(ch('j'), presses))
+            .chain(back.then(|| ch('k')));
+        turns(
+            &mut terminal,
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
+        )
+        .unwrap_err();
+        let screen: Vec<char> = text(&terminal).chars().collect();
+        screen
+            .chunks(60)
+            .map(String::from_iter)
+            .skip_while(|row| !row.contains("┌ keys"))
+            .skip(1)
+            .take_while(|row| !row.contains("sonda tab"))
+            .collect()
+    }
+
+    #[test]
+    fn j_scrolls_the_help_to_its_last_action_and_no_further() {
+        let shows = |rows: &[String], pair: [&str; 2]| {
+            rows.iter().any(|row| {
+                let words: Vec<&str> = row.split_whitespace().collect();
+                words.windows(2).any(|seen| seen == pair)
+            })
+        };
+        let opened = help_after(0, false);
+        let end = help_after(20, false);
+        let back = help_after(20, true);
+
+        assert!(!shows(&opened, ["s", "status"]), "{opened:?}");
+        assert!(shows(&end, ["s", "status"]), "{end:?}");
+        assert_ne!(back, end);
+        assert_eq!(back[1..], end[..end.len() - 1]);
     }
 
     #[test]

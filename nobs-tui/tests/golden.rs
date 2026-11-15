@@ -14,6 +14,7 @@ use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
 use nobs_core::sot::{Fixed, SourceOfTruth};
 use nobs_core::status::Urls;
+use nobs_tui::actions::{Action, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
 use nobs_tui::shell::{stacks, Health};
 use nobs_tui::{
@@ -559,6 +560,10 @@ fn lines(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
+fn flat(buffer: &Buffer) -> String {
+    buffer.content().iter().map(|cell| cell.symbol()).collect()
+}
+
 fn mismatch(name: &str, width: u16, height: u16, actual: &[String]) -> Option<String> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/golden/{name}-{width}x{height}.txt"));
@@ -792,7 +797,18 @@ fn a_failed_deploy_is_red_on_its_title_and_its_nobs_line_and_marks_its_chapter()
 
 #[test]
 fn the_question_and_the_run_pane_show_each_lab_command_with_the_sudo_flag() {
-    for (key, word) in [('D', "deploy"), ('X', "destroy")] {
+    for (key, word, clause) in [
+        (
+            'D',
+            "deploy",
+            " It takes the other chapters' services down.",
+        ),
+        (
+            'X',
+            "destroy",
+            " It removes the chapter's volumes, every node and the other chapters' services.",
+        ),
+    ] {
         let command = format!("nobs --dir {LAB_DIR} lab {word} --sudo-no-prompt -s ch1");
         let asking = || {
             let mut model = lab_model();
@@ -802,18 +818,18 @@ fn the_question_and_the_run_pane_show_each_lab_command_with_the_sudo_flag() {
         let mut running = asking();
         press(&mut running, KeyCode::Char('y'));
 
-        let question = lines(&render(asking(), 100, 30)).join("\n");
+        let question = flat(&render(asking(), 100, 30));
         let pane = lines(&render(running, 100, 30)).join("\n");
 
         assert!(
-            question.contains(&format!("run {command}? y/n")),
+            question.contains(&format!("run {command}?{clause} y/n")),
             "{question}"
         );
         assert!(pane.contains(&format!("$ {command}")), "{pane}");
     }
 }
 
-fn maintained(packt_failed: bool) -> Shell {
+fn maintenance_model(packt_failed: bool) -> Shell {
     let source =
         Fixed::from_lab_vars(&lab_vars::read(&fs::read_to_string(WORKSHOP_ONE).unwrap()).unwrap());
     let devices = source.devices().unwrap();
@@ -822,6 +838,11 @@ fn maintained(packt_failed: bool) -> Shell {
     let mut model = model_with(false, packt_failed, Some(Arc::new(source)), Some(lab));
     press(&mut model, KeyCode::Char('1'));
     model.apply(Update::Devices(Ok(devices)));
+    model
+}
+
+fn maintained(packt_failed: bool) -> Shell {
+    let mut model = maintenance_model(packt_failed);
     press(&mut model, KeyCode::Char('m'));
     press(&mut model, KeyCode::Char('y'));
     model
@@ -1008,6 +1029,58 @@ fn the_question_frame_is_pinned() {
     press(&mut model, KeyCode::Char('u'));
 
     pinned(model, "question", 100, 30);
+}
+
+fn services_model() -> Shell {
+    model(false, false)
+}
+
+#[test]
+fn a_narrow_key_line_ends_in_a_whole_hint() {
+    for build in [services_model as fn() -> Shell, lab_model] {
+        let wide = lines(&render(build(), 200, 30)).pop().unwrap();
+        let narrow = lines(&render(build(), 60, 15)).pop().unwrap();
+
+        assert!(!narrow.contains('…'), "{narrow}");
+        assert!(
+            wide.strip_prefix(narrow.as_str())
+                .is_some_and(|rest| rest.starts_with("  ")),
+            "{narrow}\n{wide}"
+        );
+    }
+}
+
+fn asked(action: &Action) -> Shell {
+    let mut model = match action.row {
+        Row::Stack => services_model(),
+        Row::Device => maintenance_model(false),
+        Row::Chapter | Row::Lab => lab_model(),
+    };
+    press(&mut model, KeyCode::Char(action.key));
+    model
+}
+
+#[test]
+fn the_longest_question_of_the_table_shows_whole_at_60_by_15() {
+    let length = |model: &Shell| model.question().map_or(0, |question| question.text().len());
+    let longest = ACTIONS.iter().map(asked).max_by_key(length).unwrap();
+    let text = longest.question().unwrap().text();
+
+    let screen = flat(&render(longest, 60, 15));
+
+    assert!(text.contains(". y/n"), "{text}");
+    assert!(screen.contains(&text), "{text}\n{screen}");
+}
+
+#[test]
+fn a_help_that_does_not_fit_says_j_k_more_and_a_help_that_fits_does_not() {
+    let opened = lines(&render(pressed('?'), 60, 15)).join("\n");
+    let mut lab = lab_model();
+    press(&mut lab, KeyCode::Char('?'));
+    let fitting = lines(&render(lab, 100, 30)).join("\n");
+
+    assert!(opened.contains("j/k more"), "{opened}");
+    assert!(!fitting.contains("j/k more"), "{fitting}");
 }
 
 #[test]

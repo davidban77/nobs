@@ -27,4 +27,4 @@
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
- Tab focus  j/k move  / filter  l logs  r refresh  u up  d down
+ Tab focus  j/k move  / filter  l logs  r refresh  u up  d down  X destroy  R reset  p preflight
