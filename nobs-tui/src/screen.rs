@@ -93,8 +93,10 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     switcher(frame, switcher_row, model);
     if let Some((source, text, at)) = model.error() {
         let age = format!("  {}s ago", seconds(model, at));
-        let room = usize::from(error_row.width).saturating_sub(1 + age.chars().count());
-        let line = format!(" {}{age}", cut_words(&format!("{source}: {text}"), room));
+        let head = format!(" {source}: ");
+        let room =
+            usize::from(error_row.width).saturating_sub(head.chars().count() + age.chars().count());
+        let line = format!("{head}{}{age}", cut_words(text, room, Keep::End));
         frame.render_widget(
             Paragraph::new(line).style(Style::new().fg(Color::Red)),
             error_row,
@@ -248,33 +250,31 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
-pub(crate) fn cut_words(text: &str, width: usize) -> String {
-    let words: Vec<&str> = text.split(' ').collect();
-    cut_whole(&words, " ", width)
+#[derive(Clone, Copy)]
+pub(crate) enum Keep {
+    Start,
+    End,
 }
 
-fn cut_whole(pieces: &[&str], gap: &str, width: usize) -> String {
+pub(crate) fn cut_words(text: &str, width: usize, keep: Keep) -> String {
+    let words: Vec<&str> = text.split(' ').collect();
+    cut_whole(&words, " ", width, keep)
+}
+
+fn cut_whole(pieces: &[&str], gap: &str, width: usize, keep: Keep) -> String {
     let text = pieces.join(gap);
     if text.chars().count() <= width {
         return text;
     }
-    let mut kept = String::new();
-    for piece in pieces {
-        let longer = if kept.is_empty() {
-            piece.to_string()
-        } else {
-            format!("{kept}{gap}{piece}")
-        };
-        if longer.chars().count() + " …".chars().count() > width {
-            break;
-        }
-        kept = longer;
-    }
-    if kept.is_empty() {
-        "…".chars().take(width).collect()
-    } else {
-        format!("{kept} …")
-    }
+    let shown = |count: usize| match keep {
+        Keep::Start => format!("{} …", pieces[..count].join(gap)),
+        Keep::End => format!("… {}", pieces[pieces.len() - count..].join(gap)),
+    };
+    (1..pieces.len())
+        .rev()
+        .map(shown)
+        .find(|cut| cut.chars().count() <= width)
+        .unwrap_or_else(|| "…".chars().take(width).collect())
 }
 
 fn highlighted(line: Line<'static>, width: u16) -> Line<'static> {
@@ -442,7 +442,12 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         let width = usize::from(area.width).saturating_sub(4);
         format!(
             " {} ",
-            cut_whole(&[name, count.as_str(), age.as_str()], "  ", width)
+            cut_whole(
+                &[name, count.as_str(), age.as_str()],
+                "  ",
+                width,
+                Keep::Start
+            )
         )
     } else {
         format!(" {name}  {age} ")
@@ -859,7 +864,7 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let count = counted(interfaces.len(), "interface");
     let differs = format!("{differs} differs");
     frame.render_widget(
-        Paragraph::new(cut_whole(&[&count, &differs], "  ", width)),
+        Paragraph::new(cut_whole(&[&count, &differs], "  ", width, Keep::Start)),
         footer,
     );
 }
@@ -872,7 +877,7 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
     let plain = Style::new();
     let facts = |pieces: &[String], gap: &str| {
         let pieces: Vec<&str> = pieces.iter().map(String::as_str).collect();
-        Line::from(cut_whole(&pieces, gap, width))
+        Line::from(cut_whole(&pieces, gap, width, Keep::Start))
     };
     let states = model.session_states();
     let established = states.iter().filter(|(_, state)| state == "up").count();
@@ -982,6 +987,7 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
         &[&last, &alerts, &flows, &rcas, &logs],
         "",
         usize::from(area.width),
+        Keep::Start,
     );
     frame.render_widget(Paragraph::new(summary), counts);
     let on_tabs = model.focus() == Focus::Tabs;
@@ -1153,7 +1159,7 @@ fn run_title(model: &Model, before_hint: usize) -> Vec<Span<'static>> {
         (_, None) => format!("{end} {}s", seconds(model, run.started)),
     };
     let room = before_hint.saturating_sub(" run  ".len() + "  ".len() + state.chars().count() + 1);
-    let words = cut_words(&run.words, room);
+    let words = cut_words(&run.words, room, Keep::Start);
     vec![
         Span::raw(format!(" run  {words}  ")),
         Span::styled(state, style),
@@ -1333,7 +1339,10 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
             let (end, style) = run_end(run);
             let used = row("last", String::new()).chars().count() + "  ".len();
             let room = width.saturating_sub(used + end.chars().count());
-            (format!("{}  ", cut_words(&run.words, room)), (end, style))
+            (
+                format!("{}  ", cut_words(&run.words, room, Keep::Start)),
+                (end, style),
+            )
         }
         None => ("—".to_string(), (String::new(), Style::new())),
     };
@@ -1929,11 +1938,16 @@ mod tests {
         Some(inside)
     }
 
-    fn cut_at_a_word(shown: &str, full: &str) -> bool {
+    fn cut_at_a_word(shown: &str, full: &str, keep: Keep) -> bool {
         shown == full
-            || shown
-                .strip_suffix(" …")
-                .is_some_and(|kept| full.starts_with(&format!("{kept} ")))
+            || match keep {
+                Keep::Start => shown
+                    .strip_suffix(" …")
+                    .is_some_and(|kept| full.starts_with(&format!("{kept} "))),
+                Keep::End => shown
+                    .strip_prefix("… ")
+                    .is_some_and(|kept| full.ends_with(&format!(" {kept}"))),
+            }
     }
 
     #[test]
@@ -2109,22 +2123,39 @@ mod tests {
                     .and_then(|(_, rest)| rest.split("  ").next())
             };
             if let Some(title) = shown_after("run  ") {
-                assert!(cut_at_a_word(title, words), "{label}\n{screen}");
+                assert!(
+                    cut_at_a_word(title, words, Keep::Start),
+                    "{label}\n{screen}"
+                );
             }
             if let Some(last) = shown_after("│ last      ") {
-                assert!(cut_at_a_word(last, words), "{label}\n{screen}");
+                assert!(cut_at_a_word(last, words, Keep::Start), "{label}\n{screen}");
             }
             if let Some((source, text, _)) = model.error() {
                 let (shown, age) = rows[2].rsplit_once("  ").unwrap();
                 let seconds = age.strip_suffix("s ago").unwrap_or(age);
                 assert!(seconds.parse::<u64>().is_ok(), "{label}\n{screen}");
-                let full = format!("{source}: {text}");
-                assert!(
-                    cut_at_a_word(shown.trim_start(), &full),
-                    "{label}\n{screen}"
-                );
+                let shown = shown.strip_prefix(&format!(" {source}: ")).unwrap();
+                assert!(cut_at_a_word(shown, text, Keep::End), "{label}\n{screen}");
             }
         }
+    }
+
+    #[test]
+    fn a_long_error_keeps_its_source_its_reason_and_its_age() {
+        let mut model = Model::new(start(vec![stack("a", &[])]));
+        model.apply(Update::Metrics(Err(
+            "cannot reach http://localhost:9090: io: Connection refused (os error 61)".to_string(),
+        )));
+
+        let rows = drawn(&mut model, 60, 15);
+
+        assert_eq!(
+            rows[2],
+            " prometheus: … io: Connection refused (os error 61)  0s ago",
+            "{}",
+            rows.join("\n")
+        );
     }
 
     #[test]

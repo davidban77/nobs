@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::data::{Model, Prompt};
-use crate::screen::{cut_words, whole_hints};
+use crate::screen::{cut_words, whole_hints, Keep};
 
 const KEYS: [&str; 5] = ["q quit", "j/k select", "r refresh", "l load", "d delete"];
 
@@ -48,19 +48,15 @@ fn top_line(model: &Model, now: Instant, width: usize) -> Line<'static> {
     };
     let plain = format!("{}  {age}", model.server());
     let Some((error, at)) = model.error().zip(model.error_at()) else {
-        return Line::from(cut_words(&plain, width));
+        return Line::from(cut_words(&plain, width, Keep::Start));
     };
-    let text = cut_words(
-        &format!("{plain}  {error} ({}s ago)", seconds(now, at)),
-        width,
-    );
-    match text.strip_prefix(plain.as_str()) {
-        Some(rest) => Line::from(vec![
-            Span::raw(plain),
-            Span::styled(rest.to_string(), Style::new().fg(Color::Red)),
-        ]),
-        None => Line::from(text),
-    }
+    let age = format!(" ({}s ago)", seconds(now, at));
+    let room = width.saturating_sub(plain.chars().count() + "  ".len() + age.chars().count());
+    let error = format!("  {}{age}", cut_words(error, room, Keep::End));
+    Line::from(vec![
+        Span::raw(plain),
+        Span::styled(error, Style::new().fg(Color::Red)),
+    ])
 }
 
 fn seconds(now: Instant, at: Instant) -> u64 {
@@ -251,6 +247,33 @@ mod tests {
             lines[0].contains("refreshed 3s ago  cannot reach http://sonda: refused (2s ago)"),
             "{}",
             lines[0]
+        );
+    }
+
+    #[test]
+    fn a_long_sonda_error_keeps_its_reason_and_its_age() {
+        let at = Instant::now();
+        let mut model = model(at);
+        model.apply(Update {
+            at: at + Duration::from_secs(1),
+            list: Err(
+                "cannot reach http://127.0.0.1:18122/scenarios: io: Connection refused (os error 61)"
+                    .to_string(),
+            ),
+            selected: None,
+        });
+
+        let line = top_line(&model, at + Duration::from_secs(3), 100);
+
+        assert_eq!(
+            line,
+            Line::from(vec![
+                Span::raw("http://127.0.0.1:18122  refreshed 3s ago"),
+                Span::styled(
+                    "  … io: Connection refused (os error 61) (2s ago)",
+                    Style::new().fg(Color::Red)
+                ),
+            ])
         );
     }
 
