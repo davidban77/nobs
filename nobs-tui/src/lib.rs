@@ -811,6 +811,31 @@ mod tests {
     }
 
     #[test]
+    fn config_answers_become_the_sorted_defined_names_or_the_last_line_of_the_error() {
+        let runner = scripted(vec![
+            answer(0, "loki\ngrafana\n", ""),
+            answer(0, TWO, ""),
+            answer(1, "", &format!("{DOCKER_DOWN}\n")),
+            answer(0, TWO, ""),
+        ]);
+        let model = Model::new(start(vec![stack(&[CLOSED])], false));
+        let (pollers, updates) = launch(&runner, &model);
+        let defined = |updates: &Receiver<Update>| {
+            next(updates, Duration::from_secs(5), |update| match update {
+                Update::Services(0, defined, _) => Some(defined),
+                _ => None,
+            })
+        };
+
+        let names = defined(&updates);
+        pollers.send(Command::Refresh);
+        let failure = defined(&updates);
+
+        assert_eq!(names, Ok(vec!["grafana".to_string(), "loki".to_string()]));
+        assert_eq!(failure, Err(DOCKER_DOWN.to_string()));
+    }
+
+    #[test]
     fn health_shows_ok_and_the_http_code_and_down_for_the_rest() {
         let stub = Stub::start(&[("GET", "/-/ready", 200, ""), ("GET", "/ready", 503, "")]);
         let url = stub.url();

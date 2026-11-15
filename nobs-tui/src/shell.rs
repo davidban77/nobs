@@ -2601,6 +2601,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_defined_service_without_a_container_shows_the_health_its_probe_gave() {
+        let mut model = opened(&["autocon5"]);
+        model.apply(Update::Health(0, vec![health("grafana", "down")]));
+        model.apply(Update::Services(0, defined(&["grafana"]), Ok(Vec::new())));
+
+        let service = &model.services()[0];
+        assert_eq!(
+            (service.name.as_str(), service.state.as_str()),
+            ("grafana", "—")
+        );
+        assert_eq!(service.health.as_deref(), Some("down"));
+    }
+
+    #[test]
     fn a_failed_ps_gives_a_question_mark_the_error_and_keeps_the_last_services() {
         let mut model = opened(&["autocon5"]);
         with_services(&mut model, &["grafana"]);
