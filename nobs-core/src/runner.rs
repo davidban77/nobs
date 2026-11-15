@@ -36,24 +36,29 @@ impl Runner for RealRunner {
     }
 
     fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
-        real_output(program, args, Stdio::inherit())
+        real_output(program, args, Stdio::inherit(), Stdio::inherit())
     }
 
     fn output_quiet(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
-        real_output(program, args, Stdio::null())
+        real_output(program, args, Stdio::inherit(), Stdio::null())
     }
 }
 
-fn real_output(program: &str, args: &[OsString], stderr: Stdio) -> io::Result<Output> {
+fn real_output(
+    program: &str,
+    args: &[OsString],
+    stdin: Stdio,
+    stderr: Stdio,
+) -> io::Result<Output> {
     let output = Command::new(program)
         .args(args)
-        .stdin(Stdio::inherit())
+        .stdin(stdin)
         .stderr(stderr)
         .output()?;
     Ok(Output {
         code: exit_code(output.status),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::new(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }
 
@@ -65,15 +70,7 @@ impl Runner for CapturedRunner {
     }
 
     fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
-        let output = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()?;
-        Ok(Output {
-            code: exit_code(output.status),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
+        real_output(program, args, Stdio::null(), Stdio::piped())
     }
 }
 

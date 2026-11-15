@@ -2642,18 +2642,13 @@ impl<'a, Topo> LabRun<'a, Topo> {
         Err(1)
     }
 
-    fn containers(&self) -> Result<Vec<String>, i32> {
-        self.list(
-            &os_strings(&["ps", "-a", "--format", "{{.Names}}"]),
-            "containers",
-        )
-    }
-
-    fn containers_where(&self, filter: &str, what: &str) -> Result<Vec<String>, i32> {
-        self.list(
-            &os_strings(&["ps", "-a", "--filter", filter, "--format", "{{.Names}}"]),
-            what,
-        )
+    fn containers(&self, filter: Option<&str>, what: &str) -> Result<Vec<String>, i32> {
+        let mut args = os_strings(&["ps", "-a"]);
+        if let Some(filter) = filter {
+            args.extend(os_strings(&["--filter", filter]));
+        }
+        args.extend(os_strings(&["--format", "{{.Names}}"]));
+        self.list(&args, what)
     }
 
     fn wait(
@@ -2849,7 +2844,7 @@ impl<'a> LabRun<'a, Topology> {
     }
 
     fn refuse_clashes(&self, nodes: &[String], scenario: &str) -> Result<(), i32> {
-        let present = self.containers()?;
+        let present = self.containers(None, "containers")?;
         let clashing: Vec<&str> = nodes
             .iter()
             .filter(|node| present.contains(node))
@@ -2865,7 +2860,7 @@ impl<'a> LabRun<'a, Topology> {
         }
         let project = self.project();
         let label = format!("label=com.docker.compose.project={project}");
-        let held = self.containers_where(&label, &format!("containers of project {project}"))?;
+        let held = self.containers(Some(&label), &format!("containers of project {project}"))?;
         if !held.is_empty() {
             eprintln!(
                 "nobs: lab {}: project {project} already has containers ({}); run nobs lab destroy -s {scenario} first, or nobs lab purge",
@@ -2890,8 +2885,8 @@ impl<'a> LabRun<'a, Topology> {
         if !self.network_exists(network)? {
             return Ok(());
         }
-        let attached = self.containers_where(
-            &format!("network={network}"),
+        let attached = self.containers(
+            Some(&format!("network={network}")),
             &format!("containers of network {network}"),
         )?;
         if !attached.is_empty() {
@@ -2933,7 +2928,7 @@ impl<'a> LabRun<'a, Topology> {
         wait: Duration,
     ) -> Result<(), i32> {
         let nodes = self.node_containers()?;
-        self.containers()?;
+        self.containers(None, "containers")?;
         self.refuse_missing_images()?;
         println!("lab prepare: scenario {scenario}");
         self.command = "purge";
@@ -3080,7 +3075,7 @@ impl<'a> LabRun<'a, Topology> {
     }
 
     fn purge_nodes(&self, nodes: &[String]) -> Result<(), i32> {
-        let present = self.containers()?;
+        let present = self.containers(None, "containers")?;
         if !nodes.iter().any(|node| present.contains(node)) {
             println!("lab purge: no lab nodes to destroy");
             return Ok(());

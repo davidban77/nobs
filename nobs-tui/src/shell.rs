@@ -1273,7 +1273,7 @@ impl Model {
         let sonda_keys = self.workbench == Workbench::Services
             && self.focus == Focus::Tabs
             && self.tab == Tab::Sonda;
-        if sonda_keys && self.sonda.prompt() != &Prompt::None && key.code != KeyCode::Esc {
+        if self.asking() && key.code != KeyCode::Esc {
             return self.sonda_key(key);
         }
         if let Some(commands) = self.action_key(key.code) {
