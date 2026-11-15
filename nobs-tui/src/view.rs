@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::data::{Model, Prompt};
-use crate::screen::{cut_words, whole_hints, Keep};
+use crate::screen::{border_below, cut_words, first_row, rows_mark, whole_hints, Keep};
 
 const KEYS: [&str; 5] = ["q quit", "j/k select", "r refresh", "l load", "d delete"];
 
@@ -29,8 +29,14 @@ pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         Paragraph::new(top_line(model, now, usize::from(top.width))),
         top,
     );
-    let mut state = TableState::default().with_selected(model.selected_index());
+    let rows = Block::bordered().inner(left);
+    let room = usize::from(rows.height).saturating_sub(1);
+    let first = first_row(model.selected_index().unwrap_or(0), room);
+    let mut state = TableState::default()
+        .with_selected(model.selected_index())
+        .with_offset(first);
     frame.render_stateful_widget(table(model, left.width), left, &mut state);
+    rows_mark(frame, border_below(rows), first, room, model.rows().len());
     frame.render_widget(
         Paragraph::new(details(model)).block(Block::bordered()),
         right,

@@ -18,8 +18,8 @@
   │Enter    open / pick alert                     Ctrl-C  stop a run, or quit                    │
   │                                                                                              │
   │alerts box: Enter picks the device, opens its timeline                                        │
+  │↑3 ↓13   3 rows hidden above, 13 below                                                        │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
-
 
 
 

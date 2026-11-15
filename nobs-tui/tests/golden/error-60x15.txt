@@ -10,6 +10,6 @@
 │                     ││ alertman…  running  ok        9093│
 │                     ││ infrahub   running  http 503  8000│
 │                     ││ prefect    running  ok        4200│
-└─────────────────────┘└───────────────────────────────────┘
+└─────────────────────┘└────────────────────────────── ↓1 ─┘
  run  none                                           o open
  Tab focus  j/k move  / filter  l logs  r refresh  u up

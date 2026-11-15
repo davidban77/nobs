@@ -50,6 +50,8 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 
 When a data call fails, one red line appears between the switcher and the body (see [Errors](#errors)).
 
+When a list holds more rows than its pane can draw, the right end of the border below its rows says how many rows are hidden: `↓16` means 16 rows below the last row drawn, `↑3` means 3 rows above the first row drawn, and `↑3 ↓13` means both; when there is no room for the whole mark, it is not shown.
+
 ### The devices workbench
 
 The devices workbench is workbench `1`. It shows the devices of the lab, one row for each, with their health and their alerts, and four tabs for the device you select. It only reads, except for the action `m` (see [Actions](#actions)). A workshop opens on it. A book lab opens on the lab workbench. A labcli lab, the chooser and `sonda only` open on the services workbench.

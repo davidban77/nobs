@@ -10,6 +10,6 @@
 ├ alerts 2 ───────────┤│ 13:40:57  log    BGP neighbor 10.…│
 │srl1  BgpSessionNotUp││ 13:40:48  rca    AI RCA disabled …│
 │srl1  BgpSessionNotUp││ 13:40:48  flow   action | srl1:10…│
-└─────────────────────┘└───────────────────────────────────┘
+└─────────────────────┘└────────────────────────────── ↓4 ─┘
  run  none                                           o open
  j/k move  Enter full text  - + window  [ ] tab  Esc back
