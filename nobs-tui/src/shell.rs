@@ -517,7 +517,7 @@ impl Model {
                     return;
                 };
                 self.states[index] = StackState::Failed;
-                self.error = Some((format!("ps {name}"), text, self.now));
+                self.fail(&format!("ps {name}"), text);
             }
             Update::Health(index, list) => {
                 if index != self.selected {
@@ -540,7 +540,7 @@ impl Model {
                 keep_last(&mut logs.lines);
             }
             Update::Logs(_, service, Err(text)) => {
-                self.error = Some((format!("logs {service}"), text, self.now));
+                self.fail(&format!("logs {service}"), text);
             }
             Update::Sonda(update) => self.sonda.apply(update),
             Update::Note(note) => self.sonda.note(note.text, note.at),
@@ -552,7 +552,7 @@ impl Model {
                     "nodes" => self.nodes_ok = false,
                     _ => {}
                 }
-                self.error = Some((source, "polling stopped".to_string(), self.now));
+                self.fail(&source, "polling stopped".to_string());
             }
             Update::Devices(Ok(list)) => {
                 self.devices = list;
@@ -757,10 +757,13 @@ impl Model {
                 });
             }
             None if action.row == Row::Stack => {
-                self.notice = Some(format!(
-                    "{} {} is for a workshop; a chapter has its actions in the lab workbench",
-                    action.key, action.hint
-                ));
+                let mut notice = format!("{} {} is for a workshop", action.key, action.hint);
+                let chapter = matches!(target, Target::Stack(index)
+                    if self.stacks.get(index).is_some_and(|stack| stack.kind == StackKind::BookLab));
+                if chapter {
+                    notice.push_str("; a chapter has its actions in the lab workbench");
+                }
+                self.notice = Some(notice);
             }
             None => {}
         }
@@ -786,7 +789,13 @@ impl Model {
     }
 
     fn fail(&mut self, source: &str, text: String) {
-        self.error = Some((source.to_string(), text, self.now));
+        if self
+            .error
+            .as_ref()
+            .is_none_or(|(held, _, _)| held == source)
+        {
+            self.error = Some((source.to_string(), text, self.now));
+        }
     }
 
     fn clear_error(&mut self, source: &str) {
@@ -1937,7 +1946,7 @@ pub(crate) mod tests {
         })
     }
 
-    fn row(name: &str, state: &str) -> lab::Service {
+    pub(crate) fn row(name: &str, state: &str) -> lab::Service {
         lab::Service {
             name: name.to_string(),
             state: state.to_string(),
@@ -3351,6 +3360,7 @@ pub(crate) mod tests {
         )])));
         assert_eq!(model.device_rows()[0].alerts, Some((1, false)));
 
+        ch(&mut model, 'x');
         model.apply(Update::Stopped("alertmanager".to_string()));
 
         assert_eq!(model.device_rows()[0].alerts, None);
@@ -3359,6 +3369,7 @@ pub(crate) mod tests {
 
         assert!(model.device_logs().unwrap().2);
 
+        ch(&mut model, 'x');
         model.apply(Update::Stopped("loki".to_string()));
 
         assert!(!model.device_logs().unwrap().2);
@@ -3685,6 +3696,54 @@ pub(crate) mod tests {
         assert_eq!(ch(&mut model, 'y'), []);
     }
 
+    #[test]
+    fn u_on_a_labcli_lab_or_on_sonda_only_says_only_that_it_is_for_a_workshop() {
+        let labcli = Stack {
+            kind: StackKind::Lab,
+            ..stack("netlab", &[])
+        };
+        for stack in [labcli, sonda_stack()] {
+            let kind = stack.kind;
+            let mut model = Model::new(start(vec![stack]));
+            code(&mut model, KeyCode::Enter);
+            code(&mut model, KeyCode::Tab);
+
+            assert_eq!(ch(&mut model, 'u'), [], "{kind:?}");
+            assert_eq!(model.question(), None, "{kind:?}");
+            assert_eq!(model.notice(), Some("u up is for a workshop"), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_first_failing_source_keeps_the_error_row_until_it_answers() {
+        let mut model = devices_model();
+        let first = Instant::now();
+        let at = |seconds| first + Duration::from_secs(seconds);
+        let fail_in_turn = [
+            Update::Alerts(Err("alertmanager one".to_string())),
+            Update::Metrics(Err("prometheus one".to_string())),
+            Update::Alerts(Err("alertmanager two".to_string())),
+            Update::Metrics(Err("prometheus two".to_string())),
+        ];
+        for (seconds, update) in (0..).zip(fail_in_turn) {
+            model.tick(at(seconds), UNIX_EPOCH, (80, 24));
+            model.apply(update);
+        }
+
+        assert_eq!(
+            model.error(),
+            Some(("alertmanager", "alertmanager two", at(2)))
+        );
+        model.apply(Update::Alerts(Ok(Vec::new())));
+        assert_eq!(model.error(), None);
+        model.tick(at(4), UNIX_EPOCH, (80, 24));
+        model.apply(Update::Metrics(Err("prometheus three".to_string())));
+        assert_eq!(
+            model.error(),
+            Some(("prometheus", "prometheus three", at(4)))
+        );
+    }
+
     const READING: [&str; 2] = ["status", "show"];
 
     fn on_its_row(row: Row) -> Model {
@@ -3877,7 +3936,9 @@ pub(crate) mod tests {
             let line = key_line(&elsewhere, 200).concat();
             assert!(!line.contains(&hint), "{hint}: {line}");
 
-            let entries = help_entries(action.workbench);
+            let home = on_its_row(action.row);
+            assert_eq!(home.workbench(), action.workbench, "{hint}");
+            let entries = help_entries(&home);
             let entry = (action.key.to_string(), action.hint);
             assert_eq!(entries.iter().filter(|seen| **seen == entry).count(), 1);
             let key = action.key.to_string();

@@ -1,4 +1,4 @@
- nobs  book-lab book lab  sot lab_vars  1 services                                         13:42:07
+ nobs  book-lab book lab  sot lab_vars                                                     13:42:07
  1 devices  2 services  [3 lab]                                                      ? keys  q quit
 
 

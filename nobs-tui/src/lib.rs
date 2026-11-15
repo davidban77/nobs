@@ -1437,7 +1437,7 @@ mod tests {
 
                     let rows = help_turn(&mut model, size, &keys);
 
-                    let entries = screen::help_entries(model.workbench());
+                    let entries = screen::help_entries(&model);
                     let last = entries.last().unwrap();
                     assert!(
                         shows_entry(&rows, last),
@@ -1476,8 +1476,9 @@ mod tests {
 
         let rows = help_turn(&mut model, (60, 15), &[ch('o'), ch('?')]);
 
-        let entries = screen::help_entries(Workbench::Lab);
+        let entries = screen::help_entries(&model);
         let screen = rows.join("\n");
+        assert_eq!(model.workbench(), Workbench::Lab);
         assert!(model.run_pane());
         assert_eq!(entries.len(), 16);
         for entry in &entries {

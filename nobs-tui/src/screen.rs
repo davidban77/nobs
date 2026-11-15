@@ -31,8 +31,7 @@ const HELP_QUIT: [(&str, &str); 2] = [
     ("q", "quit; asks in a run"),
     ("Ctrl-C", "stop a run, or quit"),
 ];
-const HELP: [(&str, &str); 13] = [
-    ("1 2 3", "switch workbench"),
+const HELP: [(&str, &str); 12] = [
     ("Tab", "focus list/tabs"),
     ("j k ↑ ↓", "move"),
     ("[ ]", "other tab"),
@@ -46,8 +45,7 @@ const HELP: [(&str, &str); 13] = [
     ("?", "close"),
     ("Esc", "close/clear/back"),
 ];
-const HELP_DEVICES: [(&str, &str); 13] = [
-    ("1 2 3", "switch workbench"),
+const HELP_DEVICES: [(&str, &str); 12] = [
     ("Tab", "focus list/tabs"),
     ("j k ↑ ↓", "move"),
     ("[ ]", "other tab"),
@@ -61,8 +59,7 @@ const HELP_DEVICES: [(&str, &str); 13] = [
     ("o", "run pane"),
     ("?", "close"),
 ];
-const HELP_LAB: [(&str, &str); 7] = [
-    ("1 2 3", "switch workbench"),
+const HELP_LAB: [(&str, &str); 6] = [
     ("j k ↑ ↓", "move"),
     ("r", "refresh now"),
     ("o", "run pane"),
@@ -71,6 +68,7 @@ const HELP_LAB: [(&str, &str); 7] = [
     ("Esc", "close/fold"),
 ];
 const HELP_MORE: &str = "j/k more";
+const FOLD: &str = "Esc fold";
 const PANE_LEAST: u16 = 3;
 const NODES_LEAST: u16 = 4;
 const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
@@ -264,11 +262,7 @@ fn highlighted(line: Line<'static>, width: u16) -> Line<'static> {
 }
 
 fn header(frame: &mut Frame, area: Rect, model: &Model) {
-    let mut text = format!(" {}", model.header());
-    if area.width >= WIDE && !model.chooser() {
-        text = format!("{text}  {} services", model.services().len());
-    }
-    frame.render_widget(Paragraph::new(text), area);
+    frame.render_widget(Paragraph::new(format!(" {}", model.header())), area);
     right(frame, area, Line::from(model.clock()), 1);
 }
 
@@ -412,7 +406,9 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         None => "no answer yet".to_string(),
     };
     let title = if wide {
-        format!(" {name}  {} services  {age} ", model.services().len())
+        let count = model.services().len();
+        let noun = if count == 1 { "service" } else { "services" };
+        format!(" {name}  {count} {noun}  {age} ")
     } else {
         format!(" {name}  {age} ")
     };
@@ -1098,7 +1094,7 @@ fn run_title(model: &Model, before_hint: usize) -> Vec<Span<'static>> {
 }
 
 fn run_line(frame: &mut Frame, area: Rect, model: &Model) {
-    let hint = Line::from("o open");
+    let hint = Line::from(if model.run_pane() { FOLD } else { "o open" });
     let before_hint = usize::from(area.width).saturating_sub(hint.width() + 1);
     frame.render_widget(
         Paragraph::new(Line::from(run_title(model, before_hint))),
@@ -1108,7 +1104,7 @@ fn run_line(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
-    let hint = Line::from(" Esc fold ").right_aligned();
+    let hint = Line::from(format!(" {FOLD} ")).right_aligned();
     let before_hint = usize::from(area.width).saturating_sub(hint.width() + 2);
     let mut title = run_title(model, before_hint);
     title.push(Span::raw(" "));
@@ -1303,7 +1299,7 @@ fn action_hints(model: &Model) -> Vec<String> {
 
 pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
     if let Some(text) = model.typed_filter() {
-        return wrapped(&format!(" filter: {text}  Enter keep  Esc clear"), width);
+        return filter_line(text, width);
     }
     if let Some(question) = model.question() {
         return wrapped(&format!(" {}", question.text()), width);
@@ -1376,30 +1372,54 @@ fn log_hints(paused: bool) -> Vec<&'static str> {
 fn whole_hints(hints: &[String], width: usize) -> String {
     let mut line = String::new();
     for hint in hints {
-        let gap = if line.is_empty() { " " } else { "  " };
-        if line.chars().count() + gap.len() + hint.chars().count() > width {
+        if !push_whole(&mut line, hint, width) {
             break;
         }
-        line.push_str(gap);
-        line.push_str(hint);
     }
     line
 }
 
-pub(crate) fn help_entries(workbench: Workbench) -> Vec<(String, &'static str)> {
+fn push_whole(line: &mut String, hint: &str, width: usize) -> bool {
+    let gap = if line.is_empty() { " " } else { "  " };
+    if line.chars().count() + gap.len() + hint.chars().count() > width {
+        return false;
+    }
+    line.push_str(gap);
+    line.push_str(hint);
+    true
+}
+
+fn filter_line(text: &str, width: usize) -> Vec<String> {
+    let mut rows = wrapped(&format!(" filter: {text}"), width);
+    for hint in ["Enter keep", "Esc clear"] {
+        let fits = rows
+            .last_mut()
+            .is_some_and(|row| push_whole(row, hint, width));
+        if !fits {
+            let mut row = String::new();
+            push_whole(&mut row, hint, width);
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
+    let workbench = model.workbench();
     let fixed: &[(&str, &str)] = match workbench {
         Workbench::Devices => &HELP_DEVICES,
         Workbench::Services => &HELP,
         Workbench::Lab => &HELP_LAB,
     };
+    let switch = if model.book_lab() { "1 2 3" } else { "1 2" };
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench)
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
-    fixed
-        .iter()
-        .map(owned)
+    [(switch.to_string(), "switch workbench")]
+        .into_iter()
+        .chain(fixed.iter().map(owned))
         .chain(actions)
         .chain(HELP_QUIT.iter().map(owned))
         .collect()
@@ -1418,9 +1438,8 @@ struct HelpLayout {
 }
 
 fn help_layout(model: &Model, body: Rect) -> HelpLayout {
-    let workbench = model.workbench();
-    let entries = help_entries(workbench);
-    let note = match workbench {
+    let entries = help_entries(model);
+    let note = match model.workbench() {
         Workbench::Devices => Some(HELP_DEVICES_NOTE),
         Workbench::Services => Some(HELP_SONDA),
         Workbench::Lab => None,
@@ -1544,7 +1563,9 @@ mod tests {
 
     use super::*;
     use crate::book::NodeRow;
-    use crate::shell::tests::{alert, fixture, stack, start, workshop_located, workshop_source};
+    use crate::shell::tests::{
+        alert, fixture, row, stack, start, workshop_located, workshop_source,
+    };
     use crate::shell::{handle, stacks, Stack, Start, Update};
 
     const REFUSAL: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
@@ -1915,6 +1936,94 @@ mod tests {
         for Walked { label, rows, .. } in walk() {
             assert!(rows[1].ends_with("? keys  q quit"), "{label}\n{}", rows[1]);
         }
+    }
+
+    #[test]
+    fn the_services_title_counts_one_service_in_the_singular_and_the_header_holds_no_count() {
+        for (count, title) in [
+            (0, " a  0 services  "),
+            (1, " a  1 service  "),
+            (2, " a  2 services  "),
+        ] {
+            let mut model = Model::new(start(vec![stack("a", &[])]));
+            handle(
+                &mut model,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            let rows = (0..count)
+                .map(|index| row(&format!("s{index}"), "running"))
+                .collect();
+            model.apply(Update::Services(0, Ok(rows)));
+            for (width, height) in SIZES {
+                let screen = drawn(&mut model, width, height);
+
+                assert!(!screen[0].contains("services"), "{}", screen.join("\n"));
+                if width >= WIDE {
+                    assert!(screen[2].contains(title), "{}", screen.join("\n"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_help_names_the_lab_switch_key_only_in_the_book_lab() {
+        let mut book_services = lab_bench(2);
+        press(&mut book_services, '2');
+        for (model, switch) in [
+            (devices_bench(), "1 2"),
+            (services_bench(), "1 2"),
+            (lab_bench(2), "1 2 3"),
+            (book_services, "1 2 3"),
+        ] {
+            let entries = help_entries(&model);
+
+            assert_eq!(
+                entries[0],
+                (switch.to_string(), "switch workbench"),
+                "{:?}",
+                model.workbench()
+            );
+        }
+    }
+
+    #[test]
+    fn the_run_line_hint_says_what_o_does_now() {
+        let mut folded_open = 0;
+        for Walked {
+            label, model, rows, ..
+        } in walk()
+        {
+            let run_line = rows.iter().find(|row| row.starts_with(" run  "));
+            let Some(run_line) = run_line.filter(|_| pane_inside(&rows).is_none()) else {
+                continue;
+            };
+            let screen = rows.join("\n");
+            let hint = if model.run_pane() {
+                "Esc fold"
+            } else {
+                "o open"
+            };
+            folded_open += usize::from(model.run_pane());
+
+            assert!(run_line.ends_with(hint), "{label}\n{screen}");
+        }
+        assert!(folded_open > 0);
+    }
+
+    #[test]
+    fn the_filter_line_moves_a_hint_that_does_not_fit_whole_to_the_next_row() {
+        let mut model = services_bench();
+        press(&mut model, '/');
+        let text = "s".repeat(44);
+        text.chars().for_each(|typed| press(&mut model, typed));
+
+        assert_eq!(
+            key_line(&model, 60),
+            [
+                format!(" filter: {text}"),
+                " Enter keep  Esc clear".to_string()
+            ]
+        );
     }
 
     #[test]
