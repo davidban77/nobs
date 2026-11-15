@@ -49,13 +49,7 @@ pub fn foreign_containers(runner: &dyn Runner, project: &str) -> Result<Vec<Stri
     if output.code != 0 {
         return Ok(Vec::new());
     }
-    Ok(output
-        .stdout
-        .lines()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .collect())
+    Ok(crate::lab::trimmed_lines(&output.stdout))
 }
 
 #[cfg(test)]

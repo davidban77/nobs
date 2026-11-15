@@ -43,6 +43,10 @@ impl Compose {
         self.compose_args(words(&["ps", "--all"]), services)
     }
 
+    pub fn config_services_args(&self) -> Vec<OsString> {
+        self.compose_args(words(&["config", "--services"]), &[])
+    }
+
     pub fn build_args(&self, services: &[String]) -> Vec<OsString> {
         self.compose_args(words(&["build"]), services)
     }
@@ -552,6 +556,15 @@ mod tests {
             compose().ps_args(&[]),
             ["compose", "-f", FILE, "ps", "--all"]
         );
+    }
+
+    #[test]
+    fn config_services_args_carry_the_project_file_and_profiles_of_the_listing() {
+        let compose = compose().project("p").with_profile("a");
+        let listing = compose.ps_args(&[]);
+        let config = compose.config_services_args();
+        assert_eq!(config[..config.len() - 2], listing[..listing.len() - 2]);
+        assert_eq!(config[config.len() - 2..], ["config", "--services"]);
     }
 
     #[test]

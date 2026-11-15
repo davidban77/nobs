@@ -55,6 +55,8 @@ const DEMO: [(&str, &str, u16, &str); 3] = [
     ("db", "exited", 0, "2 days ago"),
     ("cache", "exited", 0, "2 days ago"),
 ];
+const PACKT: [&str; 2] = ["grafana", "prometheus"];
+const CH2: [&str; 1] = ["builder"];
 const LOG_LINES: [&str; 4] = [
     r#"level=warn ts=13:41:58 msg="ingester not ready""#,
     r#"level=info ts=13:41:59 msg="ring state JOINING""#,
@@ -88,6 +90,17 @@ fn ps(rows: &[(&str, &str, u16, &str)]) -> Vec<Service> {
         })
         .collect();
     services(&text.join("\n")).unwrap()
+}
+
+fn defined(names: &[&str]) -> Result<Vec<String>, String> {
+    Ok(names.iter().map(|name| name.to_string()).collect())
+}
+
+fn listing(index: usize, rows: Vec<Service>) -> Update {
+    let mut names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
+    names.sort();
+    names.dedup();
+    Update::Services(index, Ok(names), Ok(rows))
 }
 
 fn health() -> Vec<Health> {
@@ -173,15 +186,19 @@ fn model_with(
     }
     model.tick(start, clock(), (80, 24));
     if packt_failed {
-        model.apply(Update::Services(1, Err("exit 1".to_string())));
+        model.apply(Update::Services(
+            1,
+            defined(&PACKT),
+            Err("exit 1".to_string()),
+        ));
         model.tick(start + Duration::from_secs(10), clock(), (80, 24));
     }
-    model.apply(Update::Services(0, Ok(ps(&WORKSHOP))));
+    model.apply(listing(0, ps(&WORKSHOP)));
     model.apply(Update::Health(0, health()));
     if !packt_failed {
-        model.apply(Update::Services(1, Ok(Vec::new())));
+        model.apply(Update::Services(1, defined(&PACKT), Ok(Vec::new())));
     }
-    model.apply(Update::Services(2, Ok(ps(&DEMO))));
+    model.apply(listing(2, ps(&DEMO)));
     model
 }
 
@@ -442,11 +459,11 @@ fn unpolled_lab_model(lab_dir: &str) -> Shell {
         ..begin(Some(lab), chapters, Workbench::Lab)
     });
     model.tick(Instant::now(), clock(), (80, 24));
-    model.apply(Update::Services(
+    model.apply(listing(
         0,
-        Ok(ps(&[("grafana", "running", 3000, "41 seconds ago")])),
+        ps(&[("grafana", "running", 3000, "41 seconds ago")]),
     ));
-    model.apply(Update::Services(1, Ok(Vec::new())));
+    model.apply(Update::Services(1, defined(&CH2), Ok(Vec::new())));
     model
 }
 
@@ -906,7 +923,11 @@ fn nodes_show_question_marks_until_a_good_answer_whatever_the_error_row_does() {
 
     let mut model = lab_model();
     model.apply(Update::Nodes(Err("docker is gone".to_string())));
-    model.apply(Update::Services(1, Err("exit 1".to_string())));
+    model.apply(Update::Services(
+        1,
+        defined(&CH2),
+        Err("exit 1".to_string()),
+    ));
     unknown(&lines(&render(model, 100, 30)));
 
     let mut model = lab_model();
@@ -956,7 +977,11 @@ fn a_short_run_pane_drops_the_command_line_to_keep_the_whole_refusal() {
 #[test]
 fn under_an_error_row_the_run_pane_gives_way_to_the_lab_minimum_and_keeps_the_newest_rows() {
     let mut model = refused_in(LONG_LAB_DIR);
-    model.apply(Update::Services(1, Err("exit 1".to_string())));
+    model.apply(Update::Services(
+        1,
+        defined(&CH2),
+        Err("exit 1".to_string()),
+    ));
 
     pinned(model, "run-refused-error", 60, 15);
 }
@@ -983,7 +1008,11 @@ fn chapter_two_refused() -> Shell {
     press(&mut model, KeyCode::Char('D'));
     press(&mut model, KeyCode::Char('y'));
     let mut model = with_long_refusal(model);
-    model.apply(Update::Services(1, Err("exit 1".to_string())));
+    model.apply(Update::Services(
+        1,
+        defined(&CH2),
+        Err("exit 1".to_string()),
+    ));
     model
 }
 

@@ -283,6 +283,20 @@ pub fn services(ps_json: &str) -> Result<Vec<Service>, String> {
         .collect())
 }
 
+pub(crate) fn trimmed_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn defined_services(config_services: &str) -> Vec<String> {
+    let mut names = trimmed_lines(config_services);
+    names.sort();
+    names
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     pub name: String,
@@ -793,6 +807,14 @@ mod tests {
         assert_eq!(services(" \n "), Ok(vec![]));
         assert!(services("not json").is_err());
         assert!(services("[1").is_err());
+    }
+
+    #[test]
+    fn defined_services_takes_one_trimmed_name_a_line_sorted() {
+        assert_eq!(
+            defined_services("sleeper\n\n builder \n"),
+            ["builder", "sleeper"]
+        );
     }
 
     #[test]

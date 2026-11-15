@@ -2,7 +2,7 @@
  1 devices  [2 services]                                                             ? keys  q quit
 ┌ stacks 3 ────────────────────┐┌ autocon5  7 services  refreshed 43s ago ─────────────────────────┐
 │!autocon5  up 7/7             ││OVERVIEW  logs  sonda                                             │
-│ packt     down               ││ SERVICE       STATE    HEALTH    PORT  AGE                       │
+│ packt     down 0/2           ││ SERVICE       STATE    HEALTH    PORT  AGE                       │
 │ demo      down 0/3           ││ grafana       running  ok        3000  41 seconds                │
 │                              ││ prometheus    running  ok        9090  41 seconds                │
 │                              ││ loki          running  down      3001  40 seconds                │
