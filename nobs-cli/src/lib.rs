@@ -1173,7 +1173,8 @@ const LAB_SUDO_HELP: &str = "Run containerlab with sudo; off by default, LAB_SUD
 
 const LAB_NO_SUDO_HELP: &str = "Run containerlab without sudo; this is the default";
 
-const LAB_SUDO_NO_PROMPT_HELP: &str = "With sudo, never ask for a password: fail instead";
+const LAB_SUDO_NO_PROMPT_HELP: &str =
+    "When sudo is on (--sudo or LAB_SUDO), fail instead of asking for a password";
 
 #[derive(Debug, Args)]
 pub struct SudoFlags {
@@ -2538,15 +2539,17 @@ impl<'a> LabRun<'a, Topology> {
     }
 
     fn refuse_sudo_prompt(&self) -> Result<(), i32> {
-        let fails = |program: &str, args: &[OsString]| {
-            self.runner
-                .output(program, args)
-                .is_ok_and(|output| output.code != 0)
+        let fails = |output: std::io::Result<nobs_core::runner::Output>| {
+            output.is_ok_and(|output| output.code != 0)
         };
         let containerlab = &self.topology.containerlab;
-        if fails(containerlab.program(), &containerlab.version_args())
-            && fails(Containerlab::SUDO, &os_strings(&["-n", "true"]))
-        {
+        if fails(
+            self.runner
+                .output(containerlab.program(), &containerlab.version_args()),
+        ) && fails(
+            self.runner
+                .output_quiet(Containerlab::SUDO, &os_strings(&["-n", "true"])),
+        ) {
             eprintln!(
                 "nobs: lab {}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again",
                 self.command
@@ -2896,11 +2899,14 @@ impl<'a> LabRun<'a, Topology> {
             return Ok(());
         }
         println!("lab {}: removing network {network}", self.command);
-        self.step(
-            Compose::PROGRAM,
-            &network_args(NetworkAction::Rm, Some(network), None, None),
-            "network rm",
-        )
+        let result = self
+            .runner
+            .output(
+                Compose::PROGRAM,
+                &network_args(NetworkAction::Rm, Some(network), None, None),
+            )
+            .map(|output| output.code);
+        self.finished("network rm", Compose::PROGRAM, result)
     }
 
     fn deploy(

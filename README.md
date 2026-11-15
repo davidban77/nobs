@@ -283,17 +283,16 @@ At 100 columns the key line is `j/k move  D deploy  X destroy  P purge  R prepar
 
 The lab runs one chapter at a time. So `D`, `U`, `B` and `X` take the services of the other chapters down. `R` and `P` take every chapter down. Their questions say "scenario". In the book lab, a scenario is a chapter: the folder under `chapters/` that holds its compose file (see [Book lab](#book-lab)). It is not a Sonda scenario.
 
-`D`, `X`, `P`, `R` and `S` always add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). When `LAB_SUDO` is on, they run `sudo containerlab`. The screen cannot ask for a password, so with the flag `sudo` fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
+`D`, `X`, `P`, `R` and `S` always add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). When `LAB_SUDO` is on, they run `sudo containerlab`. The screen cannot ask for a password, so with the flag, when sudo is on (`--sudo` or `LAB_SUDO`), nobs fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
 
 When `sudo` needs a password, the action ends at once with `exit 1`. For `X`, the run pane shows:
 
 ```
 sudo: a password is required
-sudo: a password is required
 nobs: lab destroy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again
 ```
 
-The `sudo:` lines come from `sudo` itself, and there can be one or two of them. For the other keys, the last line names their command, for example `lab deploy` for `D`. Nothing has changed. The chapter row gets the mark `!`, except after `P`, which acts on the whole lab.
+The `sudo:` line comes from `sudo` itself. For the other keys, the last line names their command, for example `lab deploy` for `D`. Nothing has changed. The chapter row gets the mark `!`, except after `P`, which acts on the whole lab.
 
 To go on:
 
@@ -1852,13 +1851,13 @@ Each command runs its steps one after another. nobs builds the path of each file
 `nobs lab destroy -s <scenario>` runs these steps:
 
 1. It takes the stack of the scenario down and removes its volumes.
-2. It runs `containerlab destroy -t <topology> --cleanup`. Seen with containerlab 0.77.0: when the network the stacks join is the management network of the topology (`mgmt.network`), this step removes the Docker network too, but only when no running container uses it. The next `deploy` creates the network again. When a running container uses the network, containerlab removes its nodes, keeps the network and prints nothing about it.
-3. It removes the network that `deploy` uses. nobs finds its name as `deploy` does: `LAB_NETWORK_NAME`, else the `network` setting of `nobs.toml`, else `network-observability`. nobs lists the Docker networks. When the network does not exist, for example because step 2 removed it, nobs prints nothing. When a container is attached to the network, nobs prints `lab destroy: network <network> is still in use, kept` and keeps the network. This counts a running container, a stopped one and one that was only created. To find it, run `docker ps -a --filter network=<network>`. Remove it, then run `destroy` again. Otherwise nobs prints `lab destroy: removing network <network>` and runs `docker network rm <network>`. Docker then prints the network's name on its own line. nobs removes only the network that `deploy` makes. When the topology sets a management network with another name, that network belongs to containerlab, and nobs does not remove it; after a deploy that was stopped with `Ctrl-C`, it can stay. `destroy` and `purge` take no `--network-name` flag, so they do not know a network that was named only by `deploy --network-name`. To name it for every command, use `LAB_NETWORK_NAME` or the `network` setting of `nobs.toml`.
+2. It runs `containerlab destroy -t <topology> --cleanup`. nobs removes only the lab's own network; a management network of another name that the topology sets (`mgmt.network`) stays, and `docker network rm <name>` removes it.
+3. It removes the network that `deploy` uses. nobs finds its name as `deploy` does: `LAB_NETWORK_NAME`, else the `network` setting of `nobs.toml`, else `network-observability`. nobs lists the Docker networks. When the network does not exist, for example because step 2 removed it, nobs prints nothing. When a container is attached to the network, nobs prints `lab destroy: network <network> is still in use, kept` and keeps the network. This counts a running container, a stopped one and one that was only created. To find it, run `docker ps -a --filter network=<network>`. Remove it, then run `destroy` again. Otherwise nobs prints `lab destroy: removing network <network>` and runs `docker network rm <network>`. nobs removes only the network that `deploy` makes. When the topology sets a management network with another name, that network belongs to containerlab, and nobs does not remove it; after a deploy that was stopped with `Ctrl-C`, it can stay. `destroy` and `purge` take no `--network-name` flag, so they do not know a network that was named only by `deploy --network-name`. To name it for every command, use `LAB_NETWORK_NAME` or the `network` setting of `nobs.toml`.
 
 `nobs lab purge` runs these steps:
 
 1. For each scenario, in name order, it takes the stack down and removes its volumes. When a stack fails, nobs reports it and goes on with the next scenario.
-2. It lists the containers with `docker ps -a`. It runs `containerlab destroy -t <topology> --cleanup` once, and only when a node container of the topology exists. Like `destroy`, this step may remove the network too, when it is the management network of the topology. Without a node container, it prints `lab purge: no lab nodes to destroy`.
+2. It lists the containers with `docker ps -a`. It runs `containerlab destroy -t <topology> --cleanup` once, and only when a node container of the topology exists. Without a node container, it prints `lab purge: no lab nodes to destroy`.
 3. Only when every step before passed, it removes the network as step 3 of `destroy` does. Its lines start with `lab purge:`.
 
 `nobs lab show -s <scenario>` runs these steps:
@@ -1915,7 +1914,7 @@ A blank flag or variable, one that is empty or holds only spaces, counts as not 
 - A relative `--topology` path starts at the lab folder. This differs from `nobs containerlab`, whose `TOPOLOGY` starts at the current folder.
 - `--wait SECONDS` is the time `deploy` and `prepare` wait for the lab to be ready. For `update` and `rebuild`, it is the time they wait for the services only. `0` means no wait.
 
-`--sudo-no-prompt` makes `sudo` fail instead of asking for a password. It works only when sudo is on, with `--sudo` or `LAB_SUDO`; with sudo off, it does nothing. With the flag, nobs gives `-n` to every `sudo` it runs: `-n` is the `sudo` flag that fails when a password is needed. Before any Docker read or change, nobs checks once that `sudo` can run without a password. It runs `sudo -n containerlab version`, with the same `--preserve-env` as the other steps, and when that fails, `sudo -n true`. Only when both fail, nobs prints `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` on standard error and exits with 1. Nothing has changed. Above that line, `sudo` prints its own line, `sudo: a password is required`, once for each check, so it can show twice. When `sudo` needs no password, nothing new prints. When a containerlab step fails later for another reason, nobs prints the normal `failed` line of that step. Without the flag, `sudo` may ask for a password in the terminal.
+`--sudo-no-prompt` makes `sudo` fail instead of asking for a password. It works only when sudo is on, with `--sudo` or `LAB_SUDO`; with sudo off, it does nothing. With the flag, nobs gives `-n` to every `sudo` it runs: `-n` is the `sudo` flag that fails when a password is needed. Before any Docker read or change, nobs checks once that `sudo` can run without a password. It runs `sudo -n containerlab version`, with the same `--preserve-env` as the other steps, and when that fails, `sudo -n true`. Only when both fail, nobs prints `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` on standard error and exits with 1. Nothing has changed. Above that line, `sudo` prints its own line, `sudo: a password is required`, once. When `sudo` needs no password, nothing new prints. When a containerlab step fails later for another reason, nobs prints the normal `failed` line of that step. Without the flag, `sudo` may ask for a password in the terminal.
 
 ### The clash check
 
@@ -2056,7 +2055,7 @@ The lines below go to standard error. `<command>` is the command you ran. Inside
 | `nobs: no scenario named <name> under <folder>/chapters` | 1 | the scenario is not in `chapters/`; the `known:` line follows when there are any scenarios |
 | `nobs: lab <command>: cannot list scenarios: <error>` | 1 | nobs cannot read the `chapters/` folder |
 | `nobs: LAB_SUDO must be true or false, not <value>` | 2 | `LAB_SUDO` holds another word |
-| `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` | 1 | sudo is on, `--sudo-no-prompt` is given, and `sudo` cannot run without a password; `sudo`'s own line `sudo: a password is required` shows above it, once or twice |
+| `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` | 1 | sudo is on, `--sudo-no-prompt` is given, and `sudo` cannot run without a password; `sudo`'s own line `sudo: a password is required` shows above it once |
 | `nobs: topology file not found: <path>` | 1 | the topology file does not exist |
 | `nobs: cannot read topology file: <path>: <error>` | 1 | the file cannot be read; for `deploy`, `prepare` and `purge`, also when it has no `name` or no `topology` with `nodes` (`destroy` and `show` give such a file to containerlab, which reports it); for `deploy` and `prepare`, also when the image check finds an unset variable with no default, or an unsupported `$` form |
 | `nobs: lab deploy: node containers already exist (<names>); run nobs lab destroy first` | 1 | the clash check found node containers |

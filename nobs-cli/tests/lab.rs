@@ -433,7 +433,6 @@ fn a_sudo_that_needs_a_password_stops_destroy_and_deploy_before_docker_with_exit
             run.stderr,
             format!(
                 "sudo: a password is required\n\
-                 sudo: a password is required\n\
                  nobs: lab {command}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again\n"
             )
         );
@@ -955,7 +954,13 @@ fn destroy_removes_a_network_no_container_uses_keeps_one_in_use_and_stops_on_a_f
     let cases: [Case; 4] = [
         (
             &[],
-            vec![(0, ""), (0, ""), (0, "network-observability\n")],
+            vec![
+                (0, ""),
+                (0, ""),
+                (0, "network-observability\n"),
+                (0, ""),
+                (0, "network-observability\n"),
+            ],
             0,
             vec![attached(lab_net), network_rm(lab_net)],
             format!("{removing}{destroyed}"),
@@ -963,7 +968,13 @@ fn destroy_removes_a_network_no_container_uses_keeps_one_in_use_and_stops_on_a_f
         ),
         (
             &[("LAB_NETWORK_NAME", "nobs-t-net")],
-            vec![(0, ""), (0, ""), (0, "network-observability\nnobs-t-net\n")],
+            vec![
+                (0, ""),
+                (0, ""),
+                (0, "network-observability\nnobs-t-net\n"),
+                (0, ""),
+                (0, "nobs-t-net\n"),
+            ],
             0,
             vec![attached("nobs-t-net"), network_rm("nobs-t-net")],
             format!("lab destroy: removing network nobs-t-net\n{destroyed}"),

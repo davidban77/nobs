@@ -14,6 +14,10 @@ pub struct Output {
 pub trait Runner {
     fn run(&self, program: &str, args: &[OsString]) -> io::Result<i32>;
     fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output>;
+
+    fn output_quiet(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
+        self.output(program, args)
+    }
 }
 
 pub struct RealRunner;
@@ -32,17 +36,25 @@ impl Runner for RealRunner {
     }
 
     fn output(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
-        let output = Command::new(program)
-            .args(args)
-            .stdin(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .output()?;
-        Ok(Output {
-            code: exit_code(output.status),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::new(),
-        })
+        real_output(program, args, Stdio::inherit())
     }
+
+    fn output_quiet(&self, program: &str, args: &[OsString]) -> io::Result<Output> {
+        real_output(program, args, Stdio::null())
+    }
+}
+
+fn real_output(program: &str, args: &[OsString], stderr: Stdio) -> io::Result<Output> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stderr(stderr)
+        .output()?;
+    Ok(Output {
+        code: exit_code(output.status),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::new(),
+    })
 }
 
 pub struct CapturedRunner;
@@ -231,6 +243,45 @@ mod tests {
                 stderr: String::new()
             }
         );
+    }
+
+    #[test]
+    fn real_runner_output_quiet_sends_the_child_stderr_to_null() {
+        let output = RealRunner
+            .output_quiet(
+                "sh",
+                &args(&["-c", "printf hi; test /dev/fd/2 -ef /dev/null"]),
+            )
+            .unwrap();
+        assert_eq!(
+            output,
+            Output {
+                code: 0,
+                stdout: "hi".to_string(),
+                stderr: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn output_quiet_falls_back_to_output() {
+        let runner = FakeRunner::answering("a\n");
+        assert_eq!(
+            runner.output_quiet("sudo", &args(&["-n", "true"])).unwrap(),
+            Output {
+                code: 0,
+                stdout: "a\n".to_string(),
+                stderr: String::new()
+            }
+        );
+        assert_eq!(
+            runner.outputs(),
+            vec![Call {
+                program: "sudo".to_string(),
+                args: args(&["-n", "true"])
+            }]
+        );
+        assert!(runner.calls().is_empty());
     }
 
     #[test]
