@@ -30,7 +30,7 @@ pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         top,
     );
     let mut state = TableState::default().with_selected(model.selected_index());
-    frame.render_stateful_widget(table(model), left, &mut state);
+    frame.render_stateful_widget(table(model, left.width), left, &mut state);
     frame.render_widget(
         Paragraph::new(details(model)).block(Block::bordered()),
         right,
@@ -63,30 +63,61 @@ fn seconds(now: Instant, at: Instant) -> u64 {
     now.saturating_duration_since(at).as_secs()
 }
 
-fn table(model: &Model) -> Table<'_> {
-    let rows = model.rows().iter().map(|row| {
-        Row::new([
-            row.id.chars().take(8).collect::<String>(),
-            row.name.clone(),
-            row.state.clone(),
-            row.elapsed_secs.clone(),
-            row.degraded.clone(),
-        ])
+fn table(model: &Model, width: u16) -> Table<'_> {
+    const TITLES: [&str; 5] = ["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"];
+    let cells: Vec<[String; 5]> = model
+        .rows()
+        .iter()
+        .map(|row| {
+            [
+                row.id.chars().take(8).collect::<String>(),
+                row.name.clone(),
+                row.state.clone(),
+                row.elapsed_secs.clone(),
+                row.degraded.clone(),
+            ]
+        })
+        .collect();
+    let widths: Vec<usize> = (0..TITLES.len())
+        .map(|column| {
+            cells
+                .iter()
+                .map(|row| row[column].chars().count())
+                .chain([TITLES[column].chars().count()])
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let room = usize::from(width).saturating_sub(2 + "> ".len());
+    let mut kept = [true; 5];
+    for leaving in [0, 4, 3] {
+        let used = (0..TITLES.len())
+            .filter(|column| kept[*column])
+            .map(|column| widths[column] + 1)
+            .sum::<usize>()
+            .saturating_sub(1);
+        if used <= room {
+            break;
+        }
+        kept[leaving] = false;
+    }
+    let columns: Vec<usize> = (0..TITLES.len()).filter(|column| kept[*column]).collect();
+    let rows = cells
+        .into_iter()
+        .map(|row| Row::new(columns.iter().map(|column| row[*column].clone())));
+    let constraints = columns.iter().map(|column| {
+        let least = u16::try_from(widths[*column]).unwrap_or(u16::MAX);
+        if *column == 1 {
+            Constraint::Min(least)
+        } else {
+            Constraint::Length(least)
+        }
     });
-    Table::new(
-        rows,
-        [
-            Constraint::Length(8),
-            Constraint::Min(4),
-            Constraint::Length(10),
-            Constraint::Length(7),
-            Constraint::Length(8),
-        ],
-    )
-    .header(Row::new(["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"]))
-    .block(Block::bordered())
-    .highlight_symbol("> ")
-    .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+    Table::new(rows, constraints)
+        .header(Row::new(columns.iter().map(|column| TITLES[*column])))
+        .block(Block::bordered())
+        .highlight_symbol("> ")
+        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
 }
 
 fn details(model: &Model) -> Vec<Line<'static>> {
@@ -291,6 +322,56 @@ mod tests {
             let row = &lines[line_of(&lines, &format!("name-{index} "))];
             assert!(row.contains(&format!("{index}abcdefg ")), "{row}");
             assert!(row.contains(state), "{row}");
+        }
+    }
+
+    #[test]
+    fn every_sonda_title_and_cell_is_whole_at_60_and_100_columns() {
+        let now = Instant::now();
+        let titles = ["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"];
+        for width in 60..=100 {
+            let lines = screen(&model(now), now, width, 15);
+            let table = |line: &str| line.split('│').nth(1).unwrap_or_default().to_string();
+            let top = line_of(&lines, "NAME");
+            let header: Vec<String> = table(&lines[top])
+                .split_whitespace()
+                .map(String::from)
+                .collect();
+            let gone: Vec<&str> = titles
+                .into_iter()
+                .filter(|title| !header.iter().any(|kept| kept == title))
+                .collect();
+            assert!(
+                ["ID", "DEGRADED", "ELAPSED"].starts_with(&gone),
+                "{width}: {header:?}"
+            );
+            let kept: Vec<usize> = (0..5)
+                .filter(|column| !gone.contains(&titles[*column]))
+                .collect();
+            assert_eq!(
+                header,
+                kept.iter()
+                    .map(|column| titles[*column])
+                    .collect::<Vec<_>>(),
+                "{width}"
+            );
+            for (index, state) in STATES.iter().enumerate() {
+                let cells = [
+                    format!("{index}abcdefg"),
+                    format!("name-{index}"),
+                    (*state).to_string(),
+                    index.to_string(),
+                    "false".to_string(),
+                ];
+                let row = table(&lines[top + 1 + index]);
+                let shown: Vec<&str> = row.trim_start_matches('>').split_whitespace().collect();
+                let expected: Vec<&str> =
+                    kept.iter().map(|column| cells[*column].as_str()).collect();
+                assert_eq!(shown, expected, "{width}");
+            }
+            if width == 100 {
+                assert!(gone.is_empty(), "{header:?}");
+            }
         }
     }
 

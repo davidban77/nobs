@@ -947,6 +947,30 @@ fn nodes_show_question_marks_until_a_good_answer_whatever_the_error_row_does() {
 }
 
 #[test]
+fn a_long_node_name_never_cuts_the_state_title() {
+    let long = "nobs-t-a-node-name-longer-than-any-pane-of-the-lab-workbench";
+    for (width, height) in SIZES {
+        let mut model = lab_model();
+        model.apply(Update::Nodes(Ok(vec![node(long, Some("running"))])));
+
+        let screen = lines(&render(model, width, height));
+
+        let top = screen
+            .iter()
+            .position(|line| line.contains("┌ nodes"))
+            .unwrap();
+        let pane = |row: usize| screen[row].split("││").next().unwrap().to_string();
+        assert!(pane(top + 1).contains("  STATE"), "{}", screen.join("\n"));
+        let row = pane(top + 2);
+        assert!(
+            row.contains("…  ") && row.contains("  running"),
+            "{}",
+            screen.join("\n")
+        );
+    }
+}
+
+#[test]
 fn a_long_refusal_wraps_whole_into_the_run_pane_and_is_red_on_every_row() {
     golden("run-refused", refused);
 
@@ -1302,7 +1326,7 @@ fn draw_in_draws_inside_its_area_and_nowhere_else() {
         .flat_map(|y| (area.x..area.right()).map(move |x| (x, y)))
         .map(|(x, y)| buffer[(x, y)].symbol())
         .collect();
-    assert!(inside.contains("ID"), "{inside}");
+    assert!(inside.contains("NAME"), "{inside}");
     let stray: Vec<(u16, u16)> = (0..24)
         .flat_map(|y| (0..80).map(move |x| (x, y)))
         .filter(|(x, y)| !area.contains(Position::new(*x, *y)) && buffer[(*x, *y)].symbol() != " ")

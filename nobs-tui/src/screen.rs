@@ -1273,8 +1273,26 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .unwrap_or(0)
             .max(4)
     };
-    let name_width = width(sorted.iter().map(|row| row.name.as_str()).collect());
+    let states: Vec<(&str, Style)> = sorted
+        .iter()
+        .map(|row| match row.state.as_deref() {
+            _ if !model.nodes_ok() => ("?", tone("?")),
+            None => ("—", tone("—")),
+            Some("running") => ("running", tone("running")),
+            Some(other) => (other, Style::new().fg(Color::Red)),
+        })
+        .collect();
     let kind_width = width(sorted.iter().map(|row| row.kind.as_str()).collect());
+    let state_width = width(
+        states
+            .iter()
+            .map(|state| state.0)
+            .chain(["STATE"])
+            .collect(),
+    );
+    let fixed = 3 + if wide { kind_width + 2 } else { 0 } + state_width;
+    let name_width = width(sorted.iter().map(|row| row.name.as_str()).collect())
+        .min(usize::from(inner.width).saturating_sub(fixed));
     let line = |name: &str, kind: &str, state: (&str, Style)| {
         let mut parts = vec![(format!(" {}  ", fit(name, name_width)), Style::new())];
         if wide {
@@ -1284,13 +1302,7 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         fitted(parts, usize::from(inner.width))
     };
     let mut lines = vec![line("NAME", "KIND", ("STATE", Style::new()))];
-    for row in sorted {
-        let state = match row.state.as_deref() {
-            _ if !model.nodes_ok() => ("?", tone("?")),
-            None => ("—", tone("—")),
-            Some("running") => ("running", tone("running")),
-            Some(other) => (other, Style::new().fg(Color::Red)),
-        };
+    for (row, state) in sorted.iter().zip(states) {
         lines.push(line(&row.name, &row.kind, state));
     }
     frame.render_widget(Paragraph::new(lines), inner);

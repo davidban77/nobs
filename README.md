@@ -213,7 +213,7 @@ The sonda tab shows the scenarios of a running `sonda-server` (see [Sonda](#sond
 | right panel | what `nobs sonda stats` prints for the selected scenario, as `field  value` lines sorted by name (a text value keeps its quotes, for example `state  "running"`), then what `nobs sonda show` prints for it; the lines that do not fit are cut off |
 | bottom line | the keys of the tab, empty while the focus is on the stack list; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
 
-A state is shown as the server sends it, for example `running`, `paused` or `finished`. On a narrow screen the column titles of the table are cut: `ELAPSE` and `DEGRADE` at 100 columns, and single letters at 60 columns.
+A state is shown as the server sends it, for example `running`, `paused` or `finished`. Every column title and value of the table is shown whole. When the table is too narrow for all columns, whole columns leave in this order: `ID`, then `DEGRADED`, then `ELAPSED`; `NAME` and `STATE` always stay. For example, inside a stack the table shows `NAME`, `STATE`, `ELAPSED` and `DEGRADED` at 100 columns, and `NAME` and `STATE` at 60 columns.
 
 These keys work when the focus is on the tabs (press `Tab` to move it there):
 
