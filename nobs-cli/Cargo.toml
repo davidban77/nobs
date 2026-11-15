@@ -16,3 +16,6 @@ path = "src/main.rs"
 clap.workspace = true
 nobs-core = { path = "../nobs-core" }
 nobs-tui = { path = "../nobs-tui" }
+
+[dev-dependencies]
+nobs-core = { path = "../nobs-core", features = ["fake"] }

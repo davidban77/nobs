@@ -1,9 +1,8 @@
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -177,81 +176,83 @@ fn group_gone(result: io::Result<()>) -> bool {
     result.is_err_and(|error| error.raw_os_error() == Some(libc::ESRCH))
 }
 
-#[derive(Default)]
-pub struct FakeLauncher {
-    failing: bool,
-    calls: Mutex<Vec<(PathBuf, Vec<OsString>)>>,
-    stops: Arc<AtomicUsize>,
-    sender: Mutex<Option<Sender<Update>>>,
-}
-
-struct FakeRunning {
-    stops: Arc<AtomicUsize>,
-    out: Sender<Update>,
-}
-
-impl FakeLauncher {
-    pub fn new() -> FakeLauncher {
-        FakeLauncher::default()
-    }
-
-    pub fn failing() -> FakeLauncher {
-        FakeLauncher {
-            failing: true,
-            ..FakeLauncher::default()
-        }
-    }
-
-    pub fn calls(&self) -> Vec<(PathBuf, Vec<OsString>)> {
-        self.calls.lock().unwrap().clone()
-    }
-
-    pub fn stops(&self) -> usize {
-        self.stops.load(Ordering::SeqCst)
-    }
-
-    pub fn sender(&self) -> Option<Sender<Update>> {
-        self.sender.lock().unwrap().clone()
-    }
-}
-
-impl Launcher for FakeLauncher {
-    fn start(
-        &self,
-        program: &Path,
-        args: &[OsString],
-        out: Sender<Update>,
-    ) -> io::Result<Box<dyn Running>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((program.to_path_buf(), args.to_vec()));
-        if self.failing {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "fake launcher failure",
-            ));
-        }
-        *self.sender.lock().unwrap() = Some(out.clone());
-        Ok(Box::new(FakeRunning {
-            stops: Arc::clone(&self.stops),
-            out,
-        }))
-    }
-}
-
-impl Running for FakeRunning {
-    fn stop(&mut self) {
-        self.stops.fetch_add(1, Ordering::SeqCst);
-        let _ = self.out.send(Update::ActionEnded(End::Stopped));
-    }
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 
     use super::*;
+
+    #[derive(Default)]
+    pub(crate) struct FakeLauncher {
+        failing: bool,
+        calls: Mutex<Vec<(PathBuf, Vec<OsString>)>>,
+        stops: Arc<AtomicUsize>,
+        sender: Mutex<Option<Sender<Update>>>,
+    }
+
+    struct FakeRunning {
+        stops: Arc<AtomicUsize>,
+        out: Sender<Update>,
+    }
+
+    impl FakeLauncher {
+        pub(crate) fn new() -> FakeLauncher {
+            FakeLauncher::default()
+        }
+
+        pub(crate) fn failing() -> FakeLauncher {
+            FakeLauncher {
+                failing: true,
+                ..FakeLauncher::default()
+            }
+        }
+
+        pub(crate) fn calls(&self) -> Vec<(PathBuf, Vec<OsString>)> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        pub(crate) fn stops(&self) -> usize {
+            self.stops.load(Ordering::SeqCst)
+        }
+
+        pub(crate) fn sender(&self) -> Option<Sender<Update>> {
+            self.sender.lock().unwrap().clone()
+        }
+    }
+
+    impl Launcher for FakeLauncher {
+        fn start(
+            &self,
+            program: &Path,
+            args: &[OsString],
+            out: Sender<Update>,
+        ) -> io::Result<Box<dyn Running>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((program.to_path_buf(), args.to_vec()));
+            if self.failing {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "fake launcher failure",
+                ));
+            }
+            *self.sender.lock().unwrap() = Some(out.clone());
+            Ok(Box::new(FakeRunning {
+                stops: Arc::clone(&self.stops),
+                out,
+            }))
+        }
+    }
+
+    impl Running for FakeRunning {
+        fn stop(&mut self) {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+            let _ = self.out.send(Update::ActionEnded(End::Stopped));
+        }
+    }
 
     fn shell(script: &str) -> (Box<dyn Running>, mpsc::Receiver<Update>) {
         let (out, updates) = mpsc::channel();

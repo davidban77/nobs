@@ -32,7 +32,7 @@ pub mod shell;
 pub mod view;
 
 pub use poll::Pollers;
-pub use run::{End, FakeLauncher, Launcher, Processes, Running};
+pub use run::{End, Launcher, Processes, Running};
 pub use screen::draw;
 pub use shell::{
     handle, Command, Focus, Model as Shell, Service, SondaTarget, Stack, StackKind, StackState,
@@ -284,6 +284,7 @@ mod tests {
     use super::*;
     use crate::book::NodeRow;
     use crate::data::stub::Stub;
+    use crate::run::tests::FakeLauncher;
     use crate::shell::RunState;
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");

@@ -1,3 +1,4 @@
+#[cfg(any(test, feature = "fake"))]
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io;
@@ -74,12 +75,14 @@ impl Runner for CapturedRunner {
     }
 }
 
+#[cfg(any(test, feature = "fake"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {
     pub program: String,
     pub args: Vec<OsString>,
 }
 
+#[cfg(any(test, feature = "fake"))]
 pub struct FakeRunner {
     exit_code: Option<i32>,
     answers: Vec<(String, String)>,
@@ -88,6 +91,7 @@ pub struct FakeRunner {
     outputs: RefCell<Vec<Call>>,
 }
 
+#[cfg(any(test, feature = "fake"))]
 impl FakeRunner {
     pub fn returning(exit_code: i32) -> Self {
         Self {
@@ -132,6 +136,7 @@ impl FakeRunner {
     }
 }
 
+#[cfg(any(test, feature = "fake"))]
 impl Runner for FakeRunner {
     fn run(&self, program: &str, args: &[OsString]) -> io::Result<i32> {
         self.calls.borrow_mut().push(Call {
