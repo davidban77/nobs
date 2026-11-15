@@ -8,8 +8,8 @@
 │                     ││                                   │
 │                     ││                                   │
 │                     ││                                   │
-│                     ││                                   │
 └─────────────────────┘└───────────────────────────────────┘
  run  none                                           o open
- run nobs --dir /Users/netpanda/projects/nobs/target/slice-2
-1-workshops/workshops/packt nobs-t-packt up? y/n
+ run nobs
+--dir /Users/netpanda/projects/nobs/target/slice-21-workshop
+s/workshops/packt nobs-t-packt up? y/n

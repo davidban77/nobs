@@ -17,7 +17,7 @@ use crate::devices;
 use crate::run::End;
 use crate::shell::{
     kind_text, Cursor, Focus, Model, Run, RunState, StackKind, StackState, Tab, Workbench,
-    DEVICE_TABS, SERVICES_TABS,
+    DEVICE_TABS, NO_BREAK, SERVICES_TABS,
 };
 use crate::view;
 
@@ -236,7 +236,7 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
             continue;
         }
         let mut letters: Vec<char> = word.chars().collect();
-        if length > width && used < width {
+        if length > width && used < width && !word.contains(NO_BREAK) {
             row.push_str(gap);
             row.extend(letters.drain(..width - used));
         }
@@ -248,7 +248,7 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
         rows.extend(pieces);
     }
     rows.push(row);
-    rows
+    rows.iter().map(|row| row.replace(NO_BREAK, " ")).collect()
 }
 
 #[derive(Clone, Copy)]
@@ -259,7 +259,7 @@ pub(crate) enum Keep {
 
 pub(crate) fn cut_words(text: &str, width: usize, keep: Keep) -> String {
     let words: Vec<&str> = text.split(' ').collect();
-    cut_whole(&words, " ", width, keep)
+    cut_whole(&words, " ", width, keep).replace(NO_BREAK, " ")
 }
 
 fn cut_whole(pieces: &[&str], gap: &str, width: usize, keep: Keep) -> String {
@@ -2036,12 +2036,12 @@ mod tests {
     }
 
     #[test]
-    fn the_walk_runs_a_three_row_command_and_a_three_row_last_line_at_60_columns() {
+    fn the_walk_runs_a_four_row_command_and_a_three_row_last_line_at_60_columns() {
         for bench in benches() {
             let model = staged(&bench, bench.tabs[0].0, false, Keys::Hints, true);
             let run = model.run().unwrap();
 
-            assert_eq!(command_rows(run, 58).len(), 3, "{}", bench.selected);
+            assert_eq!(command_rows(run, 58).len(), 4, "{}", bench.selected);
             assert_eq!(wrapped(REFUSAL, 58).len(), 3, "{}", bench.selected);
         }
     }
@@ -2073,7 +2073,6 @@ mod tests {
             );
             if gave_way(model, *width, *height) {
                 assert!(model.question().is_some(), "{label}\n{screen}");
-                assert!(model.error().is_some(), "{label}\n{screen}");
                 given_way.push(label.clone());
                 continue;
             }
@@ -2092,8 +2091,14 @@ mod tests {
         assert_eq!(
             given_way,
             [
+                ">stack-12 Sonda 60x15 error false Question pane false",
+                ">stack-12 Sonda 60x15 error false Question pane true",
                 ">stack-12 Sonda 60x15 error true Question pane false",
                 ">stack-12 Sonda 60x15 error true Question pane true",
+                ">ch2 Overview 60x15 error true Question pane false",
+                ">ch2 Overview 60x15 error true Question pane true",
+                ">ch10 Overview 60x15 error true Question pane false",
+                ">ch10 Overview 60x15 error true Question pane true",
             ]
         );
     }
@@ -2141,9 +2146,13 @@ mod tests {
                 continue;
             };
             let rows = key_line(&model, usize::from(width));
-            let joined: Vec<&str> = rows.iter().map(|row| row.trim()).collect();
+            let squeezed = |text: &str| text.split_whitespace().collect::<String>();
 
-            assert_eq!(joined.join(" "), question.text(), "{label}");
+            assert_eq!(
+                squeezed(&rows.concat()),
+                squeezed(&question.text()),
+                "{label}"
+            );
             assert!(rows.iter().any(|row| row.contains("y/n")), "{label}");
         }
     }
@@ -2179,9 +2188,10 @@ mod tests {
 
             assert!(both_fit || !large, "{label}\n{screen}");
             if both_fit {
+                let squeezed = |text: &str| text.split_whitespace().collect::<String>();
                 assert_eq!(
-                    inside[..command_rows].join(" "),
-                    command,
+                    squeezed(&inside[..command_rows].concat()),
+                    squeezed(&command),
                     "{label}\n{screen}"
                 );
             } else {
@@ -2195,13 +2205,55 @@ mod tests {
     }
 
     #[test]
+    fn a_flag_and_its_value_share_a_row_at_every_width_where_they_fit() {
+        let lab_dir = format!("--dir {}", fixture("book-lab").display());
+        let bench_dir = format!("--dir {LAB_DIR}");
+        let cases = [
+            ('D', vec![bench_dir.as_str(), "-s ch1"]),
+            ('m', vec![bench_dir.as_str(), "-d srl1"]),
+            ('P', vec![lab_dir.as_str()]),
+        ];
+        for (key, pairs) in cases {
+            for width in 60..=100 {
+                let mut model = if key == 'm' {
+                    devices_bench()
+                } else {
+                    lab_bench(1)
+                };
+                press(&mut model, key);
+                let question = key_line(&model, width);
+                press(&mut model, 'y');
+                let run = model.run().unwrap();
+                for (rows, room) in [(question, width), (command_rows(run, width - 2), width - 2)] {
+                    for pair in &pairs {
+                        let start: String = pair.chars().take(room).collect();
+                        let kept = if pair.chars().count() <= room {
+                            rows.iter().any(|row| row.contains(pair))
+                        } else {
+                            rows.contains(&start)
+                        };
+                        assert!(kept, "{key} {width} {pair}\n{}", rows.join("\n"));
+                    }
+                }
+                for room in 0..run.words.chars().count() {
+                    let cut = cut_words(&run.words, room, Keep::Start);
+                    assert!(
+                        !cut.ends_with("-s …") && !cut.ends_with("-d …"),
+                        "{key} {room} {cut}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_run_title_the_error_row_and_the_last_row_end_at_a_whole_word() {
         for Walked {
             label, model, rows, ..
         } in walk()
         {
             let screen = rows.join("\n");
-            let words = &model.run().unwrap().words;
+            let words = &model.run().unwrap().words.replace(NO_BREAK, " ");
             let shown_after = |anchor: &str| {
                 rows.iter()
                     .find_map(|row| row.split_once(anchor))
@@ -2471,7 +2523,7 @@ mod tests {
             press(&mut model, 'X');
             press(&mut model, 'y');
             press(&mut model, 'U');
-            let notice = model.notice().unwrap().to_string();
+            let notice = model.notice().unwrap().replace(NO_BREAK, " ");
 
             let rows = drawn(&mut model, width, height);
 

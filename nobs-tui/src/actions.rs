@@ -171,24 +171,40 @@ pub enum Target {
     Lab,
 }
 
-fn command_words(action: &Action) -> impl Iterator<Item = OsString> {
+fn command_words(action: &Action) -> impl Iterator<Item = Vec<OsString>> {
     action
         .words
         .iter()
         .copied()
         .chain(action.sudo.then_some("--sudo-no-prompt"))
-        .map(OsString::from)
+        .map(|word| vec![OsString::from(word)])
+}
+
+fn pair(flag: &str, value: impl Into<OsString>) -> Vec<OsString> {
+    vec![OsString::from(flag), value.into()]
 }
 
 pub fn arguments(action: &Action, target: &Target, model: &Model) -> Option<Vec<OsString>> {
+    pieces(action, target, model).map(|pieces| flat(&pieces))
+}
+
+pub(crate) fn flat(pieces: &[Vec<OsString>]) -> Vec<OsString> {
+    pieces.concat()
+}
+
+pub(crate) fn pieces(
+    action: &Action,
+    target: &Target,
+    model: &Model,
+) -> Option<Vec<Vec<OsString>>> {
     let words = command_words(action);
-    let (dir, args): (OsString, Vec<OsString>) = match (action.row, target) {
+    let (dir, args): (OsString, Vec<Vec<OsString>>) = match (action.row, target) {
         (Row::Stack, Target::Stack(index)) => {
             let stack = model
                 .stacks()
                 .get(*index)
                 .filter(|stack| stack.kind == StackKind::Workshop)?;
-            let name = OsString::from(&stack.name);
+            let name = vec![OsString::from(&stack.name)];
             (
                 stack.path.clone().into(),
                 [name].into_iter().chain(words).collect(),
@@ -205,10 +221,10 @@ pub fn arguments(action: &Action, target: &Target, model: &Model) -> Option<Vec<
             } else {
                 "--state"
             };
-            let args = [OsString::from(&workshop.name)]
+            let args = [vec![OsString::from(&workshop.name)]]
                 .into_iter()
                 .chain(words)
-                .chain(["-d", name.as_str(), flag].map(OsString::from))
+                .chain([pair("-d", name), vec![OsString::from(flag)]])
                 .collect();
             (lab.dir.clone().into(), args)
         }
@@ -217,9 +233,7 @@ pub fn arguments(action: &Action, target: &Target, model: &Model) -> Option<Vec<
                 .stacks()
                 .get(*index)
                 .filter(|stack| stack.kind == StackKind::BookLab)?;
-            let args = words
-                .chain(["-s", stack.name.as_str()].map(OsString::from))
-                .collect();
+            let args = words.chain([pair("-s", &stack.name)]).collect();
             (stack.path.clone().into(), args)
         }
         (Row::Lab, Target::Lab) => {
@@ -228,12 +242,7 @@ pub fn arguments(action: &Action, target: &Target, model: &Model) -> Option<Vec<
         }
         _ => return None,
     };
-    Some(
-        [OsString::from("--dir"), dir]
-            .into_iter()
-            .chain(args)
-            .collect(),
-    )
+    Some([pair("--dir", dir)].into_iter().chain(args).collect())
 }
 
 #[cfg(test)]
