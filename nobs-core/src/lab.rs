@@ -283,13 +283,16 @@ pub fn services(ps_json: &str) -> Result<Vec<Service>, String> {
         .collect())
 }
 
-pub fn defined_services(config_services: &str) -> Vec<String> {
-    let mut names: Vec<String> = config_services
-        .lines()
+pub(crate) fn trimmed_lines(text: &str) -> Vec<String> {
+    text.lines()
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map(str::to_string)
-        .collect();
+        .collect()
+}
+
+pub fn defined_services(config_services: &str) -> Vec<String> {
+    let mut names = trimmed_lines(config_services);
     names.sort();
     names
 }
