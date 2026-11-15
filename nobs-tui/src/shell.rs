@@ -593,6 +593,7 @@ impl Model {
                 self.fail("alertmanager", text);
             }
             Update::DeviceLogs(device, Ok(lines)) => {
+                self.clear_error("loki");
                 if !self.is_selected(&device) {
                     return;
                 }
@@ -605,13 +606,12 @@ impl Model {
                 self.device_lines
                     .sort_by_key(|held| Reverse(held.line.nanoseconds));
                 self.device_lines.truncate(LOG_LINES);
-                self.clear_error("loki");
             }
             Update::DeviceLogs(_, Err(text)) => self.fail("loki", text),
             Update::Rcas(device, Ok(lines)) => {
+                self.clear_error("loki");
                 if self.is_selected(&device) {
                     self.rcas = lines;
-                    self.clear_error("loki");
                 }
             }
             Update::Rcas(_, Err(text)) => self.fail("loki", text),
@@ -3510,6 +3510,38 @@ pub(crate) mod tests {
             Ok(vec![log_line(5, "late")]),
         ));
         assert!(model.device_logs().unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn device_logs_for_a_device_that_is_not_selected_remove_the_loki_error() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Err("loki down".to_string()),
+        ));
+        assert_eq!(model.error().unwrap().0, "loki");
+
+        model.apply(Update::DeviceLogs(
+            "srl2".to_string(),
+            Ok(vec![log_line(1, "other")]),
+        ));
+
+        assert_eq!(model.error(), None);
+        assert!(model.device_logs().unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn rcas_for_a_device_that_is_not_selected_remove_the_loki_error() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Rcas(
+            "srl1".to_string(),
+            Err("loki down".to_string()),
+        ));
+        assert_eq!(model.error().unwrap().0, "loki");
+
+        model.apply(Update::Rcas("srl2".to_string(), Ok(vec![])));
+
+        assert_eq!(model.error(), None);
     }
 
     fn os(list: &[&str]) -> Vec<OsString> {

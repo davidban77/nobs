@@ -10,7 +10,7 @@ use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::cascade;
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
-use nobs_core::count::counted;
+use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::env::load_env;
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
@@ -5358,27 +5358,11 @@ fn network_word(action: NetworkAction) -> &'static str {
         .map_or("", |(word, _)| word)
 }
 
-fn noun<N: PartialEq + From<u8>>(count: N, one: &str) -> String {
-    if count == N::from(1) {
-        one.to_string()
-    } else {
-        format!("{one}s")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use nobs_core::runner::FakeRunner;
     use std::net::TcpListener;
-
-    #[test]
-    fn a_count_of_one_takes_the_singular_noun() {
-        assert_eq!(noun(1_usize, "service"), "service");
-        assert_eq!(noun(1_u64, "node"), "node");
-        assert_eq!(noun(2_usize, "service"), "services");
-        assert_eq!(noun(0_u64, "node"), "nodes");
-    }
 
     struct Scratch(PathBuf);
 
