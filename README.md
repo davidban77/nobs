@@ -160,22 +160,21 @@ The alerts box is still filled.
 
 The services workbench is workbench `2`. The screen opens on it, except in a workshop, which opens on the devices workbench, and in a book lab, which opens on the lab workbench. It has two sides.
 
-The left side is the list of stacks, titled `stacks <n>`. A book lab lists its chapters first and then the workshops nobs finds. `>` marks the selected stack, and the right side shows that stack. The state of each stack comes from `docker compose ps --all --format json`, run for every stack:
+The left side is the list of stacks, titled `stacks <n>`. A book lab lists its chapters first and then the workshops nobs finds. `>` marks the selected stack, and the right side shows that stack. The state of each stack comes from two calls, run for every stack. `docker compose config --services` gives the services that the compose file of the stack defines. `docker compose ps --all --format json` gives the containers of the stack. When one of the calls fails, the red error row names it: `config <stack>` or `ps <stack>`.
 
 | State | Meaning | Colour |
 |---|---|---|
-| `up n/m` | `m` containers are listed and `n` of them run | green when `n` is `m`, else yellow |
-| `down` | no container is listed | red |
-| `down 0/m` | `m` containers are listed and none runs | dim |
-| `?` | not known yet, or the last call failed | red |
+| `up n/m` | the compose file defines `m` services, and `n` of them have a running container | green when `n` is `m`, else yellow |
+| `down 0/m` | the compose file defines `m` services, and none of them has a running container | dim |
+| `?` | not known yet, or one of the two calls failed | red |
 
-The right side is titled with the name of the stack and `refreshed <n>s ago`, or `no answer yet`. Under the title are three tabs, `overview`, `logs` and `sonda`, with the open tab in capital letters.
+The right side is titled with the name of the stack and `refreshed <n>s ago`, or `no answer yet`. At 100 columns and wider, the title also shows, after the name, how many services the stack defines, for example `22 services`, or `?` when this is not known. Under the title are three tabs, `overview`, `logs` and `sonda`, with the open tab in capital letters.
 
-The overview tab is a table with one row per service of the selected stack. A cell shows `—` when there is no value.
+The overview tab is a table with one row for each container that Docker Compose lists for the selected stack. After these rows comes one row for each defined service that has no container, with `—` under `STATE`, `PORT` and `AGE`. A cell shows `—` when there is no value.
 
 | Column | What it shows | Where it comes from |
 |---|---|---|
-| `SERVICE` | the name of the service | `docker compose ps --all --format json` |
+| `SERVICE` | the name of the service | `docker compose ps --all --format json`; for a row with no container, `docker compose config --services` |
 | `STATE` | `running`, `exited` and so on, as Docker reports it | the same call |
 | `HEALTH` | `ok`, `http <code>` or `down` | an HTTP check of the service (see below) |
 | `PORT` | the first published port | `docker compose ps --all --format json` |
@@ -191,7 +190,7 @@ The logs tab shows the log of one service. Press `Enter` or `l` on a service in 
 
 | What | How often |
 |---|---|
-| the state of each stack and the services of the selected stack (`docker compose ps`) | every 2 seconds, for every stack |
+| the state of each stack and the services of the selected stack (`docker compose config --services` and `docker compose ps`, in the same pass) | every 2 seconds, for every stack |
 | `HEALTH` (the HTTP check) | every 5 seconds, for the selected stack |
 | the logs | the last 200 lines at first, then new lines every 2 seconds; the last 2,000 lines are kept |
 | the Sonda tab | every second |
@@ -252,7 +251,7 @@ At 60 by 15 it looks like this:
 └─────────────────────┘│ last      lab deploy --sudo-no-pr…│
 ┌ chapters 2 ─────────┐│                                   │
 │>ch1  up 1/1         ││                                   │
-│ ch2  down           ││                                   │
+│ ch2  down 0/1       ││                                   │
 └─────────────────────┘└───────────────────────────────────┘
  run  lab deploy --sudo-no-prompt -s c…  exit 0  41s o open
  j/k move  D deploy  X destroy  P purge  R prepare  U update
@@ -276,7 +275,7 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 | `topology` | the topology file, from the lab folder |
 | `project` | the Docker Compose project of the lab (see [Flags and variables](#flags-and-variables)) |
 | `nodes` | how many nodes run, for example `1 of 2 running`; `?` when the last `docker ps -a` failed |
-| `services` | how many services of the chapter run; `?` when not known |
+| `services` | how many of the services the chapter defines have a running container, for example `0 of 1 running` for a chapter that defines one service and has no container; `?` when not known yet, or when a call failed |
 | `last` | the last action on this chapter and how it ended, for example `lab deploy --sudo-no-prompt -s ch1  exit 0`; `—` when there was none |
 
 At 100 columns the key line is `j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show  r refresh  o pane`. At 60 columns the last hints do not fit and are left out; `?` lists them. `D`, `X`, `P`, `R`, `U`, `B` and `S` are actions (see [Actions](#actions)).
@@ -428,7 +427,7 @@ While a question or a filter is open, `q` is typed or answers the question, and 
 
 ### Errors
 
-When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails (the stack then shows `?`), and `logs <service>` when the log call fails. In the devices workbench the source is `sot`, `prometheus`, `alertmanager`, `loki` or `prefect`, the five systems it asks. In the lab workbench the source is `nodes` when `docker ps -a` or the topology file fails. A value whose source did not answer shows `?` and never its last value: `HLTH` and the live states show `?` when Prometheus failed, and `ALRT` shows `?` when Alertmanager failed. The lists and lines already shown stay on the screen until the next answer. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda`, `poll`, `sot`, `prometheus`, `alertmanager`, `loki`, `prefect` or `nodes`. When more than one source fails, the line shows the one that failed first, with its newest error and age. It stays until that source answers again or you press `x`. Then the source that failed next shows. A `ps` line also goes away when the next `ps` call of that stack works.
+When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails, and `config <stack>` when the list of services it defines fails (in both cases the stack then shows `?`). It is `logs <service>` when the log call fails. In the devices workbench the source is `sot`, `prometheus`, `alertmanager`, `loki` or `prefect`, the five systems it asks. In the lab workbench the source is `nodes` when `docker ps -a` or the topology file fails. A value whose source did not answer shows `?` and never its last value: `HLTH` and the live states show `?` when Prometheus failed, and `ALRT` shows `?` when Alertmanager failed. The lists and lines already shown stay on the screen until the next answer. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda`, `poll`, `sot`, `prometheus`, `alertmanager`, `loki`, `prefect` or `nodes`. When more than one source fails, the line shows the one that failed first, with its newest error and age. It stays until that source answers again or you press `x`. Then the source that failed next shows. A `ps` or `config` line also goes away when the next call of the same kind for that stack works.
 
 ### Size
 
