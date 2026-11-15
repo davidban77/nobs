@@ -6,7 +6,7 @@
 └─────────────────────┘│ project   netobs                  │
 ┌ chapters 2 ─────────┐│ nodes     1 of 2 running          │
 │>ch1  up 1/1         ││ services  1 of 1 running          │
-│ ch2  down           ││ last      lab deploy …  exit 0    │
+│ ch2  down 0/1       ││ last      lab deploy …  exit 0    │
 └─────────────────────┘└───────────────────────────────────┘
 ┌ run  lab deploy …  exit 0  120s ─────────────── Esc fold ┐
 │$ nobs --dir /home/me/book-lab lab deploy --sudo-no-prompt│

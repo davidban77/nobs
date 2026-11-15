@@ -148,8 +148,8 @@ pub struct Stack {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StackState {
     Unknown,
-    Up { running: usize, listed: usize },
-    Down { listed: usize },
+    Up { running: usize, total: usize },
+    Down { total: usize },
     Failed,
 }
 
@@ -157,9 +157,32 @@ impl StackState {
     pub fn text(&self) -> String {
         match self {
             StackState::Unknown | StackState::Failed => "?".to_string(),
-            StackState::Up { running, listed } => format!("up {running}/{listed}"),
-            StackState::Down { listed: 0 } => "down".to_string(),
-            StackState::Down { listed } => format!("down 0/{listed}"),
+            StackState::Up { running, total } => format!("up {running}/{total}"),
+            StackState::Down { total } => format!("down 0/{total}"),
+        }
+    }
+
+    pub fn total(&self) -> Option<usize> {
+        match self {
+            StackState::Up { total, .. } | StackState::Down { total } => Some(*total),
+            StackState::Unknown | StackState::Failed => None,
+        }
+    }
+
+    fn of(defined: &[String], listed: &[lab::Service]) -> StackState {
+        let total = defined.len();
+        let running = defined
+            .iter()
+            .filter(|name| {
+                listed
+                    .iter()
+                    .any(|row| row.name == **name && row.state == "running")
+            })
+            .count();
+        if running > 0 {
+            StackState::Up { running, total }
+        } else {
+            StackState::Down { total }
         }
     }
 }
@@ -181,7 +204,11 @@ pub struct Health {
 
 #[derive(Debug)]
 pub enum Update {
-    Services(usize, Result<Vec<lab::Service>, String>),
+    Services(
+        usize,
+        Result<Vec<String>, String>,
+        Result<Vec<lab::Service>, String>,
+    ),
     Health(usize, Vec<Health>),
     Logs(usize, String, Result<Vec<String>, String>),
     Sonda(data::Update),
@@ -513,14 +540,7 @@ impl Model {
 
     pub fn apply(&mut self, update: Update) {
         match update {
-            Update::Services(index, Ok(rows)) => self.apply_services(index, rows),
-            Update::Services(index, Err(text)) => {
-                let Some(name) = self.stacks.get(index).map(|stack| stack.name.clone()) else {
-                    return;
-                };
-                self.states[index] = StackState::Failed;
-                self.fail(&format!("ps {name}"), text);
-            }
+            Update::Services(index, defined, listed) => self.apply_services(index, defined, listed),
             Update::Health(index, list) => {
                 if index != self.selected {
                     return;
@@ -801,6 +821,19 @@ impl Model {
 
     fn clear_error(&mut self, source: &str) {
         self.errors.retain(|(held, _, _)| held != source);
+    }
+
+    fn answered<T>(&mut self, source: &str, answer: Result<T, String>) -> Option<T> {
+        match answer {
+            Ok(value) => {
+                self.clear_error(source);
+                Some(value)
+            }
+            Err(text) => {
+                self.fail(source, text);
+                None
+            }
+        }
     }
 
     fn dismiss_error(&mut self) {
@@ -1181,22 +1214,30 @@ impl Model {
             && self.sonda.prompt() != &Prompt::None
     }
 
-    fn apply_services(&mut self, index: usize, rows: Vec<lab::Service>) {
+    fn apply_services(
+        &mut self,
+        index: usize,
+        defined: Result<Vec<String>, String>,
+        listed: Result<Vec<lab::Service>, String>,
+    ) {
         let Some(name) = self.stacks.get(index).map(|stack| stack.name.clone()) else {
             return;
         };
-        let running = rows.iter().filter(|row| row.state == "running").count();
-        let listed = rows.len();
-        self.states[index] = if running > 0 {
-            StackState::Up { running, listed }
-        } else {
-            StackState::Down { listed }
+        let listed = self.answered(&format!("ps {name}"), listed);
+        let defined = self.answered(&format!("config {name}"), defined);
+        self.states[index] = match (&defined, &listed) {
+            (Some(defined), Some(listed)) => StackState::of(defined, listed),
+            _ => StackState::Failed,
         };
-        self.clear_error(&format!("ps {name}"));
-        if index != self.selected {
+        let Some(rows) = listed.filter(|_| index == self.selected) else {
             return;
-        }
-        let services = rows
+        };
+        let without_row: Vec<String> = defined
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|name| rows.iter().all(|row| row.name != *name))
+            .collect();
+        let mut services: Vec<Service> = rows
             .into_iter()
             .map(|row| Service {
                 health: health_of(&self.health, &row.name),
@@ -1206,6 +1247,13 @@ impl Model {
                 age: row.age,
             })
             .collect();
+        services.extend(without_row.into_iter().map(|name| Service {
+            health: health_of(&self.health, &name),
+            name,
+            state: "—".to_string(),
+            port: None,
+            age: None,
+        }));
         self.services = services;
         self.service = self.service.min(self.services.len().saturating_sub(1));
         self.services_at = Some(self.now);
@@ -1951,9 +1999,25 @@ pub(crate) mod tests {
         }
     }
 
+    pub(crate) fn defined(names: &[&str]) -> Result<Vec<String>, String> {
+        Ok(names.iter().map(|name| name.to_string()).collect())
+    }
+
+    fn names_of(rows: &[lab::Service]) -> Vec<String> {
+        let mut names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    pub(crate) fn listing(index: usize, listed: Result<Vec<lab::Service>, String>) -> Update {
+        let defined = Ok(listed.as_deref().map(names_of).unwrap_or_default());
+        Update::Services(index, defined, listed)
+    }
+
     fn with_services(model: &mut Model, names: &[&str]) {
         let rows = names.iter().map(|name| row(name, "running")).collect();
-        model.apply(Update::Services(0, Ok(rows)));
+        model.apply(listing(0, Ok(rows)));
     }
 
     fn snapshot(model: &Model) -> String {
@@ -2457,33 +2521,34 @@ pub(crate) mod tests {
         assert_eq!(
             StackState::Up {
                 running: 7,
-                listed: 7
+                total: 7
             }
             .text(),
             "up 7/7"
         );
-        assert_eq!(StackState::Down { listed: 0 }.text(), "down");
-        assert_eq!(StackState::Down { listed: 3 }.text(), "down 0/3");
+        assert_eq!(StackState::Down { total: 0 }.text(), "down 0/0");
+        assert_eq!(StackState::Down { total: 3 }.text(), "down 0/3");
     }
 
     #[test]
     fn services_rows_give_the_stack_state_text() {
         let mut model = opened(&["autocon5"]);
         let seven: Vec<lab::Service> = (0..7).map(|n| row(&format!("s{n}"), "running")).collect();
-        model.apply(Update::Services(0, Ok(seven)));
+        model.apply(listing(0, Ok(seven)));
         assert_eq!(model.stack_state(0).text(), "up 7/7");
 
-        model.apply(Update::Services(0, Ok(vec![])));
-        assert_eq!(model.stack_state(0).text(), "down");
+        let defined_seven = defined(&["s0", "s1", "s2", "s3", "s4", "s5", "s6"]);
+        model.apply(Update::Services(0, defined_seven, Ok(vec![])));
+        assert_eq!(model.stack_state(0).text(), "down 0/7");
 
-        let three = ["exited", "exited", "created"]
+        let three = [("a", "exited"), ("b", "exited"), ("c", "created")]
             .iter()
-            .map(|state| row("s", state))
+            .map(|(name, state)| row(name, state))
             .collect();
-        model.apply(Update::Services(0, Ok(three)));
+        model.apply(listing(0, Ok(three)));
         assert_eq!(model.stack_state(0).text(), "down 0/3");
 
-        model.apply(Update::Services(
+        model.apply(listing(
             0,
             Ok(vec![row("a", "running"), row("b", "exited")]),
         ));
@@ -2491,10 +2556,55 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_running_number_counts_defined_services_never_containers() {
+        let mut model = opened(&["autocon5"]);
+        let twice_and_old = vec![
+            row("a", "running"),
+            row("a", "running"),
+            row("old", "running"),
+        ];
+        model.apply(Update::Services(0, defined(&["a"]), Ok(twice_and_old)));
+        assert_eq!(model.stack_state(0).text(), "up 1/1");
+
+        let exited_and_running = vec![row("a", "exited"), row("a", "running")];
+        model.apply(Update::Services(
+            0,
+            defined(&["a", "b"]),
+            Ok(exited_and_running),
+        ));
+        assert_eq!(model.stack_state(0).text(), "up 1/2");
+    }
+
+    #[test]
+    fn the_table_keeps_every_listed_container_and_adds_each_defined_service_without_one() {
+        let mut model = opened(&["autocon5"]);
+        model.apply(Update::Services(
+            0,
+            defined(&["alertmanager", "grafana", "prometheus"]),
+            Ok(vec![row("grafana", "running"), row("old", "running")]),
+        ));
+
+        let rows: Vec<(&str, &str)> = model
+            .services()
+            .iter()
+            .map(|service| (service.name.as_str(), service.state.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("grafana", "running"),
+                ("old", "running"),
+                ("alertmanager", "—"),
+                ("prometheus", "—")
+            ]
+        );
+    }
+
+    #[test]
     fn a_failed_ps_gives_a_question_mark_the_error_and_keeps_the_last_services() {
         let mut model = opened(&["autocon5"]);
         with_services(&mut model, &["grafana"]);
-        model.apply(Update::Services(0, Err("exit 1".to_string())));
+        model.apply(listing(0, Err("exit 1".to_string())));
 
         assert_eq!(model.stack_state(0).text(), "?");
         let (source, text, _) = model.error().unwrap();
@@ -2505,7 +2615,7 @@ pub(crate) mod tests {
     #[test]
     fn an_update_for_a_stack_that_is_not_selected_sets_only_its_state() {
         let mut model = opened(&["a", "b"]);
-        model.apply(Update::Services(1, Ok(vec![row("x", "running")])));
+        model.apply(listing(1, Ok(vec![row("x", "running")])));
         assert_eq!(model.stack_state(1).text(), "up 1/1");
         assert_eq!(model.services(), []);
         assert_eq!(model.services_at(), None);
@@ -2714,7 +2824,7 @@ pub(crate) mod tests {
                 vec![health("grafana", "ok"), health("loki", "http 503")],
             ));
 
-            model.apply(Update::Services(0, lab::services(text)));
+            model.apply(listing(0, lab::services(text)));
 
             let services = model.services();
             assert_eq!(services.len(), 3);
@@ -2742,7 +2852,7 @@ pub(crate) mod tests {
     #[test]
     fn health_that_arrives_after_the_services_is_merged_by_name() {
         let mut model = opened(&["autocon5"]);
-        model.apply(Update::Services(0, lab::services(LINES)));
+        model.apply(listing(0, lab::services(LINES)));
         assert_eq!(model.services()[0].health, None);
 
         model.apply(Update::Health(0, vec![health("grafana", "down")]));
@@ -2822,7 +2932,7 @@ pub(crate) mod tests {
         assert_eq!(model.services_at(), None);
         assert_eq!(model.logs(), None);
         assert_eq!(model.tab(), Tab::Overview);
-        model.apply(Update::Services(1, Ok(vec![row("grafana", "running")])));
+        model.apply(listing(1, Ok(vec![row("grafana", "running")])));
         assert_eq!(model.services()[0].health, None);
     }
 
@@ -3042,7 +3152,7 @@ pub(crate) mod tests {
         ch(&mut model, 'x');
         assert_eq!(model.error(), None);
 
-        model.apply(Update::Services(0, Err("exit 1".to_string())));
+        model.apply(listing(0, Err("exit 1".to_string())));
         assert_eq!(model.error(), Some(("ps a", "exit 1", at)));
         with_services(&mut model, &["grafana"]);
         assert_eq!(model.error(), None);

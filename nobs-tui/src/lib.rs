@@ -285,6 +285,7 @@ mod tests {
     use crate::book::NodeRow;
     use crate::data::stub::Stub;
     use crate::run::tests::FakeLauncher;
+    use crate::shell::tests::listing;
     use crate::shell::RunState;
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");
@@ -447,7 +448,7 @@ mod tests {
 
     fn services(updates: &Receiver<Update>) -> Result<Vec<lab::Service>, String> {
         next(updates, Duration::from_secs(5), |update| match update {
-            Update::Services(0, result) => Some(result),
+            Update::Services(0, _, result) => Some(result),
             _ => None,
         })
     }
@@ -491,9 +492,7 @@ mod tests {
             |_| {
                 turn += 1;
                 if turn == 1 {
-                    sender
-                        .send(Update::Services(0, Ok(lab::services(TWO).unwrap())))
-                        .unwrap();
+                    sender.send(listing(0, lab::services(TWO))).unwrap();
                     return Ok(None);
                 }
                 Ok(Some(q()))
@@ -519,7 +518,7 @@ mod tests {
         ];
         let mut model = Model::new(start(vec![stack(&env)], false));
         model.tick(Instant::now(), SystemTime::now(), (100, 30));
-        model.apply(Update::Services(0, Ok(lab::services(TWO).unwrap())));
+        model.apply(listing(0, lab::services(TWO)));
         let runner = Arc::new(Scripted {
             sleep: Duration::from_secs(3),
             ..Scripted::default()
@@ -702,7 +701,7 @@ mod tests {
             ),
         ]);
         let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
-        model.apply(Update::Services(0, Ok(lab::services(LOKI).unwrap())));
+        model.apply(listing(0, lab::services(LOKI)));
         let mut polled = model.stacks().to_vec();
         polled[0].kind = StackKind::Sonda;
         let (pollers, updates) =
@@ -753,7 +752,9 @@ mod tests {
     #[test]
     fn ps_answers_become_rows_or_the_last_line_of_the_error() {
         let runner = scripted(vec![
+            answer(0, "grafana\nloki\n", ""),
             answer(0, TWO, ""),
+            answer(0, "grafana\nloki\n", ""),
             answer(1, "", &format!("{DOCKER_DOWN}\n")),
         ]);
         let model = Model::new(start(vec![stack(&[CLOSED])], false));
@@ -769,6 +770,18 @@ mod tests {
             .collect();
         assert_eq!(names, [("grafana", "running"), ("loki", "exited")]);
         assert_eq!(failure, Err(DOCKER_DOWN.to_string()));
+        let config = (
+            "docker".to_string(),
+            args(&[
+                "compose",
+                "--project-name",
+                "p",
+                "-f",
+                "/ws/compose.yml",
+                "config",
+                "--services",
+            ]),
+        );
         let asked = (
             "docker".to_string(),
             args(&[
@@ -783,7 +796,18 @@ mod tests {
                 "json",
             ]),
         );
-        assert!(runner.calls().iter().all(|call| *call == asked));
+        let expected = |index: usize| {
+            if index.is_multiple_of(2) {
+                &config
+            } else {
+                &asked
+            }
+        };
+        assert!(runner
+            .calls()
+            .iter()
+            .enumerate()
+            .all(|(index, call)| call == expected(index)));
     }
 
     #[test]
@@ -1320,24 +1344,26 @@ mod tests {
         );
 
         next(&updates, Duration::from_secs(5), |update| {
-            matches!(update, Update::Services(1, _)).then_some(())
+            matches!(update, Update::Services(1, ..)).then_some(())
         });
 
+        let project_and_file = ["compose", "--project-name", "p", "-f", "/ws/compose.yml"];
         let ps = |extra: &[&str]| {
-            let mut words = vec![
-                "compose",
-                "--project-name",
-                "p",
-                "-f",
-                "/ws/compose.yml",
-                "ps",
-                "--all",
-            ];
+            let mut words = project_and_file.to_vec();
+            words.extend(["ps", "--all"]);
             words.extend(extra);
             words.extend(["--format", "json"]);
             (Compose::PROGRAM.to_string(), args(&words))
         };
-        assert_eq!(runner.calls()[..2], [ps(&[]), ps(&["--orphans=false"])]);
+        let config = {
+            let mut words = project_and_file.to_vec();
+            words.extend(["config", "--services"]);
+            (Compose::PROGRAM.to_string(), args(&words))
+        };
+        assert_eq!(
+            runner.calls()[..4],
+            [config.clone(), ps(&[]), config, ps(&["--orphans=false"])]
+        );
     }
 
     fn help_after(presses: usize, back: bool) -> Vec<String> {

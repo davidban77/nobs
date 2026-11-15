@@ -267,10 +267,9 @@ fn ps(
             .enumerate()
             .filter(|(_, stack)| stack.kind != StackKind::Sonda)
         {
-            if out
-                .send(Update::Services(index, services(runner, stack)))
-                .is_err()
-            {
+            let defined = defined(runner, stack);
+            let listed = services(runner, stack);
+            if out.send(Update::Services(index, defined, listed)).is_err() {
                 return true;
             }
         }
@@ -535,6 +534,13 @@ fn compose_of(stack: &Stack) -> Compose {
         Some(project) => compose.project(project.clone()),
         None => compose,
     }
+}
+
+fn defined(runner: &dyn Runner, stack: &Stack) -> Result<Vec<String>, String> {
+    let args = compose_of(stack).config_services_args();
+    answer(runner.output(Compose::PROGRAM, &args), |stdout| {
+        Ok(lab::defined_services(stdout))
+    })
 }
 
 fn services(runner: &dyn Runner, stack: &Stack) -> Result<Vec<lab::Service>, String> {

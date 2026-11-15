@@ -329,13 +329,18 @@ fn workbench(frame: &mut Frame, area: Rect, model: &Model) {
 
 fn state_style(state: &StackState) -> Style {
     match state {
-        StackState::Up { running, listed } if running == listed => Style::new().fg(Color::Green),
+        StackState::Up { running, total } if running == total => Style::new().fg(Color::Green),
         StackState::Up { .. } => Style::new().fg(Color::Yellow),
-        StackState::Down { listed: 0 } | StackState::Unknown | StackState::Failed => {
-            Style::new().fg(Color::Red)
-        }
+        StackState::Unknown | StackState::Failed => Style::new().fg(Color::Red),
         StackState::Down { .. } => DIM,
     }
+}
+
+fn state_width(model: &Model, indices: impl Iterator<Item = usize>) -> usize {
+    indices
+        .map(|index| model.stack_state(index).text().chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 fn tone(text: &str) -> Style {
@@ -390,7 +395,8 @@ fn stack_list(
         .map(|index| model.stacks()[*index].name.chars().count())
         .max()
         .unwrap_or(0);
-    let name_width = longest.min(usize::from(inner.width).saturating_sub(11));
+    let state_width = state_width(model, indices.iter().copied());
+    let name_width = longest.min(usize::from(inner.width).saturating_sub(3 + state_width));
     let at = indices
         .iter()
         .position(|index| Some(*index) == selected)
@@ -429,8 +435,15 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         None => "no answer yet".to_string(),
     };
     let title = if wide {
-        let count = counted(model.services().len(), "service");
-        format!(" {name}  {count}  {age} ")
+        let count = model
+            .stack_state(model.selected_stack())
+            .total()
+            .map_or_else(|| "?".to_string(), |total| counted(total, "service"));
+        let width = usize::from(area.width).saturating_sub(4);
+        format!(
+            " {} ",
+            cut_whole(&[name, count.as_str(), age.as_str()], "  ", width)
+        )
     } else {
         format!(" {name}  {age} ")
     };
@@ -1065,10 +1078,17 @@ fn chooser(frame: &mut Frame, area: Rect, model: &Model) {
         .map(|stack| kind_text(stack.kind).len())
         .max()
         .unwrap_or(0);
+    let state_width = state_width(
+        model,
+        (0..stacks.len()).filter(|index| stacks[*index].kind != StackKind::Sonda),
+    );
+    let path_room = usize::from(inner.width)
+        .saturating_sub(1 + name_width + 2 + kind_width + 2 + 2 + state_width);
     let path_width = workshops()
         .map(|stack| stack.path.display().to_string().chars().count())
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(path_room);
     let lines: Vec<Line> = stacks
         .iter()
         .zip(&paths)
@@ -1299,8 +1319,8 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         "?".to_string()
     };
     let services = match model.stack_state(chapter) {
-        StackState::Up { running, listed } => format!("{running} of {listed} running"),
-        StackState::Down { listed } => format!("0 of {listed} running"),
+        StackState::Up { running, total } => format!("{running} of {total} running"),
+        StackState::Down { total } => format!("0 of {total} running"),
         StackState::Unknown | StackState::Failed => "?".to_string(),
     };
     let width = usize::from(content.width);
@@ -1614,7 +1634,8 @@ mod tests {
     use super::*;
     use crate::book::NodeRow;
     use crate::shell::tests::{
-        alert, devices_model, fixture, row, sonda_rows, stack, start, workshop_located,
+        alert, defined, devices_model, fixture, listing, row, sonda_rows, stack, start,
+        workshop_located,
     };
     use crate::shell::{handle, stacks, Stack, Start, Update};
 
@@ -1685,7 +1706,7 @@ mod tests {
         for _ in 1..12 {
             press(&mut model, 'j');
         }
-        model.apply(Update::Services(11, Ok(vec![row("grafana", "running")])));
+        model.apply(listing(11, Ok(vec![row("grafana", "running")])));
         sonda_rows(&mut model);
         model
     }
@@ -2125,10 +2146,7 @@ mod tests {
                 &mut model,
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             );
-            let rows = (0..count)
-                .map(|index| row(&format!("s{index}"), "running"))
-                .collect();
-            model.apply(Update::Services(0, Ok(rows)));
+            model.apply(Update::Services(0, names(count), Ok(Vec::new())));
             for (width, height) in SIZES {
                 let screen = drawn(&mut model, width, height);
 
@@ -2137,6 +2155,125 @@ mod tests {
                     assert!(screen[2].contains(title), "{}", screen.join("\n"));
                 }
             }
+        }
+    }
+
+    fn names(count: usize) -> Result<Vec<String>, String> {
+        Ok((1..=count).map(|index| format!("s{index:02}")).collect())
+    }
+
+    fn opened(name: &str) -> Model {
+        let mut model = Model::new(start(vec![stack(name, &[])]));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        model
+    }
+
+    fn row_with<'a>(screen: &'a [String], text: &str) -> &'a str {
+        screen
+            .iter()
+            .find(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("no row with {text}\n{}", screen.join("\n")))
+    }
+
+    #[test]
+    fn a_chapter_with_no_container_whose_file_defines_one_service_reads_0_of_1_running() {
+        let mut model = lab_bench(1);
+        model.apply(Update::Services(0, defined(&["sleeper"]), Ok(Vec::new())));
+
+        for (width, height) in [(60, 15), (100, 30)] {
+            let screen = drawn(&mut model, width, height).join("\n");
+
+            assert!(screen.contains(" services  0 of 1 running"), "{screen}");
+            assert!(screen.contains(">ch1  down 0/1"), "{screen}");
+        }
+    }
+
+    #[test]
+    fn a_compose_that_cannot_answer_shows_a_question_mark_names_config_and_clears_when_it_answers()
+    {
+        let mut model = lab_bench(1);
+        let listed = || Ok(vec![row("sleeper", "running")]);
+
+        model.apply(Update::Services(
+            0,
+            Err("no such file".to_string()),
+            listed(),
+        ));
+        let screen = drawn(&mut model, 100, 30).join("\n");
+
+        assert_eq!(model.stack_state(0).text(), "?");
+        assert_eq!(model.stack_state(0).total(), None);
+        assert!(screen.contains(" services  ?"), "{screen}");
+        let (source, text, _) = model.error().unwrap();
+        assert_eq!((source, text), ("config ch1", "no such file"));
+
+        model.apply(Update::Services(0, defined(&["sleeper"]), listed()));
+        let screen = drawn(&mut model, 100, 30).join("\n");
+
+        assert_eq!(model.stack_state(0).text(), "up 1/1");
+        assert!(screen.contains(" services  1 of 1 running"), "{screen}");
+        assert_eq!(model.error(), None);
+    }
+
+    #[test]
+    fn every_place_reads_the_one_pair() {
+        let mut model = opened("packt");
+        model.apply(Update::Services(0, names(22), Ok(Vec::new())));
+        let screen = drawn(&mut model, 100, 30);
+
+        assert!(row_with(&screen, "│>packt").contains(">packt  down 0/22"));
+        assert!(row_with(&screen, "┌ stacks").contains("┌ packt  22 services  "));
+
+        let three = vec![row("a", "running"), row("b", "running"), row("c", "exited")];
+        model.apply(Update::Services(
+            0,
+            Err("cannot read".to_string()),
+            Ok(three),
+        ));
+        let screen = drawn(&mut model, 100, 30);
+
+        assert!(row_with(&screen, "│>packt").contains(">packt  ?"));
+        assert!(row_with(&screen, "┌ stacks").contains("┌ packt  ?  "));
+    }
+
+    #[test]
+    fn a_long_stack_name_gives_way_so_the_state_stays_whole_at_60_columns() {
+        let mut model = opened("nobs-t-packt");
+        model.apply(Update::Services(0, names(22), Ok(Vec::new())));
+        let screen = drawn(&mut model, 60, 15);
+
+        assert!(row_with(&screen, "│>nobs").contains("  down 0/22│"));
+    }
+
+    #[test]
+    fn a_long_path_gives_way_so_the_chooser_state_stays_whole_at_60_columns() {
+        let packt = Stack {
+            path: PathBuf::from(LAB_DIR),
+            ..stack("packt", &[])
+        };
+        let mut model = Model::new(start(vec![packt]));
+        model.apply(Update::Services(0, names(13), Ok(Vec::new())));
+        let screen = drawn(&mut model, 60, 15);
+
+        assert!(row_with(&screen, "│>packt").contains("…  down 0/13"));
+    }
+
+    #[test]
+    fn a_long_stack_name_never_cuts_the_count_in_the_title() {
+        for length in 40..=70 {
+            let mut model = opened(&"a".repeat(length));
+            model.apply(Update::Services(0, names(22), Ok(Vec::new())));
+            let screen = drawn(&mut model, 100, 30);
+            let top = row_with(&screen, "┌ stacks");
+            let title = &top[top.find("┐┌").unwrap()..];
+
+            assert!(
+                title.contains(" 22 services") || !title.contains('2'),
+                "{title}"
+            );
         }
     }
 

@@ -2,7 +2,7 @@
  1 devices  [2 services]                     ? keys  q quit
 ┌ stacks 3 ───────────┐┌ autocon5  refreshed 43s ago ──────┐
 │!autocon5  up 7/7    ││OVERVIEW  logs  sonda              │
-│ packt     down      ││ SERVICE    STATE    HLTH      PORT│
+│ packt     down 0/2  ││ SERVICE    STATE    HLTH      PORT│
 │ demo      down 0/3  ││ grafana    running  ok        3000│
 │                     ││ promethe…  running  ok        9090│
 │                     ││ loki       running  down      3001│
