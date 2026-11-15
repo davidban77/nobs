@@ -8,8 +8,9 @@ use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::data::{Model, Prompt};
+use crate::screen::{cut_words, whole_hints};
 
-const KEYS: &str = "q quit  j/k select  r refresh  l load  d delete";
+const KEYS: [&str; 5] = ["q quit", "j/k select", "r refresh", "l load", "d delete"];
 
 pub fn draw(frame: &mut Frame, model: &Model, now: Instant) {
     draw_in(frame, frame.area(), model, now);
@@ -24,29 +25,42 @@ pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     .areas(area);
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
-    frame.render_widget(Paragraph::new(top_line(model, now)), top);
+    frame.render_widget(
+        Paragraph::new(top_line(model, now, usize::from(top.width))),
+        top,
+    );
     let mut state = TableState::default().with_selected(model.selected_index());
     frame.render_stateful_widget(table(model), left, &mut state);
     frame.render_widget(
         Paragraph::new(details(model)).block(Block::bordered()),
         right,
     );
-    frame.render_widget(Paragraph::new(bottom_line(model, now)), bottom);
+    frame.render_widget(
+        Paragraph::new(bottom_line(model, now, usize::from(bottom.width))),
+        bottom,
+    );
 }
 
-fn top_line(model: &Model, now: Instant) -> Line<'static> {
+fn top_line(model: &Model, now: Instant, width: usize) -> Line<'static> {
     let age = match model.refreshed_at() {
         Some(at) => format!("refreshed {}s ago", seconds(now, at)),
         None => "no answer yet".to_string(),
     };
-    let mut spans = vec![Span::raw(format!("{}  {age}", model.server()))];
-    if let (Some(error), Some(at)) = (model.error(), model.error_at()) {
-        spans.push(Span::styled(
-            format!("  {error} ({}s ago)", seconds(now, at)),
-            Style::new().fg(Color::Red),
-        ));
+    let plain = format!("{}  {age}", model.server());
+    let Some((error, at)) = model.error().zip(model.error_at()) else {
+        return Line::from(cut_words(&plain, width));
+    };
+    let text = cut_words(
+        &format!("{plain}  {error} ({}s ago)", seconds(now, at)),
+        width,
+    );
+    match text.strip_prefix(plain.as_str()) {
+        Some(rest) => Line::from(vec![
+            Span::raw(plain),
+            Span::styled(rest.to_string(), Style::new().fg(Color::Red)),
+        ]),
+        None => Line::from(text),
     }
-    Line::from(spans)
 }
 
 fn seconds(now: Instant, at: Instant) -> u64 {
@@ -117,7 +131,7 @@ fn field(line: &str) -> String {
     }
 }
 
-fn bottom_line(model: &Model, now: Instant) -> String {
+fn bottom_line(model: &Model, now: Instant, width: usize) -> String {
     match model.prompt() {
         Prompt::Path(path) => format!("load: {path}"),
         Prompt::Delete(id) => {
@@ -128,7 +142,12 @@ fn bottom_line(model: &Model, now: Instant) -> String {
                 .map_or(id.as_str(), |row| row.name.as_str());
             format!("delete {name}? y/n")
         }
-        Prompt::None => model.status(now).unwrap_or(KEYS).to_string(),
+        Prompt::None => match model.status(now) {
+            Some(status) => status.to_string(),
+            None => whole_hints(&KEYS.map(String::from), width)
+                .trim_start()
+                .to_string(),
+        },
     }
 }
 

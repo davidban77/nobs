@@ -531,6 +531,7 @@ impl Model {
                 }
             }
             Update::Logs(index, service, Ok(lines)) => {
+                self.clear_error(&format!("logs {service}"));
                 if index != self.selected {
                     return;
                 }
@@ -2971,6 +2972,20 @@ pub(crate) mod tests {
 
         let (source, text, _) = model.error().unwrap();
         assert_eq!((source, text), ("logs grafana", "gone"));
+    }
+
+    #[test]
+    fn a_logs_answer_after_a_failure_removes_that_service_s_error() {
+        let mut model = logs_open("grafana");
+        model.apply(Update::Logs(
+            0,
+            "grafana".to_string(),
+            Err("gone".to_string()),
+        ));
+
+        model.apply(Update::Logs(0, "grafana".to_string(), Ok(timed(&["back"]))));
+
+        assert_eq!(model.error(), None);
     }
 
     #[test]

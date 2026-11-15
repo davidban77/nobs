@@ -8,6 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+use nobs_core::count::counted;
 use nobs_core::locate::Located;
 use nobs_core::time;
 
@@ -247,7 +248,7 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
-fn cut_words(text: &str, width: usize) -> String {
+pub(crate) fn cut_words(text: &str, width: usize) -> String {
     let words: Vec<&str> = text.split(' ').collect();
     cut_whole(&words, " ", width)
 }
@@ -428,9 +429,8 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         None => "no answer yet".to_string(),
     };
     let title = if wide {
-        let count = model.services().len();
-        let noun = if count == 1 { "service" } else { "services" };
-        format!(" {name}  {count} {noun}  {age} ")
+        let count = counted(model.services().len(), "service");
+        format!(" {name}  {count}  {age} ")
     } else {
         format!(" {name}  {age} ")
     };
@@ -841,7 +841,7 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
     frame.render_widget(Paragraph::new(lines), table);
     let differs = interfaces.iter().filter(|row| row.differs).count();
-    let count = format!("{} interfaces", interfaces.len());
+    let count = counted(interfaces.len(), "interface");
     let differs = format!("{differs} differs");
     frame.render_widget(
         Paragraph::new(cut_whole(&[&count, &differs], "  ", width)),
@@ -1414,7 +1414,7 @@ fn log_hints(paused: bool) -> Vec<&'static str> {
     ]
 }
 
-fn whole_hints(hints: &[String], width: usize) -> String {
+pub(crate) fn whole_hints(hints: &[String], width: usize) -> String {
     let mut line = String::new();
     for hint in hints {
         if !push_whole(&mut line, hint, width) {
@@ -1609,7 +1609,7 @@ mod tests {
     use super::*;
     use crate::book::NodeRow;
     use crate::shell::tests::{
-        devices_model, fixture, row, sonda_rows, stack, start, workshop_located,
+        alert, devices_model, fixture, row, sonda_rows, stack, start, workshop_located,
     };
     use crate::shell::{handle, stacks, Stack, Start, Update};
 
@@ -1813,8 +1813,12 @@ mod tests {
 
     fn drawn(model: &mut Model, width: u16, height: u16) -> Vec<String> {
         model.tick(model.now(), UNIX_EPOCH, (width, height));
+        painted(width, height, |frame| draw(frame, model))
+    }
+
+    fn painted(width: u16, height: u16, paint: impl FnOnce(&mut Frame)) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, model)).unwrap();
+        terminal.draw(paint).unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
             .map(|y| {
@@ -2287,5 +2291,31 @@ mod tests {
             .collect();
         let seven: Vec<String> = (0..7).map(|row| row.to_string().repeat(58)).collect();
         assert_eq!(newest, seven);
+    }
+
+    #[test]
+    fn the_device_alerts_row_with_a_firing_alert_ends_at_a_whole_fact() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(vec![alert(
+            "srl1",
+            "BgpSessionNotUp",
+            "2026-11-09T13:53:32Z",
+        )])));
+
+        let rows = painted(28, 10, |frame| device_overview(frame, frame.area(), &model));
+
+        let alerts = rows.iter().find(|row| row.starts_with("alerts")).unwrap();
+        assert_eq!(alerts, "alerts   BgpSessionNotUp …");
+    }
+
+    #[test]
+    fn the_interfaces_summary_row_ends_at_a_whole_fact() {
+        let model = devices_model(workshop_located("infrahub"));
+
+        let rows = painted(20, 10, |frame| {
+            device_interfaces(frame, frame.area(), &model, false)
+        });
+
+        assert_eq!(rows[9], "4 interfaces …");
     }
 }

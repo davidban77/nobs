@@ -10,6 +10,7 @@ use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::cascade;
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
+use nobs_core::count::counted;
 use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::env::load_env;
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
@@ -2322,10 +2323,9 @@ fn load_nautobot(
         .map(|(_, created, updated)| created + updated)
         .sum();
     println!(
-        "Done: {objects} {} across {} {}. Open Nautobot at {url}.",
-        noun(objects, "object"),
-        load.rows.len(),
-        noun(load.rows.len(), "type")
+        "Done: {} across {}. Open Nautobot at {url}.",
+        counted(objects, "object"),
+        counted(load.rows.len(), "type")
     );
     Ok(())
 }
@@ -2336,7 +2336,7 @@ fn delete_nautobot(flags: NautobotFlags, located: &Located) -> Result<(), i32> {
         .delete(&mut |kind, count| println!("{kind}: {count} deleted"))
         .map_err(|error| nautobot_failed("delete-nautobot", error))?;
     let objects: usize = deleted.rows.iter().map(|(_, count)| count).sum();
-    println!("Done: {objects} {} deleted.", noun(objects, "object"));
+    println!("Done: {} deleted.", counted(objects, "object"));
     Ok(())
 }
 
@@ -2697,9 +2697,9 @@ impl<'a, Topo> LabRun<'a, Topo> {
                     names.len()
                 };
                 println!(
-                    "lab {}: waiting for {count} {} (up to {}s)",
+                    "lab {}: waiting for {} (up to {}s)",
                     self.command,
-                    noun(count, "service"),
+                    counted(count, "service"),
                     limit.as_secs()
                 );
             }
@@ -3016,11 +3016,9 @@ impl<'a> LabRun<'a, Topology> {
             if !announced {
                 announced = true;
                 println!(
-                    "lab deploy: waiting for {} {} and {} {} (up to {}s)",
-                    services.len(),
-                    noun(services.len(), "service"),
-                    nodes.len(),
-                    noun(nodes.len(), "node"),
+                    "lab deploy: waiting for {} and {} (up to {}s)",
+                    counted(services.len(), "service"),
+                    counted(nodes.len(), "node"),
                     limit.as_secs()
                 );
             }
@@ -3075,11 +3073,7 @@ impl<'a> LabRun<'a, Topology> {
             Some(code) => Err(code),
             None => {
                 self.remove_network(network)?;
-                println!(
-                    "lab purged: {} {}",
-                    scenarios.len(),
-                    noun(scenarios.len(), "scenario")
-                );
+                println!("lab purged: {}", counted(scenarios.len(), "scenario"));
                 Ok(())
             }
         }
@@ -3384,10 +3378,9 @@ fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
         .map(|(_, created, updated)| u64::from(*created) + u64::from(*updated))
         .sum();
     println!(
-        "Done: {nodes} {} across {} {}. Open Infrahub at {}.",
-        noun(nodes, "node"),
-        seed.rows.len(),
-        noun(seed.rows.len(), "type"),
+        "Done: {} across {}. Open Infrahub at {}.",
+        counted(nodes, "node"),
+        counted(seed.rows.len(), "type"),
         infrahub.address()
     );
     if devices_seeded(&seed) == 0 {

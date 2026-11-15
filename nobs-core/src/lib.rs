@@ -2,6 +2,7 @@ pub mod alertmanager;
 pub mod cascade;
 pub mod compose;
 pub mod containerlab;
+pub mod count;
 pub mod cycle;
 pub mod env;
 pub mod evidence;

@@ -632,6 +632,22 @@ fn the_sonda_frame_is_pinned() {
 }
 
 #[test]
+fn the_sonda_top_line_ends_at_a_whole_word_and_its_key_row_at_a_whole_hint_at_60_columns() {
+    let rows = lines(&render(sonda_model(), 60, 15));
+
+    assert!(
+        rows[4].ends_with("││http://localhost:8085  refreshed … │"),
+        "{}",
+        rows[4]
+    );
+    assert!(
+        rows[11].ends_with("││q quit  j/k select  r refresh      │"),
+        "{}",
+        rows[11]
+    );
+}
+
+#[test]
 fn the_sonda_key_line_shows_only_with_the_focus_on_the_tabs() {
     let mut off_the_tabs = sonda_model();
     press(&mut off_the_tabs, KeyCode::Esc);
