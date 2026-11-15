@@ -1,4 +1,4 @@
- nobs  book-lab book lab  sot lab_vars  1 services                                         13:42:07
+ nobs  book-lab book lab  sot lab_vars                                                     13:42:07
  1 devices  2 services  [3 lab]                                                      ? keys  q quit
 
 
@@ -26,5 +26,5 @@
 
 
 
- run  none                                                                                   o open
+
  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show  r refresh  o pane

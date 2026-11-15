@@ -560,10 +560,6 @@ fn lines(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
-fn flat(buffer: &Buffer) -> String {
-    buffer.content().iter().map(|cell| cell.symbol()).collect()
-}
-
 fn mismatch(name: &str, width: u16, height: u16, actual: &[String]) -> Option<String> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/golden/{name}-{width}x{height}.txt"));
@@ -633,6 +629,22 @@ fn the_paused_logs_frame_is_pinned() {
 #[test]
 fn the_sonda_frame_is_pinned() {
     golden("sonda", sonda_model);
+}
+
+#[test]
+fn the_sonda_top_line_ends_at_a_whole_word_and_its_key_row_at_a_whole_hint_at_60_columns() {
+    let rows = lines(&render(sonda_model(), 60, 15));
+
+    assert!(
+        rows[4].ends_with("││http://localhost:8085  refreshed … │"),
+        "{}",
+        rows[4]
+    );
+    assert!(
+        rows[11].ends_with("││q quit  j/k select  r refresh      │"),
+        "{}",
+        rows[11]
+    );
 }
 
 #[test]
@@ -818,7 +830,13 @@ fn the_question_and_the_run_pane_show_each_lab_command_with_the_sudo_flag() {
         let mut running = asking();
         press(&mut running, KeyCode::Char('y'));
 
-        let question = flat(&render(asking(), 100, 30));
+        let asked = lines(&render(asking(), 100, 30));
+        let start = asked
+            .iter()
+            .position(|line| line.starts_with(" run nobs"))
+            .unwrap();
+        let rows: Vec<&str> = asked[start..].iter().map(|line| line.trim()).collect();
+        let question = rows.join(" ");
         let pane = lines(&render(running, 100, 30)).join("\n");
 
         assert!(
@@ -931,12 +949,12 @@ fn a_long_refusal_wraps_whole_into_the_run_pane_and_is_red_on_every_row() {
 }
 
 #[test]
-fn a_short_run_pane_cuts_the_command_line_to_keep_the_whole_refusal() {
+fn a_short_run_pane_drops_the_command_line_to_keep_the_whole_refusal() {
     pinned(refused_in(LONG_LAB_DIR), "run-refused-long", 60, 15);
 }
 
 #[test]
-fn under_an_error_row_the_run_pane_grows_past_half_to_keep_the_whole_refusal() {
+fn under_an_error_row_the_run_pane_gives_way_to_the_lab_minimum_and_keeps_the_newest_rows() {
     let mut model = refused_in(LONG_LAB_DIR);
     model.apply(Update::Services(1, Err("exit 1".to_string())));
 
@@ -987,7 +1005,7 @@ fn pane_rows(model: Shell, width: u16, height: u16) -> usize {
 }
 
 #[test]
-fn the_run_pane_stops_growing_where_the_selected_chapter_would_go_out_of_view() {
+fn the_run_pane_stops_at_the_lab_minimum_and_the_chapters_scroll_to_the_selected_one() {
     pinned(chapter_two_refused(), "run-least-lab", 60, 15);
 }
 
@@ -1002,7 +1020,7 @@ fn the_run_pane_grows_past_half_only_up_to_each_workbench_minimum() {
         ),
     ];
 
-    assert_eq!(heights, [("lab", 7), ("services", 7), ("devices", 9)]);
+    assert_eq!(heights, [("lab", 4), ("services", 6), ("devices", 9)]);
 }
 
 #[test]
@@ -1066,10 +1084,22 @@ fn the_longest_question_of_the_table_shows_whole_at_60_by_15() {
     let longest = ACTIONS.iter().map(asked).max_by_key(length).unwrap();
     let text = longest.question().unwrap().text();
 
-    let screen = flat(&render(longest, 60, 15));
+    let screen = lines(&render(longest, 60, 15));
 
+    let start = screen
+        .iter()
+        .position(|line| line.starts_with(" run nobs"))
+        .unwrap();
+    let shown = &screen[start..];
+    let squeezed = |text: &str| text.split_whitespace().collect::<String>();
     assert!(text.contains(". y/n"), "{text}");
-    assert!(screen.contains(&text), "{text}\n{screen}");
+    assert_eq!(
+        squeezed(&shown.concat()),
+        squeezed(&text),
+        "{}",
+        screen.join("\n")
+    );
+    assert!(shown.iter().any(|line| line.ends_with("y/n")));
 }
 
 #[test]

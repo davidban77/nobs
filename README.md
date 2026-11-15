@@ -42,10 +42,10 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 
 | Part | Where | What it shows |
 |---|---|---|
-| header | the first line | `nobs`, the name and the kind of the lab, and the `sot` word (`sot` is short for source of truth: the system that holds the intended state of the network): `sot infrahub` or `sot none` as the `sot` setting of `nobs.toml` says in a workshop, `sot lab_vars` in a book lab, `sot none` in a labcli lab (see [The devices workbench](#the-devices-workbench)); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address; from 100 columns, also the number of services |
+| header | the first line | `nobs`, the name and the kind of the lab, and the `sot` word (`sot` is short for source of truth: the system that holds the intended state of the network): `sot infrahub` or `sot none` as the `sot` setting of `nobs.toml` says in a workshop, `sot lab_vars` in a book lab, `sot none` in a labcli lab (see [The devices workbench](#the-devices-workbench)); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address |
 | switcher | the second line | `1 devices` and `2 services`, and `3 lab` in a book lab, with the open workbench in brackets; `? keys  q quit` at the right end; in the chooser `choose a lab, or q to quit` |
 | body | the middle | the open workbench, or the chooser |
-| run line | the line above the last | `run  none` before the first action, else the last action and its state, for example `run  lab deploy --sudo-no-prompt -s ch1  exit 0  41s`; `o open` at the right end; when the run pane is open, the pane takes the place of the run line (see [Actions](#actions)); the chooser has no run line |
+| run line | the line above the last | `run  none` before the first action, else the last action and its state, for example `run  lab deploy --sudo-no-prompt -s ch1  exit 0  41s`; `o open` at the right end; when the run pane is open, the pane takes the place of the run line, and when the open pane has room for only one row, the run line stays and shows `Esc fold` at the right end (see [Actions](#actions)); the chooser has no run line |
 | key line | the last line | the keys that work now; while you type a filter, `filter: <text>  Enter keep  Esc clear`; the question or the note of an action |
 
 When a data call fails, one red line appears between the switcher and the body (see [Errors](#errors)).
@@ -283,17 +283,16 @@ At 100 columns the key line is `j/k move  D deploy  X destroy  P purge  R prepar
 
 The lab runs one chapter at a time. So `D`, `U`, `B` and `X` take the services of the other chapters down. `R` and `P` take every chapter down. Their questions say "scenario". In the book lab, a scenario is a chapter: the folder under `chapters/` that holds its compose file (see [Book lab](#book-lab)). It is not a Sonda scenario.
 
-`D`, `X`, `P`, `R` and `S` always add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). When `LAB_SUDO` is on, they run `sudo containerlab`. The screen cannot ask for a password, so with the flag `sudo` fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
+`D`, `X`, `P`, `R` and `S` always add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). When `LAB_SUDO` is on, they run `sudo containerlab`. The screen cannot ask for a password, so with the flag, when sudo is on (`--sudo` or `LAB_SUDO`), nobs fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
 
 When `sudo` needs a password, the action ends at once with `exit 1`. For `X`, the run pane shows:
 
 ```
 sudo: a password is required
-sudo: a password is required
 nobs: lab destroy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again
 ```
 
-The `sudo:` lines come from `sudo` itself, and there can be one or two of them. For the other keys, the last line names their command, for example `lab deploy` for `D`. Nothing has changed. The chapter row gets the mark `!`, except after `P`, which acts on the whole lab.
+The `sudo:` line comes from `sudo` itself. For the other keys, the last line names their command, for example `lab deploy` for `D`. Nothing has changed. The chapter row gets the mark `!`, except after `P`, which acts on the whole lab.
 
 To go on:
 
@@ -346,7 +345,7 @@ Only `y` runs it. Any other key runs nothing, and the line says `not run:` and t
 
 Some keys refuse:
 
-- `u`, `d`, `X`, `R`, `p` or `s` in the services workbench, on a chapter, on a labcli lab or on `sonda only`, shows `<key> <hint> is for a workshop; a chapter has its actions in the lab workbench`, for example `u up is for a workshop; a chapter has its actions in the lab workbench`.
+- `u`, `d`, `X`, `R`, `p` or `s` in the services workbench, on a chapter, shows `<key> <hint> is for a workshop; a chapter has its actions in the lab workbench`, for example `u up is for a workshop; a chapter has its actions in the lab workbench`. On a labcli lab or on `sonda only`, it shows `<key> <hint> is for a workshop`, for example `u up is for a workshop`.
 - `m` does nothing in a book lab, nor when the device list is empty.
 - Only one action runs at a time. A second action key shows `one action at a time: <action> is running`.
 
@@ -361,7 +360,7 @@ When the action starts, the run pane opens by itself. The title of the pane show
 | `stopped` | yellow | you stopped it with Ctrl-C |
 | `not stopped` | red | you stopped it, but a program it started still runs (see below) |
 
-The pane starts with the command line, `$ nobs --dir <folder> …`. A long command line wraps onto more than one row. Under it come the lines the action prints, as they come. A line that starts with `nobs:` is red. A long line wraps. When the pane has too few rows for all of this, the command line is cut first, one row at a time from its end, until only its first row is left. When the command line is cut, its last row ends with `…`. Only then do output lines go out of view: the pane shows the newest rows that fit, so the oldest line in view may show only its end. It cannot scroll back, so the first lines of a long action go out of view. To see every line of an action, run the same command in a terminal instead of from the screen. The `y/n` question before an action that changes something shows the whole command. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
+The pane starts with the command line, `$ nobs --dir <folder> …`. A long command line wraps onto more than one row. Under it come the lines the action prints, as they come. A line that starts with `nobs:` is red. A long line, and a long command line, breaks between words; only a word longer than the row breaks at the row's end. The pane shows the whole command line, and under it the newest output, when the whole command line and the newest output line fit together. When they do not, the pane shows only the newest output rows, so the oldest line in view may show only its end. The pane gives way to the workbench: it takes only the rows the workbench does not need to show its selected row, and with fewer than 3 rows it folds to the one run line. It cannot scroll back, so the first lines of a long action go out of view. To see every line of an action, run the same command in a terminal instead of from the screen. The `y/n` question before an action that changes something shows the whole command. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
 
 An action that worked, at 100 columns:
 
@@ -382,8 +381,8 @@ An action that failed:
 ```
 ┌ run  lab deploy --sudo-no-prompt -s ch1  exit 1  0s ─────────────────────────────────── Esc fold ┐
 │$ nobs --dir /home/me/book-lab lab deploy --sudo-no-prompt -s ch1                                 │
-│nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-no│
-│bs-t-srl2); run nobs lab destroy first                                                            │
+│nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1,                    │
+│clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first                                         │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -421,7 +420,7 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `y` | answer yes to the open question; any other key answers no |
 | `o` | open or fold the run pane |
 | `x` | dismiss the red error line |
-| `?` | show the keys and every action of the workbench, or close them; when they do not fit, `j` and `k` scroll them, and the last row says `j/k more` |
+| `?` | show the keys and every action of the workbench, or close them; while they are open they cover the run pane too, a running action keeps going, and the pane is back when they close; when they do not fit, `j` and `k` scroll them, also after the terminal changes size, and the last row says `j/k more` |
 | `Esc` | close the keys, fold the run pane, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list |
 | `q` and Ctrl-C | close the screen and give the terminal back as it was; while an action runs, Ctrl-C stops it and `q` asks first |
 
@@ -429,11 +428,11 @@ While a question or a filter is open, `q` is typed or answers the question, and 
 
 ### Errors
 
-When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails (the stack then shows `?`), and `logs <service>` when the log call fails. In the devices workbench the source is `sot`, `prometheus`, `alertmanager`, `loki` or `prefect`, the five systems it asks. In the lab workbench the source is `nodes` when `docker ps -a` or the topology file fails. A value whose source did not answer shows `?` and never its last value: `HLTH` and the live states show `?` when Prometheus failed, and `ALRT` shows `?` when Alertmanager failed. The lists and lines already shown stay on the screen until the next answer. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda`, `poll`, `sot`, `prometheus`, `alertmanager`, `loki`, `prefect` or `nodes`. `x` dismisses the line. A `ps` line also goes away when the next `ps` call of that stack works.
+When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails (the stack then shows `?`), and `logs <service>` when the log call fails. In the devices workbench the source is `sot`, `prometheus`, `alertmanager`, `loki` or `prefect`, the five systems it asks. In the lab workbench the source is `nodes` when `docker ps -a` or the topology file fails. A value whose source did not answer shows `?` and never its last value: `HLTH` and the live states show `?` when Prometheus failed, and `ALRT` shows `?` when Alertmanager failed. The lists and lines already shown stay on the screen until the next answer. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda`, `poll`, `sot`, `prometheus`, `alertmanager`, `loki`, `prefect` or `nodes`. When more than one source fails, the line shows the one that failed first, with its newest error and age. It stays until that source answers again or you press `x`. Then the source that failed next shows. A `ps` line also goes away when the next `ps` call of that stack works.
 
 ### Size
 
-The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the header and the title of the right side show the number of services, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`. In the devices workbench, the device list grows from 23 to 42 columns and adds the `KIND` and `SYNC` columns. The alerts box puts the name of the alert before the device and adds the state and the age. The tab `ifaces` is written `interfaces`. A line that does not fit is cut and ends with `…`. A key hint is never cut: the key line leaves out the hints that do not fit.
+The screen needs a terminal of at least 60 columns and 15 rows. A smaller terminal shows `terminal too small: needs 60 columns and 15 rows`, and only `q` and Ctrl-C work until you make it larger. From 100 columns the layout is wider: the stack list grows from 23 to 32 columns, the title of the right side shows the number of services, for example `1 service`, and the overview table adds the `AGE` column and writes `HEALTH` in full instead of `HLTH`. In the devices workbench, the device list grows from 23 to 42 columns and adds the `KIND` and `SYNC` columns. The alerts box puts the name of the alert before the device and adds the state and the age. The tab `ifaces` is written `interfaces`. A line that does not fit ends at a whole word, followed by `…`. A key hint is never cut: the key line leaves out the hints that do not fit.
 
 ### Exit codes
 
@@ -1852,13 +1851,13 @@ Each command runs its steps one after another. nobs builds the path of each file
 `nobs lab destroy -s <scenario>` runs these steps:
 
 1. It takes the stack of the scenario down and removes its volumes.
-2. It runs `containerlab destroy -t <topology> --cleanup`. Seen with containerlab 0.77.0: when the network the stacks join is the management network of the topology (`mgmt.network`), this step removes the Docker network too, but only when no running container uses it. The next `deploy` creates the network again. When a running container uses the network, containerlab removes its nodes, keeps the network and prints nothing about it.
-3. It removes the network that `deploy` uses. nobs finds its name as `deploy` does: `LAB_NETWORK_NAME`, else the `network` setting of `nobs.toml`, else `network-observability`. nobs lists the Docker networks. When the network does not exist, for example because step 2 removed it, nobs prints nothing. When a container is attached to the network, nobs prints `lab destroy: network <network> is still in use, kept` and keeps the network. This counts a running container, a stopped one and one that was only created. To find it, run `docker ps -a --filter network=<network>`. Remove it, then run `destroy` again. Otherwise nobs prints `lab destroy: removing network <network>` and runs `docker network rm <network>`. Docker then prints the network's name on its own line. nobs removes only the network that `deploy` makes. When the topology sets a management network with another name, that network belongs to containerlab, and nobs does not remove it; after a deploy that was stopped with `Ctrl-C`, it can stay. `destroy` and `purge` take no `--network-name` flag, so they do not know a network that was named only by `deploy --network-name`. To name it for every command, use `LAB_NETWORK_NAME` or the `network` setting of `nobs.toml`.
+2. It runs `containerlab destroy -t <topology> --cleanup`. When the topology sets a management network (`mgmt.network`) with a name other than the network of step 3, nobs does not remove it, and it can stay. To remove it, run `docker network rm <name>`.
+3. It removes the network that `deploy` uses. nobs finds its name as `deploy` does: `LAB_NETWORK_NAME`, else the `network` setting of `nobs.toml`, else `network-observability`. nobs lists the Docker networks. When the network does not exist, nobs prints nothing. This happens when the topology uses that network as its management network, because step 2 then removed it. When a container is attached to the network, nobs prints `lab destroy: network <network> is still in use, kept` and keeps the network. This counts a running container, a stopped one and one that was only created. To find it, run `docker ps -a --filter network=<network>`. Remove it, then run `destroy` again. Otherwise nobs prints `lab destroy: removing network <network>` and runs `docker network rm <network>`. `destroy` and `purge` take no `--network-name` flag, so they do not know a network that was named only by `deploy --network-name`. To name it for every command, use `LAB_NETWORK_NAME` or the `network` setting of `nobs.toml`.
 
 `nobs lab purge` runs these steps:
 
 1. For each scenario, in name order, it takes the stack down and removes its volumes. When a stack fails, nobs reports it and goes on with the next scenario.
-2. It lists the containers with `docker ps -a`. It runs `containerlab destroy -t <topology> --cleanup` once, and only when a node container of the topology exists. Like `destroy`, this step may remove the network too, when it is the management network of the topology. Without a node container, it prints `lab purge: no lab nodes to destroy`.
+2. It lists the containers with `docker ps -a`. It runs `containerlab destroy -t <topology> --cleanup` once, and only when a node container of the topology exists. Without a node container, it prints `lab purge: no lab nodes to destroy`.
 3. Only when every step before passed, it removes the network as step 3 of `destroy` does. Its lines start with `lab purge:`.
 
 `nobs lab show -s <scenario>` runs these steps:
@@ -1915,7 +1914,7 @@ A blank flag or variable, one that is empty or holds only spaces, counts as not 
 - A relative `--topology` path starts at the lab folder. This differs from `nobs containerlab`, whose `TOPOLOGY` starts at the current folder.
 - `--wait SECONDS` is the time `deploy` and `prepare` wait for the lab to be ready. For `update` and `rebuild`, it is the time they wait for the services only. `0` means no wait.
 
-`--sudo-no-prompt` makes `sudo` fail instead of asking for a password. It works only when sudo is on, with `--sudo` or `LAB_SUDO`; with sudo off, it does nothing. With the flag, nobs gives `-n` to every `sudo` it runs: `-n` is the `sudo` flag that fails when a password is needed. Before any Docker read or change, nobs checks once that `sudo` can run without a password. It runs `sudo -n containerlab version`, with the same `--preserve-env` as the other steps, and when that fails, `sudo -n true`. Only when both fail, nobs prints `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` on standard error and exits with 1. Nothing has changed. Above that line, `sudo` prints its own line, `sudo: a password is required`, once for each check, so it can show twice. When `sudo` needs no password, nothing new prints. When a containerlab step fails later for another reason, nobs prints the normal `failed` line of that step. Without the flag, `sudo` may ask for a password in the terminal.
+`--sudo-no-prompt` makes `sudo` fail instead of asking for a password. It works only when sudo is on, with `--sudo` or `LAB_SUDO`; with sudo off, it does nothing. With the flag, nobs gives `-n` to every `sudo` it runs: `-n` is the `sudo` flag that fails when a password is needed. Before any Docker read or change, nobs checks once that `sudo` can run without a password. It runs `sudo -n containerlab version`, with the same `--preserve-env` as the other steps, and when that fails, `sudo -n true`. Only when both fail, nobs prints `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` on standard error and exits with 1. Nothing has changed. Above that line, `sudo` prints its own line, `sudo: a password is required`, once. When `sudo` needs no password, nothing new prints. When a containerlab step fails later for another reason, nobs prints the normal `failed` line of that step. Without the flag, `sudo` may ask for a password in the terminal.
 
 ### The clash check
 
@@ -2020,8 +2019,8 @@ The lines below go to standard output. `<topology>` is the path nobs gave to con
 | `lab deploy: creating network <network> (<subnet>)` | the network does not exist | no |
 | `lab deploy: deploying topology <topology>` | before `containerlab deploy` | no |
 | `lab deploy: starting <scenario> (project <project>)` | before `compose up` | no |
-| `lab deploy: waiting for <services> services and <nodes> nodes (up to <seconds>s)` | after the first check of the wait; not with `--wait 0` | no |
-| `lab <command>: waiting for <count> services (up to <seconds>s)` | `update` and `rebuild`, after the first check of the wait; not with `--wait 0`; `<count>` is the number of names you gave, else the number of services that `compose ps` lists | no |
+| `lab deploy: waiting for <services> services and <nodes> nodes (up to <seconds>s)` | after the first check of the wait; not with `--wait 0`; a count of 1 says `service` or `node` | no |
+| `lab <command>: waiting for <count> services (up to <seconds>s)` | `update` and `rebuild`, after the first check of the wait; not with `--wait 0`; `<count>` is the number of names you gave, else the number of services that `compose ps` lists; when it is 1, the line says `service` | no |
 | `lab <command>: ready after <seconds>s` | the lab or the services are ready; `<command>` is `deploy` (also inside `prepare`), `update` or `rebuild` | no |
 | `lab deployed: scenario <scenario>` | the last line of `deploy` | yes |
 | `lab destroy: stopping <scenario> (project <project>)` | before the stack goes down | no |
@@ -2034,7 +2033,7 @@ The lines below go to standard output. `<topology>` is the path nobs gave to con
 | `lab purge: destroying topology <topology>` | before `containerlab destroy` | no |
 | `lab purge: network <network> is still in use, kept` | every step before passed, and a container, running or stopped, is attached to the network | no |
 | `lab purge: removing network <network>` | every step before passed; before `docker network rm` | no |
-| `lab purged: <count> scenarios` | the last line of `purge`; `<count>` is the number of scenarios, also when it is 1 | yes |
+| `lab purged: <count> scenarios` | the last line of `purge`; `<count>` is the number of scenarios; when it is 1, the line says `scenario` | yes |
 | `lab prepare: scenario <scenario>` | after the image check, before the purge part of `prepare` | no |
 | `lab prepared: scenario <scenario>` | the last line of `prepare` | yes |
 | `lab update: removing <services> (project <project>)` | before `compose rm`; `<services>` is the names you gave, separated by `, `, or `all services` | no |
@@ -2056,7 +2055,7 @@ The lines below go to standard error. `<command>` is the command you ran. Inside
 | `nobs: no scenario named <name> under <folder>/chapters` | 1 | the scenario is not in `chapters/`; the `known:` line follows when there are any scenarios |
 | `nobs: lab <command>: cannot list scenarios: <error>` | 1 | nobs cannot read the `chapters/` folder |
 | `nobs: LAB_SUDO must be true or false, not <value>` | 2 | `LAB_SUDO` holds another word |
-| `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` | 1 | sudo is on, `--sudo-no-prompt` is given, and `sudo` cannot run without a password; `sudo`'s own line `sudo: a password is required` shows above it, once or twice |
+| `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` | 1 | sudo is on, `--sudo-no-prompt` is given, and `sudo` cannot run without a password; `sudo`'s own line `sudo: a password is required` shows above it once |
 | `nobs: topology file not found: <path>` | 1 | the topology file does not exist |
 | `nobs: cannot read topology file: <path>: <error>` | 1 | the file cannot be read; for `deploy`, `prepare` and `purge`, also when it has no `name` or no `topology` with `nodes` (`destroy` and `show` give such a file to containerlab, which reports it); for `deploy` and `prepare`, also when the image check finds an unset variable with no default, or an unsupported `$` form |
 | `nobs: lab deploy: node containers already exist (<names>); run nobs lab destroy first` | 1 | the clash check found node containers |
@@ -2119,7 +2118,7 @@ lab deploy: deploying topology <lab>/containerlab/lab.yml
 ...
 lab deploy: starting ch1 (project netobs)
 ...
-lab deploy: waiting for 1 services and 2 nodes (up to 300s)
+lab deploy: waiting for 1 service and 2 nodes (up to 300s)
 lab deploy: ready after <seconds>s
 lab deployed: scenario ch1
 ```

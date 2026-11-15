@@ -10,6 +10,7 @@ use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::cascade;
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
+use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::env::load_env;
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
@@ -1173,7 +1174,8 @@ const LAB_SUDO_HELP: &str = "Run containerlab with sudo; off by default, LAB_SUD
 
 const LAB_NO_SUDO_HELP: &str = "Run containerlab without sudo; this is the default";
 
-const LAB_SUDO_NO_PROMPT_HELP: &str = "With sudo, never ask for a password: fail instead";
+const LAB_SUDO_NO_PROMPT_HELP: &str =
+    "When sudo is on (--sudo or LAB_SUDO), fail instead of asking for a password";
 
 #[derive(Debug, Args)]
 pub struct SudoFlags {
@@ -2321,8 +2323,9 @@ fn load_nautobot(
         .map(|(_, created, updated)| created + updated)
         .sum();
     println!(
-        "Done: {objects} objects across {} types. Open Nautobot at {url}.",
-        load.rows.len()
+        "Done: {} across {}. Open Nautobot at {url}.",
+        counted(objects, "object"),
+        counted(load.rows.len(), "type")
     );
     Ok(())
 }
@@ -2333,7 +2336,7 @@ fn delete_nautobot(flags: NautobotFlags, located: &Located) -> Result<(), i32> {
         .delete(&mut |kind, count| println!("{kind}: {count} deleted"))
         .map_err(|error| nautobot_failed("delete-nautobot", error))?;
     let objects: usize = deleted.rows.iter().map(|(_, count)| count).sum();
-    println!("Done: {objects} objects deleted.");
+    println!("Done: {} deleted.", counted(objects, "object"));
     Ok(())
 }
 
@@ -2538,15 +2541,17 @@ impl<'a> LabRun<'a, Topology> {
     }
 
     fn refuse_sudo_prompt(&self) -> Result<(), i32> {
-        let fails = |program: &str, args: &[OsString]| {
-            self.runner
-                .output(program, args)
-                .is_ok_and(|output| output.code != 0)
+        let fails = |output: std::io::Result<nobs_core::runner::Output>| {
+            output.is_ok_and(|output| output.code != 0)
         };
         let containerlab = &self.topology.containerlab;
-        if fails(containerlab.program(), &containerlab.version_args())
-            && fails(Containerlab::SUDO, &os_strings(&["-n", "true"]))
-        {
+        if fails(
+            self.runner
+                .output(containerlab.program(), &containerlab.version_args()),
+        ) && fails(
+            self.runner
+                .output_quiet(Containerlab::SUDO, &os_strings(&["-n", "true"])),
+        ) {
             eprintln!(
                 "nobs: lab {}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again",
                 self.command
@@ -2692,8 +2697,9 @@ impl<'a, Topo> LabRun<'a, Topo> {
                     names.len()
                 };
                 println!(
-                    "lab {}: waiting for {count} services (up to {}s)",
+                    "lab {}: waiting for {} (up to {}s)",
                     self.command,
+                    counted(count, "service"),
                     limit.as_secs()
                 );
             }
@@ -2805,11 +2811,11 @@ impl<'a> LabRun<'a, Topology> {
             return Ok(());
         }
         for entry in &missing {
-            let nodes = if entry.nodes.len() == 1 {
-                format!("node {}", entry.nodes[0])
-            } else {
-                format!("nodes {}", entry.nodes.join(", "))
-            };
+            let nodes = format!(
+                "{} {}",
+                noun(entry.nodes.len(), "node"),
+                entry.nodes.join(", ")
+            );
             eprintln!(
                 "nobs: lab {}: image {} of {nodes} is not present",
                 self.command, entry.image
@@ -2896,11 +2902,14 @@ impl<'a> LabRun<'a, Topology> {
             return Ok(());
         }
         println!("lab {}: removing network {network}", self.command);
-        self.step(
-            Compose::PROGRAM,
-            &network_args(NetworkAction::Rm, Some(network), None, None),
-            "network rm",
-        )
+        let result = self
+            .runner
+            .output(
+                Compose::PROGRAM,
+                &network_args(NetworkAction::Rm, Some(network), None, None),
+            )
+            .map(|output| output.code);
+        self.finished("network rm", Compose::PROGRAM, result)
     }
 
     fn deploy(
@@ -3007,9 +3016,9 @@ impl<'a> LabRun<'a, Topology> {
             if !announced {
                 announced = true;
                 println!(
-                    "lab deploy: waiting for {} services and {} nodes (up to {}s)",
-                    services.len(),
-                    nodes.len(),
+                    "lab deploy: waiting for {} and {} (up to {}s)",
+                    counted(services.len(), "service"),
+                    counted(nodes.len(), "node"),
                     limit.as_secs()
                 );
             }
@@ -3064,7 +3073,7 @@ impl<'a> LabRun<'a, Topology> {
             Some(code) => Err(code),
             None => {
                 self.remove_network(network)?;
-                println!("lab purged: {} scenarios", scenarios.len());
+                println!("lab purged: {}", counted(scenarios.len(), "scenario"));
                 Ok(())
             }
         }
@@ -3369,8 +3378,9 @@ fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
         .map(|(_, created, updated)| u64::from(*created) + u64::from(*updated))
         .sum();
     println!(
-        "Done: {nodes} nodes across {} types. Open Infrahub at {}.",
-        seed.rows.len(),
+        "Done: {} across {}. Open Infrahub at {}.",
+        counted(nodes, "node"),
+        counted(seed.rows.len(), "type"),
         infrahub.address()
     );
     if devices_seeded(&seed) == 0 {

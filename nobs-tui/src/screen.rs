@@ -8,6 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+use nobs_core::count::counted;
 use nobs_core::locate::Located;
 use nobs_core::time;
 
@@ -31,8 +32,7 @@ const HELP_QUIT: [(&str, &str); 2] = [
     ("q", "quit; asks in a run"),
     ("Ctrl-C", "stop a run, or quit"),
 ];
-const HELP: [(&str, &str); 13] = [
-    ("1 2 3", "switch workbench"),
+const HELP: [(&str, &str); 12] = [
     ("Tab", "focus list/tabs"),
     ("j k ↑ ↓", "move"),
     ("[ ]", "other tab"),
@@ -46,8 +46,7 @@ const HELP: [(&str, &str); 13] = [
     ("?", "close"),
     ("Esc", "close/clear/back"),
 ];
-const HELP_DEVICES: [(&str, &str); 13] = [
-    ("1 2 3", "switch workbench"),
+const HELP_DEVICES: [(&str, &str); 12] = [
     ("Tab", "focus list/tabs"),
     ("j k ↑ ↓", "move"),
     ("[ ]", "other tab"),
@@ -61,8 +60,7 @@ const HELP_DEVICES: [(&str, &str); 13] = [
     ("o", "run pane"),
     ("?", "close"),
 ];
-const HELP_LAB: [(&str, &str); 7] = [
-    ("1 2 3", "switch workbench"),
+const HELP_LAB: [(&str, &str); 6] = [
     ("j k ↑ ↓", "move"),
     ("r", "refresh now"),
     ("o", "run pane"),
@@ -70,7 +68,17 @@ const HELP_LAB: [(&str, &str); 7] = [
     ("?", "close"),
     ("Esc", "close/fold"),
 ];
+const WORKBENCHES: [(Workbench, &str, &str); 3] = [
+    (Workbench::Devices, "1", "devices"),
+    (Workbench::Services, "2", "services"),
+    (Workbench::Lab, "3", "lab"),
+];
 const HELP_MORE: &str = "j/k more";
+const FOLD: &str = "Esc fold";
+const PANE_LEAST: u16 = 3;
+const NODES_LEAST: u16 = 4;
+const ALERTS_LEAST: u16 = 2;
+const BORDERS: u16 = 2;
 const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 
@@ -84,23 +92,23 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     header(frame, header_row, model);
     switcher(frame, switcher_row, model);
     if let Some((source, text, at)) = model.error() {
-        let line = format!(" {source}: {text}  {}s ago", seconds(model, at));
+        let age = format!("  {}s ago", seconds(model, at));
+        let room = usize::from(error_row.width).saturating_sub(1 + age.chars().count());
+        let line = format!(" {}{age}", cut_words(&format!("{source}: {text}"), room));
         frame.render_widget(
             Paragraph::new(line).style(Style::new().fg(Color::Red)),
             error_row,
         );
     }
     workbench(frame, body, model);
-    if !model.chooser() {
-        if model.run_pane() {
-            run_pane(frame, bottom, model);
-        } else {
-            run_line(frame, bottom, model);
-        }
+    match bottom.height {
+        0 => {}
+        1 => run_line(frame, bottom, model),
+        _ => run_pane(frame, bottom, model),
     }
     frame.render_widget(Paragraph::new(keys.join("\n")), key_row);
     if model.help() {
-        help(frame, body, model);
+        help(frame, body.union(bottom), model);
     }
 }
 
@@ -115,13 +123,20 @@ fn regions(model: &Model, area: Rect) -> (Vec<String>, [Rect; 6]) {
         Constraint::Length(key_height),
     ])
     .areas(area);
+    let least = workbench_least(model);
+    let run_line = middle.height.saturating_sub(least).min(1);
     let bottom_height = if model.chooser() {
         0
     } else if model.run_pane() {
         let width = usize::from(middle.width.saturating_sub(2));
-        pane_height(model.run(), width, middle.height, workbench_least(model))
+        let pane = pane_height(model.run(), width, middle.height, least);
+        if pane < PANE_LEAST {
+            run_line
+        } else {
+            pane
+        }
     } else {
-        1
+        run_line
     };
     let [body, bottom] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(bottom_height)]).areas(middle);
@@ -138,25 +153,28 @@ fn pane_height(run: Option<&Run>, width: usize, middle: u16, least: u16) -> u16 
         .and_then(|run| run.lines.last())
         .map_or(0, |line| wrapped(line, width).len());
     let needed = rows(command + last);
-    let essential = rows(command.min(1) + last);
+    let essential = rows(last);
     let third = middle.saturating_sub(1) / 3 + 1;
     third
         .max(needed.min(middle / 2))
-        .max(essential.min(middle.saturating_sub(least)))
+        .max(essential)
+        .min(middle.saturating_sub(least))
 }
 
 fn workbench_least(model: &Model) -> u16 {
-    let row = match model.workbench() {
-        Workbench::Devices => return 7,
-        Workbench::Services => model
-            .visible_stacks()
-            .iter()
-            .position(|index| *index == model.selected_stack()),
-        Workbench::Lab => model
-            .selected_chapter()
-            .and_then(|chapter| model.chapters().iter().position(|index| *index == chapter)),
+    let list = match model.workbench() {
+        Workbench::Devices => BORDERS + 3 + ALERTS_LEAST,
+        Workbench::Services => BORDERS + 1,
+        Workbench::Lab => NODES_LEAST + BORDERS + 1,
     };
-    u16::try_from(row.unwrap_or(0) + 3).unwrap_or(u16::MAX)
+    let tab_rows = match (model.workbench(), model.tab()) {
+        (Workbench::Lab, _) => 1,
+        (Workbench::Services, Tab::Overview) | (_, Tab::Timeline) => 2,
+        (_, Tab::Overview | Tab::Logs) => 1,
+        (_, Tab::Interfaces) => 3,
+        (_, Tab::Sonda) => 6,
+    };
+    list.max(BORDERS + 1 + tab_rows)
 }
 
 fn too_small(frame: &mut Frame, area: Rect) {
@@ -202,14 +220,61 @@ fn fit(text: &str, width: usize) -> String {
 }
 
 fn wrapped(text: &str, width: usize) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return vec![String::new()];
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    for (index, word) in text.split(' ').enumerate() {
+        let gap = if index == 0 { "" } else { " " };
+        let used = row.chars().count() + gap.len();
+        let length = word.chars().count();
+        if used + length <= width {
+            row.push_str(gap);
+            row.push_str(word);
+            continue;
+        }
+        let mut letters: Vec<char> = word.chars().collect();
+        if length > width && used < width {
+            row.push_str(gap);
+            row.extend(letters.drain(..width - used));
+        }
+        if !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+        }
+        let mut pieces: Vec<String> = letters.chunks(width).map(String::from_iter).collect();
+        row = pieces.pop().unwrap_or_default();
+        rows.extend(pieces);
     }
-    chars
-        .chunks(width.max(1))
-        .map(|row| row.iter().collect())
-        .collect()
+    rows.push(row);
+    rows
+}
+
+pub(crate) fn cut_words(text: &str, width: usize) -> String {
+    let words: Vec<&str> = text.split(' ').collect();
+    cut_whole(&words, " ", width)
+}
+
+fn cut_whole(pieces: &[&str], gap: &str, width: usize) -> String {
+    let text = pieces.join(gap);
+    if text.chars().count() <= width {
+        return text;
+    }
+    let mut kept = String::new();
+    for piece in pieces {
+        let longer = if kept.is_empty() {
+            piece.to_string()
+        } else {
+            format!("{kept}{gap}{piece}")
+        };
+        if longer.chars().count() + " …".chars().count() > width {
+            break;
+        }
+        kept = longer;
+    }
+    if kept.is_empty() {
+        "…".chars().take(width).collect()
+    } else {
+        format!("{kept} …")
+    }
 }
 
 fn highlighted(line: Line<'static>, width: u16) -> Line<'static> {
@@ -220,11 +285,7 @@ fn highlighted(line: Line<'static>, width: u16) -> Line<'static> {
 }
 
 fn header(frame: &mut Frame, area: Rect, model: &Model) {
-    let mut text = format!(" {}", model.header());
-    if area.width >= WIDE && !model.chooser() {
-        text = format!("{text}  {} services", model.services().len());
-    }
-    frame.render_widget(Paragraph::new(text), area);
+    frame.render_widget(Paragraph::new(format!(" {}", model.header())), area);
     right(frame, area, Line::from(model.clock()), 1);
 }
 
@@ -234,17 +295,12 @@ fn switcher(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     }
     let mut spans = vec![Span::raw(" ")];
-    let entries = [
-        (Workbench::Devices, "1 devices"),
-        (Workbench::Services, "2 services"),
-        (Workbench::Lab, "3 lab"),
-    ];
-    let shown = if model.book_lab() { 3 } else { 2 };
-    for (index, (workbench, name)) in entries.into_iter().take(shown).enumerate() {
+    for (index, (workbench, key, name)) in workbenches(model).iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw("  "));
         }
-        spans.push(if workbench == model.workbench() {
+        let name = format!("{key} {name}");
+        spans.push(if *workbench == model.workbench() {
             Span::styled(format!("[{name}]"), REVERSE)
         } else {
             Span::raw(name)
@@ -252,6 +308,11 @@ fn switcher(frame: &mut Frame, area: Rect, model: &Model) {
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
     right(frame, area, Line::from("? keys  q quit"), 1);
+}
+
+fn workbenches(model: &Model) -> &'static [(Workbench, &'static str, &'static str)] {
+    let shown = if model.book_lab() { 3 } else { 2 };
+    &WORKBENCHES[..shown]
 }
 
 fn workbench(frame: &mut Frame, area: Rect, model: &Model) {
@@ -330,8 +391,13 @@ fn stack_list(
         .max()
         .unwrap_or(0);
     let name_width = longest.min(usize::from(inner.width).saturating_sub(11));
+    let at = indices
+        .iter()
+        .position(|index| Some(*index) == selected)
+        .unwrap_or(0);
     let lines: Vec<Line> = indices
         .iter()
+        .skip(first_row(at, usize::from(inner.height)))
         .map(|&index| {
             let state = model.stack_state(index);
             let selected = Some(index) == selected;
@@ -363,7 +429,8 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         None => "no answer yet".to_string(),
     };
     let title = if wide {
-        format!(" {name}  {} services  {age} ", model.services().len())
+        let count = counted(model.services().len(), "service");
+        format!(" {name}  {count}  {age} ")
     } else {
         format!(" {name}  {age} ")
     };
@@ -552,7 +619,7 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let block = Block::bordered().title_top(format!(" devices {} ", visible.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let alerts_height = (inner.height / 4).max(2);
+    let alerts_height = (inner.height / 4).max(ALERTS_LEAST);
     let [list, separator, alerts] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(1),
@@ -774,9 +841,10 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
     frame.render_widget(Paragraph::new(lines), table);
     let differs = interfaces.iter().filter(|row| row.differs).count();
-    let summary = format!("{} interfaces  {differs} differs", interfaces.len());
+    let count = counted(interfaces.len(), "interface");
+    let differs = format!("{differs} differs");
     frame.render_widget(
-        Paragraph::new(fitted(vec![(summary, Style::new())], width)),
+        Paragraph::new(cut_whole(&[&count, &differs], "  ", width)),
         footer,
     );
 }
@@ -787,29 +855,44 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
     };
     let width = usize::from(area.width);
     let plain = Style::new();
-    let line = |text: String| fitted(vec![(text, plain)], width);
+    let facts = |pieces: &[String], gap: &str| {
+        let pieces: Vec<&str> = pieces.iter().map(String::as_str).collect();
+        Line::from(cut_whole(&pieces, gap, width))
+    };
     let states = model.session_states();
     let established = states.iter().filter(|(_, state)| state == "up").count();
     let seen = model.devices_at().map_or("—".to_string(), |at| {
         format!("{}s ago", seconds(model, at))
     });
     let mut lines = vec![
-        line(format!(
-            "kind {}   site {}   role {}",
-            devices::kind_short(device.kind.as_deref()),
-            device.site.as_deref().unwrap_or("—"),
-            device.role.as_deref().unwrap_or("—")
-        )),
-        line(format!(
-            "maintenance {}   sot {}   seen {seen}",
-            if device.maintenance { "yes" } else { "no" },
-            model.sot()
-        )),
-        line(format!(
-            "bgp sessions  {} intended  {established} established  {} other",
-            states.len(),
-            states.len() - established
-        )),
+        facts(
+            &[
+                format!("kind {}", devices::kind_short(device.kind.as_deref())),
+                format!("site {}", device.site.as_deref().unwrap_or("—")),
+                format!("role {}", device.role.as_deref().unwrap_or("—")),
+            ],
+            "   ",
+        ),
+        facts(
+            &[
+                format!(
+                    "maintenance {}",
+                    if device.maintenance { "yes" } else { "no" }
+                ),
+                format!("sot {}", model.sot()),
+                format!("seen {seen}"),
+            ],
+            "   ",
+        ),
+        facts(
+            &[
+                "bgp sessions".to_string(),
+                format!("{} intended", states.len()),
+                format!("{established} established"),
+                format!("{} other", states.len() - established),
+            ],
+            "  ",
+        ),
     ];
     for (session, state) in &states {
         let mut parts = vec![
@@ -842,16 +925,23 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
     let latest = model.alerts().iter().find(|alert| {
         alert.labels.get("device") == Some(&device.name) && alert.state_word() == "firing"
     });
-    lines.push(line(match latest {
-        _ if !model.alerts_ok() => "alerts   ?".to_string(),
-        Some(alert) => format!(
-            "alerts   {}  {}  {}",
-            alert.labels.get("alertname").map_or("—", String::as_str),
-            alert.labels.get("severity").map_or("—", String::as_str),
-            time::age(&alert.starts_at, wall_seconds(model))
+    let label = |name: &str| format!("alerts   {name}");
+    lines.push(match latest {
+        _ if !model.alerts_ok() => facts(&[label("?")], ""),
+        Some(alert) => facts(
+            &[
+                label(alert.labels.get("alertname").map_or("—", String::as_str)),
+                alert
+                    .labels
+                    .get("severity")
+                    .map_or("—", String::as_str)
+                    .to_string(),
+                time::age(&alert.starts_at, wall_seconds(model)),
+            ],
+            "  ",
         ),
-        None => "alerts   none".to_string(),
-    }));
+        None => facts(&[label("none")], ""),
+    });
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -868,17 +958,17 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
     let entries = model.timeline();
     let [counts, rows] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     let [alerts, flows, rcas, logs] = devices::counts(&entries);
-    let summary = format!(
-        "last {}   alerts {alerts}  flows {flows}  rca {rcas}  logs {logs}",
-        devices::window_text(model.window())
+    let last = format!("last {}", devices::window_text(model.window()));
+    let alerts = format!("   alerts {alerts}");
+    let flows = format!("  flows {flows}");
+    let rcas = format!("  rca {rcas}");
+    let logs = format!("  logs {logs}");
+    let summary = cut_whole(
+        &[&last, &alerts, &flows, &rcas, &logs],
+        "",
+        usize::from(area.width),
     );
-    frame.render_widget(
-        Paragraph::new(fitted(
-            vec![(summary, Style::new())],
-            usize::from(area.width),
-        )),
-        counts,
-    );
+    frame.render_widget(Paragraph::new(summary), counts);
     let on_tabs = model.focus() == Focus::Tabs;
     let selected = model.timeline_row();
     let start = first_row(selected, usize::from(rows.height));
@@ -1041,11 +1131,7 @@ fn run_title(model: &Model, before_hint: usize) -> Vec<Span<'static>> {
         (_, None) => format!("{end} {}s", seconds(model, run.started)),
     };
     let room = before_hint.saturating_sub(" run  ".len() + "  ".len() + state.chars().count() + 1);
-    let words = if run.words.chars().count() > room {
-        fit(&run.words, room)
-    } else {
-        run.words.clone()
-    };
+    let words = cut_words(&run.words, room);
     vec![
         Span::raw(format!(" run  {words}  ")),
         Span::styled(state, style),
@@ -1053,7 +1139,7 @@ fn run_title(model: &Model, before_hint: usize) -> Vec<Span<'static>> {
 }
 
 fn run_line(frame: &mut Frame, area: Rect, model: &Model) {
-    let hint = Line::from("o open");
+    let hint = Line::from(if model.run_pane() { FOLD } else { "o open" });
     let before_hint = usize::from(area.width).saturating_sub(hint.width() + 1);
     frame.render_widget(
         Paragraph::new(Line::from(run_title(model, before_hint))),
@@ -1063,7 +1149,7 @@ fn run_line(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
-    let hint = Line::from(" Esc fold ").right_aligned();
+    let hint = Line::from(format!(" {FOLD} ")).right_aligned();
     let before_hint = usize::from(area.width).saturating_sub(hint.width() + 2);
     let mut title = run_title(model, before_hint);
     title.push(Span::raw(" "));
@@ -1080,18 +1166,17 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn run_rows(run: &Run, width: usize, height: usize) -> Vec<Line<'static>> {
-    let mut command = command_rows(run, width);
-    let output: usize = run
+    let command = command_rows(run, width);
+    let last = run
         .lines
-        .iter()
-        .map(|line| wrapped(line, width).len())
-        .sum();
-    let keep = height.saturating_sub(output).clamp(1, command.len());
-    if keep < command.len() {
-        let rest = command.split_off(keep - 1).concat();
-        command.push(fit(&rest, width));
-    }
-    let mut lines: Vec<Line> = command
+        .last()
+        .map_or(0, |line| wrapped(line, width).len());
+    let shown = if command.len() + last <= height {
+        command
+    } else {
+        Vec::new()
+    };
+    let mut lines: Vec<Line> = shown
         .into_iter()
         .map(|row| Line::styled(row, DIM))
         .collect();
@@ -1126,8 +1211,11 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
         Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area);
     let chapters = model.chapters();
     let chapters_height = u16::try_from(chapters.len() + 2).unwrap_or(u16::MAX);
-    let [top, bottom] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(chapters_height)]).areas(left);
+    let [top, bottom] = Layout::vertical([
+        Constraint::Min(NODES_LEAST),
+        Constraint::Length(chapters_height),
+    ])
+    .areas(left);
     node_list(frame, top, model, wide);
     let selected = model.selected_chapter();
     stack_list(
@@ -1213,18 +1301,20 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         StackState::Down { listed } => format!("0 of {listed} running"),
         StackState::Unknown | StackState::Failed => "?".to_string(),
     };
+    let width = usize::from(content.width);
+    let row = |label: &str, value: String| format!(" {label:<8}  {value}");
     let last = model
         .run()
         .filter(|run| run.target == Target::Chapter(chapter));
     let (last, end) = match last {
         Some(run) => {
             let (end, style) = run_end(run);
-            (format!("{}  ", run.words), (end, style))
+            let used = row("last", String::new()).chars().count() + "  ".len();
+            let room = width.saturating_sub(used + end.chars().count());
+            (format!("{}  ", cut_words(&run.words, room)), (end, style))
         }
         None => ("—".to_string(), (String::new(), Style::new())),
     };
-    let width = usize::from(content.width);
-    let row = |label: &str, value: String| format!(" {label:<8}  {value}");
     let plain = |label: &str, value: String| fitted(vec![(row(label, value), Style::new())], width);
     let lines = vec![
         plain("topology", topology),
@@ -1254,16 +1344,13 @@ fn action_hints(model: &Model) -> Vec<String> {
 
 pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
     if let Some(text) = model.typed_filter() {
-        return vec![fit(
-            &format!(" filter: {text}  Enter keep  Esc clear"),
-            width,
-        )];
+        return filter_line(text, width);
     }
     if let Some(question) = model.question() {
         return wrapped(&format!(" {}", question.text()), width);
     }
     if let Some(notice) = model.notice() {
-        return vec![fit(&format!(" {notice}"), width)];
+        return wrapped(&format!(" {notice}"), width);
     }
     vec![whole_hints(&key_hints(model), width)]
 }
@@ -1327,33 +1414,57 @@ fn log_hints(paused: bool) -> Vec<&'static str> {
     ]
 }
 
-fn whole_hints(hints: &[String], width: usize) -> String {
+pub(crate) fn whole_hints(hints: &[String], width: usize) -> String {
     let mut line = String::new();
     for hint in hints {
-        let gap = if line.is_empty() { " " } else { "  " };
-        if line.chars().count() + gap.len() + hint.chars().count() > width {
+        if !push_whole(&mut line, hint, width) {
             break;
         }
-        line.push_str(gap);
-        line.push_str(hint);
     }
     line
 }
 
-pub(crate) fn help_entries(workbench: Workbench) -> Vec<(String, &'static str)> {
+fn push_whole(line: &mut String, hint: &str, width: usize) -> bool {
+    let gap = if line.is_empty() { " " } else { "  " };
+    if line.chars().count() + gap.len() + hint.chars().count() > width {
+        return false;
+    }
+    line.push_str(gap);
+    line.push_str(hint);
+    true
+}
+
+fn filter_line(text: &str, width: usize) -> Vec<String> {
+    let mut rows = wrapped(&format!(" filter: {text}"), width);
+    for hint in ["Enter keep", "Esc clear"] {
+        let fits = rows
+            .last_mut()
+            .is_some_and(|row| push_whole(row, hint, width));
+        if !fits {
+            let mut row = String::new();
+            push_whole(&mut row, hint, width);
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
+    let workbench = model.workbench();
     let fixed: &[(&str, &str)] = match workbench {
         Workbench::Devices => &HELP_DEVICES,
         Workbench::Services => &HELP,
         Workbench::Lab => &HELP_LAB,
     };
+    let switch: Vec<&str> = workbenches(model).iter().map(|(_, key, _)| *key).collect();
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench)
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
-    fixed
-        .iter()
-        .map(owned)
+    [(switch.join(" "), "switch workbench")]
+        .into_iter()
+        .chain(fixed.iter().map(owned))
         .chain(actions)
         .chain(HELP_QUIT.iter().map(owned))
         .collect()
@@ -1372,9 +1483,8 @@ struct HelpLayout {
 }
 
 fn help_layout(model: &Model, body: Rect) -> HelpLayout {
-    let workbench = model.workbench();
-    let entries = help_entries(workbench);
-    let note = match workbench {
+    let entries = help_entries(model);
+    let note = match model.workbench() {
         Workbench::Devices => Some(HELP_DEVICES_NOTE),
         Workbench::Services => Some(HELP_SONDA),
         Workbench::Lab => None,
@@ -1418,12 +1528,12 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
 }
 
 pub(crate) fn help_overflow(model: &Model, area: Rect) -> usize {
-    let (_, [_, _, _, body, _, _]) = regions(model, area);
-    let layout = help_layout(model, body);
+    let (_, [_, _, _, body, bottom, _]) = regions(model, area);
+    let layout = help_layout(model, body.union(bottom));
     usize::from(layout.rows - layout.room)
 }
 
-fn help(frame: &mut Frame, body: Rect, model: &Model) {
+fn help(frame: &mut Frame, area: Rect, model: &Model) {
     let HelpLayout {
         entries,
         note,
@@ -1434,8 +1544,8 @@ fn help(frame: &mut Frame, body: Rect, model: &Model) {
         note_rows,
         note_row,
         fits,
-    } = help_layout(model, body);
-    frame.render_widget(Clear, body);
+    } = help_layout(model, area);
+    frame.render_widget(Clear, area);
     let name = match model.workbench() {
         Workbench::Devices => "devices",
         Workbench::Services => "services",
@@ -1489,12 +1599,625 @@ fn help_column(entries: &[(String, &str)]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use nobs_core::locate::locate;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
     use super::*;
+    use crate::book::NodeRow;
+    use crate::shell::tests::{
+        alert, devices_model, fixture, row, sonda_rows, stack, start, workshop_located,
+    };
+    use crate::shell::{handle, stacks, Stack, Start, Update};
 
     const REFUSAL: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
+    const LAB_DIR: &str = "/home/me/My Labs/network observability/the book lab/second edition/chapter files/copy for the screen";
+    const LONG_ERROR: &str = "cannot reach the Docker daemon at unix:///var/run/docker.sock while it asks for the newest lines of loki";
+    const SIZES: [(u16, u16); 3] = [(60, 15), (80, 24), (100, 30)];
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Keys {
+        Hints,
+        Filter,
+        Question,
+    }
+
+    struct Bench {
+        build: fn() -> Model,
+        selected: &'static str,
+        run: char,
+        question: char,
+        filter: Option<&'static str>,
+        detail: &'static str,
+        tabs: &'static [(Tab, &'static str)],
+        other: Option<(&'static str, &'static str)>,
+        fill: fn(&mut Model),
+    }
+
+    struct Walked {
+        label: String,
+        selected: &'static str,
+        shown: Vec<(&'static str, &'static str)>,
+        model: Model,
+        width: u16,
+        height: u16,
+        rows: Vec<String>,
+    }
+
+    fn press(model: &mut Model, key: char) {
+        handle(model, KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+    }
+
+    fn devices_bench() -> Model {
+        let mut lab = workshop_located("infrahub");
+        lab.dir = PathBuf::from(LAB_DIR);
+        let mut model = devices_model(lab);
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![nobs_core::loki::Line {
+                nanoseconds: 0,
+                text: "link flap".to_string(),
+            }]),
+        ));
+        model
+    }
+
+    fn services_bench() -> Model {
+        let stacks = (1..=12)
+            .map(|index| Stack {
+                path: PathBuf::from(LAB_DIR),
+                ..stack(&format!("stack-{index:02}"), &[])
+            })
+            .collect();
+        let mut model = Model::new(start(stacks));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        for _ in 1..12 {
+            press(&mut model, 'j');
+        }
+        model.apply(Update::Services(11, Ok(vec![row("grafana", "running")])));
+        sonda_rows(&mut model);
+        model
+    }
+
+    fn services_logs(model: &mut Model) {
+        let lines = vec!["2026-11-09T13:53:32Z ready to serve".to_string()];
+        model.apply(Update::Logs(11, "grafana".to_string(), Ok(lines)));
+    }
+
+    fn open_tab(model: &mut Model, tab: Tab) {
+        let focus = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        if model.tab() == tab {
+            return;
+        }
+        handle(model, focus);
+        while model.tab() != tab {
+            press(model, ']');
+        }
+        handle(model, focus);
+    }
+
+    fn lab_bench(count: usize) -> Model {
+        let dir = fixture("book-lab");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        let first = stacks(Some(&located), Vec::new()).unwrap().remove(0);
+        let chapters = (1..=count)
+            .map(|index| Stack {
+                name: format!("ch{index}"),
+                path: PathBuf::from(LAB_DIR),
+                ..first.clone()
+            })
+            .collect();
+        let mut model = Model::new(Start {
+            lab: Some(located),
+            home: Workbench::Lab,
+            chooser: false,
+            ..start(chapters)
+        });
+        for _ in 1..count {
+            press(&mut model, 'j');
+        }
+        model.apply(Update::Nodes(Ok(vec![NodeRow {
+            name: "nobs-t-srl1".to_string(),
+            kind: "nokia_srlinux".to_string(),
+            state: Some("running".to_string()),
+        }])));
+        model
+    }
+
+    fn benches() -> [Bench; 4] {
+        let lab = |build: fn() -> Model, selected, detail| Bench {
+            build,
+            selected,
+            run: 'X',
+            question: 'U',
+            filter: None,
+            detail,
+            tabs: &[(Tab::Overview, "topology")],
+            other: Some((" nodes ", "nobs-t-srl1")),
+            fill: |_| {},
+        };
+        [
+            Bench {
+                build: devices_bench,
+                selected: ">  srl1",
+                run: 'm',
+                question: 'm',
+                filter: Some("srl"),
+                detail: " srl1 ",
+                tabs: &[
+                    (Tab::Overview, "kind "),
+                    (Tab::Interfaces, "ethernet-1/1"),
+                    (Tab::Timeline, "link flap"),
+                    (Tab::Logs, "link flap"),
+                ],
+                other: Some((" devices ", "BgpSessionNotUp")),
+                fill: |_| {},
+            },
+            Bench {
+                build: services_bench,
+                selected: ">stack-12",
+                run: 'u',
+                question: 'p',
+                filter: Some("stack"),
+                detail: " stack-12 ",
+                tabs: &[
+                    (Tab::Overview, "grafana"),
+                    (Tab::Logs, "ready to serve"),
+                    (Tab::Sonda, "cpu"),
+                ],
+                other: None,
+                fill: services_logs,
+            },
+            lab(|| lab_bench(2), ">ch2", " ch2 "),
+            lab(|| lab_bench(10), ">ch10", " ch10 "),
+        ]
+    }
+
+    fn staged(bench: &Bench, tab: Tab, error: bool, keys: Keys, pane: bool) -> Model {
+        let mut model = (bench.build)();
+        open_tab(&mut model, tab);
+        (bench.fill)(&mut model);
+        press(&mut model, bench.run);
+        press(&mut model, 'y');
+        for line in ["pulling", "created", REFUSAL] {
+            model.apply(Update::ActionLine(line.to_string()));
+        }
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        if !pane {
+            press(&mut model, 'o');
+        }
+        if error {
+            model.apply(Update::Logs(
+                0,
+                "loki".to_string(),
+                Err(LONG_ERROR.to_string()),
+            ));
+        }
+        match (keys, bench.filter) {
+            (Keys::Hints, _) => {}
+            (Keys::Filter, Some(filter)) => {
+                press(&mut model, '/');
+                filter.chars().for_each(|typed| press(&mut model, typed));
+            }
+            (Keys::Filter, None) => unreachable!(),
+            (Keys::Question, _) => press(&mut model, bench.question),
+        }
+        model
+    }
+
+    fn drawn(model: &mut Model, width: u16, height: u16) -> Vec<String> {
+        model.tick(model.now(), UNIX_EPOCH, (width, height));
+        painted(width, height, |frame| draw(frame, model))
+    }
+
+    fn painted(width: u16, height: u16, paint: impl FnOnce(&mut Frame)) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(paint).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    fn walk() -> Vec<Walked> {
+        let mut walked = Vec::new();
+        for bench in benches() {
+            for &(tab, row) in bench.tabs {
+                for (width, height) in SIZES {
+                    for error in [false, true] {
+                        for keys in [Keys::Hints, Keys::Filter, Keys::Question] {
+                            if keys == Keys::Filter && bench.filter.is_none() {
+                                continue;
+                            }
+                            for pane in [false, true] {
+                                let mut model = staged(&bench, tab, error, keys, pane);
+                                let rows = drawn(&mut model, width, height);
+                                walked.push(Walked {
+                                    label: format!(
+                                        "{} {tab:?} {width}x{height} error {error} {keys:?} pane {pane}",
+                                        bench.selected
+                                    ),
+                                    selected: bench.selected,
+                                    shown: [(bench.detail, row)].into_iter().chain(bench.other).collect(),
+                                    model,
+                                    width,
+                                    height,
+                                    rows,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        walked
+    }
+
+    fn boxed(rows: &[String], title: &str) -> Vec<String> {
+        let grid: Vec<Vec<char>> = rows.iter().map(|row| row.chars().collect()).collect();
+        let top: Vec<char> = format!("┌{title}").chars().collect();
+        for (y, row) in grid.iter().enumerate() {
+            let Some(left) = row.windows(top.len()).position(|seen| seen == top) else {
+                continue;
+            };
+            let right = row[left..]
+                .iter()
+                .position(|cell| *cell == '┐')
+                .map_or(row.len(), |at| left + at);
+            return grid[y + 1..]
+                .iter()
+                .take_while(|row| row.get(left) != Some(&'└'))
+                .map(|row| {
+                    let end = right.min(row.len());
+                    row.get(left + 1..end).unwrap_or_default().iter().collect()
+                })
+                .collect();
+        }
+        Vec::new()
+    }
+
+    fn gave_way(model: &Model, width: u16, height: u16) -> bool {
+        let (_, [_, _, _, body, _, _]) = regions(model, Rect::new(0, 0, width, height));
+        body.height < workbench_least(model)
+    }
+
+    fn pane_inside(rows: &[String]) -> Option<Vec<String>> {
+        let top = rows.iter().position(|row| row.starts_with("┌ run"))?;
+        let inside = rows[top + 1..]
+            .iter()
+            .take_while(|row| !row.starts_with('└'))
+            .map(|row| {
+                let row = row.strip_prefix('│').unwrap_or(row);
+                row.strip_suffix('│').unwrap_or(row).trim_end().to_string()
+            })
+            .collect();
+        Some(inside)
+    }
+
+    fn cut_at_a_word(shown: &str, full: &str) -> bool {
+        shown == full
+            || shown
+                .strip_suffix(" …")
+                .is_some_and(|kept| full.starts_with(&format!("{kept} ")))
+    }
 
     #[test]
-    fn a_long_command_line_gives_its_rows_to_the_output_down_to_one() {
+    fn the_walk_runs_a_three_row_command_and_a_three_row_last_line_at_60_columns() {
+        for bench in benches() {
+            let model = staged(&bench, bench.tabs[0].0, false, Keys::Hints, true);
+            let run = model.run().unwrap();
+
+            assert_eq!(command_rows(run, 58).len(), 3, "{}", bench.selected);
+            assert_eq!(wrapped(REFUSAL, 58).len(), 3, "{}", bench.selected);
+        }
+    }
+
+    #[test]
+    fn every_frame_of_the_walk_shows_the_selected_row_a_row_of_every_other_list_and_the_key_line_or_gives_way_to_a_question(
+    ) {
+        let mut given_way = Vec::new();
+        for walked in walk() {
+            let Walked {
+                label,
+                selected,
+                shown,
+                model,
+                width,
+                height,
+                rows,
+            } = &walked;
+            let screen = rows.join("\n");
+            let keys: Vec<String> = key_line(model, usize::from(*width))
+                .iter()
+                .map(|row| row.trim_end().to_string())
+                .collect();
+
+            assert_eq!(
+                rows[rows.len() - keys.len()..],
+                keys[..],
+                "{label}\n{screen}"
+            );
+            if gave_way(model, *width, *height) {
+                assert!(model.question().is_some(), "{label}\n{screen}");
+                assert!(model.error().is_some(), "{label}\n{screen}");
+                given_way.push(label.clone());
+                continue;
+            }
+            assert!(
+                rows.iter().any(|row| row.contains(selected)),
+                "{label}\n{screen}"
+            );
+            for (title, row) in shown {
+                let inside = boxed(rows, title);
+                assert!(
+                    inside.iter().any(|line| line.contains(row)),
+                    "{label}: {row} in{title}\n{screen}"
+                );
+            }
+        }
+        assert_eq!(
+            given_way,
+            [
+                ">stack-12 Sonda 60x15 error true Question pane false",
+                ">stack-12 Sonda 60x15 error true Question pane true",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_of_several_facts_shows_the_facts_that_fit_whole_then_an_ellipsis_at_60_columns() {
+        let mut wide = Vec::new();
+        let mut narrow = Vec::new();
+        for tab in [Tab::Overview, Tab::Timeline] {
+            let mut model = devices_bench();
+            open_tab(&mut model, tab);
+            wide.extend(boxed(&drawn(&mut model, 100, 30), " srl1 "));
+            narrow.extend(boxed(&drawn(&mut model, 60, 15), " srl1 "));
+        }
+        let mut cut = 0;
+        for start in ["kind ", "maintenance ", "bgp sessions", "last "] {
+            let find = |rows: &[String]| {
+                let row = rows.iter().find(|row| row.starts_with(start)).unwrap();
+                row.trim_end().to_string()
+            };
+            let (whole, shown) = (find(&wide), find(&narrow));
+            if shown == whole {
+                continue;
+            }
+            cut += 1;
+            let kept = shown.strip_suffix(" …").unwrap_or(&shown);
+            assert!(
+                whole.starts_with(&format!("{kept}  ")),
+                "{shown:?} is not whole facts of {whole:?}"
+            );
+        }
+        assert!(cut > 0);
+    }
+
+    #[test]
+    fn every_question_of_the_walk_shows_whole_with_y_n_in_one_row() {
+        for Walked {
+            label,
+            model,
+            width,
+            ..
+        } in walk()
+        {
+            let Some(question) = model.question() else {
+                continue;
+            };
+            let rows = key_line(&model, usize::from(width));
+            let joined: Vec<&str> = rows.iter().map(|row| row.trim()).collect();
+
+            assert_eq!(joined.join(" "), question.text(), "{label}");
+            assert!(rows.iter().any(|row| row.contains("y/n")), "{label}");
+        }
+    }
+
+    #[test]
+    fn the_run_pane_shows_the_whole_command_above_the_newest_output_or_only_the_newest_output() {
+        for Walked {
+            label,
+            model,
+            width,
+            height,
+            rows,
+            ..
+        } in walk()
+        {
+            let large = width >= 80 && height >= 24;
+            let screen = rows.join("\n");
+            let Some(inside) = pane_inside(&rows) else {
+                assert!(!(large && model.run_pane()), "{label}\n{screen}");
+                continue;
+            };
+            let run = model.run().unwrap();
+            let inner = usize::from(width) - 2;
+            let command = format!("$ nobs {}", run.command);
+            let command_rows = wrapped(&command, inner).len();
+            let last = wrapped(REFUSAL, inner).len();
+            let both_fit = command_rows + last <= inside.len();
+            let output: Vec<String> = run
+                .lines
+                .iter()
+                .flat_map(|line| wrapped(line, inner))
+                .collect();
+
+            assert!(both_fit || !large, "{label}\n{screen}");
+            if both_fit {
+                assert_eq!(
+                    inside[..command_rows].join(" "),
+                    command,
+                    "{label}\n{screen}"
+                );
+            } else {
+                assert_eq!(
+                    inside[..],
+                    output[output.len() - inside.len()..],
+                    "{label}\n{screen}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_run_title_the_error_row_and_the_last_row_end_at_a_whole_word() {
+        for Walked {
+            label, model, rows, ..
+        } in walk()
+        {
+            let screen = rows.join("\n");
+            let words = &model.run().unwrap().words;
+            let shown_after = |anchor: &str| {
+                rows.iter()
+                    .find_map(|row| row.split_once(anchor))
+                    .and_then(|(_, rest)| rest.split("  ").next())
+            };
+            if let Some(title) = shown_after("run  ") {
+                assert!(cut_at_a_word(title, words), "{label}\n{screen}");
+            }
+            if let Some(last) = shown_after("│ last      ") {
+                assert!(cut_at_a_word(last, words), "{label}\n{screen}");
+            }
+            if let Some((source, text, _)) = model.error() {
+                let (shown, age) = rows[2].rsplit_once("  ").unwrap();
+                let seconds = age.strip_suffix("s ago").unwrap_or(age);
+                assert!(seconds.parse::<u64>().is_ok(), "{label}\n{screen}");
+                let full = format!("{source}: {text}");
+                assert!(
+                    cut_at_a_word(shown.trim_start(), &full),
+                    "{label}\n{screen}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_switcher_row_ends_with_its_keys_and_quit_hint_at_every_width() {
+        for Walked { label, rows, .. } in walk() {
+            assert!(rows[1].ends_with("? keys  q quit"), "{label}\n{}", rows[1]);
+        }
+    }
+
+    #[test]
+    fn the_services_title_counts_one_service_in_the_singular_and_the_header_holds_no_count() {
+        for (count, title) in [
+            (0, " a  0 services  "),
+            (1, " a  1 service  "),
+            (2, " a  2 services  "),
+        ] {
+            let mut model = Model::new(start(vec![stack("a", &[])]));
+            handle(
+                &mut model,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            let rows = (0..count)
+                .map(|index| row(&format!("s{index}"), "running"))
+                .collect();
+            model.apply(Update::Services(0, Ok(rows)));
+            for (width, height) in SIZES {
+                let screen = drawn(&mut model, width, height);
+
+                assert!(!screen[0].contains("services"), "{}", screen.join("\n"));
+                if width >= WIDE {
+                    assert!(screen[2].contains(title), "{}", screen.join("\n"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_help_names_the_lab_switch_key_only_in_the_book_lab() {
+        let mut book_services = lab_bench(2);
+        press(&mut book_services, '2');
+        for (model, switch) in [
+            (devices_bench(), "1 2"),
+            (services_bench(), "1 2"),
+            (lab_bench(2), "1 2 3"),
+            (book_services, "1 2 3"),
+        ] {
+            let entries = help_entries(&model);
+
+            assert_eq!(
+                entries[0],
+                (switch.to_string(), "switch workbench"),
+                "{:?}",
+                model.workbench()
+            );
+        }
+    }
+
+    #[test]
+    fn the_run_line_hint_says_what_o_does_now() {
+        let mut folded_open = 0;
+        for Walked {
+            label, model, rows, ..
+        } in walk()
+        {
+            let run_line = rows.iter().find(|row| row.starts_with(" run  "));
+            let Some(run_line) = run_line.filter(|_| pane_inside(&rows).is_none()) else {
+                continue;
+            };
+            let screen = rows.join("\n");
+            let hint = if model.run_pane() {
+                "Esc fold"
+            } else {
+                "o open"
+            };
+            folded_open += usize::from(model.run_pane());
+
+            assert!(run_line.ends_with(hint), "{label}\n{screen}");
+        }
+        assert!(folded_open > 0);
+    }
+
+    #[test]
+    fn the_filter_line_moves_a_hint_that_does_not_fit_whole_to_the_next_row() {
+        let mut model = services_bench();
+        press(&mut model, '/');
+        let text = "s".repeat(44);
+        text.chars().for_each(|typed| press(&mut model, typed));
+
+        assert_eq!(
+            key_line(&model, 60),
+            [
+                format!(" filter: {text}"),
+                " Enter keep  Esc clear".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_long_notice_wraps_whole_onto_the_key_rows() {
+        for (width, height) in SIZES {
+            let mut model = lab_bench(2);
+            press(&mut model, 'X');
+            press(&mut model, 'y');
+            press(&mut model, 'U');
+            let notice = model.notice().unwrap().to_string();
+
+            let rows = drawn(&mut model, width, height);
+
+            let keys = key_line(&model, usize::from(width));
+            let shown: Vec<&str> = rows[rows.len() - keys.len()..]
+                .iter()
+                .map(|row| row.trim())
+                .collect();
+            assert_eq!(shown.join(" "), notice, "{width}x{height}");
+        }
+    }
+
+    #[test]
+    fn a_long_command_line_shows_whole_above_the_last_line_or_leaves_the_pane_to_the_output() {
         let run = Run {
             words: "lab deploy -s ch1".to_string(),
             command: format!(
@@ -1518,17 +2241,16 @@ mod tests {
 
         assert!(command.len() >= 4);
         assert_eq!(refusal.len(), 3);
-        let short = rows(4);
-        assert_eq!(short[0], format!("{}…", &command[0][..57]));
-        assert_eq!(short[1..], refusal[..]);
-        let taller = rows(6);
-        assert_eq!(taller[..2], command[..2]);
-        assert_eq!(taller[2], format!("{}…", &command[2][..57]));
-        assert_eq!(taller[3..], refusal[..]);
+        let short = rows(command.len() + 2);
+        assert_eq!(short[..], refusal[..]);
+        let tall = rows(command.len() + 3);
+        assert_eq!(tall[..command.len()], command[..]);
+        assert_eq!(tall[command.len()..], refusal[..]);
     }
 
     #[test]
-    fn the_run_pane_grows_past_half_only_to_keep_the_first_command_row_and_the_last_line() {
+    fn the_run_pane_grows_past_half_only_to_keep_the_last_line_and_leaves_the_workbench_its_least()
+    {
         let run = |lines: Vec<String>, state| Run {
             words: "lab deploy -s ch1".to_string(),
             command: "--dir /home/me/labs/network-observability/book-lab lab deploy -s ch1"
@@ -1550,22 +2272,50 @@ mod tests {
         };
 
         assert_eq!(command_rows(&refused, 58).len(), 2);
-        assert_eq!(pane_height(Some(&refused), 58, 11, 3), 6);
+        assert_eq!(pane_height(Some(&refused), 58, 11, 3), 5);
         assert_eq!(pane_height(Some(&refused), 58, 12, 3), 6);
         assert_eq!(pane_height(Some(&running), 58, 11, 3), 5);
         assert_eq!(pane_height(Some(&refused), 98, 26, 3), 9);
         assert_eq!(pane_height(Some(&refused), 98, 27, 3), 9);
-        assert_eq!(pane_height(Some(&last_line(5)), 58, 11, 3), 8);
+        assert_eq!(pane_height(Some(&last_line(5)), 58, 11, 3), 7);
         assert_eq!(pane_height(Some(&last_line(6)), 58, 11, 3), 8);
-        assert_eq!(pane_height(Some(&last_line(6)), 58, 12, 3), 9);
+        assert_eq!(pane_height(Some(&last_line(6)), 58, 12, 3), 8);
         assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 3), 9);
+        assert_eq!(pane_height(Some(&refused), 58, 11, 7), 4);
+        assert_eq!(pane_height(Some(&running), 98, 26, 7), 9);
+        assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 7), 5);
+        assert_eq!(pane_height(None, 58, 11, 9), 2);
         let newest: Vec<String> = run_rows(&last_line(7), 58, 7)
             .iter()
             .map(ToString::to_string)
             .collect();
-        assert_eq!(newest.len(), 7);
-        assert!(newest[0].ends_with('…'));
-        let newest_six: Vec<String> = (1..7).map(|row| row.to_string().repeat(58)).collect();
-        assert_eq!(newest[1..], newest_six[..]);
+        let seven: Vec<String> = (0..7).map(|row| row.to_string().repeat(58)).collect();
+        assert_eq!(newest, seven);
+    }
+
+    #[test]
+    fn the_device_alerts_row_with_a_firing_alert_ends_at_a_whole_fact() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(vec![alert(
+            "srl1",
+            "BgpSessionNotUp",
+            "2026-11-09T13:53:32Z",
+        )])));
+
+        let rows = painted(28, 10, |frame| device_overview(frame, frame.area(), &model));
+
+        let alerts = rows.iter().find(|row| row.starts_with("alerts")).unwrap();
+        assert_eq!(alerts, "alerts   BgpSessionNotUp …");
+    }
+
+    #[test]
+    fn the_interfaces_summary_row_ends_at_a_whole_fact() {
+        let model = devices_model(workshop_located("infrahub"));
+
+        let rows = painted(20, 10, |frame| {
+            device_interfaces(frame, frame.area(), &model, false)
+        });
+
+        assert_eq!(rows[9], "4 interfaces …");
     }
 }

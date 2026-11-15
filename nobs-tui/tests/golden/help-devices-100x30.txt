@@ -1,4 +1,4 @@
- nobs  autocon5 workshop  sot infrahub  7 services                                         13:42:07
+ nobs  autocon5 workshop  sot infrahub                                                     13:42:07
  [1 devices]  2 services                                                             ? keys  q quit
 
 
@@ -8,7 +8,7 @@
 
 
   ┌ keys  devices workbench ─────────────────────────────────────────────────────────────────────┐
-  │1 2 3    switch workbench                      /       filter                                 │
+  │1 2      switch workbench                      /       filter                                 │
   │Tab      focus list/tabs                       r       refresh now                            │
   │j k ↑ ↓  move                                  f       follow/pause logs                      │
   │[ ]      other tab                             o       run pane                               │
@@ -26,5 +26,5 @@
 
 
 
- run  none                                                                                   o open
+
  Tab focus  j/k move  / filter  Enter open  r refresh

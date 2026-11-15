@@ -270,7 +270,7 @@ fn deploy_checks_then_creates_deploys_starts_and_waits_and_says_so() {
             "lab deploy: creating network network-observability (198.51.100.0/24)\n\
              lab deploy: deploying topology {}\n\
              lab deploy: starting ch1 (project netobs)\n\
-             lab deploy: waiting for 1 services and 2 nodes (up to 300s)\n\
+             lab deploy: waiting for 1 service and 2 nodes (up to 300s)\n\
              lab deploy: ready after 0s\n\
              lab deployed: scenario ch1\n",
             topology.display()
@@ -433,7 +433,6 @@ fn a_sudo_that_needs_a_password_stops_destroy_and_deploy_before_docker_with_exit
             run.stderr,
             format!(
                 "sudo: a password is required\n\
-                 sudo: a password is required\n\
                  nobs: lab {command}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again\n"
             )
         );
@@ -831,7 +830,7 @@ fn a_service_that_exited_keeps_the_wait_polling_until_the_limit() {
     assert_eq!(lab.calls().len(), 11);
     assert!(run
         .stdout
-        .contains("lab deploy: waiting for 1 services and 2 nodes (up to 1s)\n"));
+        .contains("lab deploy: waiting for 1 service and 2 nodes (up to 1s)\n"));
     assert!(!run.stdout.contains("ready after"), "{}", run.stdout);
     assert!(!run.stdout.contains("lab deployed"), "{}", run.stdout);
 }
@@ -955,7 +954,13 @@ fn destroy_removes_a_network_no_container_uses_keeps_one_in_use_and_stops_on_a_f
     let cases: [Case; 4] = [
         (
             &[],
-            vec![(0, ""), (0, ""), (0, "network-observability\n")],
+            vec![
+                (0, ""),
+                (0, ""),
+                (0, "network-observability\n"),
+                (0, ""),
+                (0, "network-observability\n"),
+            ],
             0,
             vec![attached(lab_net), network_rm(lab_net)],
             format!("{removing}{destroyed}"),
@@ -963,7 +968,13 @@ fn destroy_removes_a_network_no_container_uses_keeps_one_in_use_and_stops_on_a_f
         ),
         (
             &[("LAB_NETWORK_NAME", "nobs-t-net")],
-            vec![(0, ""), (0, ""), (0, "network-observability\nnobs-t-net\n")],
+            vec![
+                (0, ""),
+                (0, ""),
+                (0, "network-observability\nnobs-t-net\n"),
+                (0, ""),
+                (0, "nobs-t-net\n"),
+            ],
             0,
             vec![attached("nobs-t-net"), network_rm("nobs-t-net")],
             format!("lab destroy: removing network nobs-t-net\n{destroyed}"),
@@ -1596,7 +1607,7 @@ fn update_removes_the_named_service_with_its_volumes_starts_it_and_waits_for_it_
         run.stdout,
         "lab update: removing sleeper (project netobs)\n\
          lab update: starting sleeper\n\
-         lab update: waiting for 1 services (up to 300s)\n\
+         lab update: waiting for 1 service (up to 300s)\n\
          lab update: ready after 0s\n\
          lab updated: scenario ch1\n"
     );
@@ -1624,7 +1635,7 @@ fn update_without_a_service_acts_on_all_services_and_waits_for_the_whole_list() 
         run.stdout,
         "lab update: removing all services (project netobs)\n\
          lab update: starting all services\n\
-         lab update: waiting for 1 services (up to 300s)\n\
+         lab update: waiting for 1 service (up to 300s)\n\
          lab update: ready after 0s\n\
          lab updated: scenario ch1\n"
     );
@@ -1737,7 +1748,7 @@ fn rebuild_stops_builds_and_starts_the_service_then_waits_for_it() {
         "lab rebuild: stopping builder\n\
          lab rebuild: building builder\n\
          lab rebuild: starting builder\n\
-         lab rebuild: waiting for 1 services (up to 1s)\n\
+         lab rebuild: waiting for 1 service (up to 1s)\n\
          lab rebuild: ready after 0s\n\
          lab rebuilt: scenario ch2\n"
     );
@@ -1784,7 +1795,7 @@ fn a_service_that_stays_exited_keeps_the_services_wait_polling_until_the_limit()
     assert_eq!(lab.calls().len(), 4);
     assert!(run
         .stdout
-        .contains("lab update: waiting for 1 services (up to 1s)\n"));
+        .contains("lab update: waiting for 1 service (up to 1s)\n"));
     assert!(!run.stdout.contains("ready after"), "{}", run.stdout);
     assert!(!run.stdout.contains("lab updated"), "{}", run.stdout);
 }
@@ -1887,7 +1898,7 @@ fn prepare_checks_the_image_purges_every_scenario_then_deploys_and_says_so() {
              lab deploy: creating network network-observability (198.51.100.0/24)\n\
              lab deploy: deploying topology {0}\n\
              lab deploy: starting ch2 (project netobs)\n\
-             lab deploy: waiting for 1 services and 2 nodes (up to 1s)\n\
+             lab deploy: waiting for 1 service and 2 nodes (up to 1s)\n\
              lab deploy: ready after 0s\n\
              lab deployed: scenario ch2\n\
              lab prepared: scenario ch2\n",
