@@ -2333,4 +2333,19 @@ mod tests {
 
         assert_eq!(rows[9], "4 interfaces …");
     }
+
+    #[test]
+    fn the_interfaces_footer_of_a_device_with_one_interface_says_1_interface() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let mut list = model.devices().to_vec();
+        list[0].interfaces.truncate(1);
+        model.apply(Update::Devices(Ok(list)));
+        assert_eq!(model.interfaces().len(), 1);
+
+        let rows = painted(30, 10, |frame| {
+            device_interfaces(frame, frame.area(), &model, false)
+        });
+
+        assert_eq!(rows[9], "1 interface  0 differs");
+    }
 }
