@@ -359,7 +359,7 @@ pub struct Model {
     logs: Option<LogsState>,
     server: Option<String>,
     sonda: data::Model,
-    error: Option<(String, String, Instant)>,
+    errors: Vec<(String, String, Instant)>,
     help: bool,
     help_scroll: usize,
     help_overflow: usize,
@@ -428,9 +428,11 @@ impl Model {
         .unwrap_or(0);
         let url = sonda_url(sonda.server.as_deref(), stacks.get(selected));
         let now = Instant::now();
-        let error = source_error
+        let errors = source_error
             .clone()
-            .map(|text| ("sot".to_string(), text, now));
+            .map(|text| ("sot".to_string(), text, now))
+            .into_iter()
+            .collect();
         Model {
             lab,
             states: vec![StackState::Unknown; stacks.len()],
@@ -456,7 +458,7 @@ impl Model {
             logs: None,
             server: sonda.server,
             sonda: data::Model::new(url),
-            error,
+            errors,
             help: false,
             help_scroll: 0,
             help_overflow: 0,
@@ -789,22 +791,20 @@ impl Model {
     }
 
     fn fail(&mut self, source: &str, text: String) {
-        if self
-            .error
-            .as_ref()
-            .is_none_or(|(held, _, _)| held == source)
-        {
-            self.error = Some((source.to_string(), text, self.now));
+        let entry = (source.to_string(), text, self.now);
+        match self.errors.iter_mut().find(|(held, _, _)| held == source) {
+            Some(held) => *held = entry,
+            None => self.errors.push(entry),
         }
     }
 
     fn clear_error(&mut self, source: &str) {
-        if self
-            .error
-            .as_ref()
-            .is_some_and(|(held, _, _)| held == source)
-        {
-            self.error = None;
+        self.errors.retain(|(held, _, _)| held != source);
+    }
+
+    fn dismiss_error(&mut self) {
+        if !self.errors.is_empty() {
+            self.errors.remove(0);
         }
     }
 
@@ -903,8 +903,8 @@ impl Model {
     }
 
     pub fn error(&self) -> Option<(&str, &str, Instant)> {
-        self.error
-            .as_ref()
+        self.errors
+            .first()
             .map(|(source, text, at)| (source.as_str(), text.as_str(), *at))
     }
 
@@ -1191,13 +1191,7 @@ impl Model {
         } else {
             StackState::Down { listed }
         };
-        if self
-            .error
-            .as_ref()
-            .is_some_and(|(source, _, _)| *source == format!("ps {name}"))
-        {
-            self.error = None;
-        }
+        self.clear_error(&format!("ps {name}"));
         if index != self.selected {
             return;
         }
@@ -1293,7 +1287,7 @@ impl Model {
                 self.help = true;
                 self.help_scroll = 0;
             }
-            KeyCode::Char('x') => self.error = None,
+            KeyCode::Char('x') => self.dismiss_error(),
             KeyCode::Char('o') => self.run_pane = !self.run_pane,
             KeyCode::Tab => {
                 self.focus = match self.focus {
@@ -1985,7 +1979,7 @@ pub(crate) mod tests {
         model.tick(Instant::now(), UNIX_EPOCH, (columns, rows));
     }
 
-    fn sonda_rows(model: &mut Model) {
+    pub(crate) fn sonda_rows(model: &mut Model) {
         model.apply(Update::Sonda(data::Update {
             at: Instant::now(),
             list: Ok(TWO.to_string()),
@@ -2301,7 +2295,7 @@ pub(crate) mod tests {
         assert_eq!(ch(&mut model, '3'), []);
         assert_eq!(snapshot(&model), before);
 
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         assert_eq!(ch(&mut model, '3'), []);
         assert_eq!(model.workbench(), Workbench::Devices);
 
@@ -3184,10 +3178,10 @@ pub(crate) mod tests {
         Command::SelectDevice("srl1".to_string())
     }
 
-    fn devices_model() -> Model {
+    pub(crate) fn devices_model(lab: Located) -> Model {
         let source = workshop_source();
         let mut model = Model::new(Start {
-            lab: Some(workshop_located("infrahub")),
+            lab: Some(lab),
             source: Some(source.clone()),
             home: Workbench::Devices,
             chooser: false,
@@ -3204,7 +3198,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_device_keys_open_the_tabs_move_the_window_pause_the_logs_filter_and_pick_an_alert() {
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         assert_eq!(model.focus(), Focus::List);
 
         let commands = code(&mut model, KeyCode::Enter);
@@ -3301,7 +3295,7 @@ pub(crate) mod tests {
         let mut services = logs_open("grafana");
         assert_eq!(ch(&mut services, 'f'), [Command::Follow(false)]);
 
-        let mut devices = devices_model();
+        let mut devices = devices_model(workshop_located("infrahub"));
         code(&mut devices, KeyCode::Enter);
         for _ in 0..3 {
             ch(&mut devices, ']');
@@ -3313,7 +3307,7 @@ pub(crate) mod tests {
 
     #[test]
     fn switching_workbench_tells_the_pollers_which_device_tab_is_open() {
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         code(&mut model, KeyCode::Enter);
         ch(&mut model, ']');
         ch(&mut model, ']');
@@ -3343,7 +3337,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_dead_prometheus_thread_leaves_no_green_ok_behind() {
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         model.apply(Update::Metrics(Ok(peer_samples(1.0))));
         assert_eq!(model.device_rows()[0].health, devices::Health::Ok);
 
@@ -3360,20 +3354,18 @@ pub(crate) mod tests {
         )])));
         assert_eq!(model.device_rows()[0].alerts, Some((1, false)));
 
-        ch(&mut model, 'x');
         model.apply(Update::Stopped("alertmanager".to_string()));
 
         assert_eq!(model.device_rows()[0].alerts, None);
         assert_eq!(model.alerts().len(), 1);
-        assert_eq!(model.error().unwrap().0, "alertmanager");
+        assert_eq!(model.error().unwrap().0, "prometheus");
 
         assert!(model.device_logs().unwrap().2);
 
-        ch(&mut model, 'x');
         model.apply(Update::Stopped("loki".to_string()));
 
         assert!(!model.device_logs().unwrap().2);
-        assert_eq!(model.error().unwrap().0, "loki");
+        assert_eq!(model.error().unwrap().0, "prometheus");
     }
 
     #[test]
@@ -3395,7 +3387,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_failed_prometheus_poll_shows_question_marks_and_its_success_clears_its_own_error() {
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         assert_eq!(model.device_rows()[1].alerts, Some((1, false)));
 
         model.apply(Update::Metrics(Ok(peer_samples(1.0))));
@@ -3424,7 +3416,7 @@ pub(crate) mod tests {
     #[test]
     fn the_session_states_follow_the_intended_sessions_and_show_question_marks_without_prometheus()
     {
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         let states = |model: &Model| -> Vec<(String, String)> {
             model
                 .session_states()
@@ -3464,7 +3456,7 @@ pub(crate) mod tests {
 
     #[test]
     fn moving_to_another_device_clears_its_logs_and_a_repeated_log_line_shows_once() {
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         assert_eq!(model.selected_device().unwrap().name, "srl1");
         let first = vec![
             log_line(1, "link down"),
@@ -3562,7 +3554,7 @@ pub(crate) mod tests {
         }
 
         let one = fixture("workshop-one").to_string_lossy().into_owned();
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         ch(&mut model, 'm');
         assert_eq!(
             ch(&mut model, 'y'),
@@ -3641,7 +3633,7 @@ pub(crate) mod tests {
 
     #[test]
     fn m_builds_clear_or_state_by_the_flag_and_nothing_in_the_book_lab_or_without_devices() {
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         let mut devices = workshop_source().devices().unwrap();
         devices[0].maintenance = true;
         model.apply(Update::Devices(Ok(devices)));
@@ -3669,7 +3661,7 @@ pub(crate) mod tests {
         assert_eq!(model.question(), None);
         assert_eq!(ch(&mut model, 'y'), []);
 
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         model.apply(Update::Devices(Ok(Vec::new())));
         assert_eq!(ch(&mut model, 'm'), []);
         assert_eq!(model.question(), None);
@@ -3716,7 +3708,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_first_failing_source_keeps_the_error_row_until_it_answers() {
-        let mut model = devices_model();
+        let mut model = devices_model(workshop_located("infrahub"));
         let first = Instant::now();
         let at = |seconds| first + Duration::from_secs(seconds);
         let fail_in_turn = [
@@ -3735,7 +3727,7 @@ pub(crate) mod tests {
             Some(("alertmanager", "alertmanager two", at(2)))
         );
         model.apply(Update::Alerts(Ok(Vec::new())));
-        assert_eq!(model.error(), None);
+        assert_eq!(model.error(), Some(("prometheus", "prometheus two", at(3))));
         model.tick(at(4), UNIX_EPOCH, (80, 24));
         model.apply(Update::Metrics(Err("prometheus three".to_string())));
         assert_eq!(
@@ -3744,12 +3736,32 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn a_poller_that_stops_behind_another_error_shows_once_the_errors_before_it_are_gone() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let at = Instant::now();
+        model.tick(at, UNIX_EPOCH, (80, 24));
+
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        model.apply(Update::Stopped("prometheus".to_string()));
+        model.apply(Update::Devices(Err("sot down".to_string())));
+        model.apply(Update::Alerts(Err("refused again".to_string())));
+
+        assert_eq!(model.error(), Some(("alertmanager", "refused again", at)));
+        model.apply(Update::Alerts(Ok(Vec::new())));
+        assert_eq!(model.error(), Some(("prometheus", "polling stopped", at)));
+        ch(&mut model, 'x');
+        assert_eq!(model.error(), Some(("sot", "sot down", at)));
+        ch(&mut model, 'x');
+        assert_eq!(model.error(), None);
+    }
+
     const READING: [&str; 2] = ["status", "show"];
 
     fn on_its_row(row: Row) -> Model {
         match row {
             Row::Stack => opened(&["nobs-t-packt"]),
-            Row::Device => devices_model(),
+            Row::Device => devices_model(workshop_located("infrahub")),
             Row::Chapter | Row::Lab => book_model(),
         }
     }

@@ -2,7 +2,7 @@
  [1 devices]  2 services                     ? keys  q quit
 ┌ devices 2 ──────────┐┌ srl1 ─────────────────────────────┐
 │   NAME  HLTH  ALRT  ││overview  ifaces  TIMELINE  logs   │
-│>  srl1  warn     1  ││last 30m   alerts 2  flows 3  rca …│
+│>  srl1  warn     1  ││last 30m   alerts 2  flows 3 …     │
 │ M srl2  ok          ││>13:41:46  alert  BgpSessionNotUp …│
 │                     ││ 13:41:17  log    chassis|1044|8|0…│
 │                     ││ 13:41:17  log    BGP neighbor 10.…│

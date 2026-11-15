@@ -2019,8 +2019,8 @@ The lines below go to standard output. `<topology>` is the path nobs gave to con
 | `lab deploy: creating network <network> (<subnet>)` | the network does not exist | no |
 | `lab deploy: deploying topology <topology>` | before `containerlab deploy` | no |
 | `lab deploy: starting <scenario> (project <project>)` | before `compose up` | no |
-| `lab deploy: waiting for <services> services and <nodes> nodes (up to <seconds>s)` | after the first check of the wait; not with `--wait 0` | no |
-| `lab <command>: waiting for <count> services (up to <seconds>s)` | `update` and `rebuild`, after the first check of the wait; not with `--wait 0`; `<count>` is the number of names you gave, else the number of services that `compose ps` lists | no |
+| `lab deploy: waiting for <services> services and <nodes> nodes (up to <seconds>s)` | after the first check of the wait; not with `--wait 0`; a count of 1 says `service` or `node` | no |
+| `lab <command>: waiting for <count> services (up to <seconds>s)` | `update` and `rebuild`, after the first check of the wait; not with `--wait 0`; `<count>` is the number of names you gave, else the number of services that `compose ps` lists; when it is 1, the line says `service` | no |
 | `lab <command>: ready after <seconds>s` | the lab or the services are ready; `<command>` is `deploy` (also inside `prepare`), `update` or `rebuild` | no |
 | `lab deployed: scenario <scenario>` | the last line of `deploy` | yes |
 | `lab destroy: stopping <scenario> (project <project>)` | before the stack goes down | no |
@@ -2033,7 +2033,7 @@ The lines below go to standard output. `<topology>` is the path nobs gave to con
 | `lab purge: destroying topology <topology>` | before `containerlab destroy` | no |
 | `lab purge: network <network> is still in use, kept` | every step before passed, and a container, running or stopped, is attached to the network | no |
 | `lab purge: removing network <network>` | every step before passed; before `docker network rm` | no |
-| `lab purged: <count> scenarios` | the last line of `purge`; `<count>` is the number of scenarios, also when it is 1 | yes |
+| `lab purged: <count> scenarios` | the last line of `purge`; `<count>` is the number of scenarios; when it is 1, the line says `scenario` | yes |
 | `lab prepare: scenario <scenario>` | after the image check, before the purge part of `prepare` | no |
 | `lab prepared: scenario <scenario>` | the last line of `prepare` | yes |
 | `lab update: removing <services> (project <project>)` | before `compose rm`; `<services>` is the names you gave, separated by `, `, or `all services` | no |
@@ -2118,7 +2118,7 @@ lab deploy: deploying topology <lab>/containerlab/lab.yml
 ...
 lab deploy: starting ch1 (project netobs)
 ...
-lab deploy: waiting for 1 services and 2 nodes (up to 300s)
+lab deploy: waiting for 1 service and 2 nodes (up to 300s)
 lab deploy: ready after <seconds>s
 lab deployed: scenario ch1
 ```

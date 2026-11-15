@@ -67,10 +67,17 @@ const HELP_LAB: [(&str, &str); 6] = [
     ("?", "close"),
     ("Esc", "close/fold"),
 ];
+const WORKBENCHES: [(Workbench, &str, &str); 3] = [
+    (Workbench::Devices, "1", "devices"),
+    (Workbench::Services, "2", "services"),
+    (Workbench::Lab, "3", "lab"),
+];
 const HELP_MORE: &str = "j/k more";
 const FOLD: &str = "Esc fold";
 const PANE_LEAST: u16 = 3;
 const NODES_LEAST: u16 = 4;
+const ALERTS_LEAST: u16 = 2;
+const BORDERS: u16 = 2;
 const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 
@@ -154,10 +161,19 @@ fn pane_height(run: Option<&Run>, width: usize, middle: u16, least: u16) -> u16 
 }
 
 fn workbench_least(model: &Model) -> u16 {
-    match model.workbench() {
-        Workbench::Devices | Workbench::Lab => 7,
-        Workbench::Services => 5,
-    }
+    let list = match model.workbench() {
+        Workbench::Devices => BORDERS + 3 + ALERTS_LEAST,
+        Workbench::Services => BORDERS + 1,
+        Workbench::Lab => NODES_LEAST + BORDERS + 1,
+    };
+    let tab_rows = match (model.workbench(), model.tab()) {
+        (Workbench::Lab, _) => 1,
+        (Workbench::Services, Tab::Overview) | (_, Tab::Timeline) => 2,
+        (_, Tab::Overview | Tab::Logs) => 1,
+        (_, Tab::Interfaces) => 3,
+        (_, Tab::Sonda) => 6,
+    };
+    list.max(BORDERS + 1 + tab_rows)
 }
 
 fn too_small(frame: &mut Frame, area: Rect) {
@@ -232,15 +248,21 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
 }
 
 fn cut_words(text: &str, width: usize) -> String {
+    let words: Vec<&str> = text.split(' ').collect();
+    cut_whole(&words, " ", width)
+}
+
+fn cut_whole(pieces: &[&str], gap: &str, width: usize) -> String {
+    let text = pieces.join(gap);
     if text.chars().count() <= width {
-        return text.to_string();
+        return text;
     }
     let mut kept = String::new();
-    for word in text.split(' ') {
+    for piece in pieces {
         let longer = if kept.is_empty() {
-            word.to_string()
+            piece.to_string()
         } else {
-            format!("{kept} {word}")
+            format!("{kept}{gap}{piece}")
         };
         if longer.chars().count() + " …".chars().count() > width {
             break;
@@ -272,17 +294,12 @@ fn switcher(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     }
     let mut spans = vec![Span::raw(" ")];
-    let entries = [
-        (Workbench::Devices, "1 devices"),
-        (Workbench::Services, "2 services"),
-        (Workbench::Lab, "3 lab"),
-    ];
-    let shown = if model.book_lab() { 3 } else { 2 };
-    for (index, (workbench, name)) in entries.into_iter().take(shown).enumerate() {
+    for (index, (workbench, key, name)) in workbenches(model).iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw("  "));
         }
-        spans.push(if workbench == model.workbench() {
+        let name = format!("{key} {name}");
+        spans.push(if *workbench == model.workbench() {
             Span::styled(format!("[{name}]"), REVERSE)
         } else {
             Span::raw(name)
@@ -290,6 +307,11 @@ fn switcher(frame: &mut Frame, area: Rect, model: &Model) {
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
     right(frame, area, Line::from("? keys  q quit"), 1);
+}
+
+fn workbenches(model: &Model) -> &'static [(Workbench, &'static str, &'static str)] {
+    let shown = if model.book_lab() { 3 } else { 2 };
+    &WORKBENCHES[..shown]
 }
 
 fn workbench(frame: &mut Frame, area: Rect, model: &Model) {
@@ -597,7 +619,7 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let block = Block::bordered().title_top(format!(" devices {} ", visible.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let alerts_height = (inner.height / 4).max(2);
+    let alerts_height = (inner.height / 4).max(ALERTS_LEAST);
     let [list, separator, alerts] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(1),
@@ -819,9 +841,10 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
     frame.render_widget(Paragraph::new(lines), table);
     let differs = interfaces.iter().filter(|row| row.differs).count();
-    let summary = format!("{} interfaces  {differs} differs", interfaces.len());
+    let count = format!("{} interfaces", interfaces.len());
+    let differs = format!("{differs} differs");
     frame.render_widget(
-        Paragraph::new(fitted(vec![(summary, Style::new())], width)),
+        Paragraph::new(cut_whole(&[&count, &differs], "  ", width)),
         footer,
     );
 }
@@ -832,29 +855,44 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
     };
     let width = usize::from(area.width);
     let plain = Style::new();
-    let line = |text: String| fitted(vec![(text, plain)], width);
+    let facts = |pieces: &[String], gap: &str| {
+        let pieces: Vec<&str> = pieces.iter().map(String::as_str).collect();
+        Line::from(cut_whole(&pieces, gap, width))
+    };
     let states = model.session_states();
     let established = states.iter().filter(|(_, state)| state == "up").count();
     let seen = model.devices_at().map_or("—".to_string(), |at| {
         format!("{}s ago", seconds(model, at))
     });
     let mut lines = vec![
-        line(format!(
-            "kind {}   site {}   role {}",
-            devices::kind_short(device.kind.as_deref()),
-            device.site.as_deref().unwrap_or("—"),
-            device.role.as_deref().unwrap_or("—")
-        )),
-        line(format!(
-            "maintenance {}   sot {}   seen {seen}",
-            if device.maintenance { "yes" } else { "no" },
-            model.sot()
-        )),
-        line(format!(
-            "bgp sessions  {} intended  {established} established  {} other",
-            states.len(),
-            states.len() - established
-        )),
+        facts(
+            &[
+                format!("kind {}", devices::kind_short(device.kind.as_deref())),
+                format!("site {}", device.site.as_deref().unwrap_or("—")),
+                format!("role {}", device.role.as_deref().unwrap_or("—")),
+            ],
+            "   ",
+        ),
+        facts(
+            &[
+                format!(
+                    "maintenance {}",
+                    if device.maintenance { "yes" } else { "no" }
+                ),
+                format!("sot {}", model.sot()),
+                format!("seen {seen}"),
+            ],
+            "   ",
+        ),
+        facts(
+            &[
+                "bgp sessions".to_string(),
+                format!("{} intended", states.len()),
+                format!("{established} established"),
+                format!("{} other", states.len() - established),
+            ],
+            "  ",
+        ),
     ];
     for (session, state) in &states {
         let mut parts = vec![
@@ -887,16 +925,23 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
     let latest = model.alerts().iter().find(|alert| {
         alert.labels.get("device") == Some(&device.name) && alert.state_word() == "firing"
     });
-    lines.push(line(match latest {
-        _ if !model.alerts_ok() => "alerts   ?".to_string(),
-        Some(alert) => format!(
-            "alerts   {}  {}  {}",
-            alert.labels.get("alertname").map_or("—", String::as_str),
-            alert.labels.get("severity").map_or("—", String::as_str),
-            time::age(&alert.starts_at, wall_seconds(model))
+    let label = |name: &str| format!("alerts   {name}");
+    lines.push(match latest {
+        _ if !model.alerts_ok() => facts(&[label("?")], ""),
+        Some(alert) => facts(
+            &[
+                label(alert.labels.get("alertname").map_or("—", String::as_str)),
+                alert
+                    .labels
+                    .get("severity")
+                    .map_or("—", String::as_str)
+                    .to_string(),
+                time::age(&alert.starts_at, wall_seconds(model)),
+            ],
+            "  ",
         ),
-        None => "alerts   none".to_string(),
-    }));
+        None => facts(&[label("none")], ""),
+    });
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -913,17 +958,17 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
     let entries = model.timeline();
     let [counts, rows] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     let [alerts, flows, rcas, logs] = devices::counts(&entries);
-    let summary = format!(
-        "last {}   alerts {alerts}  flows {flows}  rca {rcas}  logs {logs}",
-        devices::window_text(model.window())
+    let last = format!("last {}", devices::window_text(model.window()));
+    let alerts = format!("   alerts {alerts}");
+    let flows = format!("  flows {flows}");
+    let rcas = format!("  rca {rcas}");
+    let logs = format!("  logs {logs}");
+    let summary = cut_whole(
+        &[&last, &alerts, &flows, &rcas, &logs],
+        "",
+        usize::from(area.width),
     );
-    frame.render_widget(
-        Paragraph::new(fitted(
-            vec![(summary, Style::new())],
-            usize::from(area.width),
-        )),
-        counts,
-    );
+    frame.render_widget(Paragraph::new(summary), counts);
     let on_tabs = model.focus() == Focus::Tabs;
     let selected = model.timeline_row();
     let start = first_row(selected, usize::from(rows.height));
@@ -1411,13 +1456,13 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
         Workbench::Services => &HELP,
         Workbench::Lab => &HELP_LAB,
     };
-    let switch = if model.book_lab() { "1 2 3" } else { "1 2" };
+    let switch: Vec<&str> = workbenches(model).iter().map(|(_, key, _)| *key).collect();
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench)
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
-    [(switch.to_string(), "switch workbench")]
+    [(switch.join(" "), "switch workbench")]
         .into_iter()
         .chain(fixed.iter().map(owned))
         .chain(actions)
@@ -1564,7 +1609,7 @@ mod tests {
     use super::*;
     use crate::book::NodeRow;
     use crate::shell::tests::{
-        alert, fixture, row, stack, start, workshop_located, workshop_source,
+        devices_model, fixture, row, sonda_rows, stack, start, workshop_located,
     };
     use crate::shell::{handle, stacks, Stack, Start, Update};
 
@@ -1586,11 +1631,16 @@ mod tests {
         run: char,
         question: char,
         filter: Option<&'static str>,
+        detail: &'static str,
+        tabs: &'static [(Tab, &'static str)],
+        other: Option<(&'static str, &'static str)>,
+        fill: fn(&mut Model),
     }
 
     struct Walked {
         label: String,
         selected: &'static str,
+        shown: Vec<(&'static str, &'static str)>,
         model: Model,
         width: u16,
         height: u16,
@@ -1604,20 +1654,14 @@ mod tests {
     fn devices_bench() -> Model {
         let mut lab = workshop_located("infrahub");
         lab.dir = PathBuf::from(LAB_DIR);
-        let source = workshop_source();
-        let mut model = Model::new(Start {
-            lab: Some(lab),
-            source: Some(source.clone()),
-            home: Workbench::Devices,
-            chooser: false,
-            ..start(vec![stack("a", &[])])
-        });
-        model.apply(Update::Devices(Ok(source.devices().unwrap())));
-        model.apply(Update::Alerts(Ok(vec![alert(
-            "srl2",
-            "BgpSessionNotUp",
-            "2026-11-09T13:53:32Z",
-        )])));
+        let mut model = devices_model(lab);
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![nobs_core::loki::Line {
+                nanoseconds: 0,
+                text: "link flap".to_string(),
+            }]),
+        ));
         model
     }
 
@@ -1636,7 +1680,26 @@ mod tests {
         for _ in 1..12 {
             press(&mut model, 'j');
         }
+        model.apply(Update::Services(11, Ok(vec![row("grafana", "running")])));
+        sonda_rows(&mut model);
         model
+    }
+
+    fn services_logs(model: &mut Model) {
+        let lines = vec!["2026-11-09T13:53:32Z ready to serve".to_string()];
+        model.apply(Update::Logs(11, "grafana".to_string(), Ok(lines)));
+    }
+
+    fn open_tab(model: &mut Model, tab: Tab) {
+        let focus = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        if model.tab() == tab {
+            return;
+        }
+        handle(model, focus);
+        while model.tab() != tab {
+            press(model, ']');
+        }
+        handle(model, focus);
     }
 
     fn lab_bench(count: usize) -> Model {
@@ -1668,12 +1731,16 @@ mod tests {
     }
 
     fn benches() -> [Bench; 4] {
-        let lab = |build: fn() -> Model, selected| Bench {
+        let lab = |build: fn() -> Model, selected, detail| Bench {
             build,
             selected,
             run: 'X',
             question: 'U',
             filter: None,
+            detail,
+            tabs: &[(Tab::Overview, "topology")],
+            other: Some((" nodes ", "nobs-t-srl1")),
+            fill: |_| {},
         };
         [
             Bench {
@@ -1682,6 +1749,15 @@ mod tests {
                 run: 'm',
                 question: 'm',
                 filter: Some("srl"),
+                detail: " srl1 ",
+                tabs: &[
+                    (Tab::Overview, "kind "),
+                    (Tab::Interfaces, "ethernet-1/1"),
+                    (Tab::Timeline, "link flap"),
+                    (Tab::Logs, "link flap"),
+                ],
+                other: Some((" devices ", "BgpSessionNotUp")),
+                fill: |_| {},
             },
             Bench {
                 build: services_bench,
@@ -1689,14 +1765,24 @@ mod tests {
                 run: 'u',
                 question: 'p',
                 filter: Some("stack"),
+                detail: " stack-12 ",
+                tabs: &[
+                    (Tab::Overview, "grafana"),
+                    (Tab::Logs, "ready to serve"),
+                    (Tab::Sonda, "cpu"),
+                ],
+                other: None,
+                fill: services_logs,
             },
-            lab(|| lab_bench(2), ">ch2"),
-            lab(|| lab_bench(10), ">ch10"),
+            lab(|| lab_bench(2), ">ch2", " ch2 "),
+            lab(|| lab_bench(10), ">ch10", " ch10 "),
         ]
     }
 
-    fn staged(bench: &Bench, error: bool, keys: Keys, pane: bool) -> Model {
+    fn staged(bench: &Bench, tab: Tab, error: bool, keys: Keys, pane: bool) -> Model {
         let mut model = (bench.build)();
+        open_tab(&mut model, tab);
+        (bench.fill)(&mut model);
         press(&mut model, bench.run);
         press(&mut model, 'y');
         for line in ["pulling", "created", REFUSAL] {
@@ -1741,32 +1827,63 @@ mod tests {
     fn walk() -> Vec<Walked> {
         let mut walked = Vec::new();
         for bench in benches() {
-            for (width, height) in SIZES {
-                for error in [false, true] {
-                    for keys in [Keys::Hints, Keys::Filter, Keys::Question] {
-                        if keys == Keys::Filter && bench.filter.is_none() {
-                            continue;
-                        }
-                        for pane in [false, true] {
-                            let mut model = staged(&bench, error, keys, pane);
-                            let rows = drawn(&mut model, width, height);
-                            walked.push(Walked {
-                                label: format!(
-                                    "{} {width}x{height} error {error} {keys:?} pane {pane}",
-                                    bench.selected
-                                ),
-                                selected: bench.selected,
-                                model,
-                                width,
-                                height,
-                                rows,
-                            });
+            for &(tab, row) in bench.tabs {
+                for (width, height) in SIZES {
+                    for error in [false, true] {
+                        for keys in [Keys::Hints, Keys::Filter, Keys::Question] {
+                            if keys == Keys::Filter && bench.filter.is_none() {
+                                continue;
+                            }
+                            for pane in [false, true] {
+                                let mut model = staged(&bench, tab, error, keys, pane);
+                                let rows = drawn(&mut model, width, height);
+                                walked.push(Walked {
+                                    label: format!(
+                                        "{} {tab:?} {width}x{height} error {error} {keys:?} pane {pane}",
+                                        bench.selected
+                                    ),
+                                    selected: bench.selected,
+                                    shown: [(bench.detail, row)].into_iter().chain(bench.other).collect(),
+                                    model,
+                                    width,
+                                    height,
+                                    rows,
+                                });
+                            }
                         }
                     }
                 }
             }
         }
         walked
+    }
+
+    fn boxed(rows: &[String], title: &str) -> Vec<String> {
+        let grid: Vec<Vec<char>> = rows.iter().map(|row| row.chars().collect()).collect();
+        let top: Vec<char> = format!("┌{title}").chars().collect();
+        for (y, row) in grid.iter().enumerate() {
+            let Some(left) = row.windows(top.len()).position(|seen| seen == top) else {
+                continue;
+            };
+            let right = row[left..]
+                .iter()
+                .position(|cell| *cell == '┐')
+                .map_or(row.len(), |at| left + at);
+            return grid[y + 1..]
+                .iter()
+                .take_while(|row| row.get(left) != Some(&'└'))
+                .map(|row| {
+                    let end = right.min(row.len());
+                    row.get(left + 1..end).unwrap_or_default().iter().collect()
+                })
+                .collect();
+        }
+        Vec::new()
+    }
+
+    fn gave_way(model: &Model, width: u16, height: u16) -> bool {
+        let (_, [_, _, _, body, _, _]) = regions(model, Rect::new(0, 0, width, height));
+        body.height < workbench_least(model)
     }
 
     fn pane_inside(rows: &[String]) -> Option<Vec<String>> {
@@ -1792,7 +1909,7 @@ mod tests {
     #[test]
     fn the_walk_runs_a_three_row_command_and_a_three_row_last_line_at_60_columns() {
         for bench in benches() {
-            let model = staged(&bench, false, Keys::Hints, true);
+            let model = staged(&bench, bench.tabs[0].0, false, Keys::Hints, true);
             let run = model.run().unwrap();
 
             assert_eq!(command_rows(run, 58).len(), 3, "{}", bench.selected);
@@ -1801,16 +1918,18 @@ mod tests {
     }
 
     #[test]
-    fn every_frame_of_the_walk_shows_the_selected_row_a_node_row_every_question_row_and_the_key_line(
+    fn every_frame_of_the_walk_shows_the_selected_row_a_row_of_every_other_list_and_the_key_line_or_gives_way_to_a_question(
     ) {
+        let mut given_way = Vec::new();
         for walked in walk() {
             let Walked {
                 label,
                 selected,
+                shown,
                 model,
                 width,
+                height,
                 rows,
-                ..
             } = &walked;
             let screen = rows.join("\n");
             let keys: Vec<String> = key_line(model, usize::from(*width))
@@ -1818,19 +1937,66 @@ mod tests {
                 .map(|row| row.trim_end().to_string())
                 .collect();
 
-            assert!(
-                rows.iter().any(|row| row.contains(selected)),
-                "{label}\n{screen}"
-            );
-            if model.workbench() == Workbench::Lab {
-                assert!(screen.contains("nobs-t-srl1"), "{label}\n{screen}");
-            }
             assert_eq!(
                 rows[rows.len() - keys.len()..],
                 keys[..],
                 "{label}\n{screen}"
             );
+            if gave_way(model, *width, *height) {
+                assert!(model.question().is_some(), "{label}\n{screen}");
+                assert!(model.error().is_some(), "{label}\n{screen}");
+                given_way.push(label.clone());
+                continue;
+            }
+            assert!(
+                rows.iter().any(|row| row.contains(selected)),
+                "{label}\n{screen}"
+            );
+            for (title, row) in shown {
+                let inside = boxed(rows, title);
+                assert!(
+                    inside.iter().any(|line| line.contains(row)),
+                    "{label}: {row} in{title}\n{screen}"
+                );
+            }
         }
+        assert_eq!(
+            given_way,
+            [
+                ">stack-12 Sonda 60x15 error true Question pane false",
+                ">stack-12 Sonda 60x15 error true Question pane true",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_of_several_facts_shows_the_facts_that_fit_whole_then_an_ellipsis_at_60_columns() {
+        let mut wide = Vec::new();
+        let mut narrow = Vec::new();
+        for tab in [Tab::Overview, Tab::Timeline] {
+            let mut model = devices_bench();
+            open_tab(&mut model, tab);
+            wide.extend(boxed(&drawn(&mut model, 100, 30), " srl1 "));
+            narrow.extend(boxed(&drawn(&mut model, 60, 15), " srl1 "));
+        }
+        let mut cut = 0;
+        for start in ["kind ", "maintenance ", "bgp sessions", "last "] {
+            let find = |rows: &[String]| {
+                let row = rows.iter().find(|row| row.starts_with(start)).unwrap();
+                row.trim_end().to_string()
+            };
+            let (whole, shown) = (find(&wide), find(&narrow));
+            if shown == whole {
+                continue;
+            }
+            cut += 1;
+            let kept = shown.strip_suffix(" …").unwrap_or(&shown);
+            assert!(
+                whole.starts_with(&format!("{kept}  ")),
+                "{shown:?} is not whole facts of {whole:?}"
+            );
+        }
+        assert!(cut > 0);
     }
 
     #[test]

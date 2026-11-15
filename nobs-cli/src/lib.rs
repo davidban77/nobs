@@ -2322,8 +2322,10 @@ fn load_nautobot(
         .map(|(_, created, updated)| created + updated)
         .sum();
     println!(
-        "Done: {objects} objects across {} types. Open Nautobot at {url}.",
-        load.rows.len()
+        "Done: {objects} {} across {} {}. Open Nautobot at {url}.",
+        noun(objects, "object"),
+        load.rows.len(),
+        noun(load.rows.len(), "type")
     );
     Ok(())
 }
@@ -2334,7 +2336,7 @@ fn delete_nautobot(flags: NautobotFlags, located: &Located) -> Result<(), i32> {
         .delete(&mut |kind, count| println!("{kind}: {count} deleted"))
         .map_err(|error| nautobot_failed("delete-nautobot", error))?;
     let objects: usize = deleted.rows.iter().map(|(_, count)| count).sum();
-    println!("Done: {objects} objects deleted.");
+    println!("Done: {objects} {} deleted.", noun(objects, "object"));
     Ok(())
 }
 
@@ -2695,8 +2697,9 @@ impl<'a, Topo> LabRun<'a, Topo> {
                     names.len()
                 };
                 println!(
-                    "lab {}: waiting for {count} services (up to {}s)",
+                    "lab {}: waiting for {count} {} (up to {}s)",
                     self.command,
+                    noun(count, "service"),
                     limit.as_secs()
                 );
             }
@@ -2808,11 +2811,11 @@ impl<'a> LabRun<'a, Topology> {
             return Ok(());
         }
         for entry in &missing {
-            let nodes = if entry.nodes.len() == 1 {
-                format!("node {}", entry.nodes[0])
-            } else {
-                format!("nodes {}", entry.nodes.join(", "))
-            };
+            let nodes = format!(
+                "{} {}",
+                noun(entry.nodes.len(), "node"),
+                entry.nodes.join(", ")
+            );
             eprintln!(
                 "nobs: lab {}: image {} of {nodes} is not present",
                 self.command, entry.image
@@ -3013,9 +3016,11 @@ impl<'a> LabRun<'a, Topology> {
             if !announced {
                 announced = true;
                 println!(
-                    "lab deploy: waiting for {} services and {} nodes (up to {}s)",
+                    "lab deploy: waiting for {} {} and {} {} (up to {}s)",
                     services.len(),
+                    noun(services.len(), "service"),
                     nodes.len(),
+                    noun(nodes.len(), "node"),
                     limit.as_secs()
                 );
             }
@@ -3070,7 +3075,11 @@ impl<'a> LabRun<'a, Topology> {
             Some(code) => Err(code),
             None => {
                 self.remove_network(network)?;
-                println!("lab purged: {} scenarios", scenarios.len());
+                println!(
+                    "lab purged: {} {}",
+                    scenarios.len(),
+                    noun(scenarios.len(), "scenario")
+                );
                 Ok(())
             }
         }
@@ -3375,8 +3384,10 @@ fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
         .map(|(_, created, updated)| u64::from(*created) + u64::from(*updated))
         .sum();
     println!(
-        "Done: {nodes} nodes across {} types. Open Infrahub at {}.",
+        "Done: {nodes} {} across {} {}. Open Infrahub at {}.",
+        noun(nodes, "node"),
         seed.rows.len(),
+        noun(seed.rows.len(), "type"),
         infrahub.address()
     );
     if devices_seeded(&seed) == 0 {
@@ -5354,11 +5365,27 @@ fn network_word(action: NetworkAction) -> &'static str {
         .map_or("", |(word, _)| word)
 }
 
+fn noun<N: PartialEq + From<u8>>(count: N, one: &str) -> String {
+    if count == N::from(1) {
+        one.to_string()
+    } else {
+        format!("{one}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nobs_core::runner::FakeRunner;
     use std::net::TcpListener;
+
+    #[test]
+    fn a_count_of_one_takes_the_singular_noun() {
+        assert_eq!(noun(1_usize, "service"), "service");
+        assert_eq!(noun(1_u64, "node"), "node");
+        assert_eq!(noun(2_usize, "service"), "services");
+        assert_eq!(noun(0_u64, "node"), "nodes");
+    }
 
     struct Scratch(PathBuf);
 
