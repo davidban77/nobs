@@ -2120,6 +2120,29 @@ mod tests {
     }
 
     #[test]
+    fn the_first_shown_row_carries_the_mark_after_the_filter_hides_the_cursor_row() {
+        let cases = [
+            (devices_bench(), "2", " devices ", "srl2"),
+            (services_bench(), "-0", " stacks ", "stack-01"),
+        ];
+        for (mut model, filter, list, name) in cases {
+            press(&mut model, '/');
+            filter.chars().for_each(|typed| press(&mut model, typed));
+
+            let rows = drawn(&mut model, 60, 15);
+
+            let screen = rows.join("\n");
+            let marked: Vec<String> = boxed(&rows, list)
+                .into_iter()
+                .filter(|row| row.starts_with('>'))
+                .collect();
+            assert_eq!(marked.len(), 1, "{screen}");
+            assert!(marked[0].contains(name), "{screen}");
+            assert!(!boxed(&rows, &format!(" {name} ")).is_empty(), "{screen}");
+        }
+    }
+
+    #[test]
     fn a_row_of_several_facts_shows_the_facts_that_fit_whole_then_an_ellipsis_at_60_columns() {
         let mut wide = Vec::new();
         let mut narrow = Vec::new();

@@ -553,12 +553,12 @@ impl Model {
         self.size.0 < MIN_SIZE.0 || self.size.1 < MIN_SIZE.1
     }
 
-    pub fn apply(&mut self, update: Update) {
+    pub fn apply(&mut self, update: Update) -> Vec<Command> {
         match update {
             Update::Services(index, defined, listed) => self.apply_services(index, defined, listed),
             Update::Health(index, list) => {
                 if index != self.selected {
-                    return;
+                    return Vec::new();
                 }
                 self.health = list;
                 for service in &mut self.services {
@@ -568,10 +568,10 @@ impl Model {
             Update::Logs(index, service, Ok(lines)) => {
                 self.clear_error(&format!("logs {service}"));
                 if index != self.selected {
-                    return;
+                    return Vec::new();
                 }
                 let Some(logs) = self.logs.as_mut().filter(|logs| logs.service == service) else {
-                    return;
+                    return Vec::new();
                 };
                 logs.lines
                     .extend(lines.iter().map(|line| untimed(line).to_string()));
@@ -601,6 +601,7 @@ impl Model {
                     self.cursor = Cursor::Device(at.min(last));
                 }
                 self.clear_error("sot");
+                return self.show_cursor();
             }
             Update::Devices(Err(text)) => self.fail("sot", text),
             Update::Metrics(Ok(samples)) => {
@@ -630,7 +631,7 @@ impl Model {
             Update::DeviceLogs(device, Ok(lines)) => {
                 self.clear_error("loki");
                 if !self.is_selected(&device) {
-                    return;
+                    return Vec::new();
                 }
                 for line in lines {
                     if self.device_lines.iter().all(|held| held.line != line) {
@@ -673,6 +674,7 @@ impl Model {
                 self.fail("nodes", text);
             }
         }
+        Vec::new()
     }
 
     fn end_run(&mut self, end: End) {
@@ -1340,11 +1342,11 @@ impl Model {
     fn workbench_key(&mut self, key: KeyEvent) -> Vec<Command> {
         if self.filter.typing {
             self.filter.type_key(key.code);
-            return Vec::new();
+            return self.show_cursor();
         }
         if self.device_filter.typing {
             self.device_filter.type_key(key.code);
-            return Vec::new();
+            return self.show_cursor();
         }
         if self.logs_filter.typing {
             self.logs_filter.type_key(key.code);
@@ -1527,11 +1529,31 @@ impl Model {
         let Some(next) = next else {
             return Vec::new();
         };
-        self.cursor = next;
-        match next {
-            Cursor::Device(index) => self.select_device(index),
-            Cursor::Alert(_) => Vec::new(),
+        if let Cursor::Device(index) = next {
+            return self.go_device(index);
         }
+        self.cursor = next;
+        Vec::new()
+    }
+
+    fn go_device(&mut self, index: usize) -> Vec<Command> {
+        self.cursor = Cursor::Device(index);
+        self.select_device(index)
+    }
+
+    fn show_cursor(&mut self) -> Vec<Command> {
+        let mut commands = Vec::new();
+        let stacks = self.visible_stacks();
+        if let Some(&first) = stacks.first().filter(|_| !stacks.contains(&self.selected)) {
+            commands.extend(self.go_stack(first));
+        }
+        let devices = self.visible_devices();
+        if let (Cursor::Device(at), Some(&first)) = (self.cursor, devices.first()) {
+            if !devices.contains(&at) {
+                commands.extend(self.go_device(first));
+            }
+        }
+        commands
     }
 
     fn enter_cursor(&mut self) -> Vec<Command> {
@@ -1656,12 +1678,14 @@ impl Model {
             visible.rev().find(|index| *index < self.selected)
         };
         match next {
-            Some(index) => {
-                self.select(index);
-                vec![Command::SelectStack(index)]
-            }
+            Some(index) => self.go_stack(index),
             None => Vec::new(),
         }
+    }
+
+    fn go_stack(&mut self, index: usize) -> Vec<Command> {
+        self.select(index);
+        vec![Command::SelectStack(index)]
     }
 
     fn overview_key(&mut self, code: KeyCode) -> Vec<Command> {
@@ -3040,7 +3064,7 @@ pub(crate) mod tests {
         code(&mut model, KeyCode::Enter);
 
         assert_eq!(model.visible_stacks(), [1, 2]);
-        assert_eq!(ch(&mut model, 'j'), [Command::SelectStack(1)]);
+        assert_eq!(model.selected_stack(), 1);
         assert_eq!(ch(&mut model, 'j'), [Command::SelectStack(2)]);
         assert_eq!(ch(&mut model, 'j'), []);
         assert_eq!(ch(&mut model, 'k'), [Command::SelectStack(1)]);
@@ -4538,18 +4562,7 @@ pub(crate) mod tests {
         assert_eq!(model.interface_row(), 0);
 
         let mut model = devices_model(workshop_located("infrahub"));
-        let alerts = |count: usize| {
-            Update::Alerts(Ok((0..count)
-                .map(|index| {
-                    alert(
-                        "srl1",
-                        &format!("a{index}"),
-                        &format!("2026-11-09T13:5{index}:00Z"),
-                    )
-                })
-                .collect()))
-        };
-        model.apply(alerts(3));
+        model.apply(srl1_alerts(3));
         code(&mut model, KeyCode::Enter);
         ch(&mut model, ']');
         ch(&mut model, ']');
@@ -4557,9 +4570,118 @@ pub(crate) mod tests {
         ch(&mut model, 'j');
         ch(&mut model, 'j');
         assert_eq!(model.timeline_row(), 2);
-        model.apply(alerts(1));
+        model.apply(srl1_alerts(1));
         assert_eq!(model.timeline().len(), 1);
         assert_eq!(model.timeline_row(), 0);
+    }
+
+    fn srl1_alerts(count: usize) -> Update {
+        Update::Alerts(Ok((0..count)
+            .map(|index| {
+                alert(
+                    "srl1",
+                    &format!("a{index}"),
+                    &format!("2026-11-09T13:5{index}:00Z"),
+                )
+            })
+            .collect()))
+    }
+
+    #[test]
+    fn k_in_the_timeline_moves_from_the_row_shown_after_entries_leave() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(srl1_alerts(4));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        for _ in 0..3 {
+            ch(&mut model, 'j');
+        }
+        assert_eq!(model.timeline_row(), 3);
+        model.apply(srl1_alerts(2));
+        assert_eq!(model.timeline_row(), 1);
+
+        ch(&mut model, 'k');
+
+        assert_eq!(model.timeline_row(), 0);
+    }
+
+    #[test]
+    fn a_typed_filter_moves_the_cursor_only_off_a_hidden_row_and_starts_what_j_starts() {
+        let on_beta = || {
+            let mut model = opened(&["alpha", "beta", "gamma"]);
+            ch(&mut model, 'j');
+            model
+        };
+        let mut twin = on_beta();
+        let by_j = ch(&mut twin, 'j');
+        assert_eq!(by_j, [Command::SelectStack(2)]);
+        let mut model = on_beta();
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, 'g'), by_j);
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(snapshot(&model), snapshot(&twin));
+        ch(&mut model, '/');
+        assert_eq!(code(&mut model, KeyCode::Esc), []);
+        assert_eq!(model.selected_stack(), 2);
+
+        let mut model = on_beta();
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, 'a'), []);
+        code(&mut model, KeyCode::Backspace);
+        assert_eq!(ch(&mut model, 'z'), []);
+        assert_eq!(ch(&mut model, 'z'), []);
+        assert!(model.visible_stacks().is_empty());
+        assert_eq!(model.selected_stack(), 1);
+
+        let devices = || devices_model(workshop_located("infrahub"));
+        let mut twin = devices();
+        let by_j = ch(&mut twin, 'j');
+        assert_eq!(by_j, [Command::SelectDevice("srl2".to_string())]);
+        let mut model = devices();
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, '2'), by_j);
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(
+            (snapshot(&model), model.cursor(), model.device),
+            (snapshot(&twin), twin.cursor(), twin.device)
+        );
+        ch(&mut model, '/');
+        assert_eq!(code(&mut model, KeyCode::Esc), []);
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, 'z'), []);
+        assert_eq!(ch(&mut model, 'z'), []);
+        assert!(model.visible_devices().is_empty());
+        assert_eq!(model.cursor(), Cursor::Device(1));
+
+        let mut model = devices();
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, '1'), []);
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+    }
+
+    #[test]
+    fn a_new_device_list_that_hides_the_cursor_row_under_a_kept_filter_moves_it_and_tells_the_pollers(
+    ) {
+        let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, 'j');
+        ch(&mut model, '/');
+        typed(&mut model, "srl2");
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.cursor(), Cursor::Device(1));
+        let mut list = model.devices().to_vec();
+        let mut srl0 = list[0].clone();
+        srl0.name = "srl0".to_string();
+        list.insert(0, srl0);
+
+        let commands = model.apply(Update::Devices(Ok(list)));
+
+        assert_eq!(commands, [Command::SelectDevice("srl2".to_string())]);
+        assert_eq!(model.cursor(), Cursor::Device(2));
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
     }
 
     #[test]

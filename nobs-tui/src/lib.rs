@@ -139,7 +139,7 @@ impl Actions {
                 Update::ActionEnded(end) => Some(end),
                 _ => None,
             };
-            model.apply(update);
+            send(model.apply(update), self, pollers);
             if let Some(end) = ended {
                 self.running = None;
                 pollers.send(Command::Refresh);
@@ -174,7 +174,7 @@ fn turns<B: Backend>(
     let mut gone = false;
     loop {
         let until = Instant::now() + DRAIN_LIMIT;
-        drain(updates, model, &mut gone);
+        drain(updates, model, &mut gone, actions, pollers);
         match actions.drain_until_quit(model, pollers, until) {
             Some(End::NotStopped { group }) => {
                 return Err(shell::not_stopped(group));
@@ -188,14 +188,7 @@ fn turns<B: Backend>(
         let area = Rect::new(0, 0, size.width, size.height);
         model.set_help_overflow(screen::help_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
-            for command in handle(model, key) {
-                match &command {
-                    Command::Run { program, args } => actions.start(program, args),
-                    Command::Stop => actions.stop(),
-                    _ => {}
-                }
-                pollers.send(command);
-            }
+            send(handle(model, key), actions, pollers);
         }
         if model.quit() {
             return Ok(model.exit_code());
@@ -203,15 +196,36 @@ fn turns<B: Backend>(
     }
 }
 
-fn drain(updates: &Receiver<Update>, model: &mut Model, gone: &mut bool) {
+fn send(commands: Vec<Command>, actions: &mut Actions, pollers: &Pollers) {
+    for command in commands {
+        match &command {
+            Command::Run { program, args } => actions.start(program, args),
+            Command::Stop => actions.stop(),
+            _ => {}
+        }
+        pollers.send(command);
+    }
+}
+
+fn drain(
+    updates: &Receiver<Update>,
+    model: &mut Model,
+    gone: &mut bool,
+    actions: &mut Actions,
+    pollers: &Pollers,
+) {
     let until = Instant::now() + DRAIN_LIMIT;
     while !*gone && Instant::now() < until {
         match updates.try_recv() {
-            Ok(update) => model.apply(update),
+            Ok(update) => send(model.apply(update), actions, pollers),
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 *gone = true;
-                model.apply(Update::Stopped("poll".to_string()));
+                send(
+                    model.apply(Update::Stopped("poll".to_string())),
+                    actions,
+                    pollers,
+                );
             }
         }
     }
@@ -668,7 +682,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while model.error().is_none_or(|(source, ..)| source != "ps") && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
-            drain(&updates, &mut model, &mut gone);
+            drain(&updates, &mut model, &mut gone, &mut actions(), &pollers);
         }
 
         turns(
