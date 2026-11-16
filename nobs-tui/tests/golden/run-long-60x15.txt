@@ -5,11 +5,11 @@
 │                     ││ SERVICE  STATE  HLTH  PORT        │
 │                     ││                                   │
 │                     ││                                   │
+│                     ││                                   │
 └─────────────────────┘└───────────────────────────────────┘
 ┌ run  nobs-t-packt up  running 2s ────────────── Esc fold ┐
-│$ nobs                                                    │
-│--dir /Users/netpanda/projects/nobs/target/slice-21-worksh│
-│ops/workshops/packt nobs-t-packt up                       │
+│$ nobs --dir /Users/netpanda/projects/nobs/target/slice-21│
+│-workshops/workshops/packt nobs-t-packt up                │
 │ Container nobs-t-packt-sonda-1  Starting                 │
 └──────────────────────────────────────────────────────────┘
  Tab focus  j/k move  / filter  l logs  r refresh  u up

@@ -653,7 +653,7 @@ fn the_sonda_top_line_ends_at_a_whole_word_and_its_key_row_at_a_whole_hint_at_60
     let rows = lines(&render(sonda_model(), 60, 15));
 
     assert!(
-        rows[4].ends_with("││http://localhost:8085  refreshed … │"),
+        rows[4].ends_with("││http://localhost:8085              │"),
         "{}",
         rows[4]
     );
@@ -662,6 +662,94 @@ fn the_sonda_top_line_ends_at_a_whole_word_and_its_key_row_at_a_whole_hint_at_60
         "{}",
         rows[11]
     );
+}
+
+fn sonda_failed(error: &str) -> Shell {
+    let mut model = sonda_model();
+    let at = model.now();
+    model.apply(Update::Sonda(data::Update {
+        at,
+        list: Err(error.to_string()),
+        selected: None,
+    }));
+    model
+}
+
+#[test]
+fn inside_a_stack_at_60_columns_a_sonda_error_stands_alone_with_its_end_and_its_age() {
+    let model = sonda_failed(
+        "cannot reach http://localhost:8085/scenarios: io: Connection refused (os error 61)",
+    );
+
+    let rows = lines(&render(model, 60, 15));
+
+    assert!(
+        rows[4].ends_with("││… refused (os error 61) (2s ago)   │"),
+        "{}",
+        rows.join("\n")
+    );
+}
+
+#[test]
+fn a_wide_sonda_top_line_keeps_the_server_the_age_and_a_short_error() {
+    let rows = lines(&render(sonda_failed("refused"), 100, 30));
+
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("││http://localhost:8085  refreshed 2s ago  refused (2s ago)")),
+        "{}",
+        rows.join("\n")
+    );
+}
+
+fn sonda_table_at_60(names: &[&str]) -> Vec<String> {
+    let mut model = sonda_model();
+    let at = model.now();
+    let scenarios: Vec<String> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            format!(
+                r#"{{"id":"a{index}","name":"{name}","state":"running","elapsed_secs":12,"degraded":false}}"#
+            )
+        })
+        .collect();
+    model.apply(Update::Sonda(data::Update {
+        at,
+        list: Ok(format!(r#"{{"scenarios":[{}]}}"#, scenarios.join(","))),
+        selected: None,
+    }));
+    let rows = lines(&render(model, 60, 15));
+    rows[6..7 + names.len()]
+        .iter()
+        .map(|row| row.split('│').nth(4).unwrap_or_default().to_string())
+        .collect()
+}
+
+#[test]
+fn inside_a_stack_at_60_columns_the_sonda_table_lets_state_go_before_it_cuts_a_name() {
+    let short = sonda_table_at_60(&["cpu", "mem"]);
+    assert!(
+        short[0].contains("NAME") && short[0].contains("STATE"),
+        "{short:?}"
+    );
+    assert!(
+        short[1].contains("cpu") && short[1].contains("running"),
+        "{short:?}"
+    );
+
+    let middle = sonda_table_at_60(&["interface-flap", "cpu"]);
+    assert!(
+        middle[0].contains("NAME") && !middle[0].contains("STATE"),
+        "{middle:?}"
+    );
+    assert!(
+        middle[1].contains("interface-flap") && !middle[1].contains("running"),
+        "{middle:?}"
+    );
+
+    let long = sonda_table_at_60(&["a-scenario-name-longer-than-the-table"]);
+    assert_eq!(long[1].trim_end(), "> a-scenario-nam…", "{long:?}");
 }
 
 #[test]

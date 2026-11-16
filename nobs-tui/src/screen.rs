@@ -214,7 +214,7 @@ fn row_marker(model: &Model, selected: bool, target: &Target) -> &'static str {
     }
 }
 
-fn fit(text: &str, width: usize) -> String {
+pub(crate) fn fit(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return format!("{text:<width$}");
     }
@@ -222,11 +222,28 @@ fn fit(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
+pub(crate) fn widest<const N: usize, S: AsRef<str>>(
+    titles: [&str; N],
+    rows: &[[S; N]],
+) -> [usize; N] {
+    let mut widths = titles.map(|title| title.chars().count());
+    for row in rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.as_ref().chars().count());
+        }
+    }
+    widths
+}
+
 fn wrapped(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows = Vec::new();
     let mut row = String::new();
-    for (index, word) in text.split(' ').enumerate() {
+    let words = text.split(' ').flat_map(|piece| {
+        let whole = piece.chars().count() <= width;
+        piece.split(move |letter| letter == NO_BREAK && !whole)
+    });
+    for (index, word) in words.enumerate() {
         let gap = if index == 0 { "" } else { " " };
         let used = row.chars().count() + gap.len();
         let length = word.chars().count();
@@ -236,7 +253,7 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
             continue;
         }
         let mut letters: Vec<char> = word.chars().collect();
-        if length > width && used < width && !word.contains(NO_BREAK) {
+        if length > width && used < width {
             row.push_str(gap);
             row.extend(letters.drain(..width - used));
         }
@@ -547,12 +564,7 @@ fn overview(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         "PORT",
         "AGE",
     ];
-    let mut widths = titles.map(|title| title.chars().count());
-    for row in &rows {
-        for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
-        }
-    }
+    let mut widths = widest(titles, &rows);
     let fixed = 1 + widths[1..columns]
         .iter()
         .map(|width| width + 2)
@@ -879,12 +891,7 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             ]
         })
         .collect();
-    let mut widths = titles.map(|title| title.chars().count());
-    for row in &cells {
-        for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
-        }
-    }
+    let widths = widest(titles, &cells);
     let width = usize::from(area.width);
     let line = |row: &[&str; 6], yellow: bool, states: bool| {
         let parts = columns
@@ -2036,12 +2043,12 @@ mod tests {
     }
 
     #[test]
-    fn the_walk_runs_a_four_row_command_and_a_three_row_last_line_at_60_columns() {
+    fn the_walk_runs_a_three_row_command_and_a_three_row_last_line_at_60_columns() {
         for bench in benches() {
             let model = staged(&bench, bench.tabs[0].0, false, Keys::Hints, true);
             let run = model.run().unwrap();
 
-            assert_eq!(command_rows(run, 58).len(), 4, "{}", bench.selected);
+            assert_eq!(command_rows(run, 58).len(), 3, "{}", bench.selected);
             assert_eq!(wrapped(REFUSAL, 58).len(), 3, "{}", bench.selected);
         }
     }
@@ -2073,6 +2080,7 @@ mod tests {
             );
             if gave_way(model, *width, *height) {
                 assert!(model.question().is_some(), "{label}\n{screen}");
+                assert!(model.error().is_some(), "{label}\n{screen}");
                 given_way.push(label.clone());
                 continue;
             }
@@ -2091,14 +2099,8 @@ mod tests {
         assert_eq!(
             given_way,
             [
-                ">stack-12 Sonda 60x15 error false Question pane false",
-                ">stack-12 Sonda 60x15 error false Question pane true",
                 ">stack-12 Sonda 60x15 error true Question pane false",
                 ">stack-12 Sonda 60x15 error true Question pane true",
-                ">ch2 Overview 60x15 error true Question pane false",
-                ">ch2 Overview 60x15 error true Question pane true",
-                ">ch10 Overview 60x15 error true Question pane false",
-                ">ch10 Overview 60x15 error true Question pane true",
             ]
         );
     }
@@ -2146,11 +2148,11 @@ mod tests {
                 continue;
             };
             let rows = key_line(&model, usize::from(width));
-            let squeezed = |text: &str| text.split_whitespace().collect::<String>();
+            let joined: Vec<&str> = rows.iter().map(|row| row.trim()).collect();
 
             assert_eq!(
-                squeezed(&rows.concat()),
-                squeezed(&question.text()),
+                joined.join(" "),
+                question.text().replace(NO_BREAK, " "),
                 "{label}"
             );
             assert!(rows.iter().any(|row| row.contains("y/n")), "{label}");
@@ -2188,10 +2190,9 @@ mod tests {
 
             assert!(both_fit || !large, "{label}\n{screen}");
             if both_fit {
-                let squeezed = |text: &str| text.split_whitespace().collect::<String>();
                 assert_eq!(
-                    squeezed(&inside[..command_rows].concat()),
-                    squeezed(&command),
+                    inside[..command_rows].join(" "),
+                    command.replace(NO_BREAK, " "),
                     "{label}\n{screen}"
                 );
             } else {
@@ -2226,11 +2227,16 @@ mod tests {
                 let run = model.run().unwrap();
                 for (rows, room) in [(question, width), (command_rows(run, width - 2), width - 2)] {
                     for pair in &pairs {
-                        let start: String = pair.chars().take(room).collect();
+                        let whole_word = |word: &str| {
+                            word.chars().count() > room
+                                || rows
+                                    .iter()
+                                    .any(|row| row.split(' ').any(|seen| seen == word))
+                        };
                         let kept = if pair.chars().count() <= room {
                             rows.iter().any(|row| row.contains(pair))
                         } else {
-                            rows.contains(&start)
+                            pair.split(' ').all(whole_word)
                         };
                         assert!(kept, "{key} {width} {pair}\n{}", rows.join("\n"));
                     }

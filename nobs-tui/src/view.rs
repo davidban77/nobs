@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::data::{Model, Prompt};
-use crate::screen::{border_below, cut_words, first_row, rows_mark, whole_hints, Keep};
+use crate::screen::{
+    border_below, cut_words, first_row, fit, rows_mark, whole_hints, widest, Keep,
+};
 
 const KEYS: [&str; 5] = ["q quit", "j/k select", "r refresh", "l load", "d delete"];
 
@@ -52,17 +54,39 @@ fn top_line(model: &Model, now: Instant, width: usize) -> Line<'static> {
         Some(at) => format!("refreshed {}s ago", seconds(now, at)),
         None => "no answer yet".to_string(),
     };
-    let plain = format!("{}  {age}", model.server());
-    let Some((error, at)) = model.error().zip(model.error_at()) else {
-        return Line::from(cut_words(&plain, width, Keep::Start));
+    let server = model.server();
+    let error = model
+        .error()
+        .zip(model.error_at())
+        .map(|(text, at)| (text, format!(" ({}s ago)", seconds(now, at))));
+    let whole = error.as_ref().map(|(text, at)| format!("{text}{at}"));
+    let red = Style::new().fg(Color::Red);
+    let plain = [vec![server, age.as_str()], vec![server], Vec::new()]
+        .into_iter()
+        .filter(|plain| !plain.is_empty() || whole.is_some())
+        .find(|plain| {
+            let parts: Vec<&str> = plain.iter().copied().chain(whole.as_deref()).collect();
+            parts.join("  ").chars().count() <= width
+        });
+    let Some(plain) = plain else {
+        return match error {
+            Some((text, at)) => {
+                let room = width.saturating_sub(at.chars().count());
+                Line::from(Span::styled(
+                    format!("{}{at}", cut_words(text, room, Keep::End)),
+                    red,
+                ))
+            }
+            None => Line::from(cut_words(server, width, Keep::Start)),
+        };
     };
-    let age = format!(" ({}s ago)", seconds(now, at));
-    let room = width.saturating_sub(plain.chars().count() + "  ".len() + age.chars().count());
-    let error = format!("  {}{age}", cut_words(error, room, Keep::End));
-    Line::from(vec![
-        Span::raw(plain),
-        Span::styled(error, Style::new().fg(Color::Red)),
-    ])
+    let gap = if plain.is_empty() { "" } else { "  " };
+    let mut spans: Vec<Span<'static>> = (!plain.is_empty())
+        .then(|| Span::raw(plain.join("  ")))
+        .into_iter()
+        .collect();
+    spans.extend(whole.map(|whole| Span::styled(format!("{gap}{whole}"), red)));
+    Line::from(spans)
 }
 
 fn seconds(now: Instant, at: Instant) -> u64 {
@@ -84,19 +108,10 @@ fn table(model: &Model, width: u16) -> Table<'_> {
             ]
         })
         .collect();
-    let widths: Vec<usize> = (0..TITLES.len())
-        .map(|column| {
-            cells
-                .iter()
-                .map(|row| row[column].chars().count())
-                .chain([TITLES[column].chars().count()])
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
+    let mut widths = widest(TITLES, &cells);
     let room = usize::from(width).saturating_sub(2 + "> ".len());
     let mut kept = [true; 5];
-    for leaving in [0, 4, 3] {
+    for leaving in [0, 4, 3, 2] {
         let used = (0..TITLES.len())
             .filter(|column| kept[*column])
             .map(|column| widths[column] + 1)
@@ -108,9 +123,13 @@ fn table(model: &Model, width: u16) -> Table<'_> {
         kept[leaving] = false;
     }
     let columns: Vec<usize> = (0..TITLES.len()).filter(|column| kept[*column]).collect();
-    let rows = cells
-        .into_iter()
-        .map(|row| Row::new(columns.iter().map(|column| row[*column].clone())));
+    widths[1] = widths[1].min(room);
+    let rows = cells.into_iter().map(|row| {
+        Row::new(columns.iter().map(|column| match column {
+            1 => fit(&row[1], widths[1]),
+            _ => row[*column].clone(),
+        }))
+    });
     let constraints = columns.iter().map(|column| {
         let least = u16::try_from(widths[*column]).unwrap_or(u16::MAX);
         if *column == 1 {
@@ -300,17 +319,14 @@ mod tests {
             selected: None,
         });
 
-        let line = top_line(&model, at + Duration::from_secs(3), 100);
+        let line = top_line(&model, at + Duration::from_secs(3), 60);
 
         assert_eq!(
             line,
-            Line::from(vec![
-                Span::raw("http://127.0.0.1:18122  refreshed 3s ago"),
-                Span::styled(
-                    "  … io: Connection refused (os error 61) (2s ago)",
-                    Style::new().fg(Color::Red)
-                ),
-            ])
+            Line::from(Span::styled(
+                "… io: Connection refused (os error 61) (2s ago)",
+                Style::new().fg(Color::Red)
+            ))
         );
     }
 
