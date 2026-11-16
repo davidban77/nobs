@@ -187,6 +187,7 @@ fn turns<B: Backend>(
         terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         let area = Rect::new(0, 0, size.width, size.height);
         model.set_help_overflow(screen::help_overflow(model, area));
+        model.set_overview_overflow(screen::overview_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
             send(handle(model, key), actions, pollers);
         }
@@ -1534,6 +1535,61 @@ mod tests {
             let after = help_turn(&mut model, size, &[ch('k')]);
             assert_ne!(before, after, "{size:?}\n{}", after.join("\n"));
         }
+    }
+
+    fn with_sessions(name: &str, count: usize) -> Device {
+        let sessions = (1..=count)
+            .map(|index| sot::Session {
+                peer: format!("p{index:02}"),
+                afi_safi: None,
+                expected_state: None,
+                remote_as: None,
+                expected_prefixes: None,
+                reason: None,
+            })
+            .collect();
+        Device {
+            sessions,
+            ..device(name)
+        }
+    }
+
+    fn overview_model(sessions: usize) -> Model {
+        let mut model = devices_model();
+        model.apply(Update::Devices(Ok(vec![
+            with_sessions("srl1", sessions),
+            with_sessions("srl2", sessions),
+        ])));
+        model
+    }
+
+    #[test]
+    fn the_overview_is_back_at_its_first_line_with_a_new_device_and_inside_when_lines_leave() {
+        let mut model = overview_model(12);
+        let mut keys = vec![key(KeyCode::Tab)];
+        keys.extend([ch('j'); 5]);
+        help_turn(&mut model, (60, 15), &keys);
+        assert_eq!(model.overview_scroll(), 5);
+        help_turn(&mut model, (60, 15), &[key(KeyCode::Tab), ch('j')]);
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!(model.overview_scroll(), 0);
+
+        let mut model = overview_model(12);
+        let mut keys = vec![key(KeyCode::Tab)];
+        keys.extend([ch('j'); 20]);
+        help_turn(&mut model, (60, 15), &keys);
+        let limit = model.overview_scroll();
+        assert_eq!(
+            limit,
+            screen::overview_overflow(&model, Rect::new(0, 0, 60, 15))
+        );
+        model.apply(Update::Devices(Ok(vec![with_sessions("srl1", 2)])));
+        assert_eq!(model.overview_scroll(), limit);
+
+        let rows = help_turn(&mut model, (60, 15), &[]).join("\n");
+
+        assert!(rows.contains("kind "), "{rows}");
+        assert_eq!(model.overview_scroll(), 0);
     }
 
     #[test]

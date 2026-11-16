@@ -427,6 +427,8 @@ pub struct Model {
     window: u64,
     timeline_row: usize,
     popup: bool,
+    overview_scroll: usize,
+    overview_overflow: usize,
     program: PathBuf,
     run: Option<Run>,
     question: Option<Question>,
@@ -528,6 +530,8 @@ impl Model {
             window: WINDOW_MINUTES,
             timeline_row: 0,
             popup: false,
+            overview_scroll: 0,
+            overview_overflow: 0,
             program,
             run: None,
             question: None,
@@ -981,6 +985,15 @@ impl Model {
     pub(crate) fn set_help_overflow(&mut self, rows: usize) {
         self.help_overflow = rows;
         self.help_scroll = self.help_scroll.min(rows);
+    }
+
+    pub(crate) fn overview_scroll(&self) -> usize {
+        self.overview_scroll
+    }
+
+    pub(crate) fn set_overview_overflow(&mut self, lines: usize) {
+        self.overview_overflow = lines;
+        self.overview_scroll = self.overview_scroll.min(lines);
     }
 
     pub fn run_pane(&self) -> bool {
@@ -1478,6 +1491,7 @@ impl Model {
             _ => {}
         }
         match self.tab {
+            Tab::Overview => self.device_overview_key(key.code),
             Tab::Interfaces => self.interfaces_key(key.code),
             Tab::Timeline => self.timeline_key(key.code),
             Tab::Logs => self.device_logs_key(key.code),
@@ -1595,9 +1609,23 @@ impl Model {
             self.logs_scroll = 0;
             self.timeline_row = 0;
             self.interface_row = 0;
+            self.overview_scroll = 0;
             self.popup = false;
         }
         vec![Command::SelectDevice(name)]
+    }
+
+    fn device_overview_key(&mut self, code: KeyCode) -> Vec<Command> {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.overview_scroll = (self.overview_scroll + 1).min(self.overview_overflow);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.overview_scroll = self.overview_scroll.saturating_sub(1);
+            }
+            _ => {}
+        }
+        Vec::new()
     }
 
     fn interfaces_key(&mut self, code: KeyCode) -> Vec<Command> {

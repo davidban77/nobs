@@ -664,11 +664,23 @@ fn wall_seconds(model: &Model) -> i64 {
         })
 }
 
+fn device_panes(area: Rect) -> [Rect; 2] {
+    let left_width = if area.width >= WIDE {
+        LEFT_DEVICES
+    } else {
+        LEFT_NARROW
+    };
+    Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area)
+}
+
+fn tab_content(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Length(1), Constraint::Min(0)])
+        .areas(Block::bordered().inner(area))
+}
+
 fn devices(frame: &mut Frame, area: Rect, model: &Model) {
     let wide = area.width >= WIDE;
-    let left_width = if wide { LEFT_DEVICES } else { LEFT_NARROW };
-    let [left, right] =
-        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area);
+    let [left, right] = device_panes(area);
     device_list(frame, left, model, wide);
     device_detail(frame, right, model, wide);
 }
@@ -850,11 +862,8 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         || " devices ".to_string(),
         |device| format!(" {} ", device.name),
     );
-    let block = Block::bordered().title_top(title);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let [tab_row, content] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    frame.render_widget(Block::bordered().title_top(title), area);
+    let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     if let Some(note) = model.source_note() {
         let line = fitted(vec![(note.to_string(), DIM)], usize::from(content.width));
@@ -941,11 +950,28 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
 }
 
+pub(crate) fn overview_overflow(model: &Model, area: Rect) -> usize {
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, right] = device_panes(body);
+    let [_, content] = tab_content(right);
+    overview_lines(model, usize::from(content.width))
+        .len()
+        .saturating_sub(usize::from(content.height))
+}
+
 fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
+    let lines = overview_lines(model, usize::from(area.width));
+    let (room, total) = (usize::from(area.height), lines.len());
+    let first = model.overview_scroll().min(total.saturating_sub(room));
+    let shown: Vec<Line> = lines.into_iter().skip(first).collect();
+    frame.render_widget(Paragraph::new(shown), area);
+    rows_mark(frame, border_below(area), first, room, total);
+}
+
+fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
     let Some(device) = model.selected_device() else {
-        return;
+        return Vec::new();
     };
-    let width = usize::from(area.width);
     let plain = Style::new();
     let facts = |pieces: &[String], gap: &str| {
         let pieces: Vec<&str> = pieces.iter().map(String::as_str).collect();
@@ -1034,7 +1060,7 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
         ),
         None => facts(&[label("none")], ""),
     });
-    frame.render_widget(Paragraph::new(lines), area);
+    lines
 }
 
 fn kind_style(kind: devices::Kind) -> Style {
@@ -2821,6 +2847,61 @@ mod tests {
         open_tab(&mut model, Tab::Interfaces);
         focus_tabs(&mut model);
         model
+    }
+
+    fn sessions_of(count: usize) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let mut list = model.devices().to_vec();
+        let first = list[0].sessions[0].clone();
+        list[0].sessions = (1..=count)
+            .map(|index| {
+                let mut session = first.clone();
+                session.peer = format!("p{index:02}");
+                session
+            })
+            .collect();
+        model.apply(Update::Devices(Ok(list)));
+        focus_tabs(&mut model);
+        model
+    }
+
+    #[test]
+    fn the_device_overview_moves_by_one_line_and_says_how_many_lines_are_hidden() {
+        let mut model = sessions_of(12);
+        let turn = |model: &mut Model, key: char, times: usize| {
+            for _ in 0..times {
+                press(model, key);
+            }
+            let rows = drawn(model, 60, 15);
+            model.set_overview_overflow(overview_overflow(model, Rect::new(0, 0, 60, 15)));
+            let right: Vec<String> = rows
+                .iter()
+                .map(|row| row.chars().skip(usize::from(LEFT_NARROW)).collect())
+                .collect();
+            assert!(
+                right.iter().all(|row| !row.contains('>')),
+                "{}",
+                rows.join("\n")
+            );
+            rows.join("\n")
+        };
+        let steps = [
+            ('j', 0, "↓8", "kind ", true),
+            ('j', 1, "↑1 ↓7", "kind ", false),
+            ('j', 20, "↑8", "alerts   none", true),
+            ('k', 1, "↑7 ↓1", "alerts   none", false),
+        ];
+        for (key, times, mark, line, shown) in steps {
+            let screen = turn(&mut model, key, times);
+
+            let edge = format!("─ {mark} ─┘");
+            assert!(screen.contains(&edge), "{key} {times}: {edge}\n{screen}");
+            assert_eq!(
+                screen.contains(line),
+                shown,
+                "{key} {times}: {line}\n{screen}"
+            );
+        }
     }
 
     #[test]
