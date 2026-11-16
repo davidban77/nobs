@@ -644,6 +644,20 @@ fn the_paused_logs_frame_is_pinned() {
 }
 
 #[test]
+fn the_logs_with_hidden_lines_frame_is_pinned() {
+    golden("logs-hidden", || {
+        let mut model = logs_model(false);
+        let lines = (0..36).map(|index| format!("13:42:03 level=info msg=\"line {index:02}\""));
+        model.apply(Update::Logs(0, "loki".to_string(), Ok(lines.collect())));
+        press(&mut model, KeyCode::Char('f'));
+        for _ in 0..3 {
+            press(&mut model, KeyCode::Char('k'));
+        }
+        model
+    });
+}
+
+#[test]
 fn the_sonda_frame_is_pinned() {
     golden("sonda", sonda_model);
 }
@@ -844,6 +858,18 @@ fn the_devices_popup_frame_is_pinned() {
 #[test]
 fn the_devices_logs_frame_is_pinned() {
     golden("devices-logs", || on_tab(3));
+}
+
+#[test]
+fn the_devices_logs_with_hidden_lines_frame_is_pinned() {
+    golden("devices-logs-hidden", || {
+        let mut model = on_tab(3);
+        let older = (1..=35)
+            .map(|index| loki_line(100 + index, 0, &format!("log line {index:02}")))
+            .collect();
+        model.apply(Update::DeviceLogs("srl1".to_string(), Ok(older)));
+        model
+    });
 }
 
 #[test]

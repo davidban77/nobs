@@ -1761,11 +1761,11 @@ impl Model {
             }
             KeyCode::Char('/') => self.logs_filter.start(),
             KeyCode::Char('j') | KeyCode::Down if !self.logs_following => {
-                self.logs_scroll = self.logs_scroll.saturating_sub(1);
-            }
-            KeyCode::Char('k') | KeyCode::Up if !self.logs_following => {
                 let shown = self.shown_device_logs().len();
                 self.logs_scroll = (self.logs_scroll + 1).min(shown.saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up if !self.logs_following => {
+                self.logs_scroll = self.logs_scroll.saturating_sub(1);
             }
             _ => {}
         }

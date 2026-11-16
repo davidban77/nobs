@@ -629,9 +629,10 @@ fn logs(frame: &mut Frame, area: Rect, model: &Model) {
     let start = end.saturating_sub(usize::from(area.height));
     let shown: Vec<Line> = lines[start..end]
         .iter()
-        .map(|line| Line::from(*line))
+        .map(|line| Line::from(fit(line, usize::from(area.width))))
         .collect();
     frame.render_widget(Paragraph::new(shown), area);
+    rows_mark(frame, border_below(area), start, end - start, lines.len());
 }
 
 pub(crate) fn first_row(selected: usize, room: usize) -> usize {
@@ -1209,6 +1210,7 @@ fn device_logs(frame: &mut Frame, area: Rect, model: &Model) {
             Line::from(fit(&text, usize::from(area.width)))
         })
         .collect();
+    rows_mark(frame, border_below(area), start, shown.len(), lines.len());
     frame.render_widget(Paragraph::new(shown), area);
 }
 
@@ -3093,6 +3095,98 @@ mod tests {
                 "{key} {times}: {hidden}\n{screen}"
             );
         }
+    }
+
+    fn services_log_of(texts: Vec<String>) -> Model {
+        let mut model = opened("a");
+        model.apply(listing(0, Ok(vec![row("grafana", "running")])));
+        press(&mut model, 'l');
+        let lines = texts
+            .iter()
+            .map(|text| format!("2026-11-09T13:53:32Z {text}"))
+            .collect();
+        model.apply(Update::Logs(0, "grafana".to_string(), Ok(lines)));
+        model
+    }
+
+    fn device_log_of(count: i64) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let lines = (0..count)
+            .map(|index| log_line(index, &format!("line {index:02}")))
+            .collect();
+        model.apply(Update::DeviceLogs("srl1".to_string(), Ok(lines)));
+        open_tab(&mut model, Tab::Logs);
+        focus_tabs(&mut model);
+        model
+    }
+
+    fn forty_lines() -> Vec<String> {
+        (0..40).map(|index| format!("line {index:02}")).collect()
+    }
+
+    fn log_marked(model: &mut Model, mark: &str) -> String {
+        let rows = drawn(model, 60, 15);
+        let screen = rows.join("\n");
+        let edge = format!("─ {mark} ─┘");
+        assert!(
+            rows.iter().any(|row| row.ends_with(&edge)),
+            "{edge}\n{screen}"
+        );
+        screen
+    }
+
+    #[test]
+    fn the_service_log_pane_counts_the_lines_above_and_below() {
+        let mut model = services_log_of(forty_lines());
+        log_marked(&mut model, "↑32");
+        press(&mut model, 'f');
+
+        for (times, mark) in [(3, "↑29 ↓3"), (36, "↓39")] {
+            model = moved(model, 'k', times);
+            log_marked(&mut model, mark);
+        }
+    }
+
+    #[test]
+    fn the_device_log_pane_counts_the_lines_above_and_below() {
+        let mut model = device_log_of(40);
+        log_marked(&mut model, "↓32");
+        press(&mut model, 'f');
+
+        for (times, mark) in [(3, "↑3 ↓29"), (36, "↑39")] {
+            model = moved(model, 'j', times);
+            log_marked(&mut model, mark);
+        }
+    }
+
+    #[test]
+    fn in_the_paused_device_log_j_shows_the_older_lines_below_and_k_the_newer_above() {
+        for (down, up) in [
+            (KeyCode::Char('j'), KeyCode::Char('k')),
+            (KeyCode::Down, KeyCode::Up),
+        ] {
+            let mut model = device_log_of(40);
+            press(&mut model, 'f');
+
+            handle(&mut model, KeyEvent::new(down, KeyModifiers::NONE));
+            let screen = log_marked(&mut model, "↑1 ↓31");
+            assert!(!screen.contains("line 39"), "{down:?}\n{screen}");
+            assert!(screen.contains("line 38"), "{down:?}\n{screen}");
+
+            handle(&mut model, KeyEvent::new(up, KeyModifiers::NONE));
+            let screen = log_marked(&mut model, "↓32");
+            assert!(screen.contains("line 39"), "{up:?}\n{screen}");
+        }
+    }
+
+    #[test]
+    fn a_service_log_line_wider_than_the_pane_ends_with_an_ellipsis() {
+        let mut model = services_log_of(vec!["word ".repeat(30)]);
+
+        let rows = drawn(&mut model, 60, 15);
+
+        let row = row_with(&rows, "word word");
+        assert!(row.ends_with("…│"), "{}", rows.join("\n"));
     }
 
     #[test]
