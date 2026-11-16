@@ -50,7 +50,7 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 
 When a data call fails, one red line appears between the switcher and the body (see [Errors](#errors)).
 
-When a list holds more rows than its pane can draw, the right end of the border below its rows says how many rows are hidden: `↓16` means 16 rows below the last row drawn, `↑3` means 3 rows above the first row drawn, and `↑3 ↓13` means both; when there is no room for the whole mark, it is not shown.
+When a list has more rows than its pane can show, the border under the list ends with a mark that counts the hidden rows. `↓16` means 16 rows below the last row shown. `↑3` means 3 rows above the first row shown. `↑3 ↓13` means both. When there is no room for the whole mark, no mark is shown.
 
 ### The devices workbench
 
@@ -210,12 +210,12 @@ The sonda tab shows the scenarios of a running `sonda-server` (see [Sonda](#sond
 
 | Part | What it shows |
 |---|---|
-| top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error and its age, `(<n>s ago)`, when there is one |
+| top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error and its age, `(<n>s ago)`, when there is one. When the line is too short, whole parts leave: first `refreshed <n>s ago` or `no answer yet`, then the server address. An error that is still too long keeps its end and its age, for example `… refused (os error 61) (2s ago)`. With no error, a server address longer than the line ends in `…` |
 | left table | the scenarios, with the columns `ID` (its first 8 characters), `NAME`, `STATE`, `ELAPSED` (seconds) and `DEGRADED`; `>` marks the selected scenario |
 | right panel | what `nobs sonda stats` prints for the selected scenario, as `field  value` lines sorted by name (a text value keeps its quotes, for example `state  "running"`), then what `nobs sonda show` prints for it; the lines that do not fit are cut off |
 | bottom line | the keys of the tab, empty while the focus is on the stack list; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
 
-A state is shown as the server sends it, for example `running`, `paused` or `finished`. When the table is too narrow for all columns, whole columns leave in this order: `ID`, then `DEGRADED`, then `ELAPSED`, then `STATE`. `STATE` leaves only when the widest name does not fit beside it. `NAME` never leaves; a name longer than the table's room ends in `…`. For example, inside a stack the table shows `NAME`, `STATE`, `ELAPSED` and `DEGRADED` at 100 columns; at 60 columns it shows `NAME` and `STATE` for short names such as `cpu`, and only `NAME` for a name such as `interface-flap`.
+A state is shown as the server sends it, for example `running`, `paused` or `finished`. When the table is too narrow for all columns, whole columns leave in this order: `ID`, then `DEGRADED`, then `ELAPSED`, then `STATE`. `STATE` leaves only when the longest name does not fit beside it. `NAME` never leaves; a name too long for the table ends in `…`. For example, inside a stack the table shows `NAME`, `STATE`, `ELAPSED` and `DEGRADED` at 100 columns; at 60 columns it shows `NAME` and `STATE` for short names such as `cpu`, and only `NAME` for a name such as `interface-flap`.
 
 These keys work when the focus is on the tabs (press `Tab` to move it there):
 
