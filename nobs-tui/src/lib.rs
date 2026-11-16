@@ -188,6 +188,7 @@ fn turns<B: Backend>(
         let area = Rect::new(0, 0, size.width, size.height);
         model.set_help_overflow(screen::help_overflow(model, area));
         model.set_overview_overflow(screen::overview_overflow(model, area));
+        model.set_popup_overflow(screen::popup_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
             send(handle(model, key), actions, pollers);
         }
@@ -1590,6 +1591,59 @@ mod tests {
 
         assert!(rows.contains("kind "), "{rows}");
         assert_eq!(model.overview_scroll(), 0);
+    }
+
+    fn boxed_model() -> Model {
+        let mut model = devices_model();
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let text: Vec<String> = (1..=12).map(|index| format!("text {index:02}")).collect();
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![nobs_core::loki::Line {
+                nanoseconds: i64::try_from(now).unwrap(),
+                text: text.join("\n"),
+            }]),
+        ));
+        model
+    }
+
+    fn popup_limit(model: &Model, (width, height): (u16, u16)) -> usize {
+        screen::popup_overflow(model, Rect::new(0, 0, width, height))
+    }
+
+    #[test]
+    fn the_box_opens_at_its_first_line_and_its_first_line_exists_when_the_room_changes() {
+        let mut model = boxed_model();
+        let mut keys = vec![key(KeyCode::Tab), ch(']'), ch(']'), key(KeyCode::Enter)];
+        keys.extend([ch('j'); 5]);
+        help_turn(&mut model, (60, 15), &keys);
+        assert_eq!(model.tab(), shell::Tab::Timeline);
+        assert!(model.popup());
+        assert_eq!(model.popup_scroll(), 5);
+        handle(&mut model, key(KeyCode::Esc));
+        assert!(!model.popup());
+        handle(&mut model, key(KeyCode::Enter));
+        assert!(model.popup());
+        assert_eq!(model.popup_scroll(), 0);
+
+        help_turn(&mut model, (60, 15), &[ch('j'); 20]);
+        assert_eq!(model.popup_scroll(), popup_limit(&model, (60, 15)));
+        for size in [(100, 30), (60, 15)] {
+            let rows = help_turn(&mut model, size, &[]).join("\n");
+
+            let first = model.popup_scroll() + 1;
+            assert!(
+                rows.contains(&format!("text {first:02}")),
+                "{size:?}\n{rows}"
+            );
+            assert!(
+                model.popup_scroll() <= popup_limit(&model, size),
+                "{size:?}"
+            );
+        }
     }
 
     #[test]

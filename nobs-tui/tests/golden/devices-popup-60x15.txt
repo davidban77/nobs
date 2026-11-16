@@ -8,7 +8,7 @@
 │                     ││  │alertname=BgpSessionNotUp    │  │
 │                     ││  │device=srl1                  │  │
 ├ alerts 2 ───────────┤│  │peer_address=10.1.99.2       │  │
-│srl1  BgpSessionNotUp││  └─────────────────────────────┘  │
+│srl1  BgpSessionNotUp││  └──────────────────────── ↓1 ─┘  │
 │srl1  BgpSessionNotUp││                                   │
 └─────────────────────┘└────────────────────────────── ↓4 ─┘
  run  none                                           o open

@@ -426,7 +426,9 @@ pub struct Model {
     logs_filter: Filter,
     window: u64,
     timeline_row: usize,
-    popup: bool,
+    popup: Option<devices::Entry>,
+    popup_scroll: usize,
+    popup_overflow: usize,
     overview_scroll: usize,
     overview_overflow: usize,
     program: PathBuf,
@@ -529,7 +531,9 @@ impl Model {
             logs_filter: Filter::default(),
             window: WINDOW_MINUTES,
             timeline_row: 0,
-            popup: false,
+            popup: None,
+            popup_scroll: 0,
+            popup_overflow: 0,
             overview_scroll: 0,
             overview_overflow: 0,
             program,
@@ -996,6 +1000,15 @@ impl Model {
         self.overview_scroll = self.overview_scroll.min(lines);
     }
 
+    pub(crate) fn popup_scroll(&self) -> usize {
+        self.popup_scroll
+    }
+
+    pub(crate) fn set_popup_overflow(&mut self, lines: usize) {
+        self.popup_overflow = lines;
+        self.popup_scroll = self.popup_scroll.min(lines);
+    }
+
     pub fn run_pane(&self) -> bool {
         self.run_pane
     }
@@ -1134,7 +1147,11 @@ impl Model {
     }
 
     pub fn popup(&self) -> bool {
-        self.popup
+        self.popup.is_some()
+    }
+
+    pub(crate) fn popup_entry(&self) -> Option<&devices::Entry> {
+        self.popup.as_ref()
     }
 
     pub fn device_logs(&self) -> Option<ShownDeviceLogs<'_>> {
@@ -1447,8 +1464,8 @@ impl Model {
                 return vec![Command::CloseLogs];
             }
         }
-        if self.workbench == Workbench::Devices && self.popup {
-            self.popup = false;
+        if self.workbench == Workbench::Devices && self.popup.is_some() {
+            self.popup = None;
             return Vec::new();
         }
         self.focus = Focus::List;
@@ -1610,7 +1627,7 @@ impl Model {
             self.timeline_row = 0;
             self.interface_row = 0;
             self.overview_scroll = 0;
-            self.popup = false;
+            self.popup = None;
         }
         vec![Command::SelectDevice(name)]
     }
@@ -1640,17 +1657,26 @@ impl Model {
     }
 
     fn timeline_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let entries = self.timeline().len();
-        let last = entries.saturating_sub(1);
+        let entries = self.timeline();
+        let last = entries.len().saturating_sub(1);
         let row = self.timeline_row();
         match code {
+            KeyCode::Char('j') | KeyCode::Down if self.popup.is_some() => {
+                self.popup_scroll = (self.popup_scroll + 1).min(self.popup_overflow);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.popup.is_some() => {
+                self.popup_scroll = self.popup_scroll.saturating_sub(1);
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.timeline_row = (row + 1).min(last);
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.timeline_row = row.saturating_sub(1);
             }
-            KeyCode::Enter if entries > 0 => self.popup = true,
+            KeyCode::Enter if self.popup.is_none() => {
+                self.popup = entries.get(row).cloned();
+                self.popup_scroll = 0;
+            }
             KeyCode::Char('-') => {
                 self.window = (self.window / 2).max(WINDOW_MIN);
                 return vec![Command::Window(self.window)];

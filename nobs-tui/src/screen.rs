@@ -1123,20 +1123,43 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
         usize::from(rows.height),
         entries.len(),
     );
-    if model.popup() {
-        if let Some(entry) = entries.get(selected) {
-            timeline_popup(frame, area, entry);
-        }
+    if let Some(entry) = model.popup_entry() {
+        timeline_popup(frame, area, entry, model.popup_scroll());
     }
 }
 
-fn timeline_popup(frame: &mut Frame, area: Rect, entry: &devices::Entry) {
-    let popup = Rect::new(
+fn popup_area(area: Rect) -> Rect {
+    Rect::new(
         area.x + 2,
         area.y + 1,
         area.width.saturating_sub(4),
         area.height.saturating_sub(2),
-    );
+    )
+}
+
+fn popup_lines(entry: &devices::Entry, width: u16) -> Vec<String> {
+    entry
+        .text
+        .lines()
+        .flat_map(|line| wrapped(line, usize::from(width)))
+        .collect()
+}
+
+pub(crate) fn popup_overflow(model: &Model, area: Rect) -> usize {
+    let Some(entry) = model.popup_entry() else {
+        return 0;
+    };
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, right] = device_panes(body);
+    let [_, content] = tab_content(right);
+    let inner = Block::bordered().inner(popup_area(content));
+    popup_lines(entry, inner.width)
+        .len()
+        .saturating_sub(usize::from(inner.height))
+}
+
+fn timeline_popup(frame: &mut Frame, area: Rect, entry: &devices::Entry, scroll: usize) {
+    let popup = popup_area(area);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .title_top(format!(
@@ -1147,10 +1170,12 @@ fn timeline_popup(frame: &mut Frame, area: Rect, entry: &devices::Entry) {
         .title_top(Line::from(" Esc close ").right_aligned());
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    frame.render_widget(
-        Paragraph::new(entry.text.as_str()).wrap(Wrap { trim: false }),
-        inner,
-    );
+    let lines = popup_lines(entry, inner.width);
+    let (room, total) = (usize::from(inner.height), lines.len());
+    let first = scroll.min(total.saturating_sub(room));
+    let shown: Vec<Line> = lines.into_iter().skip(first).map(Line::from).collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+    rows_mark(frame, border_below(inner), first, room, total);
 }
 
 fn device_logs(frame: &mut Frame, area: Rect, model: &Model) {
@@ -2949,6 +2974,94 @@ mod tests {
                 "{key} {times}: {line}\n{screen}"
             );
         }
+    }
+
+    fn log_line(seconds: i64, text: &str) -> nobs_core::loki::Line {
+        nobs_core::loki::Line {
+            nanoseconds: seconds * 1_000_000_000,
+            text: text.to_string(),
+        }
+    }
+
+    fn boxed_entry() -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let text: Vec<String> = (1..=12).map(|index| format!("text {index:02}")).collect();
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![
+                log_line(2, &text.join("\n")),
+                log_line(1, "older entry"),
+            ]),
+        ));
+        open_tab(&mut model, Tab::Timeline);
+        focus_tabs(&mut model);
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        model
+    }
+
+    fn box_title(rows: &[String]) -> String {
+        let row = rows.iter().find(|row| row.contains("┌ log")).unwrap();
+        row.chars().skip(usize::from(LEFT_NARROW)).collect()
+    }
+
+    #[test]
+    fn the_box_of_an_entry_moves_its_text_by_one_line_and_says_how_many_lines_are_hidden() {
+        let mut model = boxed_entry();
+        let title = box_title(&drawn(&mut model, 60, 15));
+        let turn = |model: &mut Model, key: char, times: usize| {
+            for _ in 0..times {
+                press(model, key);
+            }
+            let rows = drawn(model, 60, 15);
+            model.set_popup_overflow(popup_overflow(model, Rect::new(0, 0, 60, 15)));
+            let screen = rows.join("\n");
+            assert_eq!(box_title(&rows), title, "{screen}");
+            assert_eq!(model.timeline_row(), 0, "{screen}");
+            let right: Vec<String> = rows
+                .iter()
+                .map(|row| row.chars().skip(usize::from(LEFT_NARROW)).collect())
+                .collect();
+            assert!(right.iter().all(|row| !row.contains('>')), "{screen}");
+            screen
+        };
+        let steps = [
+            ('j', 0, "↓8", "text 01", "text 12"),
+            ('j', 1, "↑1 ↓7", "text 02", "text 01"),
+            ('j', 20, "↑8", "text 12", "text 08"),
+            ('k', 1, "↑7 ↓1", "text 08", "text 12"),
+        ];
+        for (key, times, mark, shown, hidden) in steps {
+            let screen = turn(&mut model, key, times);
+
+            let edge = format!("─ {mark} ─┘  ");
+            assert!(screen.contains(&edge), "{key} {times}: {edge}\n{screen}");
+            assert!(screen.contains(shown), "{key} {times}: {shown}\n{screen}");
+            assert!(
+                !screen.contains(hidden),
+                "{key} {times}: {hidden}\n{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_open_box_keeps_the_entry_that_was_opened_when_newer_entries_arrive() {
+        let mut model = boxed_entry();
+        let before = drawn(&mut model, 60, 15);
+
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![log_line(3, "newest entry")]),
+        ));
+        let after = drawn(&mut model, 60, 15);
+
+        let screen = after.join("\n");
+        assert_eq!(model.timeline()[1].text.lines().next(), Some("text 01"));
+        assert_eq!(box_title(&after), box_title(&before), "{screen}");
+        assert!(screen.contains("text 01"), "{screen}");
+        assert!(!screen.contains("newest entry"), "{screen}");
     }
 
     #[test]
