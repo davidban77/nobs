@@ -435,6 +435,8 @@ pub struct Model {
     chapter: usize,
     nodes: Vec<book::NodeRow>,
     nodes_ok: bool,
+    node_row: usize,
+    interface_row: usize,
     quitting: bool,
 }
 
@@ -534,6 +536,8 @@ impl Model {
             chapter,
             nodes: Vec::new(),
             nodes_ok: false,
+            node_row: 0,
+            interface_row: 0,
             quitting: false,
         }
     }
@@ -657,8 +661,10 @@ impl Model {
                 }
             }
             Update::ActionEnded(end) => self.end_run(end),
-            Update::Nodes(Ok(rows)) => {
+            Update::Nodes(Ok(mut rows)) => {
+                rows.sort_by(|one, other| one.name.cmp(&other.name));
                 self.nodes = rows;
+                self.node_row = self.node_row.min(self.nodes.len().saturating_sub(1));
                 self.nodes_ok = true;
                 self.clear_error("nodes");
             }
@@ -805,6 +811,15 @@ impl Model {
     }
 
     fn lab_key(&mut self, code: KeyCode) -> Vec<Command> {
+        if self.focus == Focus::Tabs {
+            let last = self.nodes.len().saturating_sub(1);
+            match code {
+                KeyCode::Char('j') | KeyCode::Down => self.node_row = (self.node_row + 1).min(last),
+                KeyCode::Char('k') | KeyCode::Up => self.node_row = self.node_row.saturating_sub(1),
+                _ => {}
+            }
+            return Vec::new();
+        }
         let chapters = self.chapters();
         let next = match code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -1095,6 +1110,12 @@ impl Model {
 
     pub fn timeline_row(&self) -> usize {
         self.timeline_row
+            .min(self.timeline().len().saturating_sub(1))
+    }
+
+    pub(crate) fn interface_row(&self) -> usize {
+        self.interface_row
+            .min(self.interfaces().len().saturating_sub(1))
     }
 
     pub fn popup(&self) -> bool {
@@ -1201,6 +1222,10 @@ impl Model {
 
     pub fn nodes_ok(&self) -> bool {
         self.nodes_ok
+    }
+
+    pub(crate) fn node_row(&self) -> usize {
+        self.node_row
     }
 
     pub(crate) fn located(&self) -> Option<&Located> {
@@ -1368,6 +1393,9 @@ impl Model {
     fn switch(&mut self, workbench: Workbench) -> Vec<Command> {
         let left_devices = self.workbench == Workbench::Devices && workbench != Workbench::Devices;
         self.workbench = workbench;
+        if workbench == Workbench::Lab {
+            self.focus = Focus::List;
+        }
         let tabs: &[Tab] = match workbench {
             Workbench::Devices => &DEVICE_TABS,
             Workbench::Services => &SERVICES_TABS,
@@ -1448,6 +1476,7 @@ impl Model {
             _ => {}
         }
         match self.tab {
+            Tab::Interfaces => self.interfaces_key(key.code),
             Tab::Timeline => self.timeline_key(key.code),
             Tab::Logs => self.device_logs_key(key.code),
             _ => Vec::new(),
@@ -1543,20 +1572,33 @@ impl Model {
             self.rcas.clear();
             self.logs_scroll = 0;
             self.timeline_row = 0;
+            self.interface_row = 0;
             self.popup = false;
         }
         vec![Command::SelectDevice(name)]
     }
 
+    fn interfaces_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let last = self.interfaces().len().saturating_sub(1);
+        let row = self.interface_row();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.interface_row = (row + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => self.interface_row = row.saturating_sub(1),
+            _ => {}
+        }
+        Vec::new()
+    }
+
     fn timeline_key(&mut self, code: KeyCode) -> Vec<Command> {
         let entries = self.timeline().len();
         let last = entries.saturating_sub(1);
+        let row = self.timeline_row();
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.timeline_row = (self.timeline_row + 1).min(last);
+                self.timeline_row = (row + 1).min(last);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.timeline_row = self.timeline_row.saturating_sub(1).min(last);
+                self.timeline_row = row.saturating_sub(1);
             }
             KeyCode::Enter if entries > 0 => self.popup = true,
             KeyCode::Char('-') => {
@@ -4349,6 +4391,175 @@ pub(crate) mod tests {
             "-s{NO_BREAK}ch2? It takes the other chapters' services down. y/n"
         )));
         assert_eq!(opened(&["a"]).selected_chapter(), None);
+    }
+
+    fn nodes(names: &[&str]) -> Update {
+        Update::Nodes(Ok(names
+            .iter()
+            .map(|name| book::NodeRow {
+                name: name.to_string(),
+                kind: "nokia_srlinux".to_string(),
+                state: Some("running".to_string()),
+            })
+            .collect()))
+    }
+
+    #[test]
+    fn tab_moves_the_lab_focus_and_j_k_move_only_the_pane_with_the_focus() {
+        let mut model = book_model();
+        model.apply(nodes(&["a", "b", "c"]));
+        assert_eq!(model.focus(), Focus::List);
+
+        ch(&mut model, 'j');
+        assert_eq!((model.selected_chapter(), model.node_row()), (Some(1), 0));
+
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::Tabs);
+        ch(&mut model, 'j');
+        assert_eq!((model.selected_chapter(), model.node_row()), (Some(1), 1));
+
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::List);
+        ch(&mut model, 'k');
+        assert_eq!((model.selected_chapter(), model.node_row()), (Some(0), 1));
+
+        code(&mut model, KeyCode::Tab);
+        code(&mut model, KeyCode::Esc);
+        assert_eq!(model.focus(), Focus::List);
+
+        ch(&mut model, '1');
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::Tabs);
+        ch(&mut model, '3');
+        assert_eq!(
+            (model.workbench(), model.focus()),
+            (Workbench::Lab, Focus::List)
+        );
+    }
+
+    #[test]
+    fn an_action_asks_about_the_selected_chapter_in_both_focuses() {
+        let mut listed = book_model();
+        ch(&mut listed, 'j');
+        ch(&mut listed, 'D');
+        let question = listed.question().unwrap().text();
+        assert!(question.ends_with(&format!(
+            "-s{NO_BREAK}ch2? It takes the other chapters' services down. y/n"
+        )));
+        let lab = book_dir();
+        let deploy = nobs(&[
+            "--dir",
+            &lab,
+            "lab",
+            "deploy",
+            "--sudo-no-prompt",
+            "-s",
+            "ch2",
+        ]);
+        assert_eq!(ch(&mut listed, 'y'), std::slice::from_ref(&deploy));
+
+        let mut model = book_model();
+        model.apply(nodes(&["a", "b", "c"]));
+        ch(&mut model, 'j');
+        code(&mut model, KeyCode::Tab);
+        ch(&mut model, 'D');
+        assert_eq!(model.question().unwrap().text(), question);
+        ch(&mut model, 'n');
+        assert_eq!(model.question(), None);
+        ch(&mut model, 'D');
+        assert_eq!(model.question().unwrap().text(), question);
+        assert_eq!(ch(&mut model, 'y'), [deploy]);
+
+        ch(&mut model, '?');
+        model.set_help_overflow(5);
+        ch(&mut model, 'j');
+        assert_eq!((model.help_scroll(), model.node_row()), (1, 0));
+        code(&mut model, KeyCode::Esc);
+
+        let running = format!(
+            "one action at a time: {} is running",
+            model.run().unwrap().words
+        );
+        assert_eq!(model.focus(), Focus::Tabs);
+        assert_eq!(ch(&mut model, 'D'), []);
+        assert_eq!(model.notice(), Some(running.as_str()));
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::List);
+        assert_eq!(ch(&mut model, 'D'), []);
+        assert_eq!(model.notice(), Some(running.as_str()));
+        assert_eq!(model.question(), None);
+    }
+
+    #[test]
+    fn a_cursor_stays_on_a_row_that_exists() {
+        let mut model = book_model();
+        model.apply(nodes(&["b", "a"]));
+        let names: Vec<&str> = model.nodes().iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+
+        model.apply(nodes(&["a", "b", "c"]));
+        code(&mut model, KeyCode::Tab);
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.node_row(), 2);
+        model.apply(nodes(&["a"]));
+        assert_eq!(model.node_row(), 0);
+        model.apply(nodes(&[]));
+        assert_eq!(model.node_row(), 0);
+
+        let mut model = devices_model(workshop_located("infrahub"));
+        let mut list = model.devices().to_vec();
+        let first = list[0].interfaces[0].clone();
+        let named = |count: usize| {
+            (1..=count)
+                .map(|index| {
+                    let mut interface = first.clone();
+                    interface.name = format!("e{index}");
+                    interface
+                })
+                .collect::<Vec<_>>()
+        };
+        list[0].interfaces = named(5);
+        list[1].interfaces = named(5);
+        model.apply(Update::Devices(Ok(list.clone())));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        assert_eq!(model.tab(), Tab::Interfaces);
+        for _ in 0..4 {
+            ch(&mut model, 'j');
+        }
+        assert_eq!(model.interface_row(), 4);
+        list[0].interfaces = named(2);
+        model.apply(Update::Devices(Ok(list)));
+        assert_eq!(model.interface_row(), 1);
+        code(&mut model, KeyCode::Esc);
+        ch(&mut model, 'j');
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!(model.interface_row(), 0);
+
+        let mut model = devices_model(workshop_located("infrahub"));
+        let alerts = |count: usize| {
+            Update::Alerts(Ok((0..count)
+                .map(|index| {
+                    alert(
+                        "srl1",
+                        &format!("a{index}"),
+                        &format!("2026-11-09T13:5{index}:00Z"),
+                    )
+                })
+                .collect()))
+        };
+        model.apply(alerts(3));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        assert_eq!(model.tab(), Tab::Timeline);
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.timeline_row(), 2);
+        model.apply(alerts(1));
+        assert_eq!(model.timeline().len(), 1);
+        assert_eq!(model.timeline_row(), 0);
     }
 
     #[test]

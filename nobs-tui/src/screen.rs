@@ -893,10 +893,9 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         .collect();
     let widths = widest(titles, &cells);
     let width = usize::from(area.width);
-    let line = |row: &[&str; 6], yellow: bool, states: bool| {
-        let parts = columns
-            .iter()
-            .map(|&column| {
+    let line = |mark: &str, row: &[&str; 6], yellow: bool, states: bool| {
+        let parts = std::iter::once((mark.to_string(), Style::new()))
+            .chain(columns.iter().map(|&column| {
                 let text = if column == 5 {
                     row[column].to_string()
                 } else {
@@ -910,21 +909,29 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
                     Style::new()
                 };
                 (text, style)
-            })
+            }))
             .collect();
         fitted(parts, width)
     };
     let [table, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    let mut lines = vec![line(&titles, false, false)];
-    lines.extend(
-        cells
-            .iter()
-            .zip(&interfaces)
-            .map(|(row, source)| line(row, source.differs, true)),
-    );
-    frame.render_widget(Paragraph::new(lines), table);
     let room = usize::from(table.height).saturating_sub(1);
-    rows_mark(frame, border_below(area), 0, room, interfaces.len());
+    let on_tabs = model.focus() == Focus::Tabs;
+    let selected = model.interface_row();
+    let first = first_row(selected, room);
+    let mut lines = vec![line(" ", &titles, false, false)];
+    lines.extend(cells.iter().zip(&interfaces).enumerate().skip(first).map(
+        |(index, (row, source))| {
+            let here = on_tabs && index == selected;
+            let line = line(marker(here), row, source.differs, true);
+            if here {
+                highlighted(line, table.width)
+            } else {
+                line
+            }
+        },
+    ));
+    frame.render_widget(Paragraph::new(lines), table);
+    rows_mark(frame, border_below(area), first, room, interfaces.len());
     let differs = interfaces.iter().filter(|row| row.differs).count();
     let count = counted(interfaces.len(), "interface");
     let differs = format!("{differs} differs");
@@ -1339,8 +1346,6 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let block = Block::bordered().title_top(format!(" nodes {} ", rows.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let mut sorted: Vec<_> = rows.iter().collect();
-    sorted.sort_by(|one, other| one.name.cmp(&other.name));
     let width = |texts: Vec<&str>| {
         texts
             .iter()
@@ -1349,7 +1354,7 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .unwrap_or(0)
             .max(4)
     };
-    let states: Vec<(&str, Style)> = sorted
+    let states: Vec<(&str, Style)> = rows
         .iter()
         .map(|row| match row.state.as_deref() {
             _ if !model.nodes_ok() => ("?", tone("?")),
@@ -1358,7 +1363,7 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             Some(other) => (other, Style::new().fg(Color::Red)),
         })
         .collect();
-    let kind_width = width(sorted.iter().map(|row| row.kind.as_str()).collect());
+    let kind_width = width(rows.iter().map(|row| row.kind.as_str()).collect());
     let state_width = width(
         states
             .iter()
@@ -1367,23 +1372,32 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .collect(),
     );
     let fixed = 3 + if wide { kind_width + 2 } else { 0 } + state_width;
-    let name_width = width(sorted.iter().map(|row| row.name.as_str()).collect())
+    let name_width = width(rows.iter().map(|row| row.name.as_str()).collect())
         .min(usize::from(inner.width).saturating_sub(fixed));
-    let line = |name: &str, kind: &str, state: (&str, Style)| {
-        let mut parts = vec![(format!(" {}  ", fit(name, name_width)), Style::new())];
+    let line = |mark: &str, name: &str, kind: &str, state: (&str, Style)| {
+        let mut parts = vec![(format!("{mark}{}  ", fit(name, name_width)), Style::new())];
         if wide {
             parts.push((format!("{}  ", fit(kind, kind_width)), Style::new()));
         }
         parts.push((state.0.to_string(), state.1));
         fitted(parts, usize::from(inner.width))
     };
-    let mut lines = vec![line("NAME", "KIND", ("STATE", Style::new()))];
-    for (row, state) in sorted.iter().zip(states) {
-        lines.push(line(&row.name, &row.kind, state));
+    let room = usize::from(inner.height).saturating_sub(1);
+    let on_tabs = model.focus() == Focus::Tabs;
+    let selected = model.node_row();
+    let first = first_row(selected, room);
+    let mut lines = vec![line(" ", "NAME", "KIND", ("STATE", Style::new()))];
+    for (index, (row, state)) in rows.iter().zip(states).enumerate().skip(first) {
+        let here = on_tabs && index == selected;
+        let line = line(marker(here), &row.name, &row.kind, state);
+        lines.push(if here {
+            highlighted(line, inner.width)
+        } else {
+            line
+        });
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    let room = usize::from(inner.height).saturating_sub(1);
-    rows_mark(frame, border_below(inner), 0, room, sorted.len());
+    rows_mark(frame, border_below(inner), first, room, rows.len());
 }
 
 fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
@@ -2765,6 +2779,7 @@ mod tests {
             })
             .collect();
         model.apply(Update::Nodes(Ok(nodes)));
+        focus_tabs(&mut model);
         model
     }
 
@@ -2781,6 +2796,7 @@ mod tests {
             .collect();
         model.apply(Update::Devices(Ok(list)));
         open_tab(&mut model, Tab::Interfaces);
+        focus_tabs(&mut model);
         model
     }
 
@@ -2841,13 +2857,23 @@ mod tests {
                 "┘",
                 &[(0, "↓7", "n00"), (5, "↑3 ↓4", "n05"), (9, "↑7", "n09")],
             ),
-            ("nodes", || nodes_of(10), 'j', "┘", &[(0, "↓5", "n01")]),
+            (
+                "nodes",
+                || nodes_of(10),
+                'j',
+                "┘",
+                &[(0, "↓5", ">n01"), (5, "↑1 ↓4", ">n06"), (9, "↑5", ">n10")],
+            ),
             (
                 "interfaces",
                 || interfaces_of(20),
                 'j',
                 "┘",
-                &[(0, "↓14", "e01")],
+                &[
+                    (0, "↓14", ">e01"),
+                    (10, "↑5 ↓9", ">e11"),
+                    (19, "↑14", ">e20"),
+                ],
             ),
             (
                 "chooser",
@@ -2875,6 +2901,28 @@ mod tests {
                 assert!(screen.contains(shown), "{label} {times}: {shown}\n{screen}");
             }
         }
+    }
+
+    #[test]
+    fn the_nodes_and_interfaces_mark_shows_only_with_the_focus_on_their_pane() {
+        let mut model = lab_bench(1);
+        let screen = drawn(&mut model, 60, 15).join("\n");
+        assert!(!screen.contains(">nobs-t-srl1"), "{screen}");
+        assert!(screen.contains(">ch1"), "{screen}");
+
+        focus_tabs(&mut model);
+        let screen = drawn(&mut model, 60, 15).join("\n");
+        assert!(screen.contains(">nobs-t-srl1"), "{screen}");
+        assert!(screen.contains(">ch1"), "{screen}");
+
+        let mut model = devices_model(workshop_located("infrahub"));
+        open_tab(&mut model, Tab::Interfaces);
+        let screen = drawn(&mut model, 60, 15).join("\n");
+        assert!(!screen.contains(">ethernet"), "{screen}");
+
+        focus_tabs(&mut model);
+        let screen = drawn(&mut model, 60, 15).join("\n");
+        assert!(screen.contains(">ethernet-1/1 "), "{screen}");
     }
 
     #[test]
