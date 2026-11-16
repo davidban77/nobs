@@ -1647,7 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lab_help_covers_the_open_pane_and_shows_all_sixteen_entries_at_60_by_15() {
+    fn the_lab_help_covers_the_open_pane_and_shows_all_seventeen_entries_at_60_by_15() {
         let mut model = lab_model();
 
         let rows = help_turn(&mut model, (60, 15), &[ch('o'), ch('?')]);
@@ -1656,7 +1656,7 @@ mod tests {
         let screen = rows.join("\n");
         assert_eq!(model.workbench(), Workbench::Lab);
         assert!(model.run_pane());
-        assert_eq!(entries.len(), 16);
+        assert_eq!(entries.len(), 17);
         for entry in &entries {
             assert!(shows_entry(&rows, entry), "{entry:?}\n{screen}");
         }

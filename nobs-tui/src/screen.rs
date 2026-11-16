@@ -61,13 +61,14 @@ const HELP_DEVICES: [(&str, &str); 12] = [
     ("o", "run pane"),
     ("?", "close"),
 ];
-const HELP_LAB: [(&str, &str); 6] = [
+const HELP_LAB: [(&str, &str); 7] = [
+    ("Tab", "focus other pane"),
     ("j k ↑ ↓", "move"),
     ("r", "refresh now"),
     ("o", "run pane"),
     ("x", "dismiss the error"),
     ("?", "close"),
-    ("Esc", "close/fold"),
+    ("Esc", "close/fold/back"),
 ];
 const WORKBENCHES: [(Workbench, &str, &str); 3] = [
     (Workbench::Devices, "1", "devices"),
@@ -1549,7 +1550,7 @@ fn key_hints(model: &Model) -> Vec<String> {
     let actions = action_hints(model);
     let fixed = match (model.workbench(), model.focus(), model.tab()) {
         (Workbench::Lab, ..) => {
-            return listed(vec!["j/k move"])
+            return listed(vec!["Tab focus", "j/k move"])
                 .chain(actions)
                 .chain(listed(vec!["r refresh", "o pane"]))
                 .collect();
@@ -1573,7 +1574,9 @@ fn key_hints(model: &Model) -> Vec<String> {
                 "r refresh",
             ]
         }
-        (Workbench::Devices, Focus::Tabs, Tab::Timeline) if model.popup() => vec!["Esc close"],
+        (Workbench::Devices, Focus::Tabs, Tab::Timeline) if model.popup() => {
+            vec!["j/k move", "Esc close"]
+        }
         (Workbench::Devices, Focus::Tabs, Tab::Timeline) => vec![
             "j/k move",
             "Enter full text",
@@ -1584,7 +1587,9 @@ fn key_hints(model: &Model) -> Vec<String> {
         (Workbench::Devices, Focus::Tabs, Tab::Logs) => {
             log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
         }
-        (Workbench::Devices, Focus::Tabs, _) => vec!["Tab focus", "[ ] tab", "Esc back"],
+        (Workbench::Devices, Focus::Tabs, _) => {
+            vec!["Tab focus", "j/k move", "[ ] tab", "Esc back"]
+        }
     };
     listed(fixed).chain(actions).collect()
 }
@@ -3062,6 +3067,45 @@ mod tests {
         assert_eq!(box_title(&after), box_title(&before), "{screen}");
         assert!(screen.contains("text 01"), "{screen}");
         assert!(!screen.contains("newest entry"), "{screen}");
+    }
+
+    #[test]
+    fn the_key_line_and_the_help_name_tab_and_j_k_for_each_lab_focus_and_the_device_tabs() {
+        let lab_line = " Tab focus  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show";
+        let mut lab = lab_bench(1);
+        assert_eq!(key_line(&lab, 100), [lab_line], "chapters");
+        focus_tabs(&mut lab);
+        assert_eq!(lab.focus(), Focus::Tabs);
+        assert_eq!(key_line(&lab, 100), [lab_line], "nodes");
+
+        let tab_line = " Tab focus  j/k move  [ ] tab  Esc back  ";
+        for (tab, start) in [
+            (Tab::Overview, tab_line),
+            (Tab::Interfaces, tab_line),
+            (
+                Tab::Timeline,
+                " j/k move  Enter full text  - + window  [ ] tab  Esc back  ",
+            ),
+            (
+                Tab::Logs,
+                " f pause  / filter  j/k scroll  [ ] tab  Esc back to list  ",
+            ),
+        ] {
+            let mut model = devices_bench();
+            open_tab(&mut model, tab);
+            focus_tabs(&mut model);
+            let line = key_line(&model, 100).concat();
+            assert!(line.starts_with(start), "{tab:?}: {line}");
+        }
+        let boxed = key_line(&boxed_entry(), 100).concat();
+        assert!(boxed.starts_with(" j/k move  Esc close  "), "{boxed}");
+
+        let entries = help_entries(&lab_bench(1));
+        assert_eq!(entries[1], ("Tab".to_string(), "focus other pane"));
+        assert!(entries.contains(&("Esc".to_string(), "close/fold/back")));
+        assert!(HELP_LAB
+            .iter()
+            .all(|(_, meaning)| meaning.chars().count() <= 17));
     }
 
     #[test]

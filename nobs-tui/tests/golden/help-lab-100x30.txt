@@ -9,13 +9,14 @@
 
   ┌ keys  lab workbench ─────────────────────────────────────────────────────────────────────────┐
   │1 2 3    switch workbench                      X       destroy                                │
-  │j k ↑ ↓  move                                  P       purge                                  │
-  │r        refresh now                           R       prepare                                │
-  │o        run pane                              U       update                                 │
-  │x        dismiss the error                     B       rebuild                                │
-  │?        close                                 S       show                                   │
-  │Esc      close/fold                            q       quit; asks in a run                    │
-  │D        deploy                                Ctrl-C  stop a run, or quit                    │
+  │Tab      focus other pane                      P       purge                                  │
+  │j k ↑ ↓  move                                  R       prepare                                │
+  │r        refresh now                           U       update                                 │
+  │o        run pane                              B       rebuild                                │
+  │x        dismiss the error                     S       show                                   │
+  │?        close                                 q       quit; asks in a run                    │
+  │Esc      close/fold/back                       Ctrl-C  stop a run, or quit                    │
+  │D        deploy                                                                               │
   │                                                                                              │
   │↑3 ↓13   3 rows hidden above, 13 below                                                        │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -26,5 +27,4 @@
 
 
 
-
- j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show  r refresh  o pane
+ Tab focus  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show

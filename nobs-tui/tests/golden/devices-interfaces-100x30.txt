@@ -27,4 +27,4 @@
 │                                        ││4 interfaces  1 differs                                 │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
  run  none                                                                                   o open
- Tab focus  [ ] tab  Esc back
+ Tab focus  j/k move  [ ] tab  Esc back
