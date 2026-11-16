@@ -599,22 +599,26 @@ mod tests {
         }
     }
 
+    fn all_at(stub: &Stub) -> Urls {
+        let address = || stub.url().to_string();
+        Urls {
+            grafana: address(),
+            prometheus: address(),
+            loki: address(),
+            alertmanager: address(),
+            infrahub: address(),
+            prefect: address(),
+            sonda: address(),
+        }
+    }
+
     #[test]
     fn the_device_sources_that_hold_on_never_delay_a_key() {
         let stub = Stub::start_silent(Duration::from_secs(2));
-        let address = || stub.url().to_string();
         let begin = Start {
             home: Workbench::Devices,
             source: Some(Arc::new(Holding)),
-            urls: Urls {
-                grafana: address(),
-                prometheus: address(),
-                loki: address(),
-                alertmanager: address(),
-                infrahub: address(),
-                prefect: address(),
-                sonda: address(),
-            },
+            urls: all_at(&stub),
             ..start(vec![stack(&[CLOSED])], false)
         };
         let (source, urls) = (begin.source.clone(), Some(begin.urls.clone()));
@@ -654,6 +658,48 @@ mod tests {
         assert!(elapsed < Duration::from_millis(100), "{elapsed:?}");
         let screen = text(&terminal);
         assert!(screen.contains("devices"), "{screen}");
+    }
+
+    #[test]
+    fn a_device_list_that_hides_the_cursor_row_under_a_kept_filter_tells_the_pollers_the_new_row() {
+        let stub = Stub::start(&[]);
+        let mut model = devices_model();
+        model.apply(Update::Devices(Ok(vec![device("srl1"), device("srl2")])));
+        for pressed in [ch('/'), ch('2'), key(KeyCode::Enter)] {
+            handle(&mut model, pressed);
+        }
+        let (pollers, _polled) = Pollers::start(
+            scripted(Vec::new()),
+            model.stacks().to_vec(),
+            model.selected_stack(),
+            target(),
+            Some(Arc::new(Holding)),
+            Some(all_at(&stub)),
+            None,
+        );
+        pollers.send(Command::OpenTab(Tab::Logs));
+        let (sender, updates) = mpsc::channel();
+        sender
+            .send(Update::Devices(Ok(vec![
+                device("srl0"),
+                device("srl1"),
+                device("srl2"),
+            ])))
+            .unwrap();
+
+        drain(&updates, &mut model, &mut false, &mut actions(), &pollers);
+
+        let asked = || {
+            stub.requests()
+                .iter()
+                .any(|seen| seen.path.contains("device%3D%22srl2%22"))
+        };
+        let end = Instant::now() + Duration::from_secs(5);
+        while !asked() && Instant::now() < end {
+            thread::sleep(Duration::from_millis(20));
+        }
+        pollers.send(Command::Quit);
+        assert!(asked(), "{:?}", stub.requests());
     }
 
     #[test]

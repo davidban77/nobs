@@ -624,13 +624,16 @@ impl Model {
                 list.sort_by_key(|alert| Reverse(time::parse_rfc3339(&alert.starts_at)));
                 self.alerts = list;
                 self.alerts_ok = true;
+                self.clear_error("alertmanager");
                 if let Cursor::Alert(at) = self.cursor {
-                    self.cursor = match self.alerts.len() {
-                        0 => Cursor::Device(self.devices.len().saturating_sub(1)),
-                        len => Cursor::Alert(at.min(len - 1)),
+                    return match self.alerts.len() {
+                        0 => self.go_last_shown_device(),
+                        len => {
+                            self.cursor = Cursor::Alert(at.min(len - 1));
+                            Vec::new()
+                        }
                     };
                 }
-                self.clear_error("alertmanager");
             }
             Update::Alerts(Err(text)) => {
                 self.alerts_ok = false;
@@ -1554,7 +1557,7 @@ impl Model {
             (Cursor::Alert(at), true) => {
                 (at + 1 < self.alerts.len()).then_some(Cursor::Alert(at + 1))
             }
-            (Cursor::Alert(0), false) => visible.last().map(|index| Cursor::Device(*index)),
+            (Cursor::Alert(0), false) => return self.go_last_shown_device(),
             (Cursor::Alert(at), false) => Some(Cursor::Alert(at - 1)),
         };
         let Some(next) = next else {
@@ -1570,6 +1573,13 @@ impl Model {
     fn go_device(&mut self, index: usize) -> Vec<Command> {
         self.cursor = Cursor::Device(index);
         self.select_device(index)
+    }
+
+    fn go_last_shown_device(&mut self) -> Vec<Command> {
+        match self.visible_devices().last() {
+            Some(&index) => self.go_device(index),
+            None => Vec::new(),
+        }
     }
 
     fn show_cursor(&mut self) -> Vec<Command> {
@@ -4736,6 +4746,31 @@ pub(crate) mod tests {
         assert_eq!(commands, [Command::SelectDevice("srl2".to_string())]);
         assert_eq!(model.cursor(), Cursor::Device(2));
         assert_eq!(model.selected_device().unwrap().name, "srl2");
+    }
+
+    #[test]
+    fn the_last_alert_leaving_under_a_kept_filter_moves_the_cursor_where_k_moves_it() {
+        let on_first_alert = || {
+            let mut model = devices_model(workshop_located("infrahub"));
+            ch(&mut model, 'j');
+            ch(&mut model, 'j');
+            assert_eq!(model.cursor(), Cursor::Alert(0));
+            ch(&mut model, '/');
+            ch(&mut model, '1');
+            code(&mut model, KeyCode::Enter);
+            model
+        };
+        let mut twin = on_first_alert();
+        let by_k = ch(&mut twin, 'k');
+        let mut model = on_first_alert();
+
+        let commands = model.apply(Update::Alerts(Ok(Vec::new())));
+
+        assert_eq!(commands, [Command::SelectDevice("srl1".to_string())]);
+        assert_eq!(commands, by_k);
+        assert_eq!(model.cursor(), Cursor::Device(0));
+        assert_eq!(model.cursor(), twin.cursor());
+        assert_eq!(model.selected_device().unwrap().name, "srl1");
     }
 
     #[test]
