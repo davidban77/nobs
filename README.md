@@ -15,7 +15,7 @@ Five words are used in this part:
 | workbench | one view of the screen for one kind of work: `1 devices`, `2 services` and, in a book lab only, `3 lab`; the keys `1`, `2` and `3` switch between them |
 | action | a nobs command that the screen runs for you when you press its key; an action that changes something asks `y/n` first (see [Actions](#actions)) |
 | stack | one group of containers that Docker Compose starts together: a workshop, one chapter of the book lab, or a labcli lab; the row `sonda only` is listed as a stack too, but it has no containers |
-| focus | the part of the screen that gets your keys, the stack list or the tabs; in the lab workbench, the chapters or the nodes; `Tab` moves it |
+| focus | the part of the screen that gets your keys, the stack list or the tabs, and in the sonda tab also the right panel; in the lab workbench, the chapters, the nodes or the overview; `Tab` moves it; the overview of the lab workbench and the right panel of the sonda tab have a double border (`╔═╗`) while they have the focus |
 | chooser | the list of labs that plain `nobs` shows when it finds no lab |
 
 ### Starting the screen
@@ -141,7 +141,7 @@ The interfaces tab shows one row per interface from the source of truth. A row i
 
 The timeline tab merges what happened to the device in a time window, at first the last 30 minutes, newest first: its alerts, its flow runs, its RCA records and its log lines. The first line counts each kind, for example `last 30m   alerts 2  flows 3  rca 1  logs 5`. Each row shows the time in UTC, the kind (`alert`, `flow`, `rca` or `log`) and the first line of the text. `j` and `k` move the row, `Enter` opens its full text in a box, and `Esc` closes the box. In the box, `j` and `k` move the text by one line, and the bottom border says how many lines are hidden. The box keeps the row it opened: newer rows still arrive in the timeline behind the box, and the text in the box does not change. To read another row, press `Esc`, move to it with `j` or `k`, and press `Enter`. `-` halves the window and `+` doubles it, between 1 minute and 24 hours. The same window sets how far back the logs tab looks.
 
-The logs tab shows the Loki lines of the device, newest first, each with its time in UTC, without the RCA records, which the timeline tab shows as `rca`. nobs asks for the last 200 lines at first, then again every 2 seconds while the log follows, and keeps the last 2,000. At the right end of the tab row it shows `<device>  following` or `<device>  paused`. When the row is too short it shows only `following` or `paused`, and at 60 columns it shows nothing. `f` pauses and resumes, `j` and `k` scroll a paused log, and `/` filters the lines (type the text, then `Enter` keeps the filter and `Esc` clears it). A line in JSON shows its `message` field instead of the whole line.
+The logs tab shows the Loki lines of the device, newest first, each with its time in UTC, without the RCA records, which the timeline tab shows as `rca`. nobs asks for the last 200 lines at first, then again every 2 seconds while the log follows, and keeps the last 2,000. At the right end of the tab row it shows `<device>  following` or `<device>  paused`. When the row is too short it shows only `following` or `paused`, and at 60 columns it shows nothing. `f` pauses and resumes, `j` and `k` scroll a paused log, and `/` filters the lines (type the text, then `Enter` keeps the filter and `Esc` clears it). When the log has more lines than the tab can show, the bottom border counts the hidden lines above and below, for example `↑29 ↓3`. A line in JSON shows its `message` field instead of the whole line.
 
 With `sot = "none"` in `nobs.toml`, the lab has no source of truth. The list and the body of the tab then show one dim line, `no source of truth (sot = "none")`, and the alerts box is still filled, because nobs asks Alertmanager whatever the source is. A labcli lab shows the same line.
 
@@ -186,7 +186,7 @@ The HTTP check is the probe of `nobs <workshop> status`. It sends one HTTP GET r
 
 A state is shown in colour: green for `running` and `ok`; yellow for `paused`, `restarting` and every `http <code>`; red for `down`, `exited` and `dead`; dim for `created`. `AGE` is dim.
 
-The logs tab shows the log of one service. Press `Enter` or `l` on a service in the overview tab to open it. nobs asks Docker Compose for the end of the log, then for the new lines. At the right end of the tab row, nobs shows `<service>  following` while the log follows new lines, and `<service>  paused` after you press `f` (only `following` or `paused` when the line is too short). `f` pauses and resumes. While the log is paused, `k` scrolls back and `j` scrolls forward. `/` filters the lines: type the text, then press `Enter` to keep the filter or `Esc` to clear it (to clear a kept filter, press `/` and then `Esc`). `Esc` closes the logs and returns to the stack list.
+The logs tab shows the log of one service. Press `Enter` or `l` on a service in the overview tab to open it. nobs asks Docker Compose for the end of the log, then for the new lines. At the right end of the tab row, nobs shows `<service>  following` while the log follows new lines, and `<service>  paused` after you press `f` (only `following` or `paused` when the line is too short). `f` pauses and resumes. While the log is paused, `k` scrolls back and `j` scrolls forward. When the log has more lines than the tab can show, the bottom border counts the hidden lines above and below, for example `↑29 ↓3`. `/` filters the lines: type the text, then press `Enter` to keep the filter or `Esc` to clear it (to clear a kept filter, press `/` and then `Esc`). `Esc` closes the logs and returns to the stack list.
 
 ### How often the screen asks
 
@@ -212,12 +212,12 @@ The sonda tab shows the scenarios of a running `sonda-server` (see [Sonda](#sond
 |---|---|
 | top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error and its age, `(<n>s ago)`, when there is one. When the line is too short, whole parts leave: first `refreshed <n>s ago` or `no answer yet`, then the server address. An error that is still too long keeps its end and its age, for example `… refused (os error 61) (2s ago)`. With no error, a server address longer than the line ends in `…` |
 | left table | the scenarios, with the columns `ID` (its first 8 characters), `NAME`, `STATE`, `ELAPSED` (seconds) and `DEGRADED`; `>` marks the selected scenario |
-| right panel | what `nobs sonda stats` prints for the selected scenario, as `field  value` lines sorted by name (a text value keeps its quotes, for example `state  "running"`), then what `nobs sonda show` prints for it; the lines that do not fit are cut off |
-| bottom line | the keys of the tab, empty while the focus is on the stack list; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
+| right panel | what `nobs sonda stats` prints for the selected scenario, as `field  value` lines sorted by name (a text value keeps its quotes, for example `state  "running"`), then what `nobs sonda show` prints for it; a line wider than the panel goes on in the next line, and a word wider than the panel goes on in pieces, so no letter is lost; when the panel has more lines than its room, its bottom border says how many lines are hidden, for example `↓2` |
+| bottom line | the keys of the tab, empty while the focus is on the stack list, and without `j/k select` while the focus is on the right panel; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
 
 A state is shown as the server sends it, for example `running`, `paused` or `finished`. When the table is too narrow for all columns, whole columns leave in this order: `ID`, then `DEGRADED`, then `ELAPSED`, then `STATE`. `STATE` leaves only when the longest name does not fit beside it. `NAME` never leaves; a name too long for the table ends in `…`. For example, inside a stack the table shows `NAME`, `STATE`, `ELAPSED` and `DEGRADED` at 100 columns; at 60 columns it shows `NAME` and `STATE` for short names such as `cpu`, and only `NAME` for a name such as `interface-flap`.
 
-These keys work when the focus is on the tabs (press `Tab` to move it there):
+`Tab` moves the focus from the stack list to the tabs, then to the right panel, then back to the stack list. These keys work when the focus is on the tabs or on the right panel. With the focus on the right panel, `j`, `k` and the arrow keys move the text of the panel by one line, and do not select another scenario:
 
 | Key | What it does |
 |---|---|
@@ -268,7 +268,7 @@ The left side has two boxes. The `nodes` box lists the nodes of the topology fil
 | `—` | dim | the node has no container |
 | `?` | dim | the last call failed, or no answer came yet |
 
-Under it, the `chapters` box lists the chapters of the lab, each with its state, as in the services workbench (see [The services workbench](#the-services-workbench)). A chapter counts only its own services. The workbench opens with the focus on the chapters. With the focus on the chapters, `j` and `k` move the selected chapter, which `>` marks. `Tab` moves the focus to the nodes. With the focus on the nodes, `j` and `k` move the selected node, and `>` marks it only then. The chapter keeps its `>`, and the action keys act on the selected chapter. `Tab` moves the focus back to the chapters.
+Under it, the `chapters` box lists the chapters of the lab, each with its state, as in the services workbench (see [The services workbench](#the-services-workbench)). A chapter counts only its own services. The workbench opens with the focus on the chapters. With the focus on the chapters, `j` and `k` move the selected chapter, which `>` marks. `Tab` moves the focus to the nodes. With the focus on the nodes, `j` and `k` move the selected node, and `>` marks it only then. The chapter keeps its `>`, and the action keys act on the selected chapter. The next `Tab` moves the focus to the overview on the right side, which then has a double border (`╔═╗`). With the focus on the overview, `j` and `k` move its text by one line, and the action keys still act on the selected chapter. When the overview has more lines than its pane can show, its bottom border says how many lines are hidden, for example `↓1`. The next `Tab` moves the focus back to the chapters.
 
 The right side shows the selected chapter on one tab, `OVERVIEW`:
 
@@ -350,7 +350,7 @@ Some keys refuse:
 - `m` does nothing in a book lab, nor when the device list is empty.
 - Only one action runs at a time. A second action key shows `one action at a time: <action> is running`.
 
-In the sonda tab, with the focus on the tabs, `d` does not take the stack down. It asks to delete the selected scenario (see [The Sonda tab](#the-sonda-tab)).
+In the sonda tab, with the focus on the tabs or on the right panel, `d` does not take the stack down. It asks to delete the selected scenario (see [The Sonda tab](#the-sonda-tab)).
 
 When the action starts, the run pane opens by itself. The title of the pane shows the command without its `--dir` folder, and its state: `running 12s` while it runs, then the end and how long it took:
 
@@ -406,9 +406,9 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | Key | What it does |
 |---|---|
 | `1` `2` `3` | open the devices workbench, the services workbench or the lab workbench; `3` works only in a book lab |
-| `Tab` | move the focus between the stack list and the tabs; in the devices workbench, between the device list and the tabs; in the lab workbench, between the chapters and the nodes |
-| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, the row in the interfaces tab and the row in the timeline tab; in the lab workbench, the chapter or the node; in the overview tab of a device and in the box of a timeline row, move the text by one line; scroll a paused log |
-| `[` `]` | open the previous or the next tab, when the focus is on the tabs; the devices workbench has four tabs |
+| `Tab` | move the focus between the stack list and the tabs; in the sonda tab, from the stack list to the tabs, then to the right panel, then back to the stack list; in the devices workbench, between the device list and the tabs; in the lab workbench, from the chapters to the nodes, then to the overview, then back to the chapters |
+| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, the row in the interfaces tab and the row in the timeline tab; in the lab workbench, the chapter or the node; in the overview tab of a device, in the box of a timeline row, in the overview of the lab workbench and in the right panel of the sonda tab, move the text by one line; scroll a paused log |
+| `[` `]` | open the previous or the next tab, when the focus is on the tabs, or on the right panel of the sonda tab; the devices workbench has four tabs |
 | `Enter` | in the list, move the focus to the tabs; in the overview tab, open the logs of the selected service; in the chooser, open the row; in the devices workbench, on a device move the focus to the tabs, on an alert select its device and open the timeline tab, and in the timeline tab open the full text of the row; in a question or a filter, confirm it |
 | `/` | filter the stacks or the devices by name, or the lines of the log; while you type, `Enter` keeps the filter and `Esc` clears it; when the filter hides the selected stack or device, the selection moves to the first row shown, and the right side follows; when the filter shows no row, the selection stays |
 | `r` | ask for new data now; in the sonda tab, ask the server for the list |

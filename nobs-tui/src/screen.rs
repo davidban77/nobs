@@ -27,7 +27,7 @@ const LEFT_WIDE: u16 = 32;
 const LEFT_DEVICES: u16 = 42;
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
-const HELP_SONDA: &str = "sonda tab: l load  d delete  r refresh";
+const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
 const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
 const HELP_QUIT: [(&str, &str); 2] = [
     ("q", "quit; asks in a run"),
@@ -62,7 +62,7 @@ const HELP_DEVICES: [(&str, &str); 12] = [
     ("?", "close"),
 ];
 const HELP_LAB: [(&str, &str); 7] = [
-    ("Tab", "focus other pane"),
+    ("Tab", "focus next pane"),
     ("j k ↑ ↓", "move"),
     ("r", "refresh now"),
     ("o", "run pane"),
@@ -3239,7 +3239,7 @@ mod tests {
         assert!(boxed.starts_with(" j/k move  Esc close  "), "{boxed}");
 
         let entries = help_entries(&lab_bench(1));
-        assert_eq!(entries[1], ("Tab".to_string(), "focus other pane"));
+        assert_eq!(entries[1], ("Tab".to_string(), "focus next pane"));
         assert!(entries.contains(&("Esc".to_string(), "close/fold/back")));
         assert!(HELP_LAB
             .iter()
@@ -3530,6 +3530,13 @@ mod tests {
             ],
             "{}",
             screens.join("\n\n")
+        );
+
+        press(&mut sonda, '?');
+        let help = drawn(&mut sonda, 60, 15).join("\n");
+        assert!(
+            help.contains("│sonda tab: Tab details  l load  d delete  r refresh"),
+            "{help}"
         );
     }
 
