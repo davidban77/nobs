@@ -15,7 +15,7 @@ Five words are used in this part:
 | workbench | one view of the screen for one kind of work: `1 devices`, `2 services` and, in a book lab only, `3 lab`; the keys `1`, `2` and `3` switch between them |
 | action | a nobs command that the screen runs for you when you press its key; an action that changes something asks `y/n` first (see [Actions](#actions)) |
 | stack | one group of containers that Docker Compose starts together: a workshop, one chapter of the book lab, or a labcli lab; the row `sonda only` is listed as a stack too, but it has no containers |
-| focus | the part of the screen that gets your keys, the stack list or the tabs; `Tab` moves it |
+| focus | the part of the screen that gets your keys, the stack list or the tabs; in the lab workbench, the chapters or the nodes; `Tab` moves it |
 | chooser | the list of labs that plain `nobs` shows when it finds no lab |
 
 ### Starting the screen
@@ -124,11 +124,11 @@ The overview tab shows these lines, from the top:
 | one per session | `10.1.99.2  ipv4-unicast  active  ! expected established` | the peer, the address family (the kind of routes the session carries, here IPv4) and the live state |
 | alert | `alerts   BgpSessionNotUp  warning  21s` | the newest firing alert of the device, with its severity and age; `alerts   none` when there is none; `alerts   ?` when Alertmanager did not answer |
 
-The live state of a session comes from Prometheus. It is `up`, `down`, `idle`, `connect` or `active`, or `unknown` for any other value. It is `—` when Prometheus has no value and `?` when Prometheus did not answer. The source of truth calls the up state `established`, so `established` and `up` mean the same.
+The live state of a session comes from Prometheus. It is `up`, `down`, `idle`, `connect` or `active`, or `unknown` for any other value. It is `—` when Prometheus has no value and `?` when Prometheus did not answer. The source of truth calls the up state `established`, so `established` and `up` mean the same. When the overview has more lines than room, `j` and `k` move it by one line while the focus is on the tabs, and its bottom border says how many lines are hidden.
 
 When the live state is not the intended one, the line ends with `! expected <state>` in yellow. This mark is not shown when the state is `?` or `—`, because those say nothing yet.
 
-The interfaces tab shows one row per interface from the source of truth. A row is yellow when its BGP session is not up, or when its admin state is up and its oper state is down. The last line counts the interfaces and the yellow rows, for example `4 interfaces  1 differs`. These are the columns:
+The interfaces tab shows one row per interface from the source of truth. A row is yellow when its BGP session is not up, or when its admin state is up and its oper state is down. The last line counts the interfaces and the yellow rows, for example `4 interfaces  1 differs`. While the focus is on the tabs, `j` and `k` move the selected row, and `>` marks it only then. These are the columns:
 
 | Column | What it shows |
 |---|---|
@@ -139,7 +139,7 @@ The interfaces tab shows one row per interface from the source of truth. A row i
 | `PEER` | the peer of the BGP session whose address lies in the subnet of the interface; empty when there is none; from 100 columns |
 | `BGP` | the live state of that session, with the same words as the overview tab; empty when there is no session |
 
-The timeline tab merges what happened to the device in a time window, at first the last 30 minutes, newest first: its alerts, its flow runs, its RCA records and its log lines. The first line counts each kind, for example `last 30m   alerts 2  flows 3  rca 1  logs 5`. Each row shows the time in UTC, the kind (`alert`, `flow`, `rca` or `log`) and the first line of the text. `j` and `k` move the row, `Enter` opens its full text in a box, and `Esc` closes the box. `-` halves the window and `+` doubles it, between 1 minute and 24 hours. The same window sets how far back the logs tab looks.
+The timeline tab merges what happened to the device in a time window, at first the last 30 minutes, newest first: its alerts, its flow runs, its RCA records and its log lines. The first line counts each kind, for example `last 30m   alerts 2  flows 3  rca 1  logs 5`. Each row shows the time in UTC, the kind (`alert`, `flow`, `rca` or `log`) and the first line of the text. `j` and `k` move the row, `Enter` opens its full text in a box, and `Esc` closes the box. In the box, `j` and `k` move the text by one line, and the bottom border says how many lines are hidden. To read the next row, press `Esc`, `j`, `Enter`. The box keeps the row it opened: newer rows still arrive in the timeline behind the box, and the text in the box does not change. `-` halves the window and `+` doubles it, between 1 minute and 24 hours. The same window sets how far back the logs tab looks.
 
 The logs tab shows the Loki lines of the device, newest first, each with its time in UTC, without the RCA records, which the timeline tab shows as `rca`. nobs asks for the last 200 lines at first, then again every 2 seconds while the log follows, and keeps the last 2,000. At the right end of the tab row it shows `<device>  following` or `<device>  paused`. When the row is too short it shows only `following` or `paused`, and at 60 columns it shows nothing. `f` pauses and resumes, `j` and `k` scroll a paused log, and `/` filters the lines (type the text, then `Enter` keeps the filter and `Esc` clears it). A line in JSON shows its `message` field instead of the whole line.
 
@@ -256,7 +256,7 @@ At 60 by 15 it looks like this:
 │ ch2  down 0/1       ││                                   │
 └─────────────────────┘└───────────────────────────────────┘
  run  lab deploy --sudo-no-prompt -s c…  exit 0  41s o open
- j/k move  D deploy  X destroy  P purge  R prepare  U update
+ Tab focus  j/k move  D deploy  X destroy  P purge
 ```
 
 The left side has two boxes. The `nodes` box lists the nodes of the topology file (the containerlab file that names the network devices of the lab), with the columns `NAME`, `KIND` and `STATE`. `KIND` appears from 100 columns. The state comes from `docker ps -a`, which the screen runs as you, without `sudo`:
@@ -268,7 +268,7 @@ The left side has two boxes. The `nodes` box lists the nodes of the topology fil
 | `—` | dim | the node has no container |
 | `?` | dim | the last call failed, or no answer came yet |
 
-Under it, the `chapters` box lists the chapters of the lab, each with its state, as in the services workbench (see [The services workbench](#the-services-workbench)). A chapter counts only its own services. `j` and `k` move the selection, which `>` marks.
+Under it, the `chapters` box lists the chapters of the lab, each with its state, as in the services workbench (see [The services workbench](#the-services-workbench)). A chapter counts only its own services. The workbench opens with the focus on the chapters. There `j` and `k` move the selection, which `>` marks. `Tab` moves the focus to the nodes. There `j` and `k` move the selected node, and `>` marks it only while the focus is on the nodes. The chapter keeps its `>`, and the action keys still act on the selected chapter. `Tab` moves the focus back to the chapters.
 
 The right side shows the selected chapter on one tab, `OVERVIEW`:
 
@@ -280,7 +280,7 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 | `services` | how many of the services the chapter defines have a running container, for example `0 of 1 running` for a chapter that defines one service and has no container; `?` when not known yet, or when a call failed |
 | `last` | the last action on this chapter and how it ended, for example `lab deploy --sudo-no-prompt -s ch1  exit 0`; `—` when there was none |
 
-At 100 columns the key line is `j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show  r refresh  o pane`. At 60 columns the last hints do not fit and are left out; `?` lists them. `D`, `X`, `P`, `R`, `U`, `B` and `S` are actions (see [Actions](#actions)).
+At 100 columns the key line is `Tab focus  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show`. The last hints, `r refresh` and `o pane`, do not fit and are left out. At 60 columns more hints are left out. `?` lists every key. `D`, `X`, `P`, `R`, `U`, `B` and `S` are actions (see [Actions](#actions)).
 
 The lab runs one chapter at a time. So `D`, `U`, `B` and `X` take the services of the other chapters down. `R` and `P` take every chapter down. Their questions say "scenario". In the book lab, a scenario is a chapter: the folder under `chapters/` that holds its compose file (see [Book lab](#book-lab)). It is not a Sonda scenario.
 
@@ -406,11 +406,11 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | Key | What it does |
 |---|---|
 | `1` `2` `3` | open the devices workbench, the services workbench or the lab workbench; `3` works only in a book lab |
-| `Tab` | move the focus between the stack list and the tabs; in the devices workbench, between the device list and the tabs |
-| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, and the row in the timeline tab; in the lab workbench, the chapter; scroll a paused log |
+| `Tab` | move the focus between the stack list and the tabs; in the devices workbench, between the device list and the tabs; in the lab workbench, between the chapters and the nodes |
+| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, the row in the interfaces tab and the row in the timeline tab; in the lab workbench, the chapter or the node; move the lines of the overview tab of a device and the text in the box of a timeline row by one line; scroll a paused log |
 | `[` `]` | open the previous or the next tab, when the focus is on the tabs; the devices workbench has four tabs |
 | `Enter` | in the list, move the focus to the tabs; in the overview tab, open the logs of the selected service; in the chooser, open the row; in the devices workbench, on a device move the focus to the tabs, on an alert select its device and open the timeline tab, and in the timeline tab open the full text of the row; in a question or a filter, confirm it |
-| `/` | filter the stacks or the devices by name, or the lines of the log; while you type, `Enter` keeps the filter and `Esc` clears it |
+| `/` | filter the stacks or the devices by name, or the lines of the log; while you type, `Enter` keeps the filter and `Esc` clears it; when the filter hides the selected stack or device, the selection moves to the first row shown, and the right side follows; when the filter shows no row, the selection stays |
 | `r` | ask for new data now; in the sonda tab, ask the server for the list |
 | `l` | open the logs of the selected service; in the sonda tab, ask for the path of a scenario file |
 | `f` | pause the log, or follow it again; this works in the logs tab of the devices workbench too |
@@ -421,8 +421,8 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `y` | answer yes to the open question; any other key answers no |
 | `o` | open or fold the run pane |
 | `x` | dismiss the red error line |
-| `?` | show the keys and every action of the workbench, or close them; while they are open they cover the run pane too, a running action keeps going, and the pane is back when they close; when they do not fit, `j` and `k` scroll them, also after the terminal changes size, and the last row says `j/k more` |
-| `Esc` | close the keys, fold the run pane, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list |
+| `?` | show the keys and every action of the workbench, or close them; while they are open they cover the run pane too, a running action keeps going, and the pane is back when they close; when they do not fit, `j` and `k` scroll them, also after the terminal changes size, and the last row says `j/k more`; the bottom border counts the hidden rows |
+| `Esc` | close the keys, fold the run pane, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list; in the lab workbench, back to the chapters |
 | `q` and Ctrl-C | close the screen and give the terminal back as it was; while an action runs, Ctrl-C stops it and `q` asks first |
 
 While a question or a filter is open, `q` is typed or answers the question, and Ctrl-C still closes the screen, or stops the action that runs.
