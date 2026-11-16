@@ -482,6 +482,12 @@ mod tests {
         moved(&mut model);
         model.apply(good(&["d4"]));
         assert_eq!(model.details_scroll, 0);
+
+        assert_eq!(moved(&mut model), 2);
+        model.set_details_overflow(1);
+        assert_eq!(model.details_scroll, 1);
+        model.move_details(false);
+        assert_eq!(model.details_scroll, 0);
     }
 
     #[test]

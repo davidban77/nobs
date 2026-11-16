@@ -221,8 +221,8 @@ A state is shown as the server sends it, for example `running`, `paused` or `fin
 
 | Key | What it does |
 |---|---|
-| `j` or down arrow | select the next scenario |
-| `k` or up arrow | select the previous scenario |
+| `j` or down arrow | with the focus on the tabs, select the next scenario |
+| `k` or up arrow | with the focus on the tabs, select the previous scenario |
 | `r` | ask the server for the list now |
 | `l` | ask for the path of a scenario file: type it, then press `Enter` to load it or `Esc` to cancel; `Backspace` removes the last character |
 | `d` | ask `delete <name>? y/n` about the selected scenario: `y` deletes it, any other key cancels |

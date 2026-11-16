@@ -4131,7 +4131,8 @@ pub(crate) mod tests {
             let kind = stack.kind;
             let mut model = Model::new(start(vec![stack]));
             code(&mut model, KeyCode::Enter);
-            while model.focus() != Focus::List {
+            code(&mut model, KeyCode::Tab);
+            if model.focus() == Focus::Lines {
                 code(&mut model, KeyCode::Tab);
             }
 
