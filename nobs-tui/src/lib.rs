@@ -190,6 +190,7 @@ fn turns<B: Backend>(
         model.set_overview_overflow(screen::overview_overflow(model, area));
         model.set_popup_overflow(screen::popup_overflow(model, area));
         model.set_lab_overflow(screen::lab_overflow(model, area));
+        model.set_details_overflow(screen::sonda_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
             send(handle(model, key), actions, pollers);
         }

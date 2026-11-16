@@ -1042,6 +1042,10 @@ impl Model {
         self.lab_scroll = self.lab_scroll.min(lines);
     }
 
+    pub(crate) fn set_details_overflow(&mut self, lines: usize) {
+        self.sonda.set_details_overflow(lines);
+    }
+
     pub fn run_pane(&self) -> bool {
         self.run_pane
     }

@@ -649,6 +649,15 @@ fn the_sonda_frame_is_pinned() {
 }
 
 #[test]
+fn the_sonda_details_with_the_focus_frame_is_pinned() {
+    golden("sonda-lines", || {
+        let mut model = sonda_model();
+        press(&mut model, KeyCode::Tab);
+        model
+    });
+}
+
+#[test]
 fn the_sonda_top_line_ends_at_a_whole_word_and_its_key_row_at_a_whole_hint_at_60_columns() {
     let rows = lines(&render(sonda_model(), 60, 15));
 
@@ -1416,7 +1425,7 @@ fn draw_in_draws_inside_its_area_and_nowhere_else() {
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
     terminal
-        .draw(|frame| view::draw_in(frame, area, &sonda, at))
+        .draw(|frame| view::draw_in(frame, area, &sonda, at, false))
         .unwrap();
 
     let buffer = terminal.backend().buffer();

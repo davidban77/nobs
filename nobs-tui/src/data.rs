@@ -207,6 +207,15 @@ impl Model {
         self.error.as_ref().map(|(_, at)| *at)
     }
 
+    pub(crate) fn details_scroll(&self) -> usize {
+        self.details_scroll
+    }
+
+    pub(crate) fn set_details_overflow(&mut self, lines: usize) {
+        self.details_overflow = lines;
+        self.details_scroll = self.details_scroll.min(lines);
+    }
+
     pub(crate) fn move_details(&mut self, down: bool) {
         self.details_scroll = if down {
             (self.details_scroll + 1).min(self.details_overflow)
