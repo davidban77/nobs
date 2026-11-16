@@ -4,7 +4,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
+    Block, BorderType, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
 };
 use ratatui::Frame;
 
@@ -1369,9 +1369,7 @@ fn command_rows(run: &Run, width: usize) -> Vec<String> {
 
 fn lab(frame: &mut Frame, area: Rect, model: &Model) {
     let wide = area.width >= WIDE;
-    let left_width = if wide { LEFT_DEVICES } else { LEFT_NARROW };
-    let [left, right] =
-        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area);
+    let [left, right] = device_panes(area);
     let chapters = model.chapters();
     let chapters_height = u16::try_from(chapters.len() + 2).unwrap_or(u16::MAX);
     let [top, bottom] = Layout::vertical([
@@ -1456,12 +1454,38 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
     let Some(chapter) = model.selected_chapter() else {
         return;
     };
-    let block = Block::bordered().title_top(format!(" {} ", model.stacks()[chapter].name));
-    let inner = block.inner(area);
+    let border = if model.focus() == Focus::Lines {
+        BorderType::Double
+    } else {
+        BorderType::Plain
+    };
+    let block = Block::bordered()
+        .border_type(border)
+        .title_top(format!(" {} ", model.stacks()[chapter].name));
     frame.render_widget(block, area);
-    let [tab_row, content] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    let [tab_row, content] = tab_content(area);
     frame.render_widget(Paragraph::new(Span::styled("OVERVIEW", REVERSE)), tab_row);
+    let lines = lab_lines(model, chapter, usize::from(content.width));
+    let (room, total) = (usize::from(content.height), lines.len());
+    let first = model.lab_scroll().min(total.saturating_sub(room));
+    let shown: Vec<Line> = lines.into_iter().skip(first).collect();
+    frame.render_widget(Paragraph::new(shown), content);
+    rows_mark(frame, border_below(content), first, room, total);
+}
+
+pub(crate) fn lab_overflow(model: &Model, area: Rect) -> usize {
+    let Some(chapter) = model.selected_chapter() else {
+        return 0;
+    };
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, right] = device_panes(body);
+    let [_, content] = tab_content(right);
+    lab_lines(model, chapter, usize::from(content.width))
+        .len()
+        .saturating_sub(usize::from(content.height))
+}
+
+fn lab_lines(model: &Model, chapter: usize, width: usize) -> Vec<Line<'static>> {
     let lab = model.located();
     let topology = lab.map_or("—".to_string(), |lab| {
         let path = lab.topology();
@@ -1485,7 +1509,6 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         StackState::Down { total } => format!("0 of {total} running"),
         StackState::Unknown | StackState::Failed => "?".to_string(),
     };
-    let width = usize::from(content.width);
     let row = |label: &str, value: String| format!(" {label:<8}  {value}");
     let last = model
         .run()
@@ -1503,7 +1526,7 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         None => ("—".to_string(), (String::new(), Style::new())),
     };
     let plain = |label: &str, value: String| fitted(vec![(row(label, value), Style::new())], width);
-    let lines = vec![
+    vec![
         plain("topology", topology),
         plain(
             "project",
@@ -1512,8 +1535,7 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         plain("nodes", nodes),
         plain("services", services),
         fitted(vec![(row("last", last), Style::new()), end], width),
-    ];
-    frame.render_widget(Paragraph::new(lines), content);
+    ]
 }
 
 fn action_hints(model: &Model) -> Vec<String> {
@@ -1587,7 +1609,7 @@ fn key_hints(model: &Model) -> Vec<String> {
         (Workbench::Devices, Focus::Tabs, Tab::Logs) => {
             log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
         }
-        (Workbench::Devices, Focus::Tabs, _) => {
+        (Workbench::Services, Focus::Lines, _) | (Workbench::Devices, _, _) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Esc back"]
         }
     };
@@ -1903,7 +1925,9 @@ mod tests {
         while model.tab() != tab {
             press(model, ']');
         }
-        handle(model, focus);
+        while model.focus() != Focus::List {
+            handle(model, focus);
+        }
     }
 
     fn lab_bench(count: usize) -> Model {
@@ -3209,6 +3233,64 @@ mod tests {
                 assert!(screen.contains(shown), "{label} {times}: {shown}\n{screen}");
             }
         }
+    }
+
+    #[test]
+    fn j_on_the_lab_overview_draws_the_hidden_line_and_marks_the_lines_above() {
+        let mut model = lab_bench(1);
+        press(&mut model, 'D');
+        press(&mut model, 'y');
+        model.apply(Update::ActionLine(REFUSAL.to_string()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        model.apply(Update::Services(
+            0,
+            defined(&["grafana"]),
+            Err("exit 1".to_string()),
+        ));
+        focus_tabs(&mut model);
+        focus_tabs(&mut model);
+        let bottom = |rows: &[String]| {
+            rows.iter()
+                .find(|row| row.contains('╚'))
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        let before = drawn(&mut model, 60, 15);
+        model.set_lab_overflow(lab_overflow(&model, Rect::new(0, 0, 60, 15)));
+        press(&mut model, 'j');
+        let after = drawn(&mut model, 60, 15);
+
+        let screens = [before.join("\n"), after.join("\n")];
+        assert!(screens[0].contains(" ps ch1: exit 1"), "{}", screens[0]);
+        assert!(!screens[0].contains("║ last"), "{}", screens[0]);
+        assert!(bottom(&before).ends_with("═ ↓1 ═╝"), "{}", screens[0]);
+        assert!(screens[1].contains("║ last"), "{}", screens[1]);
+        assert!(bottom(&after).ends_with("═ ↑1 ═╝"), "{}", screens[1]);
+    }
+
+    #[test]
+    fn the_pane_of_lines_with_the_focus_draws_a_double_border() {
+        let mut model = lab_bench(1);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let screen = drawn(&mut model, 60, 15).join("\n");
+            seen.push((
+                model.focus(),
+                screen.matches('╔').count(),
+                screen.contains("╔ ch1 ═"),
+            ));
+            focus_tabs(&mut model);
+        }
+
+        assert_eq!(
+            seen,
+            [
+                (Focus::List, 0, false),
+                (Focus::Tabs, 0, false),
+                (Focus::Lines, 1, true)
+            ]
+        );
     }
 
     #[test]

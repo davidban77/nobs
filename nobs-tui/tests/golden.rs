@@ -852,6 +852,16 @@ fn the_lab_frame_is_pinned() {
 }
 
 #[test]
+fn the_lab_overview_with_the_focus_frame_is_pinned() {
+    golden("lab-lines", || {
+        let mut model = lab_model();
+        press(&mut model, KeyCode::Tab);
+        press(&mut model, KeyCode::Tab);
+        model
+    });
+}
+
+#[test]
 fn a_narrow_run_title_cuts_its_command_to_keep_its_time_whole_and_a_gap_before_the_hint() {
     let mut folded = deployed_after(120, End::Exited(0));
     press(&mut folded, KeyCode::Esc);

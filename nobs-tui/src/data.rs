@@ -14,6 +14,8 @@ pub struct Model {
     selected: Option<usize>,
     stats: Option<String>,
     show: Option<String>,
+    details_scroll: usize,
+    details_overflow: usize,
     refreshed_at: Option<Instant>,
     error: Option<(String, Instant)>,
     prompt: Prompt,
@@ -64,6 +66,8 @@ impl Model {
             selected: None,
             stats: None,
             show: None,
+            details_scroll: 0,
+            details_overflow: 0,
             refreshed_at: None,
             error: None,
             prompt: Prompt::None,
@@ -85,6 +89,7 @@ impl Model {
                 if self.selected().map(|row| &row.id) != before.as_ref() {
                     self.stats = None;
                     self.show = None;
+                    self.details_scroll = 0;
                 }
                 self.refreshed_at = Some(update.at);
                 self.error = None;
@@ -202,6 +207,14 @@ impl Model {
         self.error.as_ref().map(|(_, at)| *at)
     }
 
+    pub(crate) fn move_details(&mut self, down: bool) {
+        self.details_scroll = if down {
+            (self.details_scroll + 1).min(self.details_overflow)
+        } else {
+            self.details_scroll.saturating_sub(1)
+        };
+    }
+
     fn step(&mut self, by: isize) -> Vec<Command> {
         let Some(next) = self
             .selected
@@ -213,6 +226,7 @@ impl Model {
         self.selected = Some(next);
         self.stats = None;
         self.show = None;
+        self.details_scroll = 0;
         vec![Command::Select(self.rows[next].id.clone())]
     }
 }
@@ -433,6 +447,32 @@ mod tests {
 
         model.apply(good(&[]));
         assert_eq!(selected(&model), None);
+    }
+
+    #[test]
+    fn a_new_scenario_puts_the_details_at_their_first_line_and_moving_stays_inside_the_text() {
+        let mut model = model(&["a1", "b2"]);
+        model.details_overflow = 2;
+        let moved = |model: &mut Model| {
+            for _ in 0..3 {
+                model.move_details(true);
+            }
+            model.details_scroll
+        };
+        assert_eq!(moved(&mut model), 2);
+        model.move_details(false);
+        assert_eq!(model.details_scroll, 1);
+
+        model.apply(good(&["c3", "a1"]));
+        assert_eq!(model.details_scroll, 1);
+
+        model.handle(key(KeyCode::Char('k')));
+        assert_eq!(selected(&model), Some("c3"));
+        assert_eq!(model.details_scroll, 0);
+
+        moved(&mut model);
+        model.apply(good(&["d4"]));
+        assert_eq!(model.details_scroll, 0);
     }
 
     #[test]
