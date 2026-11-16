@@ -331,6 +331,27 @@ mod tests {
     }
 
     #[test]
+    fn a_top_line_too_short_for_the_age_keeps_the_server_and_a_short_error() {
+        let at = Instant::now();
+        let mut model = model(at);
+        model.apply(Update {
+            at: at + Duration::from_secs(1),
+            list: Err("refused".to_string()),
+            selected: None,
+        });
+
+        let line = top_line(&model, at + Duration::from_secs(3), 40);
+
+        assert_eq!(
+            line,
+            Line::from(vec![
+                Span::raw("http://127.0.0.1:18122"),
+                Span::styled("  refused (2s ago)", Style::new().fg(Color::Red)),
+            ])
+        );
+    }
+
+    #[test]
     fn the_table_holds_the_header_and_one_row_per_scenario_with_its_state() {
         let now = Instant::now();
 
