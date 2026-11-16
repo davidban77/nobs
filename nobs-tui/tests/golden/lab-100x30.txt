@@ -27,4 +27,4 @@
 │ ch2  down 0/1                          ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
  run  lab deploy --sudo-no-prompt -s ch1  exit 0  41s                                        o open
- j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show  r refresh  o pane
+ Tab focus  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show

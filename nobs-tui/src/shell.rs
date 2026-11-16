@@ -426,7 +426,11 @@ pub struct Model {
     logs_filter: Filter,
     window: u64,
     timeline_row: usize,
-    popup: bool,
+    popup: Option<devices::Entry>,
+    popup_scroll: usize,
+    popup_overflow: usize,
+    overview_scroll: usize,
+    overview_overflow: usize,
     program: PathBuf,
     run: Option<Run>,
     question: Option<Question>,
@@ -435,6 +439,8 @@ pub struct Model {
     chapter: usize,
     nodes: Vec<book::NodeRow>,
     nodes_ok: bool,
+    node_row: usize,
+    interface_row: usize,
     quitting: bool,
 }
 
@@ -525,7 +531,11 @@ impl Model {
             logs_filter: Filter::default(),
             window: WINDOW_MINUTES,
             timeline_row: 0,
-            popup: false,
+            popup: None,
+            popup_scroll: 0,
+            popup_overflow: 0,
+            overview_scroll: 0,
+            overview_overflow: 0,
             program,
             run: None,
             question: None,
@@ -534,6 +544,8 @@ impl Model {
             chapter,
             nodes: Vec::new(),
             nodes_ok: false,
+            node_row: 0,
+            interface_row: 0,
             quitting: false,
         }
     }
@@ -549,12 +561,12 @@ impl Model {
         self.size.0 < MIN_SIZE.0 || self.size.1 < MIN_SIZE.1
     }
 
-    pub fn apply(&mut self, update: Update) {
+    pub fn apply(&mut self, update: Update) -> Vec<Command> {
         match update {
             Update::Services(index, defined, listed) => self.apply_services(index, defined, listed),
             Update::Health(index, list) => {
                 if index != self.selected {
-                    return;
+                    return Vec::new();
                 }
                 self.health = list;
                 for service in &mut self.services {
@@ -564,10 +576,10 @@ impl Model {
             Update::Logs(index, service, Ok(lines)) => {
                 self.clear_error(&format!("logs {service}"));
                 if index != self.selected {
-                    return;
+                    return Vec::new();
                 }
                 let Some(logs) = self.logs.as_mut().filter(|logs| logs.service == service) else {
-                    return;
+                    return Vec::new();
                 };
                 logs.lines
                     .extend(lines.iter().map(|line| untimed(line).to_string()));
@@ -597,6 +609,7 @@ impl Model {
                     self.cursor = Cursor::Device(at.min(last));
                 }
                 self.clear_error("sot");
+                return self.show_cursor();
             }
             Update::Devices(Err(text)) => self.fail("sot", text),
             Update::Metrics(Ok(samples)) => {
@@ -611,13 +624,19 @@ impl Model {
                 list.sort_by_key(|alert| Reverse(time::parse_rfc3339(&alert.starts_at)));
                 self.alerts = list;
                 self.alerts_ok = true;
+                self.clear_error("alertmanager");
                 if let Cursor::Alert(at) = self.cursor {
-                    self.cursor = match self.alerts.len() {
-                        0 => Cursor::Device(self.devices.len().saturating_sub(1)),
-                        len => Cursor::Alert(at.min(len - 1)),
+                    return match self.alerts.len() {
+                        0 => {
+                            self.cursor = Cursor::Device(self.device);
+                            self.show_cursor()
+                        }
+                        len => {
+                            self.cursor = Cursor::Alert(at.min(len - 1));
+                            Vec::new()
+                        }
                     };
                 }
-                self.clear_error("alertmanager");
             }
             Update::Alerts(Err(text)) => {
                 self.alerts_ok = false;
@@ -626,7 +645,7 @@ impl Model {
             Update::DeviceLogs(device, Ok(lines)) => {
                 self.clear_error("loki");
                 if !self.is_selected(&device) {
-                    return;
+                    return Vec::new();
                 }
                 for line in lines {
                     if self.device_lines.iter().all(|held| held.line != line) {
@@ -657,8 +676,10 @@ impl Model {
                 }
             }
             Update::ActionEnded(end) => self.end_run(end),
-            Update::Nodes(Ok(rows)) => {
+            Update::Nodes(Ok(mut rows)) => {
+                rows.sort_by(|one, other| one.name.cmp(&other.name));
                 self.nodes = rows;
+                self.node_row = self.node_row.min(self.nodes.len().saturating_sub(1));
                 self.nodes_ok = true;
                 self.clear_error("nodes");
             }
@@ -667,6 +688,7 @@ impl Model {
                 self.fail("nodes", text);
             }
         }
+        Vec::new()
     }
 
     fn end_run(&mut self, end: End) {
@@ -805,6 +827,15 @@ impl Model {
     }
 
     fn lab_key(&mut self, code: KeyCode) -> Vec<Command> {
+        if self.focus == Focus::Tabs {
+            let last = self.nodes.len().saturating_sub(1);
+            match code {
+                KeyCode::Char('j') | KeyCode::Down => self.node_row = (self.node_row + 1).min(last),
+                KeyCode::Char('k') | KeyCode::Up => self.node_row = self.node_row.saturating_sub(1),
+                _ => {}
+            }
+            return Vec::new();
+        }
         let chapters = self.chapters();
         let next = match code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -966,6 +997,24 @@ impl Model {
         self.help_scroll = self.help_scroll.min(rows);
     }
 
+    pub(crate) fn overview_scroll(&self) -> usize {
+        self.overview_scroll
+    }
+
+    pub(crate) fn set_overview_overflow(&mut self, lines: usize) {
+        self.overview_overflow = lines;
+        self.overview_scroll = self.overview_scroll.min(lines);
+    }
+
+    pub(crate) fn popup_scroll(&self) -> usize {
+        self.popup_scroll
+    }
+
+    pub(crate) fn set_popup_overflow(&mut self, lines: usize) {
+        self.popup_overflow = lines;
+        self.popup_scroll = self.popup_scroll.min(lines);
+    }
+
     pub fn run_pane(&self) -> bool {
         self.run_pane
     }
@@ -1095,10 +1144,20 @@ impl Model {
 
     pub fn timeline_row(&self) -> usize {
         self.timeline_row
+            .min(self.timeline().len().saturating_sub(1))
+    }
+
+    pub(crate) fn interface_row(&self) -> usize {
+        self.interface_row
+            .min(self.interfaces().len().saturating_sub(1))
     }
 
     pub fn popup(&self) -> bool {
-        self.popup
+        self.popup.is_some()
+    }
+
+    pub(crate) fn popup_entry(&self) -> Option<&devices::Entry> {
+        self.popup.as_ref()
     }
 
     pub fn device_logs(&self) -> Option<ShownDeviceLogs<'_>> {
@@ -1201,6 +1260,10 @@ impl Model {
 
     pub fn nodes_ok(&self) -> bool {
         self.nodes_ok
+    }
+
+    pub(crate) fn node_row(&self) -> usize {
+        self.node_row
     }
 
     pub(crate) fn located(&self) -> Option<&Located> {
@@ -1315,11 +1378,11 @@ impl Model {
     fn workbench_key(&mut self, key: KeyEvent) -> Vec<Command> {
         if self.filter.typing {
             self.filter.type_key(key.code);
-            return Vec::new();
+            return self.show_cursor();
         }
         if self.device_filter.typing {
             self.device_filter.type_key(key.code);
-            return Vec::new();
+            return self.show_cursor();
         }
         if self.logs_filter.typing {
             self.logs_filter.type_key(key.code);
@@ -1368,6 +1431,9 @@ impl Model {
     fn switch(&mut self, workbench: Workbench) -> Vec<Command> {
         let left_devices = self.workbench == Workbench::Devices && workbench != Workbench::Devices;
         self.workbench = workbench;
+        if workbench == Workbench::Lab {
+            self.focus = Focus::List;
+        }
         let tabs: &[Tab] = match workbench {
             Workbench::Devices => &DEVICE_TABS,
             Workbench::Services => &SERVICES_TABS,
@@ -1404,8 +1470,8 @@ impl Model {
                 return vec![Command::CloseLogs];
             }
         }
-        if self.workbench == Workbench::Devices && self.popup {
-            self.popup = false;
+        if self.workbench == Workbench::Devices && self.popup.is_some() {
+            self.popup = None;
             return Vec::new();
         }
         self.focus = Focus::List;
@@ -1448,6 +1514,8 @@ impl Model {
             _ => {}
         }
         match self.tab {
+            Tab::Overview => self.device_overview_key(key.code),
+            Tab::Interfaces => self.interfaces_key(key.code),
             Tab::Timeline => self.timeline_key(key.code),
             Tab::Logs => self.device_logs_key(key.code),
             _ => Vec::new(),
@@ -1498,11 +1566,31 @@ impl Model {
         let Some(next) = next else {
             return Vec::new();
         };
-        self.cursor = next;
-        match next {
-            Cursor::Device(index) => self.select_device(index),
-            Cursor::Alert(_) => Vec::new(),
+        if let Cursor::Device(index) = next {
+            return self.go_device(index);
         }
+        self.cursor = next;
+        Vec::new()
+    }
+
+    fn go_device(&mut self, index: usize) -> Vec<Command> {
+        self.cursor = Cursor::Device(index);
+        self.select_device(index)
+    }
+
+    fn show_cursor(&mut self) -> Vec<Command> {
+        let mut commands = Vec::new();
+        let stacks = self.visible_stacks();
+        if let Some(&first) = stacks.first().filter(|_| !stacks.contains(&self.selected)) {
+            commands.extend(self.go_stack(first));
+        }
+        let devices = self.visible_devices();
+        if let (Cursor::Device(at), Some(&first)) = (self.cursor, devices.first()) {
+            if !devices.contains(&at) {
+                commands.extend(self.go_device(first));
+            }
+        }
+        commands
     }
 
     fn enter_cursor(&mut self) -> Vec<Command> {
@@ -1543,22 +1631,58 @@ impl Model {
             self.rcas.clear();
             self.logs_scroll = 0;
             self.timeline_row = 0;
-            self.popup = false;
+            self.interface_row = 0;
+            self.overview_scroll = 0;
+            self.popup = None;
         }
         vec![Command::SelectDevice(name)]
     }
 
-    fn timeline_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let entries = self.timeline().len();
-        let last = entries.saturating_sub(1);
+    fn device_overview_key(&mut self, code: KeyCode) -> Vec<Command> {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.timeline_row = (self.timeline_row + 1).min(last);
+                self.overview_scroll = (self.overview_scroll + 1).min(self.overview_overflow);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.timeline_row = self.timeline_row.saturating_sub(1).min(last);
+                self.overview_scroll = self.overview_scroll.saturating_sub(1);
             }
-            KeyCode::Enter if entries > 0 => self.popup = true,
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn interfaces_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let last = self.interfaces().len().saturating_sub(1);
+        let row = self.interface_row();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.interface_row = (row + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => self.interface_row = row.saturating_sub(1),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn timeline_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let entries = self.timeline();
+        let last = entries.len().saturating_sub(1);
+        let row = self.timeline_row();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down if self.popup.is_some() => {
+                self.popup_scroll = (self.popup_scroll + 1).min(self.popup_overflow);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.popup.is_some() => {
+                self.popup_scroll = self.popup_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.timeline_row = (row + 1).min(last);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.timeline_row = row.saturating_sub(1);
+            }
+            KeyCode::Enter if self.popup.is_none() => {
+                self.popup = entries.get(row).cloned();
+                self.popup_scroll = 0;
+            }
             KeyCode::Char('-') => {
                 self.window = (self.window / 2).max(WINDOW_MIN);
                 return vec![Command::Window(self.window)];
@@ -1614,12 +1738,14 @@ impl Model {
             visible.rev().find(|index| *index < self.selected)
         };
         match next {
-            Some(index) => {
-                self.select(index);
-                vec![Command::SelectStack(index)]
-            }
+            Some(index) => self.go_stack(index),
             None => Vec::new(),
         }
+    }
+
+    fn go_stack(&mut self, index: usize) -> Vec<Command> {
+        self.select(index);
+        vec![Command::SelectStack(index)]
     }
 
     fn overview_key(&mut self, code: KeyCode) -> Vec<Command> {
@@ -2998,7 +3124,7 @@ pub(crate) mod tests {
         code(&mut model, KeyCode::Enter);
 
         assert_eq!(model.visible_stacks(), [1, 2]);
-        assert_eq!(ch(&mut model, 'j'), [Command::SelectStack(1)]);
+        assert_eq!(model.selected_stack(), 1);
         assert_eq!(ch(&mut model, 'j'), [Command::SelectStack(2)]);
         assert_eq!(ch(&mut model, 'j'), []);
         assert_eq!(ch(&mut model, 'k'), [Command::SelectStack(1)]);
@@ -4349,6 +4475,339 @@ pub(crate) mod tests {
             "-s{NO_BREAK}ch2? It takes the other chapters' services down. y/n"
         )));
         assert_eq!(opened(&["a"]).selected_chapter(), None);
+    }
+
+    fn nodes(names: &[&str]) -> Update {
+        Update::Nodes(Ok(names
+            .iter()
+            .map(|name| book::NodeRow {
+                name: name.to_string(),
+                kind: "nokia_srlinux".to_string(),
+                state: Some("running".to_string()),
+            })
+            .collect()))
+    }
+
+    #[test]
+    fn tab_moves_the_lab_focus_and_j_k_move_only_the_pane_with_the_focus() {
+        let mut model = book_model();
+        model.apply(nodes(&["a", "b", "c"]));
+        assert_eq!(model.focus(), Focus::List);
+
+        ch(&mut model, 'j');
+        assert_eq!((model.selected_chapter(), model.node_row()), (Some(1), 0));
+
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::Tabs);
+        ch(&mut model, 'j');
+        assert_eq!((model.selected_chapter(), model.node_row()), (Some(1), 1));
+
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::List);
+        ch(&mut model, 'k');
+        assert_eq!((model.selected_chapter(), model.node_row()), (Some(0), 1));
+
+        code(&mut model, KeyCode::Tab);
+        code(&mut model, KeyCode::Esc);
+        assert_eq!(model.focus(), Focus::List);
+
+        ch(&mut model, '1');
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::Tabs);
+        ch(&mut model, '3');
+        assert_eq!(
+            (model.workbench(), model.focus()),
+            (Workbench::Lab, Focus::List)
+        );
+    }
+
+    #[test]
+    fn an_action_asks_about_the_selected_chapter_in_both_focuses() {
+        let mut listed = book_model();
+        ch(&mut listed, 'j');
+        ch(&mut listed, 'D');
+        let question = listed.question().unwrap().text();
+        assert!(question.ends_with(&format!(
+            "-s{NO_BREAK}ch2? It takes the other chapters' services down. y/n"
+        )));
+        let lab = book_dir();
+        let deploy = nobs(&[
+            "--dir",
+            &lab,
+            "lab",
+            "deploy",
+            "--sudo-no-prompt",
+            "-s",
+            "ch2",
+        ]);
+        assert_eq!(ch(&mut listed, 'y'), std::slice::from_ref(&deploy));
+
+        let mut model = book_model();
+        model.apply(nodes(&["a", "b", "c"]));
+        ch(&mut model, 'j');
+        code(&mut model, KeyCode::Tab);
+        ch(&mut model, 'D');
+        assert_eq!(model.question().unwrap().text(), question);
+        ch(&mut model, 'n');
+        assert_eq!(model.question(), None);
+        ch(&mut model, 'D');
+        assert_eq!(model.question().unwrap().text(), question);
+        assert_eq!(ch(&mut model, 'y'), [deploy]);
+
+        ch(&mut model, '?');
+        model.set_help_overflow(5);
+        ch(&mut model, 'j');
+        assert_eq!((model.help_scroll(), model.node_row()), (1, 0));
+        code(&mut model, KeyCode::Esc);
+
+        let running = format!(
+            "one action at a time: {} is running",
+            model.run().unwrap().words
+        );
+        assert_eq!(model.focus(), Focus::Tabs);
+        assert_eq!(ch(&mut model, 'D'), []);
+        assert_eq!(model.notice(), Some(running.as_str()));
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::List);
+        assert_eq!(ch(&mut model, 'D'), []);
+        assert_eq!(model.notice(), Some(running.as_str()));
+        assert_eq!(model.question(), None);
+    }
+
+    #[test]
+    fn a_cursor_stays_on_a_row_that_exists() {
+        let mut model = book_model();
+        model.apply(nodes(&["b", "a"]));
+        let names: Vec<&str> = model.nodes().iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+
+        model.apply(nodes(&["a", "b", "c"]));
+        code(&mut model, KeyCode::Tab);
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.node_row(), 2);
+        model.apply(nodes(&["a"]));
+        assert_eq!(model.node_row(), 0);
+        model.apply(nodes(&[]));
+        assert_eq!(model.node_row(), 0);
+
+        let mut model = devices_model(workshop_located("infrahub"));
+        let mut list = model.devices().to_vec();
+        let first = list[0].interfaces[0].clone();
+        let named = |count: usize| {
+            (1..=count)
+                .map(|index| {
+                    let mut interface = first.clone();
+                    interface.name = format!("e{index}");
+                    interface
+                })
+                .collect::<Vec<_>>()
+        };
+        list[0].interfaces = named(5);
+        list[1].interfaces = named(5);
+        model.apply(Update::Devices(Ok(list.clone())));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        assert_eq!(model.tab(), Tab::Interfaces);
+        for _ in 0..4 {
+            ch(&mut model, 'j');
+        }
+        assert_eq!(model.interface_row(), 4);
+        list[0].interfaces = named(2);
+        model.apply(Update::Devices(Ok(list)));
+        assert_eq!(model.interface_row(), 1);
+        code(&mut model, KeyCode::Esc);
+        ch(&mut model, 'j');
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!(model.interface_row(), 0);
+
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(srl1_alerts(3));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        assert_eq!(model.tab(), Tab::Timeline);
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.timeline_row(), 2);
+        model.apply(srl1_alerts(1));
+        assert_eq!(model.timeline().len(), 1);
+        assert_eq!(model.timeline_row(), 0);
+    }
+
+    fn srl1_alerts(count: usize) -> Update {
+        Update::Alerts(Ok((0..count)
+            .map(|index| {
+                alert(
+                    "srl1",
+                    &format!("a{index}"),
+                    &format!("2026-11-09T13:5{index}:00Z"),
+                )
+            })
+            .collect()))
+    }
+
+    #[test]
+    fn k_in_the_timeline_moves_from_the_row_shown_after_entries_leave() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(srl1_alerts(4));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        for _ in 0..3 {
+            ch(&mut model, 'j');
+        }
+        assert_eq!(model.timeline_row(), 3);
+        model.apply(srl1_alerts(2));
+        assert_eq!(model.timeline_row(), 1);
+
+        ch(&mut model, 'k');
+
+        assert_eq!(model.timeline_row(), 0);
+    }
+
+    #[test]
+    fn a_typed_filter_moves_the_cursor_only_off_a_hidden_row_and_starts_what_j_starts() {
+        let on_beta = || {
+            let mut model = opened(&["alpha", "beta", "gamma"]);
+            ch(&mut model, 'j');
+            model
+        };
+        let mut twin = on_beta();
+        let by_j = ch(&mut twin, 'j');
+        assert_eq!(by_j, [Command::SelectStack(2)]);
+        let mut model = on_beta();
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, 'g'), by_j);
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(snapshot(&model), snapshot(&twin));
+        ch(&mut model, '/');
+        assert_eq!(code(&mut model, KeyCode::Esc), []);
+        assert_eq!(model.selected_stack(), 2);
+
+        let mut model = on_beta();
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, 'a'), []);
+        code(&mut model, KeyCode::Backspace);
+        assert_eq!(ch(&mut model, 'z'), []);
+        assert_eq!(ch(&mut model, 'z'), []);
+        assert!(model.visible_stacks().is_empty());
+        assert_eq!(model.selected_stack(), 1);
+
+        let devices = || devices_model(workshop_located("infrahub"));
+        let mut twin = devices();
+        let by_j = ch(&mut twin, 'j');
+        assert_eq!(by_j, [Command::SelectDevice("srl2".to_string())]);
+        let mut model = devices();
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, '2'), by_j);
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(
+            (snapshot(&model), model.cursor(), model.device),
+            (snapshot(&twin), twin.cursor(), twin.device)
+        );
+        ch(&mut model, '/');
+        assert_eq!(code(&mut model, KeyCode::Esc), []);
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, 'z'), []);
+        assert_eq!(ch(&mut model, 'z'), []);
+        assert!(model.visible_devices().is_empty());
+        assert_eq!(model.cursor(), Cursor::Device(1));
+
+        let mut model = devices();
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+        ch(&mut model, '/');
+        assert_eq!(ch(&mut model, '1'), []);
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+    }
+
+    #[test]
+    fn a_new_device_list_that_hides_the_cursor_row_under_a_kept_filter_moves_it_and_tells_the_pollers(
+    ) {
+        let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, 'j');
+        ch(&mut model, '/');
+        typed(&mut model, "srl2");
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.cursor(), Cursor::Device(1));
+        let mut list = model.devices().to_vec();
+        let mut srl0 = list[0].clone();
+        srl0.name = "srl0".to_string();
+        list.insert(0, srl0);
+
+        let commands = model.apply(Update::Devices(Ok(list)));
+
+        assert_eq!(commands, [Command::SelectDevice("srl2".to_string())]);
+        assert_eq!(model.cursor(), Cursor::Device(2));
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+    }
+
+    #[test]
+    fn the_last_alert_leaving_under_a_kept_filter_moves_the_cursor_where_k_moves_it() {
+        let on_first_alert = || {
+            let mut model = devices_model(workshop_located("infrahub"));
+            ch(&mut model, 'j');
+            ch(&mut model, 'j');
+            assert_eq!(model.cursor(), Cursor::Alert(0));
+            ch(&mut model, '/');
+            ch(&mut model, '1');
+            code(&mut model, KeyCode::Enter);
+            model
+        };
+        let mut twin = on_first_alert();
+        let by_k = ch(&mut twin, 'k');
+        let mut model = on_first_alert();
+
+        let commands = model.apply(Update::Alerts(Ok(Vec::new())));
+
+        assert_eq!(commands, [Command::SelectDevice("srl1".to_string())]);
+        assert_eq!(commands, by_k);
+        assert_eq!(model.cursor(), Cursor::Device(0));
+        assert_eq!(model.cursor(), twin.cursor());
+        assert_eq!(model.selected_device().unwrap().name, "srl1");
+    }
+
+    #[test]
+    fn the_last_alert_leaving_while_the_filter_shows_no_device_puts_the_cursor_on_a_shown_row_when_it_widens(
+    ) {
+        let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+        ch(&mut model, '/');
+        ch(&mut model, 'z');
+        assert!(model.visible_devices().is_empty());
+
+        model.apply(Update::Alerts(Ok(Vec::new())));
+        code(&mut model, KeyCode::Backspace);
+
+        let Cursor::Device(at) = model.cursor() else {
+            panic!("cursor not on a device: {:?}", model.cursor());
+        };
+        assert!(model.visible_devices().contains(&at));
+    }
+
+    #[test]
+    fn the_last_alert_leaving_after_enter_on_it_keeps_the_selected_device_and_the_open_box() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(srl1_alerts(1));
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        code(&mut model, KeyCode::Enter);
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Timeline));
+        assert_eq!(model.selected_device().unwrap().name, "srl1");
+        code(&mut model, KeyCode::Enter);
+        let entry = model.popup_entry().cloned();
+        assert!(entry.is_some());
+
+        let commands = model.apply(Update::Alerts(Ok(Vec::new())));
+
+        assert_eq!(commands, []);
+        assert_eq!(model.popup_entry().cloned(), entry);
+        assert_eq!(model.selected_device().unwrap().name, "srl1");
+        assert_eq!(model.cursor(), Cursor::Device(0));
     }
 
     #[test]

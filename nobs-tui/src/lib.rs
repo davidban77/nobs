@@ -139,7 +139,7 @@ impl Actions {
                 Update::ActionEnded(end) => Some(end),
                 _ => None,
             };
-            model.apply(update);
+            send(model.apply(update), self, pollers);
             if let Some(end) = ended {
                 self.running = None;
                 pollers.send(Command::Refresh);
@@ -174,7 +174,7 @@ fn turns<B: Backend>(
     let mut gone = false;
     loop {
         let until = Instant::now() + DRAIN_LIMIT;
-        drain(updates, model, &mut gone);
+        drain(updates, model, &mut gone, actions, pollers);
         match actions.drain_until_quit(model, pollers, until) {
             Some(End::NotStopped { group }) => {
                 return Err(shell::not_stopped(group));
@@ -187,15 +187,10 @@ fn turns<B: Backend>(
         terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         let area = Rect::new(0, 0, size.width, size.height);
         model.set_help_overflow(screen::help_overflow(model, area));
+        model.set_overview_overflow(screen::overview_overflow(model, area));
+        model.set_popup_overflow(screen::popup_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
-            for command in handle(model, key) {
-                match &command {
-                    Command::Run { program, args } => actions.start(program, args),
-                    Command::Stop => actions.stop(),
-                    _ => {}
-                }
-                pollers.send(command);
-            }
+            send(handle(model, key), actions, pollers);
         }
         if model.quit() {
             return Ok(model.exit_code());
@@ -203,15 +198,36 @@ fn turns<B: Backend>(
     }
 }
 
-fn drain(updates: &Receiver<Update>, model: &mut Model, gone: &mut bool) {
+fn send(commands: Vec<Command>, actions: &mut Actions, pollers: &Pollers) {
+    for command in commands {
+        match &command {
+            Command::Run { program, args } => actions.start(program, args),
+            Command::Stop => actions.stop(),
+            _ => {}
+        }
+        pollers.send(command);
+    }
+}
+
+fn drain(
+    updates: &Receiver<Update>,
+    model: &mut Model,
+    gone: &mut bool,
+    actions: &mut Actions,
+    pollers: &Pollers,
+) {
     let until = Instant::now() + DRAIN_LIMIT;
     while !*gone && Instant::now() < until {
         match updates.try_recv() {
-            Ok(update) => model.apply(update),
+            Ok(update) => send(model.apply(update), actions, pollers),
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 *gone = true;
-                model.apply(Update::Stopped("poll".to_string()));
+                send(
+                    model.apply(Update::Stopped("poll".to_string())),
+                    actions,
+                    pollers,
+                );
             }
         }
     }
@@ -583,22 +599,26 @@ mod tests {
         }
     }
 
+    fn all_at(stub: &Stub) -> Urls {
+        let address = || stub.url().to_string();
+        Urls {
+            grafana: address(),
+            prometheus: address(),
+            loki: address(),
+            alertmanager: address(),
+            infrahub: address(),
+            prefect: address(),
+            sonda: address(),
+        }
+    }
+
     #[test]
     fn the_device_sources_that_hold_on_never_delay_a_key() {
         let stub = Stub::start_silent(Duration::from_secs(2));
-        let address = || stub.url().to_string();
         let begin = Start {
             home: Workbench::Devices,
             source: Some(Arc::new(Holding)),
-            urls: Urls {
-                grafana: address(),
-                prometheus: address(),
-                loki: address(),
-                alertmanager: address(),
-                infrahub: address(),
-                prefect: address(),
-                sonda: address(),
-            },
+            urls: all_at(&stub),
             ..start(vec![stack(&[CLOSED])], false)
         };
         let (source, urls) = (begin.source.clone(), Some(begin.urls.clone()));
@@ -641,6 +661,48 @@ mod tests {
     }
 
     #[test]
+    fn a_device_list_that_hides_the_cursor_row_under_a_kept_filter_tells_the_pollers_the_new_row() {
+        let stub = Stub::start(&[]);
+        let mut model = devices_model();
+        model.apply(Update::Devices(Ok(vec![device("srl1"), device("srl2")])));
+        for pressed in [ch('/'), ch('2'), key(KeyCode::Enter)] {
+            handle(&mut model, pressed);
+        }
+        let (pollers, _polled) = Pollers::start(
+            scripted(Vec::new()),
+            model.stacks().to_vec(),
+            model.selected_stack(),
+            target(),
+            Some(Arc::new(Holding)),
+            Some(all_at(&stub)),
+            None,
+        );
+        pollers.send(Command::OpenTab(Tab::Logs));
+        let (sender, updates) = mpsc::channel();
+        sender
+            .send(Update::Devices(Ok(vec![
+                device("srl0"),
+                device("srl1"),
+                device("srl2"),
+            ])))
+            .unwrap();
+
+        drain(&updates, &mut model, &mut false, &mut actions(), &pollers);
+
+        let asked = || {
+            stub.requests()
+                .iter()
+                .any(|seen| seen.path.contains("device%3D%22srl2%22"))
+        };
+        let end = Instant::now() + Duration::from_secs(5);
+        while !asked() && Instant::now() < end {
+            thread::sleep(Duration::from_millis(20));
+        }
+        pollers.send(Command::Quit);
+        assert!(asked(), "{:?}", stub.requests());
+    }
+
+    #[test]
     fn a_panic_off_the_main_thread_writes_nothing_and_the_screen_shows_the_stopped_row() {
         let (sender, receiver) = mpsc::channel();
         panic::set_hook(panic_hook(
@@ -668,7 +730,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while model.error().is_none_or(|(source, ..)| source != "ps") && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
-            drain(&updates, &mut model, &mut gone);
+            drain(&updates, &mut model, &mut gone, &mut actions(), &pollers);
         }
 
         turns(
@@ -1522,8 +1584,116 @@ mod tests {
         }
     }
 
+    fn with_sessions(name: &str, count: usize) -> Device {
+        let sessions = (1..=count)
+            .map(|index| sot::Session {
+                peer: format!("p{index:02}"),
+                afi_safi: None,
+                expected_state: None,
+                remote_as: None,
+                expected_prefixes: None,
+                reason: None,
+            })
+            .collect();
+        Device {
+            sessions,
+            ..device(name)
+        }
+    }
+
+    fn overview_model(sessions: usize) -> Model {
+        let mut model = devices_model();
+        model.apply(Update::Devices(Ok(vec![
+            with_sessions("srl1", sessions),
+            with_sessions("srl2", sessions),
+        ])));
+        model
+    }
+
     #[test]
-    fn the_lab_help_covers_the_open_pane_and_shows_all_sixteen_entries_at_60_by_15() {
+    fn the_overview_is_back_at_its_first_line_with_a_new_device_and_inside_when_lines_leave() {
+        let mut model = overview_model(12);
+        let mut keys = vec![key(KeyCode::Tab)];
+        keys.extend([ch('j'); 5]);
+        help_turn(&mut model, (60, 15), &keys);
+        assert_eq!(model.overview_scroll(), 5);
+        help_turn(&mut model, (60, 15), &[key(KeyCode::Tab), ch('j')]);
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!(model.overview_scroll(), 0);
+
+        let mut model = overview_model(12);
+        let mut keys = vec![key(KeyCode::Tab)];
+        keys.extend([ch('j'); 20]);
+        help_turn(&mut model, (60, 15), &keys);
+        let limit = model.overview_scroll();
+        assert_eq!(
+            limit,
+            screen::overview_overflow(&model, Rect::new(0, 0, 60, 15))
+        );
+        model.apply(Update::Devices(Ok(vec![with_sessions("srl1", 2)])));
+        assert_eq!(model.overview_scroll(), limit);
+
+        let rows = help_turn(&mut model, (60, 15), &[]).join("\n");
+
+        assert!(rows.contains("kind "), "{rows}");
+        assert_eq!(model.overview_scroll(), 0);
+    }
+
+    fn boxed_model() -> Model {
+        let mut model = devices_model();
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let text: Vec<String> = (1..=12).map(|index| format!("text {index:02}")).collect();
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![nobs_core::loki::Line {
+                nanoseconds: i64::try_from(now).unwrap(),
+                text: text.join("\n"),
+            }]),
+        ));
+        model
+    }
+
+    fn popup_limit(model: &Model, (width, height): (u16, u16)) -> usize {
+        screen::popup_overflow(model, Rect::new(0, 0, width, height))
+    }
+
+    #[test]
+    fn the_box_opens_at_its_first_line_and_its_first_line_exists_when_the_room_changes() {
+        let mut model = boxed_model();
+        let mut keys = vec![key(KeyCode::Tab), ch(']'), ch(']'), key(KeyCode::Enter)];
+        keys.extend([ch('j'); 5]);
+        help_turn(&mut model, (60, 15), &keys);
+        assert_eq!(model.tab(), shell::Tab::Timeline);
+        assert!(model.popup());
+        assert_eq!(model.popup_scroll(), 5);
+        handle(&mut model, key(KeyCode::Esc));
+        assert!(!model.popup());
+        handle(&mut model, key(KeyCode::Enter));
+        assert!(model.popup());
+        assert_eq!(model.popup_scroll(), 0);
+
+        help_turn(&mut model, (60, 15), &[ch('j'); 20]);
+        assert_eq!(model.popup_scroll(), popup_limit(&model, (60, 15)));
+        for size in [(100, 30), (60, 15)] {
+            let rows = help_turn(&mut model, size, &[]).join("\n");
+
+            let first = model.popup_scroll() + 1;
+            assert!(
+                rows.contains(&format!("text {first:02}")),
+                "{size:?}\n{rows}"
+            );
+            assert!(
+                model.popup_scroll() <= popup_limit(&model, size),
+                "{size:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lab_help_covers_the_open_pane_and_shows_all_seventeen_entries_at_60_by_15() {
         let mut model = lab_model();
 
         let rows = help_turn(&mut model, (60, 15), &[ch('o'), ch('?')]);
@@ -1532,7 +1702,7 @@ mod tests {
         let screen = rows.join("\n");
         assert_eq!(model.workbench(), Workbench::Lab);
         assert!(model.run_pane());
-        assert_eq!(entries.len(), 16);
+        assert_eq!(entries.len(), 17);
         for entry in &entries {
             assert!(shows_entry(&rows, entry), "{entry:?}\n{screen}");
         }

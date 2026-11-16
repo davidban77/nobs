@@ -11,5 +11,5 @@
   │sonda tab: l load  d delete  r refresh                │
   │↑3 ↓13   3 rows hidden above, 13 below                │
   │j/k more                                              │
-  └──────────────────────────────────────────────────────┘
+  └───────────────────────────────────────────────── ↓4 ─┘
  Tab focus  j/k move  / filter  l logs  r refresh  u up

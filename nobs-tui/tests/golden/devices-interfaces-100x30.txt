@@ -2,11 +2,11 @@
  [1 devices]  2 services                                                             ? keys  q quit
 ┌ devices 2 ─────────────────────────────┐┌ srl1 ──────────────────────────────────────────────────┐
 │   NAME  KIND  HLTH  SYNC  ALRT         ││overview  INTERFACES  timeline  logs                    │
-│>  srl1  —     warn  —        1         ││NAME           INTENT  ADMIN  OPER  PEER      BGP       │
-│ M srl2  —     ok    —                  ││ethernet-1/1   up      up     up    10.1.2.2  up        │
-│                                        ││ethernet-1/10  up      up     up    10.1.7.2  up        │
-│                                        ││ethernet-1/11  down    up     down                      │
-│                                        ││lo0            up      —      —                         │
+│>  srl1  —     warn  —        1         ││ NAME           INTENT  ADMIN  OPER  PEER      BGP      │
+│ M srl2  —     ok    —                  ││>ethernet-1/1   up      up     up    10.1.2.2  up       │
+│                                        ││ ethernet-1/10  up      up     up    10.1.7.2  up       │
+│                                        ││ ethernet-1/11  down    up     down                     │
+│                                        ││ lo0            up      —      —                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
@@ -27,4 +27,4 @@
 │                                        ││4 interfaces  1 differs                                 │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
  run  none                                                                                   o open
- Tab focus  [ ] tab  Esc back
+ Tab focus  j/k move  [ ] tab  Esc back

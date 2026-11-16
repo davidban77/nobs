@@ -61,13 +61,14 @@ const HELP_DEVICES: [(&str, &str); 12] = [
     ("o", "run pane"),
     ("?", "close"),
 ];
-const HELP_LAB: [(&str, &str); 6] = [
+const HELP_LAB: [(&str, &str); 7] = [
+    ("Tab", "focus other pane"),
     ("j k ↑ ↓", "move"),
     ("r", "refresh now"),
     ("o", "run pane"),
     ("x", "dismiss the error"),
     ("?", "close"),
-    ("Esc", "close/fold"),
+    ("Esc", "close/fold/back"),
 ];
 const WORKBENCHES: [(Workbench, &str, &str); 3] = [
     (Workbench::Devices, "1", "devices"),
@@ -664,11 +665,23 @@ fn wall_seconds(model: &Model) -> i64 {
         })
 }
 
+fn device_panes(area: Rect) -> [Rect; 2] {
+    let left_width = if area.width >= WIDE {
+        LEFT_DEVICES
+    } else {
+        LEFT_NARROW
+    };
+    Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area)
+}
+
+fn tab_content(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Length(1), Constraint::Min(0)])
+        .areas(Block::bordered().inner(area))
+}
+
 fn devices(frame: &mut Frame, area: Rect, model: &Model) {
     let wide = area.width >= WIDE;
-    let left_width = if wide { LEFT_DEVICES } else { LEFT_NARROW };
-    let [left, right] =
-        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area);
+    let [left, right] = device_panes(area);
     device_list(frame, left, model, wide);
     device_detail(frame, right, model, wide);
 }
@@ -850,11 +863,8 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         || " devices ".to_string(),
         |device| format!(" {} ", device.name),
     );
-    let block = Block::bordered().title_top(title);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let [tab_row, content] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    frame.render_widget(Block::bordered().title_top(title), area);
+    let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     if let Some(note) = model.source_note() {
         let line = fitted(vec![(note.to_string(), DIM)], usize::from(content.width));
@@ -893,10 +903,9 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         .collect();
     let widths = widest(titles, &cells);
     let width = usize::from(area.width);
-    let line = |row: &[&str; 6], yellow: bool, states: bool| {
-        let parts = columns
-            .iter()
-            .map(|&column| {
+    let line = |mark: &str, row: &[&str; 6], yellow: bool, states: bool| {
+        let parts = std::iter::once((mark.to_string(), Style::new()))
+            .chain(columns.iter().map(|&column| {
                 let text = if column == 5 {
                     row[column].to_string()
                 } else {
@@ -910,21 +919,29 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
                     Style::new()
                 };
                 (text, style)
-            })
+            }))
             .collect();
         fitted(parts, width)
     };
     let [table, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    let mut lines = vec![line(&titles, false, false)];
-    lines.extend(
-        cells
-            .iter()
-            .zip(&interfaces)
-            .map(|(row, source)| line(row, source.differs, true)),
-    );
-    frame.render_widget(Paragraph::new(lines), table);
     let room = usize::from(table.height).saturating_sub(1);
-    rows_mark(frame, border_below(area), 0, room, interfaces.len());
+    let on_tabs = model.focus() == Focus::Tabs;
+    let selected = model.interface_row();
+    let first = first_row(selected, room);
+    let mut lines = vec![line(" ", &titles, false, false)];
+    lines.extend(cells.iter().zip(&interfaces).enumerate().skip(first).map(
+        |(index, (row, source))| {
+            let here = on_tabs && index == selected;
+            let line = line(marker(here), row, source.differs, true);
+            if here {
+                highlighted(line, table.width)
+            } else {
+                line
+            }
+        },
+    ));
+    frame.render_widget(Paragraph::new(lines), table);
+    rows_mark(frame, border_below(area), first, room, interfaces.len());
     let differs = interfaces.iter().filter(|row| row.differs).count();
     let count = counted(interfaces.len(), "interface");
     let differs = format!("{differs} differs");
@@ -934,11 +951,28 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
 }
 
+pub(crate) fn overview_overflow(model: &Model, area: Rect) -> usize {
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, right] = device_panes(body);
+    let [_, content] = tab_content(right);
+    overview_lines(model, usize::from(content.width))
+        .len()
+        .saturating_sub(usize::from(content.height))
+}
+
 fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
+    let lines = overview_lines(model, usize::from(area.width));
+    let (room, total) = (usize::from(area.height), lines.len());
+    let first = model.overview_scroll().min(total.saturating_sub(room));
+    let shown: Vec<Line> = lines.into_iter().skip(first).collect();
+    frame.render_widget(Paragraph::new(shown), area);
+    rows_mark(frame, border_below(area), first, room, total);
+}
+
+fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
     let Some(device) = model.selected_device() else {
-        return;
+        return Vec::new();
     };
-    let width = usize::from(area.width);
     let plain = Style::new();
     let facts = |pieces: &[String], gap: &str| {
         let pieces: Vec<&str> = pieces.iter().map(String::as_str).collect();
@@ -1027,7 +1061,7 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
         ),
         None => facts(&[label("none")], ""),
     });
-    frame.render_widget(Paragraph::new(lines), area);
+    lines
 }
 
 fn kind_style(kind: devices::Kind) -> Style {
@@ -1090,20 +1124,43 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
         usize::from(rows.height),
         entries.len(),
     );
-    if model.popup() {
-        if let Some(entry) = entries.get(selected) {
-            timeline_popup(frame, area, entry);
-        }
+    if let Some(entry) = model.popup_entry() {
+        timeline_popup(frame, area, entry, model.popup_scroll());
     }
 }
 
-fn timeline_popup(frame: &mut Frame, area: Rect, entry: &devices::Entry) {
-    let popup = Rect::new(
+fn popup_area(area: Rect) -> Rect {
+    Rect::new(
         area.x + 2,
         area.y + 1,
         area.width.saturating_sub(4),
         area.height.saturating_sub(2),
-    );
+    )
+}
+
+fn popup_lines(entry: &devices::Entry, width: u16) -> Vec<String> {
+    entry
+        .text
+        .lines()
+        .flat_map(|line| wrapped(line, usize::from(width)))
+        .collect()
+}
+
+pub(crate) fn popup_overflow(model: &Model, area: Rect) -> usize {
+    let Some(entry) = model.popup_entry() else {
+        return 0;
+    };
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, right] = device_panes(body);
+    let [_, content] = tab_content(right);
+    let inner = Block::bordered().inner(popup_area(content));
+    popup_lines(entry, inner.width)
+        .len()
+        .saturating_sub(usize::from(inner.height))
+}
+
+fn timeline_popup(frame: &mut Frame, area: Rect, entry: &devices::Entry, scroll: usize) {
+    let popup = popup_area(area);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .title_top(format!(
@@ -1114,10 +1171,12 @@ fn timeline_popup(frame: &mut Frame, area: Rect, entry: &devices::Entry) {
         .title_top(Line::from(" Esc close ").right_aligned());
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    frame.render_widget(
-        Paragraph::new(entry.text.as_str()).wrap(Wrap { trim: false }),
-        inner,
-    );
+    let lines = popup_lines(entry, inner.width);
+    let (room, total) = (usize::from(inner.height), lines.len());
+    let first = scroll.min(total.saturating_sub(room));
+    let shown: Vec<Line> = lines.into_iter().skip(first).map(Line::from).collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+    rows_mark(frame, border_below(inner), first, room, total);
 }
 
 fn device_logs(frame: &mut Frame, area: Rect, model: &Model) {
@@ -1339,8 +1398,6 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let block = Block::bordered().title_top(format!(" nodes {} ", rows.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let mut sorted: Vec<_> = rows.iter().collect();
-    sorted.sort_by(|one, other| one.name.cmp(&other.name));
     let width = |texts: Vec<&str>| {
         texts
             .iter()
@@ -1349,7 +1406,7 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .unwrap_or(0)
             .max(4)
     };
-    let states: Vec<(&str, Style)> = sorted
+    let states: Vec<(&str, Style)> = rows
         .iter()
         .map(|row| match row.state.as_deref() {
             _ if !model.nodes_ok() => ("?", tone("?")),
@@ -1358,7 +1415,7 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             Some(other) => (other, Style::new().fg(Color::Red)),
         })
         .collect();
-    let kind_width = width(sorted.iter().map(|row| row.kind.as_str()).collect());
+    let kind_width = width(rows.iter().map(|row| row.kind.as_str()).collect());
     let state_width = width(
         states
             .iter()
@@ -1367,23 +1424,32 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .collect(),
     );
     let fixed = 3 + if wide { kind_width + 2 } else { 0 } + state_width;
-    let name_width = width(sorted.iter().map(|row| row.name.as_str()).collect())
+    let name_width = width(rows.iter().map(|row| row.name.as_str()).collect())
         .min(usize::from(inner.width).saturating_sub(fixed));
-    let line = |name: &str, kind: &str, state: (&str, Style)| {
-        let mut parts = vec![(format!(" {}  ", fit(name, name_width)), Style::new())];
+    let line = |mark: &str, name: &str, kind: &str, state: (&str, Style)| {
+        let mut parts = vec![(format!("{mark}{}  ", fit(name, name_width)), Style::new())];
         if wide {
             parts.push((format!("{}  ", fit(kind, kind_width)), Style::new()));
         }
         parts.push((state.0.to_string(), state.1));
         fitted(parts, usize::from(inner.width))
     };
-    let mut lines = vec![line("NAME", "KIND", ("STATE", Style::new()))];
-    for (row, state) in sorted.iter().zip(states) {
-        lines.push(line(&row.name, &row.kind, state));
+    let room = usize::from(inner.height).saturating_sub(1);
+    let on_tabs = model.focus() == Focus::Tabs;
+    let selected = model.node_row();
+    let first = first_row(selected, room);
+    let mut lines = vec![line(" ", "NAME", "KIND", ("STATE", Style::new()))];
+    for (index, (row, state)) in rows.iter().zip(states).enumerate().skip(first) {
+        let here = on_tabs && index == selected;
+        let line = line(marker(here), &row.name, &row.kind, state);
+        lines.push(if here {
+            highlighted(line, inner.width)
+        } else {
+            line
+        });
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    let room = usize::from(inner.height).saturating_sub(1);
-    rows_mark(frame, border_below(inner), 0, room, sorted.len());
+    rows_mark(frame, border_below(inner), first, room, rows.len());
 }
 
 fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
@@ -1484,7 +1550,7 @@ fn key_hints(model: &Model) -> Vec<String> {
     let actions = action_hints(model);
     let fixed = match (model.workbench(), model.focus(), model.tab()) {
         (Workbench::Lab, ..) => {
-            return listed(vec!["j/k move"])
+            return listed(vec!["Tab focus", "j/k move"])
                 .chain(actions)
                 .chain(listed(vec!["r refresh", "o pane"]))
                 .collect();
@@ -1508,7 +1574,9 @@ fn key_hints(model: &Model) -> Vec<String> {
                 "r refresh",
             ]
         }
-        (Workbench::Devices, Focus::Tabs, Tab::Timeline) if model.popup() => vec!["Esc close"],
+        (Workbench::Devices, Focus::Tabs, Tab::Timeline) if model.popup() => {
+            vec!["j/k move", "Esc close"]
+        }
         (Workbench::Devices, Focus::Tabs, Tab::Timeline) => vec![
             "j/k move",
             "Enter full text",
@@ -1519,7 +1587,9 @@ fn key_hints(model: &Model) -> Vec<String> {
         (Workbench::Devices, Focus::Tabs, Tab::Logs) => {
             log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
         }
-        (Workbench::Devices, Focus::Tabs, _) => vec!["Tab focus", "[ ] tab", "Esc back"],
+        (Workbench::Devices, Focus::Tabs, _) => {
+            vec!["Tab focus", "j/k move", "[ ] tab", "Esc back"]
+        }
     };
     listed(fixed).chain(actions).collect()
 }
@@ -1686,6 +1756,13 @@ fn help(frame: &mut Frame, area: Rect, model: &Model) {
     let top = u16::try_from(model.help_scroll())
         .unwrap_or(u16::MAX)
         .min(rows - room);
+    rows_mark(
+        frame,
+        border_below(inner),
+        usize::from(top),
+        usize::from(room),
+        usize::from(rows),
+    );
     let (first, second) = entries.split_at(usize::from(rows));
     let middle = inner.width / 2;
     frame.render_widget(
@@ -2106,6 +2183,29 @@ mod tests {
     }
 
     #[test]
+    fn the_first_shown_row_carries_the_mark_after_the_filter_hides_the_cursor_row() {
+        let cases = [
+            (devices_bench(), "2", " devices ", "srl2"),
+            (services_bench(), "-0", " stacks ", "stack-01"),
+        ];
+        for (mut model, filter, list, name) in cases {
+            press(&mut model, '/');
+            filter.chars().for_each(|typed| press(&mut model, typed));
+
+            let rows = drawn(&mut model, 60, 15);
+
+            let screen = rows.join("\n");
+            let marked: Vec<String> = boxed(&rows, list)
+                .into_iter()
+                .filter(|row| row.starts_with('>'))
+                .collect();
+            assert_eq!(marked.len(), 1, "{screen}");
+            assert!(marked[0].contains(name), "{screen}");
+            assert!(!boxed(&rows, &format!(" {name} ")).is_empty(), "{screen}");
+        }
+    }
+
+    #[test]
     fn a_row_of_several_facts_shows_the_facts_that_fit_whole_then_an_ellipsis_at_60_columns() {
         let mut wide = Vec::new();
         let mut narrow = Vec::new();
@@ -2462,6 +2562,46 @@ mod tests {
     }
 
     #[test]
+    fn the_keys_box_marks_its_hidden_lines_on_its_bottom_border() {
+        let mut model = services_bench();
+        model.apply(Update::Logs(
+            0,
+            "loki".to_string(),
+            Err(LONG_ERROR.to_string()),
+        ));
+        press(&mut model, '?');
+        let bottom = |rows: &[String]| {
+            rows.iter()
+                .find(|row| row.trim_start().starts_with('└'))
+                .unwrap()
+                .clone()
+        };
+        for mark in ["↓5", "↑1 ↓4", "↑2 ↓3"] {
+            let rows = drawn(&mut model, 60, 15);
+            model.set_help_overflow(help_overflow(&model, Rect::new(0, 0, 60, 15)));
+            let screen = rows.join("\n");
+
+            assert!(
+                bottom(&rows).ends_with(&format!("─ {mark} ─┘")),
+                "{mark}\n{screen}"
+            );
+            assert!(screen.contains(HELP_MORE), "{mark}\n{screen}");
+            press(&mut model, 'j');
+        }
+
+        let rows = drawn(&mut model, 100, 30);
+
+        assert!(
+            bottom(&rows)
+                .trim_start()
+                .chars()
+                .all(|c| "└─┘".contains(c)),
+            "{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
     fn the_help_names_the_lab_switch_key_only_in_the_book_lab() {
         let mut book_services = lab_bench(2);
         press(&mut book_services, '2');
@@ -2765,6 +2905,7 @@ mod tests {
             })
             .collect();
         model.apply(Update::Nodes(Ok(nodes)));
+        focus_tabs(&mut model);
         model
     }
 
@@ -2781,7 +2922,190 @@ mod tests {
             .collect();
         model.apply(Update::Devices(Ok(list)));
         open_tab(&mut model, Tab::Interfaces);
+        focus_tabs(&mut model);
         model
+    }
+
+    fn sessions_of(count: usize) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let mut list = model.devices().to_vec();
+        let first = list[0].sessions[0].clone();
+        list[0].sessions = (1..=count)
+            .map(|index| {
+                let mut session = first.clone();
+                session.peer = format!("p{index:02}");
+                session
+            })
+            .collect();
+        model.apply(Update::Devices(Ok(list)));
+        focus_tabs(&mut model);
+        model
+    }
+
+    #[test]
+    fn the_device_overview_moves_by_one_line_and_says_how_many_lines_are_hidden() {
+        let mut model = sessions_of(12);
+        let turn = |model: &mut Model, key: char, times: usize| {
+            for _ in 0..times {
+                press(model, key);
+            }
+            let rows = drawn(model, 60, 15);
+            model.set_overview_overflow(overview_overflow(model, Rect::new(0, 0, 60, 15)));
+            let right: Vec<String> = rows
+                .iter()
+                .map(|row| row.chars().skip(usize::from(LEFT_NARROW)).collect())
+                .collect();
+            assert!(
+                right.iter().all(|row| !row.contains('>')),
+                "{}",
+                rows.join("\n")
+            );
+            rows.join("\n")
+        };
+        let steps = [
+            ('j', 0, "↓8", "kind ", true),
+            ('j', 1, "↑1 ↓7", "kind ", false),
+            ('j', 20, "↑8", "alerts   none", true),
+            ('k', 1, "↑7 ↓1", "alerts   none", false),
+        ];
+        for (key, times, mark, line, shown) in steps {
+            let screen = turn(&mut model, key, times);
+
+            let edge = format!("─ {mark} ─┘");
+            assert!(screen.contains(&edge), "{key} {times}: {edge}\n{screen}");
+            assert_eq!(
+                screen.contains(line),
+                shown,
+                "{key} {times}: {line}\n{screen}"
+            );
+        }
+    }
+
+    fn log_line(seconds: i64, text: &str) -> nobs_core::loki::Line {
+        nobs_core::loki::Line {
+            nanoseconds: seconds * 1_000_000_000,
+            text: text.to_string(),
+        }
+    }
+
+    fn boxed_entry() -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let text: Vec<String> = (1..=12).map(|index| format!("text {index:02}")).collect();
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![
+                log_line(2, &text.join("\n")),
+                log_line(1, "older entry"),
+            ]),
+        ));
+        open_tab(&mut model, Tab::Timeline);
+        focus_tabs(&mut model);
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        model
+    }
+
+    fn box_title(rows: &[String]) -> String {
+        let row = rows.iter().find(|row| row.contains("┌ log")).unwrap();
+        row.chars().skip(usize::from(LEFT_NARROW)).collect()
+    }
+
+    #[test]
+    fn the_box_of_an_entry_moves_its_text_by_one_line_and_says_how_many_lines_are_hidden() {
+        let mut model = boxed_entry();
+        let title = box_title(&drawn(&mut model, 60, 15));
+        let turn = |model: &mut Model, key: char, times: usize| {
+            for _ in 0..times {
+                press(model, key);
+            }
+            let rows = drawn(model, 60, 15);
+            model.set_popup_overflow(popup_overflow(model, Rect::new(0, 0, 60, 15)));
+            let screen = rows.join("\n");
+            assert_eq!(box_title(&rows), title, "{screen}");
+            assert_eq!(model.timeline_row(), 0, "{screen}");
+            let right: Vec<String> = rows
+                .iter()
+                .map(|row| row.chars().skip(usize::from(LEFT_NARROW)).collect())
+                .collect();
+            assert!(right.iter().all(|row| !row.contains('>')), "{screen}");
+            screen
+        };
+        let steps = [
+            ('j', 0, "↓8", "text 01", "text 12"),
+            ('j', 1, "↑1 ↓7", "text 02", "text 01"),
+            ('j', 20, "↑8", "text 12", "text 08"),
+            ('k', 1, "↑7 ↓1", "text 08", "text 12"),
+        ];
+        for (key, times, mark, shown, hidden) in steps {
+            let screen = turn(&mut model, key, times);
+
+            let edge = format!("─ {mark} ─┘  ");
+            assert!(screen.contains(&edge), "{key} {times}: {edge}\n{screen}");
+            assert!(screen.contains(shown), "{key} {times}: {shown}\n{screen}");
+            assert!(
+                !screen.contains(hidden),
+                "{key} {times}: {hidden}\n{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_open_box_keeps_the_entry_that_was_opened_when_newer_entries_arrive() {
+        let mut model = boxed_entry();
+        let before = drawn(&mut model, 60, 15);
+
+        model.apply(Update::DeviceLogs(
+            "srl1".to_string(),
+            Ok(vec![log_line(3, "newest entry")]),
+        ));
+        let after = drawn(&mut model, 60, 15);
+
+        let screen = after.join("\n");
+        assert_eq!(model.timeline()[1].text.lines().next(), Some("text 01"));
+        assert_eq!(box_title(&after), box_title(&before), "{screen}");
+        assert!(screen.contains("text 01"), "{screen}");
+        assert!(!screen.contains("newest entry"), "{screen}");
+    }
+
+    #[test]
+    fn the_key_line_and_the_help_name_tab_and_j_k_for_each_lab_focus_and_the_device_tabs() {
+        let lab_line = " Tab focus  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show";
+        let mut lab = lab_bench(1);
+        assert_eq!(key_line(&lab, 100), [lab_line], "chapters");
+        focus_tabs(&mut lab);
+        assert_eq!(lab.focus(), Focus::Tabs);
+        assert_eq!(key_line(&lab, 100), [lab_line], "nodes");
+
+        let tab_line = " Tab focus  j/k move  [ ] tab  Esc back  ";
+        for (tab, start) in [
+            (Tab::Overview, tab_line),
+            (Tab::Interfaces, tab_line),
+            (
+                Tab::Timeline,
+                " j/k move  Enter full text  - + window  [ ] tab  Esc back  ",
+            ),
+            (
+                Tab::Logs,
+                " f pause  / filter  j/k scroll  [ ] tab  Esc back to list  ",
+            ),
+        ] {
+            let mut model = devices_bench();
+            open_tab(&mut model, tab);
+            focus_tabs(&mut model);
+            let line = key_line(&model, 100).concat();
+            assert!(line.starts_with(start), "{tab:?}: {line}");
+        }
+        let boxed = key_line(&boxed_entry(), 100).concat();
+        assert!(boxed.starts_with(" j/k move  Esc close  "), "{boxed}");
+
+        let entries = help_entries(&lab_bench(1));
+        assert_eq!(entries[1], ("Tab".to_string(), "focus other pane"));
+        assert!(entries.contains(&("Esc".to_string(), "close/fold/back")));
+        assert!(HELP_LAB
+            .iter()
+            .all(|(_, meaning)| meaning.chars().count() <= 17));
     }
 
     #[test]
@@ -2841,13 +3165,23 @@ mod tests {
                 "┘",
                 &[(0, "↓7", "n00"), (5, "↑3 ↓4", "n05"), (9, "↑7", "n09")],
             ),
-            ("nodes", || nodes_of(10), 'j', "┘", &[(0, "↓5", "n01")]),
+            (
+                "nodes",
+                || nodes_of(10),
+                'j',
+                "┘",
+                &[(0, "↓5", ">n01"), (5, "↑1 ↓4", ">n06"), (9, "↑5", ">n10")],
+            ),
             (
                 "interfaces",
                 || interfaces_of(20),
                 'j',
                 "┘",
-                &[(0, "↓14", "e01")],
+                &[
+                    (0, "↓14", ">e01"),
+                    (10, "↑5 ↓9", ">e11"),
+                    (19, "↑14", ">e20"),
+                ],
             ),
             (
                 "chooser",
@@ -2875,6 +3209,28 @@ mod tests {
                 assert!(screen.contains(shown), "{label} {times}: {shown}\n{screen}");
             }
         }
+    }
+
+    #[test]
+    fn the_nodes_and_interfaces_mark_shows_only_with_the_focus_on_their_pane() {
+        let mut model = lab_bench(1);
+        let screen = drawn(&mut model, 60, 15).join("\n");
+        assert!(!screen.contains(">nobs-t-srl1"), "{screen}");
+        assert!(screen.contains(">ch1"), "{screen}");
+
+        focus_tabs(&mut model);
+        let screen = drawn(&mut model, 60, 15).join("\n");
+        assert!(screen.contains(">nobs-t-srl1"), "{screen}");
+        assert!(screen.contains(">ch1"), "{screen}");
+
+        let mut model = devices_model(workshop_located("infrahub"));
+        open_tab(&mut model, Tab::Interfaces);
+        let screen = drawn(&mut model, 60, 15).join("\n");
+        assert!(!screen.contains(">ethernet"), "{screen}");
+
+        focus_tabs(&mut model);
+        let screen = drawn(&mut model, 60, 15).join("\n");
+        assert!(screen.contains(">ethernet-1/1 "), "{screen}");
     }
 
     #[test]
