@@ -4,8 +4,8 @@
 │>autocon5  up 7/7             ││overview  logs  SONDA                                             │
 │ packt     down 0/2           ││http://localhost:8085  refreshed 2s ago                           │
 │ demo      down 0/3           ││┌──────────────────────────────────┐┌────────────────────────────┐│
-│                              │││  ID   NAME STATE   ELAPSE DEGRADE││state  "running"            ││
-│                              │││> a1b2 cpu  running 12     false  ││{                           ││
+│                              │││  NAME    STATE   ELAPSED DEGRADED││state  "running"            ││
+│                              │││> cpu     running 12      false   ││{                           ││
 │                              │││                                  ││  "name": "cpu"             ││
 │                              │││                                  ││}                           ││
 │                              │││                                  ││                            ││

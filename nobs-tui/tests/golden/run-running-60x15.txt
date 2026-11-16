@@ -7,7 +7,7 @@
 │                     ││ promethe…  running  ok        9090│
 │                     ││ loki       running  down      3001│
 │                     ││ alertman…  running  ok        9093│
-└─────────────────────┘└───────────────────────────────────┘
+└─────────────────────┘└────────────────────────────── ↓3 ─┘
 ┌ run  autocon5 up  running 2s ────────────────── Esc fold ┐
 │$ nobs --dir /home/me/ws/autocon5 autocon5 up             │
 │ Container autocon5-grafana-1  Started                    │

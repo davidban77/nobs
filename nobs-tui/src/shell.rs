@@ -19,7 +19,7 @@ use nobs_core::sot::{Device, Session, SourceOfTruth};
 use nobs_core::status::Urls;
 use nobs_core::time;
 
-use crate::actions::{arguments, Ask, Row, Target, ACTIONS};
+use crate::actions::{flat, pieces, Ask, Row, Target, ACTIONS};
 use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
@@ -35,6 +35,7 @@ const MIN_SIZE: (u16, u16) = (60, 15);
 const STACK_SONDA_URL: &str = "http://localhost:8085";
 const SONDA_ENV: &str = "SONDA_SERVER_URL";
 const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
+const RUNNING: &str = "running";
 
 pub type ShownDeviceLogs<'a> = (&'a str, Vec<(i64, &'a str)>, bool, usize);
 
@@ -176,7 +177,7 @@ impl StackState {
             .filter(|name| {
                 listed
                     .iter()
-                    .any(|row| row.name == **name && row.state == "running")
+                    .any(|row| row.name == **name && row.state == RUNNING)
             })
             .count();
         if running > 0 {
@@ -269,7 +270,7 @@ pub struct Run {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Question {
     Pending {
-        args: Vec<OsString>,
+        args: Vec<Vec<OsString>>,
         target: Target,
         saying: Option<&'static str>,
     },
@@ -298,15 +299,25 @@ pub fn not_stopped(group: u32) -> String {
     )
 }
 
-fn joined(args: &[OsString]) -> String {
-    args.iter()
-        .map(|arg| arg.to_string_lossy())
+pub(crate) const NO_BREAK: char = '\u{a0}';
+
+fn joined(pieces: &[Vec<OsString>]) -> String {
+    pieces
+        .iter()
+        .map(|piece| {
+            piece
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .replace(' ', &NO_BREAK.to_string())
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn words(args: &[OsString]) -> String {
-    joined(args.get(2..).unwrap_or_default())
+fn words(pieces: &[Vec<OsString>]) -> String {
+    joined(pieces.get(1..).unwrap_or_default())
 }
 
 #[derive(Default)]
@@ -547,7 +558,7 @@ impl Model {
                 }
                 self.health = list;
                 for service in &mut self.services {
-                    service.health = health_of(&self.health, &service.name);
+                    service.health = health_of(&self.health, &service.name, &service.state);
                 }
             }
             Update::Logs(index, service, Ok(lines)) => {
@@ -714,7 +725,7 @@ impl Model {
         }
     }
 
-    fn start_run(&mut self, args: Vec<OsString>, target: Target) -> Vec<Command> {
+    fn start_run(&mut self, args: Vec<Vec<OsString>>, target: Target) -> Vec<Command> {
         self.run = Some(Run {
             words: words(&args),
             command: joined(&args),
@@ -727,7 +738,7 @@ impl Model {
         self.run_pane = true;
         vec![Command::Run {
             program: self.program.clone(),
-            args,
+            args: flat(&args),
         }]
     }
 
@@ -765,7 +776,7 @@ impl Model {
         let Some(target) = target else {
             return Some(Vec::new());
         };
-        match arguments(action, &target, self) {
+        match pieces(action, &target, self) {
             Some(args) => {
                 self.notice = None;
                 let saying = match action.ask {
@@ -1240,7 +1251,7 @@ impl Model {
         let mut services: Vec<Service> = rows
             .into_iter()
             .map(|row| Service {
-                health: health_of(&self.health, &row.name),
+                health: health_of(&self.health, &row.name, &row.state),
                 name: row.name,
                 state: row.state,
                 port: row.port,
@@ -1248,7 +1259,7 @@ impl Model {
             })
             .collect();
         services.extend(without_row.into_iter().map(|name| Service {
-            health: health_of(&self.health, &name),
+            health: health_of(&self.health, &name, "—"),
             name,
             state: "—".to_string(),
             port: None,
@@ -1857,7 +1868,10 @@ pub(crate) fn sonda_url(flag: Option<&str>, stack: Option<&Stack>) -> String {
     }
 }
 
-fn health_of(health: &[Health], name: &str) -> Option<String> {
+fn health_of(health: &[Health], name: &str, state: &str) -> Option<String> {
+    if state != RUNNING {
+        return None;
+    }
     health
         .iter()
         .find(|entry| entry.service == name)
@@ -1901,7 +1915,7 @@ pub(crate) mod tests {
     use nobs_core::sot::Fixed;
 
     use super::*;
-    use crate::actions::Action;
+    use crate::actions::{arguments, Action};
     use crate::screen::{help_entries, key_line};
 
     const TWO: &str = r#"{"scenarios":[{"id":"a1","name":"cpu","state":"running"},{"id":"b2","name":"mem","state":"paused"}]}"#;
@@ -2601,7 +2615,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_defined_service_without_a_container_shows_the_health_its_probe_gave() {
+    fn a_defined_service_without_a_container_shows_no_health() {
         let mut model = opened(&["autocon5"]);
         model.apply(Update::Health(0, vec![health("grafana", "down")]));
         model.apply(Update::Services(0, defined(&["grafana"]), Ok(Vec::new())));
@@ -2611,7 +2625,31 @@ pub(crate) mod tests {
             (service.name.as_str(), service.state.as_str()),
             ("grafana", "—")
         );
-        assert_eq!(service.health.as_deref(), Some("down"));
+        assert_eq!(service.health, None);
+    }
+
+    #[test]
+    fn a_stopped_container_shows_no_health_and_a_running_one_the_probe_s_answer() {
+        let mut model = opened(&["autocon5"]);
+        let probed = vec![health("grafana", "down"), health("loki", "ok")];
+        let listed = vec![row("grafana", "exited"), row("loki", "running")];
+
+        model.apply(Update::Health(0, probed.clone()));
+        model.apply(listing(0, Ok(listed)));
+        let before: Vec<Option<&str>> = model
+            .services()
+            .iter()
+            .map(|service| service.health.as_deref())
+            .collect();
+        assert_eq!(before, [None, Some("ok")]);
+
+        model.apply(Update::Health(0, probed));
+        let after: Vec<Option<&str>> = model
+            .services()
+            .iter()
+            .map(|service| service.health.as_deref())
+            .collect();
+        assert_eq!(after, [None, Some("ok")]);
     }
 
     #[test]
@@ -3748,7 +3786,7 @@ pub(crate) mod tests {
             assert_eq!(ch(&mut model, typed), []);
             assert_eq!(
                 model.question().unwrap().text(),
-                format!("run nobs --dir {ws} nobs-t-packt {word}? y/n")
+                format!("run nobs --dir{NO_BREAK}{ws} nobs-t-packt {word}? y/n")
             );
             assert_eq!(
                 ch(&mut model, 'y'),
@@ -3794,9 +3832,16 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 model.run().unwrap().words,
-                format!("lab {word} --sudo-no-prompt -s ch1")
+                format!("lab {word} --sudo-no-prompt -s{NO_BREAK}ch1")
             );
         }
+
+        let mut model = book_model();
+        ch(&mut model, 'P');
+        assert_eq!(
+            ch(&mut model, 'y'),
+            [nobs(&["--dir", &lab, "lab", "purge", "--sudo-no-prompt"])]
+        );
     }
 
     #[test]
@@ -3848,7 +3893,7 @@ pub(crate) mod tests {
         assert_eq!(
             model.question().unwrap().text(),
             format!(
-                "run nobs --dir {} nobs-t-one maintenance -d srl1 --clear? y/n",
+                "run nobs --dir{NO_BREAK}{} nobs-t-one maintenance -d{NO_BREAK}srl1 --clear? y/n",
                 fixture("workshop-one").display()
             )
         );
@@ -3859,7 +3904,7 @@ pub(crate) mod tests {
             .question()
             .unwrap()
             .text()
-            .ends_with("maintenance -d srl2 --state? y/n"));
+            .ends_with(&format!("maintenance -d{NO_BREAK}srl2 --state? y/n")));
 
         let mut model = book_model();
         model.apply(Update::Devices(Ok(workshop_source().devices().unwrap())));
@@ -4058,10 +4103,10 @@ pub(crate) mod tests {
             assert_eq!(saying, agreed_clause(action), "{}", action.key);
             let mut model = on_its_row(action.row);
             let target = model.action_target(action.row).unwrap();
-            let args = arguments(action, &target, &model).unwrap();
+            let args = pieces(action, &target, &model).unwrap();
             let run = Command::Run {
                 program: PathBuf::from("/bin/nobs"),
-                args: args.clone(),
+                args: arguments(action, &target, &model).unwrap(),
             };
             let commands = ch(&mut model, action.key);
             if action
@@ -4300,11 +4345,9 @@ pub(crate) mod tests {
 
         ch(&mut model, 'j');
         ch(&mut model, 'D');
-        assert!(model
-            .question()
-            .unwrap()
-            .text()
-            .ends_with("-s ch2? It takes the other chapters' services down. y/n"));
+        assert!(model.question().unwrap().text().ends_with(&format!(
+            "-s{NO_BREAK}ch2? It takes the other chapters' services down. y/n"
+        )));
         assert_eq!(opened(&["a"]).selected_chapter(), None);
     }
 

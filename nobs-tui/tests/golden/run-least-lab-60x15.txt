@@ -4,10 +4,10 @@
 ┌ nodes 2 ────────────┐┌ ch2 ──────────────────────────────┐
 │ NAME         STATE  ││OVERVIEW                           │
 │ nobs-t-srl1  running││ topology  containerlab/lab.yml    │
-└─────────────────────┘│ project   netobs                  │
+└──────────────── ↓1 ─┘│ project   netobs                  │
 ┌ chapters 2 ─────────┐│ nodes     1 of 2 running          │
 │!ch2  ?              ││ services  ?                       │
-└─────────────────────┘└───────────────────────────────────┘
+└──────────────── ↑1 ─┘└───────────────────────────────────┘
 ┌ run  lab deploy --sudo-no-prompt …  exit 1  0s  Esc fold ┐
 │clab-nobs-t-book-nobs-t-srl9,                             │
 │clab-nobs-t-book-nobs-t-srl10); run nobs lab destroy first│

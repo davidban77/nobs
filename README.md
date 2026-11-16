@@ -50,6 +50,8 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 
 When a data call fails, one red line appears between the switcher and the body (see [Errors](#errors)).
 
+When a list has more rows than its pane can show, the border under the list ends with a mark that counts the hidden rows. `↓16` means 16 rows below the last row shown. `↑3` means 3 rows above the first row shown. `↑3 ↓13` means both. When there is no room for the whole mark, no mark is shown.
+
 ### The devices workbench
 
 The devices workbench is workbench `1`. It shows the devices of the lab, one row for each, with their health and their alerts, and four tabs for the device you select. It only reads, except for the action `m` (see [Actions](#actions)). A workshop opens on it. A book lab opens on the lab workbench. A labcli lab, the chooser and `sonda only` open on the services workbench.
@@ -170,13 +172,13 @@ The left side is the list of stacks, titled `stacks <n>`. A book lab lists its c
 
 The right side is titled with the name of the stack and `refreshed <n>s ago`, or `no answer yet`. At 100 columns and wider, the title also shows, after the name, how many services the stack defines, for example `22 services`, or `?` when this is not known. Under the title are three tabs, `overview`, `logs` and `sonda`, with the open tab in capital letters.
 
-The overview tab is a table with one row for each container that Docker Compose lists for the selected stack. After these rows comes one row for each defined service that has no container, with `—` under `STATE`, `PORT` and `AGE`. A cell shows `—` when there is no value.
+The overview tab is a table with one row for each container that Docker Compose lists for the selected stack. After these rows comes one row for each defined service that has no container, with `—` under `STATE`, `HEALTH`, `PORT` and `AGE`. A cell shows `—` when there is no value.
 
 | Column | What it shows | Where it comes from |
 |---|---|---|
 | `SERVICE` | the name of the service | `docker compose ps --all --format json`; for a row with no container, `docker compose config --services` |
 | `STATE` | `running`, `exited` and so on, as Docker reports it; `—` for a row with no container | `docker compose ps --all --format json` |
-| `HEALTH` | `ok`, `http <code>` or `down` | an HTTP check of the service (see below) |
+| `HEALTH` | `ok`, `http <code>` or `down` when the container is `running`; `—` for any other state and for a row with no container | an HTTP check of the service (see below) |
 | `PORT` | the first published port | `docker compose ps --all --format json` |
 | `AGE` | how long the container has run | the same call |
 
@@ -208,12 +210,12 @@ The sonda tab shows the scenarios of a running `sonda-server` (see [Sonda](#sond
 
 | Part | What it shows |
 |---|---|
-| top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error and its age, `(<n>s ago)`, when there is one |
+| top line | the server address; `refreshed <n>s ago`, the age of the last good answer, or `no answer yet`; the last error and its age, `(<n>s ago)`, when there is one. When the line is too short, whole parts leave: first `refreshed <n>s ago` or `no answer yet`, then the server address. An error that is still too long keeps its end and its age, for example `… refused (os error 61) (2s ago)`. With no error, a server address longer than the line ends in `…` |
 | left table | the scenarios, with the columns `ID` (its first 8 characters), `NAME`, `STATE`, `ELAPSED` (seconds) and `DEGRADED`; `>` marks the selected scenario |
 | right panel | what `nobs sonda stats` prints for the selected scenario, as `field  value` lines sorted by name (a text value keeps its quotes, for example `state  "running"`), then what `nobs sonda show` prints for it; the lines that do not fit are cut off |
 | bottom line | the keys of the tab, empty while the focus is on the stack list; or the open question, `load: <path>` or `delete <name>? y/n`; or, for three seconds, the answer to a load or a delete |
 
-A state is shown as the server sends it, for example `running`, `paused` or `finished`. On a narrow screen the column titles of the table are cut: `ELAPSE` and `DEGRADE` at 100 columns, and single letters at 60 columns.
+A state is shown as the server sends it, for example `running`, `paused` or `finished`. When the table is too narrow for all columns, whole columns leave in this order: `ID`, then `DEGRADED`, then `ELAPSED`, then `STATE`. `STATE` leaves only when the longest name does not fit beside it. `NAME` never leaves; a name too long for the table ends in `…`. For example, inside a stack the table shows `NAME`, `STATE`, `ELAPSED` and `DEGRADED` at 100 columns; at 60 columns it shows `NAME` and `STATE` for short names such as `cpu`, and only `NAME` for a name such as `interface-flap`.
 
 These keys work when the focus is on the tabs (press `Tab` to move it there):
 

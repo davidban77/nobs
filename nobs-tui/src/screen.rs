@@ -17,7 +17,7 @@ use crate::devices;
 use crate::run::End;
 use crate::shell::{
     kind_text, Cursor, Focus, Model, Run, RunState, StackKind, StackState, Tab, Workbench,
-    DEVICE_TABS, SERVICES_TABS,
+    DEVICE_TABS, NO_BREAK, SERVICES_TABS,
 };
 use crate::view;
 
@@ -28,6 +28,7 @@ const LEFT_DEVICES: u16 = 42;
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
 const HELP_SONDA: &str = "sonda tab: l load  d delete  r refresh";
+const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
 const HELP_QUIT: [(&str, &str); 2] = [
     ("q", "quit; asks in a run"),
     ("Ctrl-C", "stop a run, or quit"),
@@ -93,8 +94,10 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     switcher(frame, switcher_row, model);
     if let Some((source, text, at)) = model.error() {
         let age = format!("  {}s ago", seconds(model, at));
-        let room = usize::from(error_row.width).saturating_sub(1 + age.chars().count());
-        let line = format!(" {}{age}", cut_words(&format!("{source}: {text}"), room));
+        let head = format!(" {source}: ");
+        let room =
+            usize::from(error_row.width).saturating_sub(head.chars().count() + age.chars().count());
+        let line = format!("{head}{}{age}", cut_words(text, room, Keep::End));
         frame.render_widget(
             Paragraph::new(line).style(Style::new().fg(Color::Red)),
             error_row,
@@ -211,7 +214,7 @@ fn row_marker(model: &Model, selected: bool, target: &Target) -> &'static str {
     }
 }
 
-fn fit(text: &str, width: usize) -> String {
+pub(crate) fn fit(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return format!("{text:<width$}");
     }
@@ -219,11 +222,28 @@ fn fit(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
+pub(crate) fn widest<const N: usize, S: AsRef<str>>(
+    titles: [&str; N],
+    rows: &[[S; N]],
+) -> [usize; N] {
+    let mut widths = titles.map(|title| title.chars().count());
+    for row in rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.as_ref().chars().count());
+        }
+    }
+    widths
+}
+
 fn wrapped(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows = Vec::new();
     let mut row = String::new();
-    for (index, word) in text.split(' ').enumerate() {
+    let words = text.split(' ').flat_map(|piece| {
+        let whole = piece.chars().count() <= width;
+        piece.split(move |letter| letter == NO_BREAK && !whole)
+    });
+    for (index, word) in words.enumerate() {
         let gap = if index == 0 { "" } else { " " };
         let used = row.chars().count() + gap.len();
         let length = word.chars().count();
@@ -245,36 +265,34 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
         rows.extend(pieces);
     }
     rows.push(row);
-    rows
+    rows.iter().map(|row| row.replace(NO_BREAK, " ")).collect()
 }
 
-pub(crate) fn cut_words(text: &str, width: usize) -> String {
+#[derive(Clone, Copy)]
+pub(crate) enum Keep {
+    Start,
+    End,
+}
+
+pub(crate) fn cut_words(text: &str, width: usize, keep: Keep) -> String {
     let words: Vec<&str> = text.split(' ').collect();
-    cut_whole(&words, " ", width)
+    cut_whole(&words, " ", width, keep).replace(NO_BREAK, " ")
 }
 
-fn cut_whole(pieces: &[&str], gap: &str, width: usize) -> String {
+fn cut_whole(pieces: &[&str], gap: &str, width: usize, keep: Keep) -> String {
     let text = pieces.join(gap);
     if text.chars().count() <= width {
         return text;
     }
-    let mut kept = String::new();
-    for piece in pieces {
-        let longer = if kept.is_empty() {
-            piece.to_string()
-        } else {
-            format!("{kept}{gap}{piece}")
-        };
-        if longer.chars().count() + " …".chars().count() > width {
-            break;
-        }
-        kept = longer;
-    }
-    if kept.is_empty() {
-        "…".chars().take(width).collect()
-    } else {
-        format!("{kept} …")
-    }
+    let shown = |count: usize| match keep {
+        Keep::Start => format!("{} …", pieces[..count].join(gap)),
+        Keep::End => format!("… {}", pieces[pieces.len() - count..].join(gap)),
+    };
+    (1..pieces.len())
+        .rev()
+        .map(shown)
+        .find(|cut| cut.chars().count() <= width)
+        .unwrap_or_else(|| "…".chars().take(width).collect())
 }
 
 fn highlighted(line: Line<'static>, width: u16) -> Line<'static> {
@@ -401,9 +419,11 @@ fn stack_list(
         .iter()
         .position(|index| Some(*index) == selected)
         .unwrap_or(0);
+    let room = usize::from(inner.height);
+    let first = first_row(at, room);
     let lines: Vec<Line> = indices
         .iter()
-        .skip(first_row(at, usize::from(inner.height)))
+        .skip(first)
         .map(|&index| {
             let state = model.stack_state(index);
             let selected = Some(index) == selected;
@@ -423,6 +443,7 @@ fn stack_list(
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
+    rows_mark(frame, border_below(inner), first, room, indices.len());
 }
 
 fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
@@ -442,7 +463,12 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         let width = usize::from(area.width).saturating_sub(4);
         format!(
             " {} ",
-            cut_whole(&[name, count.as_str(), age.as_str()], "  ", width)
+            cut_whole(
+                &[name, count.as_str(), age.as_str()],
+                "  ",
+                width,
+                Keep::Start
+            )
         )
     } else {
         format!(" {name}  {age} ")
@@ -538,12 +564,7 @@ fn overview(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         "PORT",
         "AGE",
     ];
-    let mut widths = titles.map(|title| title.chars().count());
-    for row in &rows {
-        for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
-        }
-    }
+    let mut widths = widest(titles, &rows);
     let fixed = 1 + widths[1..columns]
         .iter()
         .map(|width| width + 2)
@@ -570,8 +591,13 @@ fn overview(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         .highlight_spacing(HighlightSpacing::Always)
         .highlight_symbol(if on_tabs { ">" } else { " " })
         .row_highlight_style(if on_tabs { REVERSE } else { Style::new() });
-    let mut state = TableState::default().with_selected(selected);
+    let room = usize::from(area.height).saturating_sub(1);
+    let first = first_row(selected.unwrap_or(0), room);
+    let mut state = TableState::default()
+        .with_selected(selected)
+        .with_offset(first);
     frame.render_stateful_widget(table, area, &mut state);
+    rows_mark(frame, border_below(area), first, room, rows.len());
 }
 
 fn logs(frame: &mut Frame, area: Rect, model: &Model) {
@@ -591,8 +617,26 @@ fn logs(frame: &mut Frame, area: Rect, model: &Model) {
     frame.render_widget(Paragraph::new(shown), area);
 }
 
-fn first_row(selected: usize, room: usize) -> usize {
+pub(crate) fn first_row(selected: usize, room: usize) -> usize {
     (selected + 1).saturating_sub(room)
+}
+
+pub(crate) fn border_below(inner: Rect) -> Rect {
+    Rect::new(inner.x + 1, inner.bottom(), inner.width, 1)
+}
+
+pub(crate) fn rows_mark(frame: &mut Frame, free: Rect, first: usize, room: usize, total: usize) {
+    let below = total.saturating_sub(first + room);
+    let mark = match (first, below) {
+        (0, 0) => return,
+        (0, below) => format!("↓{below}"),
+        (above, 0) => format!("↑{above}"),
+        (above, below) => format!("↑{above} ↓{below}"),
+    };
+    let line = format!(" {mark} ");
+    if line.chars().count() + 2 <= usize::from(free.width) {
+        right(frame, free, Line::from(line), 2);
+    }
 }
 
 fn fitted(parts: Vec<(String, Style)>, width: usize) -> Line<'static> {
@@ -641,27 +685,54 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Constraint::Length(alerts_height),
     ])
     .areas(inner);
-    match model.source_note() {
+    let first = match model.source_note() {
         Some(note) => {
             let line = fitted(vec![(note.to_string(), DIM)], usize::from(list.width));
             frame.render_widget(Paragraph::new(line), list);
+            None
         }
-        None => device_rows(frame, list, model, &visible, wide),
-    }
+        None => Some(device_rows(frame, list, model, &visible, wide)),
+    };
     let count = if model.alerts_ok() {
         model.alerts().len().to_string()
     } else {
         "?".to_string()
     };
-    let head = format!("├ alerts {count} ");
-    let fill = usize::from(area.width).saturating_sub(head.chars().count() + 1);
-    let line = format!("{head}{}┤", "─".repeat(fill));
     let row = Rect::new(area.x, separator.y, area.width, 1);
-    frame.render_widget(Paragraph::new(line), row);
+    let room = usize::from(list.height).saturating_sub(1);
+    let window = first.map(|first| (first, room, visible.len()));
+    alerts_separator(frame, row, &count, window);
     alert_rows(frame, alerts, model, wide);
 }
 
-fn device_rows(frame: &mut Frame, area: Rect, model: &Model, visible: &[usize], wide: bool) {
+fn alerts_separator(
+    frame: &mut Frame,
+    row: Rect,
+    count: &str,
+    window: Option<(usize, usize, usize)>,
+) {
+    let head = format!("├ alerts {count} ");
+    let fill = usize::from(row.width).saturating_sub(head.chars().count() + 1);
+    let line = format!("{head}{}┤", "─".repeat(fill));
+    frame.render_widget(Paragraph::new(line), row);
+    if let Some((first, room, total)) = window {
+        let title = u16::try_from(head.chars().count() - 1).unwrap_or(u16::MAX);
+        let free = Rect {
+            x: row.x + title,
+            width: row.width.saturating_sub(title),
+            ..row
+        };
+        rows_mark(frame, free, first, room, total);
+    }
+}
+
+fn device_rows(
+    frame: &mut Frame,
+    area: Rect,
+    model: &Model,
+    visible: &[usize],
+    wide: bool,
+) -> usize {
     let rows = model.device_rows();
     let fixed = if wide { 27 } else { 15 };
     let name_width = rows
@@ -726,6 +797,7 @@ fn device_rows(frame: &mut Frame, area: Rect, model: &Model, visible: &[usize], 
         });
     }
     frame.render_widget(Paragraph::new(lines), area);
+    start
 }
 
 fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
@@ -770,6 +842,7 @@ fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
+    rows_mark(frame, border_below(area), start, room, model.alerts().len());
 }
 
 fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
@@ -818,12 +891,7 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             ]
         })
         .collect();
-    let mut widths = titles.map(|title| title.chars().count());
-    for row in &cells {
-        for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
-        }
-    }
+    let widths = widest(titles, &cells);
     let width = usize::from(area.width);
     let line = |row: &[&str; 6], yellow: bool, states: bool| {
         let parts = columns
@@ -855,11 +923,13 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .map(|(row, source)| line(row, source.differs, true)),
     );
     frame.render_widget(Paragraph::new(lines), table);
+    let room = usize::from(table.height).saturating_sub(1);
+    rows_mark(frame, border_below(area), 0, room, interfaces.len());
     let differs = interfaces.iter().filter(|row| row.differs).count();
     let count = counted(interfaces.len(), "interface");
     let differs = format!("{differs} differs");
     frame.render_widget(
-        Paragraph::new(cut_whole(&[&count, &differs], "  ", width)),
+        Paragraph::new(cut_whole(&[&count, &differs], "  ", width, Keep::Start)),
         footer,
     );
 }
@@ -872,7 +942,7 @@ fn device_overview(frame: &mut Frame, area: Rect, model: &Model) {
     let plain = Style::new();
     let facts = |pieces: &[String], gap: &str| {
         let pieces: Vec<&str> = pieces.iter().map(String::as_str).collect();
-        Line::from(cut_whole(&pieces, gap, width))
+        Line::from(cut_whole(&pieces, gap, width, Keep::Start))
     };
     let states = model.session_states();
     let established = states.iter().filter(|(_, state)| state == "up").count();
@@ -982,6 +1052,7 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
         &[&last, &alerts, &flows, &rcas, &logs],
         "",
         usize::from(area.width),
+        Keep::Start,
     );
     frame.render_widget(Paragraph::new(summary), counts);
     let on_tabs = model.focus() == Focus::Tabs;
@@ -1012,6 +1083,13 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows);
+    rows_mark(
+        frame,
+        border_below(rows),
+        start,
+        usize::from(rows.height),
+        entries.len(),
+    );
     if model.popup() {
         if let Some(entry) = entries.get(selected) {
             timeline_popup(frame, area, entry);
@@ -1089,10 +1167,13 @@ fn chooser(frame: &mut Frame, area: Rect, model: &Model) {
         .max()
         .unwrap_or(0)
         .min(path_room);
+    let room = usize::from(inner.height);
+    let first = first_row(model.selected_stack(), room);
     let lines: Vec<Line> = stacks
         .iter()
         .zip(&paths)
         .enumerate()
+        .skip(first)
         .map(|(index, (stack, path))| {
             let selected = index == model.selected_stack();
             let spans = if stack.kind == StackKind::Sonda {
@@ -1124,6 +1205,7 @@ fn chooser(frame: &mut Frame, area: Rect, model: &Model) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
+    rows_mark(frame, border_below(inner), first, room, stacks.len());
 }
 
 fn run_end(run: &Run) -> (String, Style) {
@@ -1153,7 +1235,7 @@ fn run_title(model: &Model, before_hint: usize) -> Vec<Span<'static>> {
         (_, None) => format!("{end} {}s", seconds(model, run.started)),
     };
     let room = before_hint.saturating_sub(" run  ".len() + "  ".len() + state.chars().count() + 1);
-    let words = cut_words(&run.words, room);
+    let words = cut_words(&run.words, room, Keep::Start);
     vec![
         Span::raw(format!(" run  {words}  ")),
         Span::styled(state, style),
@@ -1267,8 +1349,26 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .unwrap_or(0)
             .max(4)
     };
-    let name_width = width(sorted.iter().map(|row| row.name.as_str()).collect());
+    let states: Vec<(&str, Style)> = sorted
+        .iter()
+        .map(|row| match row.state.as_deref() {
+            _ if !model.nodes_ok() => ("?", tone("?")),
+            None => ("—", tone("—")),
+            Some("running") => ("running", tone("running")),
+            Some(other) => (other, Style::new().fg(Color::Red)),
+        })
+        .collect();
     let kind_width = width(sorted.iter().map(|row| row.kind.as_str()).collect());
+    let state_width = width(
+        states
+            .iter()
+            .map(|state| state.0)
+            .chain(["STATE"])
+            .collect(),
+    );
+    let fixed = 3 + if wide { kind_width + 2 } else { 0 } + state_width;
+    let name_width = width(sorted.iter().map(|row| row.name.as_str()).collect())
+        .min(usize::from(inner.width).saturating_sub(fixed));
     let line = |name: &str, kind: &str, state: (&str, Style)| {
         let mut parts = vec![(format!(" {}  ", fit(name, name_width)), Style::new())];
         if wide {
@@ -1278,16 +1378,12 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         fitted(parts, usize::from(inner.width))
     };
     let mut lines = vec![line("NAME", "KIND", ("STATE", Style::new()))];
-    for row in sorted {
-        let state = match row.state.as_deref() {
-            _ if !model.nodes_ok() => ("?", tone("?")),
-            None => ("—", tone("—")),
-            Some("running") => ("running", tone("running")),
-            Some(other) => (other, Style::new().fg(Color::Red)),
-        };
+    for (row, state) in sorted.iter().zip(states) {
         lines.push(line(&row.name, &row.kind, state));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+    let room = usize::from(inner.height).saturating_sub(1);
+    rows_mark(frame, border_below(inner), 0, room, sorted.len());
 }
 
 fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
@@ -1333,7 +1429,10 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
             let (end, style) = run_end(run);
             let used = row("last", String::new()).chars().count() + "  ".len();
             let room = width.saturating_sub(used + end.chars().count());
-            (format!("{}  ", cut_words(&run.words, room)), (end, style))
+            (
+                format!("{}  ", cut_words(&run.words, room, Keep::Start)),
+                (end, style),
+            )
         }
         None => ("—".to_string(), (String::new(), Style::new())),
     };
@@ -1494,7 +1593,7 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
 
 struct HelpLayout {
     entries: Vec<(String, &'static str)>,
-    note: Option<&'static str>,
+    notes: Vec<&'static str>,
     popup: Rect,
     inner: Rect,
     rows: u16,
@@ -1506,18 +1605,21 @@ struct HelpLayout {
 
 fn help_layout(model: &Model, body: Rect) -> HelpLayout {
     let entries = help_entries(model);
-    let note = match model.workbench() {
-        Workbench::Devices => Some(HELP_DEVICES_NOTE),
-        Workbench::Services => Some(HELP_SONDA),
-        Workbench::Lab => None,
+    let notes = match model.workbench() {
+        Workbench::Devices => vec![HELP_DEVICES_NOTE, HELP_MARK],
+        Workbench::Services => vec![HELP_SONDA, HELP_MARK],
+        Workbench::Lab => vec![HELP_MARK],
     };
     let width = body.width.saturating_sub(4);
-    let note_rows = note.map_or(0, |note| {
-        let note = u16::try_from(note.chars().count()).unwrap_or(u16::MAX);
-        note.div_ceil(width.saturating_sub(2).max(1)).max(1)
-    });
+    let note_rows = notes
+        .iter()
+        .map(|note| {
+            let note = u16::try_from(note.chars().count()).unwrap_or(u16::MAX);
+            note.div_ceil(width.saturating_sub(2).max(1)).max(1)
+        })
+        .sum();
     let rows = u16::try_from(entries.len().div_ceil(2)).unwrap_or(u16::MAX);
-    let note_height = if note.is_some() { note_rows + 1 } else { 0 };
+    let note_height = note_rows + 1;
     let fits = rows + note_rows + 2 <= body.height;
     let height = body.height.min(rows + 2 + note_height);
     let popup = Rect::new(
@@ -1538,7 +1640,7 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
     };
     HelpLayout {
         entries,
-        note,
+        notes,
         popup,
         inner,
         rows,
@@ -1561,7 +1663,7 @@ pub(crate) fn help_overflow(model: &Model, area: Rect) -> usize {
 fn help(frame: &mut Frame, area: Rect, model: &Model) {
     let HelpLayout {
         entries,
-        note,
+        notes,
         popup,
         inner,
         rows,
@@ -1594,12 +1696,10 @@ fn help(frame: &mut Frame, area: Rect, model: &Model) {
         Paragraph::new(help_column(second)).scroll((top, 0)),
         column(middle, 0, inner.width - middle, room),
     );
-    if let Some(note) = note {
-        frame.render_widget(
-            Paragraph::new(note).wrap(Wrap { trim: false }),
-            column(0, note_row, inner.width, note_rows),
-        );
-    }
+    frame.render_widget(
+        Paragraph::new(notes.join("\n")).wrap(Wrap { trim: false }),
+        column(0, note_row, inner.width, note_rows),
+    );
     if !fits {
         frame.render_widget(
             Paragraph::new(HELP_MORE),
@@ -1633,6 +1733,7 @@ mod tests {
 
     use super::*;
     use crate::book::NodeRow;
+    use crate::data;
     use crate::shell::tests::{
         alert, defined, devices_model, fixture, listing, row, sonda_rows, stack, start,
         workshop_located,
@@ -1929,11 +2030,16 @@ mod tests {
         Some(inside)
     }
 
-    fn cut_at_a_word(shown: &str, full: &str) -> bool {
+    fn cut_at_a_word(shown: &str, full: &str, keep: Keep) -> bool {
         shown == full
-            || shown
-                .strip_suffix(" …")
-                .is_some_and(|kept| full.starts_with(&format!("{kept} ")))
+            || match keep {
+                Keep::Start => shown
+                    .strip_suffix(" …")
+                    .is_some_and(|kept| full.starts_with(&format!("{kept} "))),
+                Keep::End => shown
+                    .strip_prefix("… ")
+                    .is_some_and(|kept| full.ends_with(&format!(" {kept}"))),
+            }
     }
 
     #[test]
@@ -2044,7 +2150,11 @@ mod tests {
             let rows = key_line(&model, usize::from(width));
             let joined: Vec<&str> = rows.iter().map(|row| row.trim()).collect();
 
-            assert_eq!(joined.join(" "), question.text(), "{label}");
+            assert_eq!(
+                joined.join(" "),
+                question.text().replace(NO_BREAK, " "),
+                "{label}"
+            );
             assert!(rows.iter().any(|row| row.contains("y/n")), "{label}");
         }
     }
@@ -2082,7 +2192,7 @@ mod tests {
             if both_fit {
                 assert_eq!(
                     inside[..command_rows].join(" "),
-                    command,
+                    command.replace(NO_BREAK, " "),
                     "{label}\n{screen}"
                 );
             } else {
@@ -2096,35 +2206,99 @@ mod tests {
     }
 
     #[test]
+    fn a_flag_and_its_value_share_a_row_at_every_width_where_they_fit() {
+        let lab_dir = format!("--dir {}", fixture("book-lab").display());
+        let bench_dir = format!("--dir {LAB_DIR}");
+        let cases = [
+            ('D', vec![bench_dir.as_str(), "-s ch1"]),
+            ('m', vec![bench_dir.as_str(), "-d srl1"]),
+            ('P', vec![lab_dir.as_str()]),
+        ];
+        for (key, pairs) in cases {
+            for width in 60..=100 {
+                let mut model = if key == 'm' {
+                    devices_bench()
+                } else {
+                    lab_bench(1)
+                };
+                press(&mut model, key);
+                let question = key_line(&model, width);
+                press(&mut model, 'y');
+                let run = model.run().unwrap();
+                for (rows, room) in [(question, width), (command_rows(run, width - 2), width - 2)] {
+                    for pair in &pairs {
+                        let whole_word = |word: &str| {
+                            word.chars().count() > room
+                                || rows
+                                    .iter()
+                                    .any(|row| row.split(' ').any(|seen| seen == word))
+                        };
+                        let kept = if pair.chars().count() <= room {
+                            rows.iter().any(|row| row.contains(pair))
+                        } else {
+                            pair.split(' ').all(whole_word)
+                        };
+                        assert!(kept, "{key} {width} {pair}\n{}", rows.join("\n"));
+                    }
+                }
+                for room in 0..run.words.chars().count() {
+                    let cut = cut_words(&run.words, room, Keep::Start);
+                    assert!(
+                        !cut.ends_with("-s …") && !cut.ends_with("-d …"),
+                        "{key} {room} {cut}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_run_title_the_error_row_and_the_last_row_end_at_a_whole_word() {
         for Walked {
             label, model, rows, ..
         } in walk()
         {
             let screen = rows.join("\n");
-            let words = &model.run().unwrap().words;
+            let words = &model.run().unwrap().words.replace(NO_BREAK, " ");
             let shown_after = |anchor: &str| {
                 rows.iter()
                     .find_map(|row| row.split_once(anchor))
                     .and_then(|(_, rest)| rest.split("  ").next())
             };
             if let Some(title) = shown_after("run  ") {
-                assert!(cut_at_a_word(title, words), "{label}\n{screen}");
+                assert!(
+                    cut_at_a_word(title, words, Keep::Start),
+                    "{label}\n{screen}"
+                );
             }
             if let Some(last) = shown_after("│ last      ") {
-                assert!(cut_at_a_word(last, words), "{label}\n{screen}");
+                assert!(cut_at_a_word(last, words, Keep::Start), "{label}\n{screen}");
             }
             if let Some((source, text, _)) = model.error() {
                 let (shown, age) = rows[2].rsplit_once("  ").unwrap();
                 let seconds = age.strip_suffix("s ago").unwrap_or(age);
                 assert!(seconds.parse::<u64>().is_ok(), "{label}\n{screen}");
-                let full = format!("{source}: {text}");
-                assert!(
-                    cut_at_a_word(shown.trim_start(), &full),
-                    "{label}\n{screen}"
-                );
+                let shown = shown.strip_prefix(&format!(" {source}: ")).unwrap();
+                assert!(cut_at_a_word(shown, text, Keep::End), "{label}\n{screen}");
             }
         }
+    }
+
+    #[test]
+    fn a_long_error_keeps_its_source_its_reason_and_its_age() {
+        let mut model = Model::new(start(vec![stack("a", &[])]));
+        model.apply(Update::Metrics(Err(
+            "cannot reach http://localhost:9090: io: Connection refused (os error 61)".to_string(),
+        )));
+
+        let rows = drawn(&mut model, 60, 15);
+
+        assert_eq!(
+            rows[2],
+            " prometheus: … io: Connection refused (os error 61)  0s ago",
+            "{}",
+            rows.join("\n")
+        );
     }
 
     #[test]
@@ -2355,7 +2529,7 @@ mod tests {
             press(&mut model, 'X');
             press(&mut model, 'y');
             press(&mut model, 'U');
-            let notice = model.notice().unwrap().to_string();
+            let notice = model.notice().unwrap().replace(NO_BREAK, " ");
 
             let rows = drawn(&mut model, width, height);
 
@@ -2484,5 +2658,287 @@ mod tests {
         });
 
         assert_eq!(rows[9], "1 interface  0 differs");
+    }
+
+    type Build = fn() -> Model;
+
+    fn many_stacks(count: usize) -> Vec<Stack> {
+        (1..=count)
+            .map(|index| stack(&format!("s{index:02}"), &[]))
+            .collect()
+    }
+
+    fn moved(mut model: Model, key: char, times: usize) -> Model {
+        for _ in 0..times {
+            press(&mut model, key);
+        }
+        model
+    }
+
+    fn focus_tabs(model: &mut Model) {
+        handle(model, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+
+    fn stacks_of(count: usize) -> Model {
+        let mut model = Model::new(start(many_stacks(count)));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        model.apply(Update::Services(0, names(count), Ok(Vec::new())));
+        model
+    }
+
+    fn services_of(count: usize) -> Model {
+        let mut model = opened("packt");
+        model.apply(Update::Services(0, names(count), Ok(Vec::new())));
+        focus_tabs(&mut model);
+        model
+    }
+
+    fn devices_of(count: usize) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let first = model.devices()[0].clone();
+        let list = (1..=count)
+            .map(|index| {
+                let mut device = first.clone();
+                device.name = format!("d{index:02}");
+                device
+            })
+            .collect();
+        model.apply(Update::Devices(Ok(list)));
+        model
+    }
+
+    fn alerts_of(count: usize) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let alerts = (0..count)
+            .map(|index| {
+                let starts_at = format!("2026-11-09T13:{:02}:00Z", 59 - index);
+                alert("srl1", &format!("a{index:02}"), &starts_at)
+            })
+            .collect();
+        model.apply(Update::Alerts(Ok(alerts)));
+        moved(model, 'j', 2)
+    }
+
+    fn timeline_of(count: usize) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let lines = (0..count)
+            .map(|index| nobs_core::loki::Line {
+                nanoseconds: 0,
+                text: format!("line {index:02}"),
+            })
+            .collect();
+        model.apply(Update::DeviceLogs("srl1".to_string(), Ok(lines)));
+        open_tab(&mut model, Tab::Timeline);
+        focus_tabs(&mut model);
+        model
+    }
+
+    fn sonda_of(count: usize) -> Model {
+        let mut model = opened("a");
+        let rows: Vec<String> = (0..count)
+            .map(|index| {
+                format!(
+                    r#"{{"id":"id{index:02}","name":"n{index:02}","state":"running","elapsed_secs":1,"degraded":false}}"#
+                )
+            })
+            .collect();
+        model.apply(Update::Sonda(data::Update {
+            at: Instant::now(),
+            list: Ok(format!(r#"{{"scenarios":[{}]}}"#, rows.join(","))),
+            selected: None,
+        }));
+        open_tab(&mut model, Tab::Sonda);
+        focus_tabs(&mut model);
+        model
+    }
+
+    fn nodes_of(count: usize) -> Model {
+        let mut model = lab_bench(1);
+        let nodes = (1..=count)
+            .map(|index| NodeRow {
+                name: format!("n{index:02}"),
+                kind: "nokia_srlinux".to_string(),
+                state: Some("running".to_string()),
+            })
+            .collect();
+        model.apply(Update::Nodes(Ok(nodes)));
+        model
+    }
+
+    fn interfaces_of(count: usize) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let mut list = model.devices().to_vec();
+        let first = list[0].interfaces[0].clone();
+        list[0].interfaces = (1..=count)
+            .map(|index| {
+                let mut interface = first.clone();
+                interface.name = format!("e{index:02}");
+                interface
+            })
+            .collect();
+        model.apply(Update::Devices(Ok(list)));
+        open_tab(&mut model, Tab::Interfaces);
+        model
+    }
+
+    #[test]
+    fn a_list_longer_than_its_pane_says_how_many_rows_are_above_and_below() {
+        type Steps = &'static [(usize, &'static str, &'static str)];
+        let cases: [(&str, Build, char, &str, Steps); 10] = [
+            (
+                "stacks",
+                || stacks_of(20),
+                'j',
+                "┘",
+                &[
+                    (0, "↓11", ">s01"),
+                    (10, "↑2 ↓9", ">s11"),
+                    (19, "↑11", ">s20"),
+                ],
+            ),
+            (
+                "chapters",
+                || lab_bench(10),
+                'k',
+                "┘",
+                &[(0, "↑5", ">ch10"), (3, "↑2 ↓3", ">ch7"), (9, "↓5", ">ch1 ")],
+            ),
+            (
+                "services",
+                || services_of(22),
+                'j',
+                "┘",
+                &[(0, "↓15", "s01"), (10, "↑4 ↓11", "s11"), (21, "↑15", "s22")],
+            ),
+            (
+                "devices",
+                || devices_of(30),
+                'j',
+                "┤",
+                &[(0, "↓25", "d01"), (10, "↑6 ↓19", "d11"), (29, "↑25", "d30")],
+            ),
+            (
+                "alerts",
+                || alerts_of(10),
+                'j',
+                "┘",
+                &[(0, "↓8", "a00"), (5, "↑4 ↓4", "a05"), (9, "↑8", "a09")],
+            ),
+            (
+                "timeline",
+                || timeline_of(20),
+                'j',
+                "┘",
+                &[(0, "↓13", ">"), (10, "↑4 ↓9", ">"), (19, "↑13", ">")],
+            ),
+            (
+                "sonda",
+                || sonda_of(10),
+                'j',
+                "┘",
+                &[(0, "↓7", "n00"), (5, "↑3 ↓4", "n05"), (9, "↑7", "n09")],
+            ),
+            ("nodes", || nodes_of(10), 'j', "┘", &[(0, "↓5", "n01")]),
+            (
+                "interfaces",
+                || interfaces_of(20),
+                'j',
+                "┘",
+                &[(0, "↓14", "e01")],
+            ),
+            (
+                "chooser",
+                || Model::new(start(many_stacks(20))),
+                'j',
+                "┘",
+                &[
+                    (0, "↓10", ">s01"),
+                    (10, "↑1 ↓9", ">s11"),
+                    (19, "↑10", ">s20"),
+                ],
+            ),
+        ];
+        for (label, build, key, corner, steps) in cases {
+            for &(times, mark, shown) in steps {
+                let mut model = moved(build(), key, times);
+                let screen = drawn(&mut model, 60, 15).join("\n");
+                let edge = if corner == "┤" {
+                    format!(" {mark} ─┤")
+                } else {
+                    format!("─ {mark} ─┘")
+                };
+
+                assert!(screen.contains(&edge), "{label} {times}: {edge}\n{screen}");
+                assert!(screen.contains(shown), "{label} {times}: {shown}\n{screen}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_list_whose_rows_all_fit_has_no_mark() {
+        let builds: [(&str, Build); 7] = [
+            ("stacks and services", || stacks_of(3)),
+            ("chooser", || Model::new(start(many_stacks(3)))),
+            ("devices and alerts", || {
+                devices_model(workshop_located("infrahub"))
+            }),
+            ("timeline", || {
+                let mut model = devices_bench();
+                open_tab(&mut model, Tab::Timeline);
+                model
+            }),
+            ("interfaces", || {
+                let mut model = devices_model(workshop_located("infrahub"));
+                open_tab(&mut model, Tab::Interfaces);
+                model
+            }),
+            ("sonda", || {
+                let mut model = opened("a");
+                sonda_rows(&mut model);
+                open_tab(&mut model, Tab::Sonda);
+                model
+            }),
+            ("nodes and chapters", || lab_bench(2)),
+        ];
+        for (label, build) in builds {
+            for (width, height) in [(60, 15), (100, 30)] {
+                let screen = drawn(&mut build(), width, height).join("\n");
+
+                assert!(
+                    !screen.contains(['↑', '↓']),
+                    "{label} {width}x{height}\n{screen}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_mark_fits_beside_alerts_n_at_60_columns_for_every_count_under_1000() {
+        let windows = [
+            ((99, 1, 199), "↑99 ↓99"),
+            ((0, 1, 1000), "↓999"),
+            ((999, 1, 1000), "↑999"),
+        ];
+        for count in 0..1000 {
+            for (window, mark) in windows {
+                let rows = painted(LEFT_NARROW, 1, |frame| {
+                    alerts_separator(frame, frame.area(), &count.to_string(), Some(window));
+                });
+
+                assert!(
+                    rows[0].starts_with(&format!("├ alerts {count} ")),
+                    "{}",
+                    rows[0]
+                );
+                assert!(rows[0].ends_with(&format!(" {mark} ─┤")), "{}", rows[0]);
+            }
+        }
+        let rows = painted(LEFT_NARROW, 1, |frame| {
+            alerts_separator(frame, frame.area(), "999", Some((100, 1, 200)));
+        });
+        assert_eq!(rows[0], "├ alerts 999 ─────────┤");
     }
 }

@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::data::{Model, Prompt};
-use crate::screen::{cut_words, whole_hints};
+use crate::screen::{
+    border_below, cut_words, first_row, fit, rows_mark, whole_hints, widest, Keep,
+};
 
 const KEYS: [&str; 5] = ["q quit", "j/k select", "r refresh", "l load", "d delete"];
 
@@ -29,8 +31,14 @@ pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         Paragraph::new(top_line(model, now, usize::from(top.width))),
         top,
     );
-    let mut state = TableState::default().with_selected(model.selected_index());
-    frame.render_stateful_widget(table(model), left, &mut state);
+    let rows = Block::bordered().inner(left);
+    let room = usize::from(rows.height).saturating_sub(1);
+    let first = first_row(model.selected_index().unwrap_or(0), room);
+    let mut state = TableState::default()
+        .with_selected(model.selected_index())
+        .with_offset(first);
+    frame.render_stateful_widget(table(model, left.width), left, &mut state);
+    rows_mark(frame, border_below(rows), first, room, model.rows().len());
     frame.render_widget(
         Paragraph::new(details(model)).block(Block::bordered()),
         right,
@@ -46,51 +54,95 @@ fn top_line(model: &Model, now: Instant, width: usize) -> Line<'static> {
         Some(at) => format!("refreshed {}s ago", seconds(now, at)),
         None => "no answer yet".to_string(),
     };
-    let plain = format!("{}  {age}", model.server());
-    let Some((error, at)) = model.error().zip(model.error_at()) else {
-        return Line::from(cut_words(&plain, width));
+    let server = model.server();
+    let error = model
+        .error()
+        .zip(model.error_at())
+        .map(|(text, at)| (text, format!(" ({}s ago)", seconds(now, at))));
+    let whole = error.as_ref().map(|(text, at)| format!("{text}{at}"));
+    let red = Style::new().fg(Color::Red);
+    let plain = [vec![server, age.as_str()], vec![server], Vec::new()]
+        .into_iter()
+        .filter(|plain| !plain.is_empty() || whole.is_some())
+        .find(|plain| {
+            let parts: Vec<&str> = plain.iter().copied().chain(whole.as_deref()).collect();
+            parts.join("  ").chars().count() <= width
+        });
+    let Some(plain) = plain else {
+        return match error {
+            Some((text, at)) => {
+                let room = width.saturating_sub(at.chars().count());
+                Line::from(Span::styled(
+                    format!("{}{at}", cut_words(text, room, Keep::End)),
+                    red,
+                ))
+            }
+            None => Line::from(cut_words(server, width, Keep::Start)),
+        };
     };
-    let text = cut_words(
-        &format!("{plain}  {error} ({}s ago)", seconds(now, at)),
-        width,
-    );
-    match text.strip_prefix(plain.as_str()) {
-        Some(rest) => Line::from(vec![
-            Span::raw(plain),
-            Span::styled(rest.to_string(), Style::new().fg(Color::Red)),
-        ]),
-        None => Line::from(text),
-    }
+    let gap = if plain.is_empty() { "" } else { "  " };
+    let mut spans: Vec<Span<'static>> = (!plain.is_empty())
+        .then(|| Span::raw(plain.join("  ")))
+        .into_iter()
+        .collect();
+    spans.extend(whole.map(|whole| Span::styled(format!("{gap}{whole}"), red)));
+    Line::from(spans)
 }
 
 fn seconds(now: Instant, at: Instant) -> u64 {
     now.saturating_duration_since(at).as_secs()
 }
 
-fn table(model: &Model) -> Table<'_> {
-    let rows = model.rows().iter().map(|row| {
-        Row::new([
-            row.id.chars().take(8).collect::<String>(),
-            row.name.clone(),
-            row.state.clone(),
-            row.elapsed_secs.clone(),
-            row.degraded.clone(),
-        ])
+fn table(model: &Model, width: u16) -> Table<'_> {
+    const TITLES: [&str; 5] = ["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"];
+    let cells: Vec<[String; 5]> = model
+        .rows()
+        .iter()
+        .map(|row| {
+            [
+                row.id.chars().take(8).collect::<String>(),
+                row.name.clone(),
+                row.state.clone(),
+                row.elapsed_secs.clone(),
+                row.degraded.clone(),
+            ]
+        })
+        .collect();
+    let mut widths = widest(TITLES, &cells);
+    let room = usize::from(width).saturating_sub(2 + "> ".len());
+    let mut kept = [true; 5];
+    for leaving in [0, 4, 3, 2] {
+        let used = (0..TITLES.len())
+            .filter(|column| kept[*column])
+            .map(|column| widths[column] + 1)
+            .sum::<usize>()
+            .saturating_sub(1);
+        if used <= room {
+            break;
+        }
+        kept[leaving] = false;
+    }
+    let columns: Vec<usize> = (0..TITLES.len()).filter(|column| kept[*column]).collect();
+    widths[1] = widths[1].min(room);
+    let rows = cells.into_iter().map(|row| {
+        Row::new(columns.iter().map(|column| match column {
+            1 => fit(&row[1], widths[1]),
+            _ => row[*column].clone(),
+        }))
     });
-    Table::new(
-        rows,
-        [
-            Constraint::Length(8),
-            Constraint::Min(4),
-            Constraint::Length(10),
-            Constraint::Length(7),
-            Constraint::Length(8),
-        ],
-    )
-    .header(Row::new(["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"]))
-    .block(Block::bordered())
-    .highlight_symbol("> ")
-    .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+    let constraints = columns.iter().map(|column| {
+        let least = u16::try_from(widths[*column]).unwrap_or(u16::MAX);
+        if *column == 1 {
+            Constraint::Min(least)
+        } else {
+            Constraint::Length(least)
+        }
+    });
+    Table::new(rows, constraints)
+        .header(Row::new(columns.iter().map(|column| TITLES[*column])))
+        .block(Block::bordered())
+        .highlight_symbol("> ")
+        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
 }
 
 fn details(model: &Model) -> Vec<Line<'static>> {
@@ -255,6 +307,51 @@ mod tests {
     }
 
     #[test]
+    fn a_long_sonda_error_keeps_its_reason_and_its_age() {
+        let at = Instant::now();
+        let mut model = model(at);
+        model.apply(Update {
+            at: at + Duration::from_secs(1),
+            list: Err(
+                "cannot reach http://127.0.0.1:18122/scenarios: io: Connection refused (os error 61)"
+                    .to_string(),
+            ),
+            selected: None,
+        });
+
+        let line = top_line(&model, at + Duration::from_secs(3), 60);
+
+        assert_eq!(
+            line,
+            Line::from(Span::styled(
+                "… io: Connection refused (os error 61) (2s ago)",
+                Style::new().fg(Color::Red)
+            ))
+        );
+    }
+
+    #[test]
+    fn a_top_line_too_short_for_the_age_keeps_the_server_and_a_short_error() {
+        let at = Instant::now();
+        let mut model = model(at);
+        model.apply(Update {
+            at: at + Duration::from_secs(1),
+            list: Err("refused".to_string()),
+            selected: None,
+        });
+
+        let line = top_line(&model, at + Duration::from_secs(3), 40);
+
+        assert_eq!(
+            line,
+            Line::from(vec![
+                Span::raw("http://127.0.0.1:18122"),
+                Span::styled("  refused (2s ago)", Style::new().fg(Color::Red)),
+            ])
+        );
+    }
+
+    #[test]
     fn the_table_holds_the_header_and_one_row_per_scenario_with_its_state() {
         let now = Instant::now();
 
@@ -268,6 +365,56 @@ mod tests {
             let row = &lines[line_of(&lines, &format!("name-{index} "))];
             assert!(row.contains(&format!("{index}abcdefg ")), "{row}");
             assert!(row.contains(state), "{row}");
+        }
+    }
+
+    #[test]
+    fn every_sonda_title_and_cell_is_whole_at_60_and_100_columns() {
+        let now = Instant::now();
+        let titles = ["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"];
+        for width in 60..=100 {
+            let lines = screen(&model(now), now, width, 15);
+            let table = |line: &str| line.split('│').nth(1).unwrap_or_default().to_string();
+            let top = line_of(&lines, "NAME");
+            let header: Vec<String> = table(&lines[top])
+                .split_whitespace()
+                .map(String::from)
+                .collect();
+            let gone: Vec<&str> = titles
+                .into_iter()
+                .filter(|title| !header.iter().any(|kept| kept == title))
+                .collect();
+            assert!(
+                ["ID", "DEGRADED", "ELAPSED"].starts_with(&gone),
+                "{width}: {header:?}"
+            );
+            let kept: Vec<usize> = (0..5)
+                .filter(|column| !gone.contains(&titles[*column]))
+                .collect();
+            assert_eq!(
+                header,
+                kept.iter()
+                    .map(|column| titles[*column])
+                    .collect::<Vec<_>>(),
+                "{width}"
+            );
+            for (index, state) in STATES.iter().enumerate() {
+                let cells = [
+                    format!("{index}abcdefg"),
+                    format!("name-{index}"),
+                    (*state).to_string(),
+                    index.to_string(),
+                    "false".to_string(),
+                ];
+                let row = table(&lines[top + 1 + index]);
+                let shown: Vec<&str> = row.trim_start_matches('>').split_whitespace().collect();
+                let expected: Vec<&str> =
+                    kept.iter().map(|column| cells[*column].as_str()).collect();
+                assert_eq!(shown, expected, "{width}");
+            }
+            if width == 100 {
+                assert!(gone.is_empty(), "{header:?}");
+            }
         }
     }
 

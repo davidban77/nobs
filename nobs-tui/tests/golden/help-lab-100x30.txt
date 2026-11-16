@@ -7,7 +7,6 @@
 
 
 
-
   ┌ keys  lab workbench ─────────────────────────────────────────────────────────────────────────┐
   │1 2 3    switch workbench                      X       destroy                                │
   │j k ↑ ↓  move                                  P       purge                                  │
@@ -17,8 +16,9 @@
   │?        close                                 S       show                                   │
   │Esc      close/fold                            q       quit; asks in a run                    │
   │D        deploy                                Ctrl-C  stop a run, or quit                    │
+  │                                                                                              │
+  │↑3 ↓13   3 rows hidden above, 13 below                                                        │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
-
 
 
 
