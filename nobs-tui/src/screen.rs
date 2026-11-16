@@ -1726,6 +1726,13 @@ fn help(frame: &mut Frame, area: Rect, model: &Model) {
     let top = u16::try_from(model.help_scroll())
         .unwrap_or(u16::MAX)
         .min(rows - room);
+    rows_mark(
+        frame,
+        border_below(inner),
+        usize::from(top),
+        usize::from(room),
+        usize::from(rows),
+    );
     let (first, second) = entries.split_at(usize::from(rows));
     let middle = inner.width / 2;
     frame.render_widget(
@@ -2522,6 +2529,46 @@ mod tests {
         assert_eq!(help_overflow(&model, area), 0);
         press(&mut model, '?');
         assert!(help_overflow(&model, area) > 0);
+    }
+
+    #[test]
+    fn the_keys_box_marks_its_hidden_lines_on_its_bottom_border() {
+        let mut model = services_bench();
+        model.apply(Update::Logs(
+            0,
+            "loki".to_string(),
+            Err(LONG_ERROR.to_string()),
+        ));
+        press(&mut model, '?');
+        let bottom = |rows: &[String]| {
+            rows.iter()
+                .find(|row| row.trim_start().starts_with('└'))
+                .unwrap()
+                .clone()
+        };
+        for mark in ["↓5", "↑1 ↓4", "↑2 ↓3"] {
+            let rows = drawn(&mut model, 60, 15);
+            model.set_help_overflow(help_overflow(&model, Rect::new(0, 0, 60, 15)));
+            let screen = rows.join("\n");
+
+            assert!(
+                bottom(&rows).ends_with(&format!("─ {mark} ─┘")),
+                "{mark}\n{screen}"
+            );
+            assert!(screen.contains(HELP_MORE), "{mark}\n{screen}");
+            press(&mut model, 'j');
+        }
+
+        let rows = drawn(&mut model, 100, 30);
+
+        assert!(
+            bottom(&rows)
+                .trim_start()
+                .chars()
+                .all(|c| "└─┘".contains(c)),
+            "{}",
+            rows.join("\n")
+        );
     }
 
     #[test]
