@@ -627,7 +627,10 @@ impl Model {
                 self.clear_error("alertmanager");
                 if let Cursor::Alert(at) = self.cursor {
                     return match self.alerts.len() {
-                        0 => self.go_last_shown_device(),
+                        0 => {
+                            self.cursor = Cursor::Device(self.device);
+                            self.show_cursor()
+                        }
                         len => {
                             self.cursor = Cursor::Alert(at.min(len - 1));
                             Vec::new()
@@ -1557,7 +1560,7 @@ impl Model {
             (Cursor::Alert(at), true) => {
                 (at + 1 < self.alerts.len()).then_some(Cursor::Alert(at + 1))
             }
-            (Cursor::Alert(0), false) => return self.go_last_shown_device(),
+            (Cursor::Alert(0), false) => visible.last().map(|index| Cursor::Device(*index)),
             (Cursor::Alert(at), false) => Some(Cursor::Alert(at - 1)),
         };
         let Some(next) = next else {
@@ -1573,13 +1576,6 @@ impl Model {
     fn go_device(&mut self, index: usize) -> Vec<Command> {
         self.cursor = Cursor::Device(index);
         self.select_device(index)
-    }
-
-    fn go_last_shown_device(&mut self) -> Vec<Command> {
-        match self.visible_devices().last() {
-            Some(&index) => self.go_device(index),
-            None => Vec::new(),
-        }
     }
 
     fn show_cursor(&mut self) -> Vec<Command> {
@@ -4771,6 +4767,47 @@ pub(crate) mod tests {
         assert_eq!(model.cursor(), Cursor::Device(0));
         assert_eq!(model.cursor(), twin.cursor());
         assert_eq!(model.selected_device().unwrap().name, "srl1");
+    }
+
+    #[test]
+    fn the_last_alert_leaving_while_the_filter_shows_no_device_puts_the_cursor_on_a_shown_row_when_it_widens(
+    ) {
+        let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+        ch(&mut model, '/');
+        ch(&mut model, 'z');
+        assert!(model.visible_devices().is_empty());
+
+        model.apply(Update::Alerts(Ok(Vec::new())));
+        code(&mut model, KeyCode::Backspace);
+
+        let Cursor::Device(at) = model.cursor() else {
+            panic!("cursor not on a device: {:?}", model.cursor());
+        };
+        assert!(model.visible_devices().contains(&at));
+    }
+
+    #[test]
+    fn the_last_alert_leaving_after_enter_on_it_keeps_the_selected_device_and_the_open_box() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(srl1_alerts(1));
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        code(&mut model, KeyCode::Enter);
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Timeline));
+        assert_eq!(model.selected_device().unwrap().name, "srl1");
+        code(&mut model, KeyCode::Enter);
+        let entry = model.popup_entry().cloned();
+        assert!(entry.is_some());
+
+        let commands = model.apply(Update::Alerts(Ok(Vec::new())));
+
+        assert_eq!(commands, []);
+        assert_eq!(model.popup_entry().cloned(), entry);
+        assert_eq!(model.selected_device().unwrap().name, "srl1");
+        assert_eq!(model.cursor(), Cursor::Device(0));
     }
 
     #[test]
