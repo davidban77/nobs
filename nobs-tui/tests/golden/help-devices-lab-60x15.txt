@@ -7,7 +7,7 @@
   ║[ ]      other tab         ?       close              ║
   ║- +      timeline window   m       maintenance        ║
   ║x        dismiss the error g       get config         ║
-  ║Esc      close/clear/back  q       quit; asks in a run║
+  ║Esc      close/clear/back  s       run command        ║
   ║alerts box: Enter picks the device, opens its timeline║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
   ║j/k more                                              ║

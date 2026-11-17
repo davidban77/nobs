@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab              ? keys  q quit
+╔ devices 2 ══════════╗┌ nobs-t-srl1 ──────────────────────┐
+║   NAME    HLTH  ALRT║│OVERVIEW  ifaces  config ›         │
+║>  nobs-…  ?        ?║│kind —   site lab   role edge      │
+║   nobs-…  ?        ?║│maintenance no   sot lab_vars …    │
+║                     ║│bgp sessions  1 intended …         │
+║                     ║│ 192.0.2.1  ipv4-unicast  ?        │
+║                     ║│alerts   ?                         │
+╠ alerts ? ═══════════╣│                                   │
+║                     ║│                                   │
+║                     ║│                                   │
+╚═════════════════════╝└───────────────────────────────────┘
+ run  none                                           o open
+ run on nobs-t-srl1: show version  Enter run  Esc cancel

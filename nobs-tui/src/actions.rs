@@ -18,6 +18,7 @@ pub enum Ask {
     No,
     Yes,
     Saying(&'static str),
+    Text,
 }
 
 #[derive(Debug)]
@@ -34,7 +35,7 @@ pub struct Action {
 
 const OTHER_CHAPTERS_DOWN: &str = "takes the other chapters' services down";
 
-pub const ACTIONS: [Action; 15] = [
+pub const ACTIONS: [Action; 16] = [
     Action {
         key: 'u',
         workbench: Workbench::Services,
@@ -114,6 +115,16 @@ pub const ACTIONS: [Action; 15] = [
         ask: Ask::No,
         sudo: false,
         keeps: true,
+    },
+    Action {
+        key: 's',
+        workbench: Workbench::Devices,
+        row: Row::Node,
+        words: &["device", "run"],
+        hint: "run command",
+        ask: Ask::Text,
+        sudo: false,
+        keeps: false,
     },
     Action {
         key: 'D',

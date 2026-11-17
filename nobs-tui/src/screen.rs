@@ -1727,8 +1727,12 @@ fn action_hints(model: &Model) -> Vec<String> {
 }
 
 pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
+    if let Some((device, text)) = model.entry() {
+        let label = format!("run on {device}");
+        return entry_line(&label, text, ["Enter run", "Esc cancel"], width);
+    }
     if let Some(text) = model.typed_filter() {
-        return filter_line(text, width);
+        return entry_line("filter", text, ["Enter keep", "Esc clear"], width);
     }
     if let Some(question) = model.question() {
         return wrapped(&format!(" {}", question.text()), width);
@@ -1821,9 +1825,9 @@ fn push_whole(line: &mut String, hint: &str, width: usize) -> bool {
     true
 }
 
-fn filter_line(text: &str, width: usize) -> Vec<String> {
-    let mut rows = wrapped(&format!(" filter: {text}"), width);
-    for hint in ["Enter keep", "Esc clear"] {
+fn entry_line(label: &str, text: &str, keys: [&str; 2], width: usize) -> Vec<String> {
+    let mut rows = wrapped(&format!(" {label}: {text}"), width);
+    for hint in keys {
         let fits = rows
             .last_mut()
             .is_some_and(|row| push_whole(row, hint, width));
@@ -3580,6 +3584,51 @@ mod tests {
         assert!(bottom(&before).ends_with("═ ↓1 ═╝"), "{}", screens[0]);
         assert!(screens[1].contains("║ last"), "{}", screens[1]);
         assert!(bottom(&after).ends_with("═ ↑1 ═╝"), "{}", screens[1]);
+    }
+
+    #[test]
+    fn the_answer_of_s_stands_in_the_run_pane_with_its_exit_status() {
+        let answers: [(&str, &[&str], &[&str], i32); 2] = [
+            (
+                "show version",
+                &[
+                    "Hostname             : srl1",
+                    "OS                   : SR Linux",
+                ],
+                &[],
+                0,
+            ),
+            (
+                "show nonsense words",
+                &[],
+                &["Parsing error: Unknown token 'nonsense'. Options are [...]"],
+                1,
+            ),
+        ];
+        for (command, out, error, code) in answers {
+            let mut model = lab_devices_model();
+            press(&mut model, 's');
+            command.chars().for_each(|typed| press(&mut model, typed));
+            handle(
+                &mut model,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            for line in out {
+                model.apply(Update::ActionLine(line.to_string()));
+            }
+            for line in error {
+                model.apply(Update::ActionError(line.to_string()));
+            }
+            model.apply(Update::ActionEnded(End::Exited(code)));
+
+            let screen = drawn(&mut model, 100, 30).join("\n").replace(NO_BREAK, " ");
+
+            let title = format!(" run  device run nobs-t-srl1 {command}  exit {code}");
+            assert!(screen.contains(&title), "{title}\n{screen}");
+            for line in out.iter().chain(error) {
+                assert!(screen.contains(line), "{line}\n{screen}");
+            }
+        }
     }
 
     fn bottom(rows: &[String]) -> String {

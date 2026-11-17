@@ -943,6 +943,18 @@ fn the_config_filter_frame_is_pinned() {
 }
 
 #[test]
+fn the_entry_frame_is_pinned() {
+    golden("devices-entry", || {
+        let mut model = lab_devices_model();
+        press(&mut model, KeyCode::Char('s'));
+        for typed in "show version".chars() {
+            press(&mut model, KeyCode::Char(typed));
+        }
+        model
+    });
+}
+
+#[test]
 fn the_lab_logs_tab_line_frame_is_pinned() {
     pinned(on_lab_tab(4), "devices-lab-logs", 60, 15);
 }

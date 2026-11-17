@@ -13,9 +13,9 @@
   ║[ ]      other tab                             ?       close                                  ║
   ║- +      timeline window                       m       maintenance                            ║
   ║x        dismiss the error                     g       get config                             ║
-  ║Esc      close/clear/back                      q       quit; asks in a run                    ║
-  ║Enter    open / pick alert                     Ctrl-C  stop a run, or quit                    ║
-  ║/        filter                                                                               ║
+  ║Esc      close/clear/back                      s       run command                            ║
+  ║Enter    open / pick alert                     q       quit; asks in a run                    ║
+  ║/        filter                                Ctrl-C  stop a run, or quit                    ║
   ║                                                                                              ║
   ║alerts box: Enter picks the device, opens its timeline                                        ║
   ║↑3 ↓13   3 rows hidden above, 13 below                                                        ║
@@ -27,4 +27,4 @@
 
 
 
- Tab focus  j/k move  / filter  Enter open  r refresh  g get config
+ Tab focus  j/k move  / filter  Enter open  r refresh  g get config  s run command

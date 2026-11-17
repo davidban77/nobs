@@ -6,11 +6,12 @@ use nobs_cli::{Cli, Command, WorkshopCli};
 use nobs_core::locate::{locate, Kind, Located};
 use nobs_core::sot::Device;
 use nobs_core::status::Urls;
-use nobs_tui::actions::{arguments, Action, Row, Target, ACTIONS};
+use nobs_tui::actions::{arguments, Action, Ask, Row, Target, ACTIONS};
 use nobs_tui::shell::stacks;
 use nobs_tui::{Shell, SondaTarget, Stack, StackKind, Start, Update, Workbench};
 
 const DEVICE: &str = "srl1";
+const TEXT: &str = "show version";
 const CHAPTER: &str = "ch1";
 const SUDO_NO_PROMPT: &str = "sudo-no-prompt";
 
@@ -88,8 +89,12 @@ fn command_line(action: &Action, workshop: &Shell, book: &Shell) -> Vec<OsString
         ),
         Row::Lab => (book, Target::Lab),
     };
-    arguments(action, &target, model)
-        .unwrap_or_else(|| panic!("{} on {:?} builds no command", action.key, action.row))
+    let mut args = arguments(action, &target, model)
+        .unwrap_or_else(|| panic!("{} on {:?} builds no command", action.key, action.row));
+    if action.ask == Ask::Text {
+        args.push(OsString::from(TEXT));
+    }
+    args
 }
 
 fn workshop_row(row: Row) -> bool {

@@ -377,6 +377,13 @@ impl Filter {
     }
 }
 
+struct Asked {
+    args: Vec<Vec<OsString>>,
+    target: Target,
+    text: Filter,
+    keeps: bool,
+}
+
 struct DeviceLine {
     line: Line,
     shown: String,
@@ -457,6 +464,7 @@ pub struct Model {
     program: PathBuf,
     run: Option<Run>,
     question: Option<Question>,
+    asked: Option<Asked>,
     notice: Option<String>,
     failed: Vec<Target>,
     configs: BTreeMap<String, Config>,
@@ -567,6 +575,7 @@ impl Model {
             program,
             run: None,
             question: None,
+            asked: None,
             notice: None,
             failed: Vec::new(),
             configs: BTreeMap::new(),
@@ -856,6 +865,17 @@ impl Model {
                     }
                     Ask::Yes => None,
                     Ask::Saying(saying) => Some(saying),
+                    Ask::Text => {
+                        let mut text = Filter::default();
+                        text.start();
+                        self.asked = Some(Asked {
+                            args,
+                            target,
+                            text,
+                            keeps: action.keeps,
+                        });
+                        return Some(Vec::new());
+                    }
                 };
                 self.question = Some(Question::Pending {
                     args,
@@ -992,11 +1012,20 @@ impl Model {
     }
 
     pub fn typing(&self) -> bool {
-        self.filter.typing
+        self.asked.is_some()
+            || self.filter.typing
             || self.device_filter.typing
             || self.logs_filter.typing
             || self.config_filter.typing
             || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
+    }
+
+    pub(crate) fn entry(&self) -> Option<(&str, &str)> {
+        let asked = self.asked.as_ref()?;
+        let Target::Device(device) = &asked.target else {
+            return None;
+        };
+        Some((device, asked.text.text.as_deref().unwrap_or_default()))
     }
 
     pub fn typed_filter(&self) -> Option<&str> {
@@ -1501,6 +1530,18 @@ impl Model {
     }
 
     fn workbench_key(&mut self, key: KeyEvent) -> Vec<Command> {
+        if let Some(mut asked) = self.asked.take() {
+            asked.text.type_key(key.code);
+            if asked.text.typing {
+                self.asked = Some(asked);
+                return Vec::new();
+            }
+            let Some(text) = asked.text.text else {
+                return Vec::new();
+            };
+            asked.args.push(vec![OsString::from(text)]);
+            return self.start_run(asked.args, asked.target, asked.keeps);
+        }
         if self.filter.typing {
             self.filter.type_key(key.code);
             return self.show_cursor();
@@ -4406,7 +4447,7 @@ pub(crate) mod tests {
         for action in &ACTIONS {
             let saying = match action.ask {
                 Ask::Saying(saying) => Some(saying),
-                Ask::No | Ask::Yes => None,
+                Ask::No | Ask::Yes | Ask::Text => None,
             };
             assert_eq!(saying, agreed_clause(action), "{}", action.key);
             let mut model = on_its_row(action.row);
@@ -4417,6 +4458,12 @@ pub(crate) mod tests {
                 args: arguments(action, &target, &model).unwrap(),
             };
             let commands = ch(&mut model, action.key);
+            if action.ask == Ask::Text {
+                assert_eq!(commands, [], "{}", action.key);
+                assert_eq!(model.question(), None, "{}", action.key);
+                assert!(model.entry().is_some(), "{}", action.key);
+                continue;
+            }
             if action
                 .words
                 .last()
@@ -5289,18 +5336,29 @@ pub(crate) mod tests {
         );
         assert_eq!(model.tab(), Tab::Overview);
         assert_eq!(model.run().unwrap().words, "device fetch nobs-t-srl1");
-
-        let mut model = lab_devices_model();
-        ch(&mut model, '2');
-        running(&mut model);
-        ch(&mut model, '1');
-        assert_eq!(ch(&mut model, 'g'), []);
+        assert_eq!(ch(&mut model, 's'), []);
         assert_eq!(
             model.notice(),
-            Some("one action at a time: a up is running")
+            Some("one action at a time: device fetch nobs-t-srl1 is running")
         );
-        assert_eq!(model.tab(), Tab::Overview);
-        assert_eq!(model.run().unwrap().words, "a up");
+        assert_eq!(model.entry(), None);
+        assert_eq!(model.run().unwrap().words, "device fetch nobs-t-srl1");
+
+        for key in ['g', 's'] {
+            let mut model = lab_devices_model();
+            ch(&mut model, '2');
+            running(&mut model);
+            ch(&mut model, '1');
+            assert_eq!(ch(&mut model, key), [], "{key}");
+            assert_eq!(
+                model.notice(),
+                Some("one action at a time: a up is running"),
+                "{key}"
+            );
+            assert_eq!(model.tab(), Tab::Overview, "{key}");
+            assert_eq!(model.entry(), None, "{key}");
+            assert_eq!(model.run().unwrap().words, "a up", "{key}");
+        }
     }
 
     #[test]
@@ -5423,26 +5481,29 @@ pub(crate) mod tests {
             ("no device", no_device),
         ];
         for (name, mut model) in models {
-            let tab = model.tab();
+            for (key, hint) in [('g', "g get config"), ('s', "s run command")] {
+                let tab = model.tab();
 
-            assert_eq!(ch(&mut model, 'g'), [], "{name}");
+                assert_eq!(ch(&mut model, key), [], "{name} {key}");
 
-            assert!(model.run().is_none(), "{name}");
-            assert_eq!(model.question(), None, "{name}");
-            assert_eq!(model.notice(), None, "{name}");
-            assert_eq!(model.tab(), tab, "{name}");
-            let line = key_line(&model, 200).concat();
-            assert!(!line.contains("g get config"), "{name}: {line}");
-            if name != "no device" {
-                let entries = help_entries(&model);
-                assert!(
-                    entries.iter().all(|(key, _)| key != "g"),
-                    "{name}: {entries:?}"
-                );
+                assert!(model.run().is_none(), "{name} {key}");
+                assert_eq!(model.question(), None, "{name} {key}");
+                assert_eq!(model.entry(), None, "{name} {key}");
+                assert_eq!(model.notice(), None, "{name} {key}");
+                assert_eq!(model.tab(), tab, "{name} {key}");
+                let line = key_line(&model, 200).concat();
+                assert!(!line.contains(hint), "{name}: {line}");
+                if name != "no device" {
+                    let entries = help_entries(&model);
+                    assert!(
+                        entries.iter().all(|(seen, _)| *seen != key.to_string()),
+                        "{name}: {entries:?}"
+                    );
+                }
             }
         }
         let line = key_line(&lab_devices_model(), 200).concat();
-        assert!(line.contains("g get config"), "{line}");
+        assert!(line.contains("g get config  s run command"), "{line}");
     }
 
     #[test]
@@ -5555,10 +5616,12 @@ pub(crate) mod tests {
         };
         let lab = lab_devices_model();
         assert_eq!(named(&lab, "g"), ["get config"]);
+        assert_eq!(named(&lab, "s"), ["run command"]);
         assert_eq!(named(&lab, "m"), ["maintenance"]);
 
         let workshop = devices_model(workshop_located("infrahub"));
         assert_eq!(named(&workshop, "g"), Vec::<&str>::new());
+        assert_eq!(named(&workshop, "s"), Vec::<&str>::new());
         assert_eq!(named(&workshop, "m"), ["maintenance"]);
     }
 
@@ -5575,5 +5638,86 @@ pub(crate) mod tests {
 
         assert_eq!(model.config().unwrap().0, "nobs-t-srl2");
         assert_eq!(scroll(&model), 0);
+    }
+
+    #[test]
+    fn s_runs_device_run_with_the_text_as_one_argument() {
+        let lab = book_dir();
+        let mut model = lab_devices_model();
+
+        assert_eq!(ch(&mut model, 's'), []);
+        assert_eq!(model.entry(), Some(("nobs-t-srl1", "")));
+        typed(&mut model, "show version");
+        assert_eq!(model.entry(), Some(("nobs-t-srl1", "show version")));
+        let commands = code(&mut model, KeyCode::Enter);
+
+        assert_eq!(
+            commands,
+            [nobs(&[
+                "--dir",
+                &lab,
+                "device",
+                "run",
+                "nobs-t-srl1",
+                "show version"
+            ])]
+        );
+        assert_eq!(model.entry(), None);
+        assert!(!model.typing());
+        assert_eq!(model.tab(), Tab::Overview);
+        assert_eq!(
+            model.run().unwrap().words.replace(NO_BREAK, " "),
+            "device run nobs-t-srl1 show version"
+        );
+    }
+
+    #[test]
+    fn the_entry_of_s_takes_every_key_as_text() {
+        let mut model = lab_devices_model();
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        ch(&mut model, 's');
+        let before = (model.workbench(), model.focus(), model.tab());
+
+        for typed in "q g x ? 1  r o".chars() {
+            assert_eq!(ch(&mut model, typed), [], "{typed}");
+        }
+
+        assert!(!model.quit());
+        assert!(model.run().is_none());
+        assert!(!model.help());
+        assert!(!model.run_pane());
+        assert!(model.error().is_some());
+        assert_eq!((model.workbench(), model.focus(), model.tab()), before);
+        assert_eq!(model.entry(), Some(("nobs-t-srl1", "q g x ? 1  r o")));
+        let commands = code(&mut model, KeyCode::Enter);
+        let Some(Command::Run { args, .. }) = commands.first() else {
+            panic!("{commands:?}");
+        };
+        assert_eq!(commands.len(), 1);
+        assert_eq!(args.last(), Some(&OsString::from("q g x ? 1  r o")));
+    }
+
+    #[test]
+    fn esc_and_an_empty_text_run_nothing() {
+        for keys in [
+            vec![KeyCode::Char('s'), KeyCode::Char('w'), KeyCode::Esc],
+            vec![KeyCode::Char('s'), KeyCode::Enter],
+            vec![
+                KeyCode::Char('s'),
+                KeyCode::Char('w'),
+                KeyCode::Backspace,
+                KeyCode::Enter,
+            ],
+        ] {
+            let mut model = lab_devices_model();
+            let commands: Vec<Command> =
+                keys.iter().flat_map(|key| code(&mut model, *key)).collect();
+
+            assert_eq!(commands, [], "{keys:?}");
+            assert!(model.run().is_none(), "{keys:?}");
+            assert_eq!(model.entry(), None, "{keys:?}");
+            assert!(!model.typing(), "{keys:?}");
+            assert_eq!(model.question(), None, "{keys:?}");
+        }
     }
 }
