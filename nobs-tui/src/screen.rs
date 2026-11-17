@@ -13,12 +13,12 @@ use nobs_core::count::counted;
 use nobs_core::locate::Located;
 use nobs_core::time;
 
-use crate::actions::{arguments, Target, ACTIONS};
+use crate::actions::{self, arguments, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
     kind_text, Cursor, Focus, Model, Run, RunState, StackKind, StackState, Tab, Workbench,
-    DEVICE_TABS, NO_BREAK, SERVICES_TABS,
+    NO_BREAK, SERVICES_TABS,
 };
 use crate::view;
 
@@ -236,7 +236,7 @@ fn workbench_least(model: &Model) -> u16 {
     let tab_rows = match (model.workbench(), model.tab()) {
         (Workbench::Lab, _) => 1,
         (Workbench::Services, Tab::Overview) | (_, Tab::Timeline) => 2,
-        (_, Tab::Overview | Tab::Logs) => 1,
+        (_, Tab::Overview | Tab::Config | Tab::Logs) => 1,
         (_, Tab::Interfaces) => 3,
         (_, Tab::Sonda) => 6,
     };
@@ -552,7 +552,9 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     match model.tab() {
-        Tab::Overview | Tab::Interfaces | Tab::Timeline => overview(frame, content, model, wide),
+        Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline => {
+            overview(frame, content, model, wide)
+        }
         Tab::Logs => logs(frame, content, model),
         Tab::Sonda => {
             view::draw_in(
@@ -580,7 +582,7 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
 fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let on_devices = model.workbench() == Workbench::Devices;
     let shown: &[Tab] = if on_devices {
-        &DEVICE_TABS
+        model.device_tabs()
     } else {
         &SERVICES_TABS
     };
@@ -967,7 +969,7 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Tab::Timeline => timeline(frame, content, model),
         Tab::Logs => device_logs(frame, content, model),
         Tab::Interfaces => device_interfaces(frame, content, model, wide),
-        Tab::Sonda => {}
+        Tab::Config | Tab::Sonda => {}
     }
 }
 
@@ -1687,7 +1689,11 @@ fn key_hints(model: &Model) -> Vec<String> {
         (Workbench::Services, Focus::List, _) => {
             vec!["Tab focus", "j/k move", "/ filter", "l logs", "r refresh"]
         }
-        (Workbench::Services, Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Timeline) => {
+        (
+            Workbench::Services,
+            Focus::Tabs,
+            Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline,
+        ) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Enter logs", "Esc back"]
         }
         (Workbench::Services, Focus::Tabs, Tab::Logs) => {
@@ -1780,6 +1786,7 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench)
+        .filter(|action| action.row != actions::Row::Node || model.lab_with_nodes())
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
     [(switch.join(" "), "switch workbench")]
@@ -2830,6 +2837,7 @@ mod tests {
             ),
             target: Target::Chapter(0),
             lines: vec![REFUSAL.to_string()],
+            output: None,
             started: Instant::now(),
             ended: None,
             state: RunState::Running,
@@ -2861,6 +2869,7 @@ mod tests {
                 .to_string(),
             target: Target::Chapter(0),
             lines,
+            output: None,
             started: Instant::now(),
             ended: None,
             state,

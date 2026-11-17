@@ -75,8 +75,16 @@ fn launch(
         .process_group(0)
         .spawn()?;
     let readers = [
-        read(child.stdout.take().expect("stdout is piped"), out.clone()),
-        read(child.stderr.take().expect("stderr is piped"), out.clone()),
+        read(
+            child.stdout.take().expect("stdout is piped"),
+            out.clone(),
+            Update::ActionLine,
+        ),
+        read(
+            child.stderr.take().expect("stderr is piped"),
+            out.clone(),
+            Update::ActionError,
+        ),
     ];
     let group = child.id();
     let state = Arc::new(Mutex::new(State::default()));
@@ -96,7 +104,11 @@ impl Running for Process {
     }
 }
 
-fn read(source: impl Read + Send + 'static, out: Sender<Update>) -> JoinHandle<()> {
+fn read(
+    source: impl Read + Send + 'static,
+    out: Sender<Update>,
+    line: fn(String) -> Update,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut reader = BufReader::new(source);
         let mut bytes = Vec::new();
@@ -105,10 +117,10 @@ fn read(source: impl Read + Send + 'static, out: Sender<Update>) -> JoinHandle<(
             if !matches!(reader.read_until(b'\n', &mut bytes), Ok(read) if read > 0) {
                 return;
             }
-            let line = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
-            let line = line.strip_suffix(b"\r").unwrap_or(line);
-            let line = String::from_utf8_lossy(line).into_owned();
-            if out.send(Update::ActionLine(line)).is_err() {
+            let text = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+            let text = text.strip_suffix(b"\r").unwrap_or(text);
+            let text = String::from_utf8_lossy(text).into_owned();
+            if out.send(line(text)).is_err() {
                 return;
             }
         }
@@ -270,6 +282,27 @@ pub(crate) mod tests {
         assert!(
             matches!(&first, Update::ActionLine(line) if line == "one"),
             "{first:?}"
+        );
+    }
+
+    #[test]
+    fn run_sends_stderr_as_action_error() {
+        let (_running, updates) = shell("echo out; echo err >&2; exit 1");
+        let mut seen = Vec::new();
+
+        loop {
+            match updates.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Update::ActionLine(line) => seen.push(("out", line)),
+                Update::ActionError(line) => seen.push(("err", line)),
+                Update::ActionEnded(_) => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        seen.sort();
+
+        assert_eq!(
+            seen,
+            [("err", "err".to_string()), ("out", "out".to_string())]
         );
     }
 

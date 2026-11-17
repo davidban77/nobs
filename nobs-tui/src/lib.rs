@@ -632,6 +632,7 @@ mod tests {
             key(KeyCode::Enter),
             key(KeyCode::Char(']')),
             key(KeyCode::Char(']')),
+            key(KeyCode::Char(']')),
         ]
         .into_iter();
         let started = Instant::now();
@@ -1077,7 +1078,11 @@ mod tests {
     }
 
     fn devices_model() -> Model {
-        let dir = fixture("workshop-one");
+        devices_in("workshop-one")
+    }
+
+    fn devices_in(folder: &str) -> Model {
+        let dir = fixture(folder);
         let mut model = Model::new(Start {
             lab: Some(locate(&dir, Some(&dir)).unwrap()),
             source: Some(Arc::new(Holding)),
@@ -1242,6 +1247,33 @@ mod tests {
         assert_eq!(launcher.stops(), 1);
         assert_eq!(run_state(&model), RunState::Ended(End::Stopped));
         assert_eq!(press(&mut model, &mut actions, &[q()]), Ok(0));
+    }
+
+    #[test]
+    fn ctrl_c_stops_a_get_and_a_later_get_fills_the_tab() {
+        let config = "set / acl acl-filter cpm type ipv4 statistics-per-entry true";
+        let launcher = Arc::new(FakeLauncher::new());
+        let mut actions = Actions::new(launcher.clone());
+        let mut model = devices_in("book-lab");
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        press(&mut model, &mut actions, &[ch('g')]).unwrap_err();
+        let sender = launcher.sender().unwrap();
+        sender.send(Update::ActionLine(config.to_string())).unwrap();
+        press(&mut model, &mut actions, &[ctrl_c]).unwrap_err();
+
+        assert_eq!(launcher.stops(), 1);
+        assert_eq!(run_state(&model), RunState::Ended(End::Stopped));
+        assert_eq!(model.config_of("srl1"), None);
+
+        press(&mut model, &mut actions, &[ch('g')]).unwrap_err();
+        let sender = launcher.sender().unwrap();
+        sender.send(Update::ActionLine(config.to_string())).unwrap();
+        sender.send(Update::ActionEnded(End::Exited(0))).unwrap();
+        press(&mut model, &mut actions, &[]).unwrap_err();
+
+        assert_eq!(launcher.calls().len(), 2);
+        assert_eq!(model.config_of("srl1").unwrap().lines, [config]);
     }
 
     #[test]

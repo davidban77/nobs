@@ -1257,7 +1257,7 @@ fn a_narrow_key_line_ends_in_a_whole_hint() {
 fn asked(action: &Action) -> Shell {
     let mut model = match action.row {
         Row::Stack => services_model(),
-        Row::Device => maintenance_model(false),
+        Row::Device | Row::Node => maintenance_model(false),
         Row::Chapter | Row::Lab => lab_model(),
     };
     press(&mut model, KeyCode::Char(action.key));
