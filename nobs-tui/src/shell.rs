@@ -381,7 +381,6 @@ struct Asked {
     args: Vec<Vec<OsString>>,
     target: Target,
     text: Filter,
-    keeps: bool,
 }
 
 struct DeviceLine {
@@ -844,14 +843,14 @@ impl Model {
         if action.row == Row::Stack && target.is_none() {
             return None;
         }
-        if let Some(run) = self.active() {
-            self.notice = Some(format!("one action at a time: {} is running", run.words));
-            return Some(Vec::new());
-        }
         let Some(target) = target else {
             return Some(Vec::new());
         };
         match pieces(action, &target, self) {
+            Some(_) if self.active().is_some() => {
+                let words = self.active().map_or("", |run| run.words.as_str());
+                self.notice = Some(format!("one action at a time: {words} is running"));
+            }
             Some(args) => {
                 self.notice = None;
                 let saying = match action.ask {
@@ -868,12 +867,7 @@ impl Model {
                     Ask::Text => {
                         let mut text = Filter::default();
                         text.start();
-                        self.asked = Some(Asked {
-                            args,
-                            target,
-                            text,
-                            keeps: action.keeps,
-                        });
+                        self.asked = Some(Asked { args, target, text });
                         return Some(Vec::new());
                     }
                 };
@@ -1544,7 +1538,7 @@ impl Model {
                 return Vec::new();
             };
             asked.args.push(vec![OsString::from(text)]);
-            return self.start_run(asked.args, asked.target, asked.keeps);
+            return self.start_run(asked.args, asked.target, false);
         }
         if self.filter.typing {
             self.filter.type_key(key.code);
@@ -5530,6 +5524,29 @@ pub(crate) mod tests {
         }
         let line = key_line(&lab_devices_model(), 200).concat();
         assert!(line.contains("g get config  s run command"), "{line}");
+
+        let mut busy = devices_model(workshop_located("infrahub"));
+        ch(&mut busy, 'm');
+        ch(&mut busy, 'y');
+        let words = busy.run().unwrap().words.clone();
+        for key in ['g', 's'] {
+            assert_eq!(ch(&mut busy, key), [], "run going {key}");
+            assert_eq!(busy.notice(), None, "run going {key}");
+            assert_eq!(busy.entry(), None, "run going {key}");
+            assert_eq!(busy.run().unwrap().words, words, "run going {key}");
+        }
+    }
+
+    #[test]
+    fn in_a_book_lab_m_with_a_run_going_gives_no_notice_and_starts_nothing() {
+        let mut model = lab_devices_model();
+        ch(&mut model, 'g');
+
+        assert_eq!(ch(&mut model, 'm'), []);
+
+        assert_eq!(model.notice(), None);
+        assert_eq!(model.question(), None);
+        assert_eq!(model.run().unwrap().words, "device fetch nobs-t-srl1");
     }
 
     #[test]
