@@ -2139,13 +2139,15 @@ fn read_topology(topology: &Path) -> Result<String, i32> {
         eprintln!("nobs: topology file not found: {}", topology.display());
         return Err(1);
     }
-    fs::read_to_string(topology).map_err(|error| {
-        eprintln!(
-            "nobs: cannot read topology file: {}: {error}",
-            topology.display()
-        );
-        1
-    })
+    fs::read_to_string(topology).map_err(|error| unreadable_topology(topology, error))
+}
+
+fn unreadable_topology(topology: &Path, error: impl std::fmt::Display) -> i32 {
+    eprintln!(
+        "nobs: cannot read topology file: {}: {error}",
+        topology.display()
+    );
+    1
 }
 
 fn run_device(command: DeviceCommand, given: Option<&Path>, transport: &dyn Transport) -> i32 {
@@ -2178,13 +2180,8 @@ fn device_nodes(located: &Located) -> Result<(PathBuf, Vec<TopologyNode>), i32> 
     }
     let topology = located.topology();
     let text = read_topology(&topology)?;
-    let nodes = lab::topology_nodes(&text).map_err(|error| {
-        eprintln!(
-            "nobs: cannot read topology file: {}: {error}",
-            topology.display()
-        );
-        1
-    })?;
+    let nodes =
+        lab::topology_nodes(&text).map_err(|error| unreadable_topology(&topology, error))?;
     Ok((topology, nodes))
 }
 
@@ -2867,24 +2864,13 @@ impl<'a, Topo> LabRun<'a, Topo> {
 
 impl<'a> LabRun<'a, Topology> {
     fn node_containers(&self) -> Result<Vec<String>, i32> {
-        lab::node_containers(&self.topology.text).map_err(|error| {
-            eprintln!(
-                "nobs: cannot read topology file: {}: {error}",
-                self.topology.containerlab.topology().display()
-            );
-            1
-        })
+        lab::node_containers(&self.topology.text)
+            .map_err(|error| unreadable_topology(self.topology.containerlab.topology(), error))
     }
 
     fn refuse_missing_images(&self) -> Result<(), i32> {
         let images = lab::node_images(&self.topology.text, |name| std::env::var(name).ok())
-            .map_err(|error| {
-                eprintln!(
-                    "nobs: cannot read topology file: {}: {error}",
-                    self.topology.containerlab.topology().display()
-                );
-                1
-            })?;
+            .map_err(|error| unreadable_topology(self.topology.containerlab.topology(), error))?;
         let mut missing = Vec::new();
         for entry in images {
             let args = os_strings(&["image", "inspect", "--format", "{{.Id}}", &entry.image]);
@@ -6256,5 +6242,23 @@ mod tests {
         assert_eq!(out, "Hostname : srl1\n");
         assert_eq!(err, parsing);
         assert!(!out.contains(TEST_PASSWORD) && !err.contains(TEST_PASSWORD));
+    }
+
+    #[test]
+    fn a_kind_without_a_driver_is_no_driver_for_fetch_and_run_and_calls_nothing() {
+        set_credentials();
+        let (topology, nodes) = device_lab();
+        for asked in [None, Some("show version")] {
+            let transport = FakeTransport::answering(Ok(answer(0, "", "")));
+
+            let result = device_answer("nobs-t-ceos1", asked, &topology, &nodes, &transport);
+
+            assert_eq!(
+                result,
+                Err(device::Error::NoDriver("ceos".into())),
+                "{asked:?}"
+            );
+            assert!(transport.calls().is_empty(), "{asked:?}");
+        }
     }
 }

@@ -136,6 +136,9 @@ mod tests {
         type Error = russh::Error;
 
         async fn auth_password(&mut self, _: &str, password: &str) -> Result<Auth, Self::Error> {
+            if password == "hang" {
+                return std::future::pending().await;
+            }
             Ok(if password == "right" {
                 Auth::Accept
             } else {
@@ -215,9 +218,13 @@ mod tests {
         run_at("127.0.0.1", port, &credentials, command, LIMIT)
     }
 
-    fn ask_in_five_seconds(port: u16, command: &'static str) -> Result<Output, Error> {
+    fn ask_in_five_seconds(
+        port: u16,
+        password: &'static str,
+        command: &'static str,
+    ) -> Result<Output, Error> {
         let (sender, answers) = mpsc::channel();
-        thread::spawn(move || sender.send(ask(port, "right", command)));
+        thread::spawn(move || sender.send(ask(port, password, command)));
         answers
             .recv_timeout(Duration::from_secs(5))
             .expect("an answer within 5 seconds")
@@ -237,7 +244,10 @@ mod tests {
     fn a_listener_that_never_speaks_gives_no_answer() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert_eq!(ask_in_five_seconds(port, "answer"), Err(Error::NoAnswer));
+        assert_eq!(
+            ask_in_five_seconds(port, "right", "answer"),
+            Err(Error::NoAnswer)
+        );
     }
 
     #[test]
@@ -271,6 +281,18 @@ mod tests {
     #[test]
     fn a_command_with_no_answer_gives_no_answer() {
         let port = device();
-        assert_eq!(ask_in_five_seconds(port, "silent"), Err(Error::NoAnswer));
+        assert_eq!(
+            ask_in_five_seconds(port, "right", "silent"),
+            Err(Error::NoAnswer)
+        );
+    }
+
+    #[test]
+    fn a_login_with_no_answer_gives_no_answer() {
+        let port = device();
+        assert_eq!(
+            ask_in_five_seconds(port, "hang", "answer"),
+            Err(Error::NoAnswer)
+        );
     }
 }
