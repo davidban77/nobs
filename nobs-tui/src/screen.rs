@@ -2,6 +2,7 @@ use std::time::{Instant, UNIX_EPOCH};
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::line;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
@@ -83,6 +84,67 @@ const ALERTS_LEAST: u16 = 2;
 const BORDERS: u16 = 2;
 const REVERSE: Style = Style::new().add_modifier(Modifier::REVERSED);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Holder {
+    Chooser,
+    Keys,
+    Entry,
+    Stacks,
+    Chapters,
+    Nodes,
+    Overview,
+    Pane,
+    Devices,
+    Sonda(view::Part),
+}
+
+fn holder(model: &Model) -> Holder {
+    if model.chooser() {
+        return Holder::Chooser;
+    }
+    if model.help() {
+        return Holder::Keys;
+    }
+    match (model.workbench(), model.focus()) {
+        (Workbench::Services, Focus::List) => Holder::Stacks,
+        (Workbench::Services, Focus::Tabs) if model.tab() == Tab::Sonda => {
+            Holder::Sonda(view::Part::Scenarios)
+        }
+        (Workbench::Services, Focus::Tabs) => Holder::Pane,
+        (Workbench::Services, Focus::Lines) => Holder::Sonda(view::Part::Details),
+        (Workbench::Devices, Focus::Tabs)
+            if model.tab() == Tab::Timeline && model.popup_entry().is_some() =>
+        {
+            Holder::Entry
+        }
+        (Workbench::Devices, Focus::Tabs) => Holder::Pane,
+        (Workbench::Devices, _) => Holder::Devices,
+        (Workbench::Lab, Focus::List) => Holder::Chapters,
+        (Workbench::Lab, Focus::Tabs) => Holder::Nodes,
+        (Workbench::Lab, Focus::Lines) => Holder::Overview,
+    }
+}
+
+pub(crate) fn border(focused: bool) -> BorderType {
+    if focused {
+        BorderType::Double
+    } else {
+        BorderType::Plain
+    }
+}
+
+fn border_of(model: &Model, which: Holder) -> BorderType {
+    border(holder(model) == which)
+}
+
+fn line_set(border: BorderType) -> line::Set<'static> {
+    if border == BorderType::Plain {
+        line::NORMAL
+    } else {
+        line::DOUBLE
+    }
+}
 
 pub fn draw(frame: &mut Frame, model: &Model) {
     let area = frame.area();
@@ -399,27 +461,21 @@ pub(crate) fn sonda_overflow(model: &Model, area: Rect) -> usize {
 fn stacks(frame: &mut Frame, area: Rect, model: &Model) {
     let visible = model.visible_stacks();
     let selected = Some(model.selected_stack());
-    stack_list(
-        frame,
-        area,
-        model,
-        "stacks",
-        &visible,
-        selected,
-        Target::Stack,
-    );
+    let block = Block::bordered()
+        .border_type(border_of(model, Holder::Stacks))
+        .title_top(format!(" stacks {} ", visible.len()));
+    stack_list(frame, area, model, block, &visible, selected, Target::Stack);
 }
 
 fn stack_list(
     frame: &mut Frame,
     area: Rect,
     model: &Model,
-    title: &str,
+    block: Block,
     indices: &[usize],
     selected: Option<usize>,
     target: fn(usize) -> Target,
 ) {
-    let block = Block::bordered().title_top(format!(" {title} {} ", indices.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let longest = indices
@@ -487,7 +543,12 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     } else {
         format!(" {name}  {age} ")
     };
-    frame.render_widget(Block::bordered().title_top(title), area);
+    frame.render_widget(
+        Block::bordered()
+            .border_type(border_of(model, Holder::Pane))
+            .title_top(title),
+        area,
+    );
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     match model.tab() {
@@ -499,7 +560,10 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
                 content,
                 model.sonda(),
                 model.now(),
-                model.focus() == Focus::Lines,
+                match holder(model) {
+                    Holder::Sonda(part) => Some(part),
+                    _ => None,
+                },
             );
             if model.focus() == Focus::List {
                 let key_row = Rect {
@@ -705,7 +769,10 @@ fn devices(frame: &mut Frame, area: Rect, model: &Model) {
 
 fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let visible = model.visible_devices();
-    let block = Block::bordered().title_top(format!(" devices {} ", visible.len()));
+    let border = border_of(model, Holder::Devices);
+    let block = Block::bordered()
+        .border_type(border)
+        .title_top(format!(" devices {} ", visible.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let alerts_height = (inner.height / 4).max(ALERTS_LEAST);
@@ -731,7 +798,7 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let row = Rect::new(area.x, separator.y, area.width, 1);
     let room = usize::from(list.height).saturating_sub(1);
     let window = first.map(|first| (first, room, visible.len()));
-    alerts_separator(frame, row, &count, window);
+    alerts_separator(frame, row, &count, window, border);
     alert_rows(frame, alerts, model, wide);
 }
 
@@ -740,10 +807,12 @@ fn alerts_separator(
     row: Rect,
     count: &str,
     window: Option<(usize, usize, usize)>,
+    border: BorderType,
 ) {
-    let head = format!("├ alerts {count} ");
+    let set = line_set(border);
+    let head = format!("{} alerts {count} ", set.vertical_right);
     let fill = usize::from(row.width).saturating_sub(head.chars().count() + 1);
-    let line = format!("{head}{}┤", "─".repeat(fill));
+    let line = format!("{head}{}{}", set.horizontal.repeat(fill), set.vertical_left);
     frame.render_widget(Paragraph::new(line), row);
     if let Some((first, room, total)) = window {
         let title = u16::try_from(head.chars().count() - 1).unwrap_or(u16::MAX);
@@ -880,7 +949,12 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         || " devices ".to_string(),
         |device| format!(" {} ", device.name),
     );
-    frame.render_widget(Block::bordered().title_top(title), area);
+    frame.render_widget(
+        Block::bordered()
+            .border_type(border_of(model, Holder::Pane))
+            .title_top(title),
+        area,
+    );
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     if let Some(note) = model.source_note() {
@@ -1142,7 +1216,13 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
         entries.len(),
     );
     if let Some(entry) = model.popup_entry() {
-        timeline_popup(frame, area, entry, model.popup_scroll());
+        timeline_popup(
+            frame,
+            area,
+            entry,
+            model.popup_scroll(),
+            border_of(model, Holder::Entry),
+        );
     }
 }
 
@@ -1176,10 +1256,17 @@ pub(crate) fn popup_overflow(model: &Model, area: Rect) -> usize {
         .saturating_sub(usize::from(inner.height))
 }
 
-fn timeline_popup(frame: &mut Frame, area: Rect, entry: &devices::Entry, scroll: usize) {
+fn timeline_popup(
+    frame: &mut Frame,
+    area: Rect,
+    entry: &devices::Entry,
+    scroll: usize,
+    border: BorderType,
+) {
     let popup = popup_area(area);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
+        .border_type(border)
         .title_top(format!(
             " {}  {} ",
             entry.kind.name(),
@@ -1215,7 +1302,9 @@ fn device_logs(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn chooser(frame: &mut Frame, area: Rect, model: &Model) {
-    let block = Block::bordered().title_top(" labs found ");
+    let block = Block::bordered()
+        .border_type(border_of(model, Holder::Chooser))
+        .title_top(" labs found ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let stacks = model.stacks();
@@ -1397,11 +1486,14 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
     .areas(left);
     node_list(frame, top, model, wide);
     let selected = model.selected_chapter();
+    let block = Block::bordered()
+        .border_type(border_of(model, Holder::Chapters))
+        .title_top(format!(" chapters {} ", chapters.len()));
     stack_list(
         frame,
         bottom,
         model,
-        "chapters",
+        block,
         &chapters,
         selected,
         Target::Chapter,
@@ -1411,7 +1503,9 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
 
 fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let rows = model.nodes();
-    let block = Block::bordered().title_top(format!(" nodes {} ", rows.len()));
+    let block = Block::bordered()
+        .border_type(border_of(model, Holder::Nodes))
+        .title_top(format!(" nodes {} ", rows.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let width = |texts: Vec<&str>| {
@@ -1469,17 +1563,12 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
 }
 
 fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
+    let block = Block::bordered().border_type(border_of(model, Holder::Overview));
     let Some(chapter) = model.selected_chapter() else {
+        frame.render_widget(block, area);
         return;
     };
-    let border = if model.focus() == Focus::Lines {
-        BorderType::Double
-    } else {
-        BorderType::Plain
-    };
-    let block = Block::bordered()
-        .border_type(border)
-        .title_top(format!(" {} ", model.stacks()[chapter].name));
+    let block = block.title_top(format!(" {} ", model.stacks()[chapter].name));
     frame.render_widget(block, area);
     let [tab_row, content] = tab_content(area);
     frame.render_widget(Paragraph::new(Span::styled("OVERVIEW", REVERSE)), tab_row);
@@ -1788,7 +1877,9 @@ fn help(frame: &mut Frame, area: Rect, model: &Model) {
         Workbench::Services => "services",
         Workbench::Lab => "lab",
     };
-    let block = Block::bordered().title_top(format!(" keys  {name} workbench "));
+    let block = Block::bordered()
+        .border_type(border_of(model, Holder::Keys))
+        .title_top(format!(" keys  {name} workbench "));
     frame.render_widget(block, popup);
     let column = |x: u16, y: u16, width: u16, height: u16| {
         Rect::new(inner.x + x, inner.y + y, width, height).intersection(inner)
@@ -1877,14 +1968,14 @@ mod tests {
         filter: Option<&'static str>,
         detail: &'static str,
         tabs: &'static [(Tab, &'static str)],
-        other: Option<(&'static str, &'static str)>,
+        other: Option<(&'static str, &'static str, BorderType)>,
         fill: fn(&mut Model),
     }
 
     struct Walked {
         label: String,
         selected: &'static str,
-        shown: Vec<(&'static str, &'static str)>,
+        shown: Vec<(&'static str, &'static str, BorderType)>,
         model: Model,
         width: u16,
         height: u16,
@@ -1985,7 +2076,7 @@ mod tests {
             filter: None,
             detail,
             tabs: &[(Tab::Overview, "topology")],
-            other: Some((" nodes ", "nobs-t-srl1")),
+            other: Some((" nodes ", "nobs-t-srl1", border(false))),
             fill: |_| {},
         };
         [
@@ -2002,7 +2093,7 @@ mod tests {
                     (Tab::Timeline, "link flap"),
                     (Tab::Logs, "link flap"),
                 ],
-                other: Some((" devices ", "BgpSessionNotUp")),
+                other: Some((" devices ", "BgpSessionNotUp", border(true))),
                 fill: |_| {},
             },
             Bench {
@@ -2093,7 +2184,7 @@ mod tests {
                                         bench.selected
                                     ),
                                     selected: bench.selected,
-                                    shown: [(bench.detail, row)].into_iter().chain(bench.other).collect(),
+                                    shown: [(bench.detail, row, border(false))].into_iter().chain(bench.other).collect(),
                                     model,
                                     width,
                                     height,
@@ -2108,20 +2199,22 @@ mod tests {
         walked
     }
 
-    fn boxed(rows: &[String], title: &str) -> Vec<String> {
+    fn boxed(rows: &[String], title: &str, border: BorderType) -> Vec<String> {
+        let set = border.to_border_set();
+        let corner = |symbol: &str| symbol.chars().next();
         let grid: Vec<Vec<char>> = rows.iter().map(|row| row.chars().collect()).collect();
-        let top: Vec<char> = format!("┌{title}").chars().collect();
+        let top: Vec<char> = format!("{}{title}", set.top_left).chars().collect();
         for (y, row) in grid.iter().enumerate() {
             let Some(left) = row.windows(top.len()).position(|seen| seen == top) else {
                 continue;
             };
             let right = row[left..]
                 .iter()
-                .position(|cell| *cell == '┐')
+                .position(|cell| Some(*cell) == corner(set.top_right))
                 .map_or(row.len(), |at| left + at);
             return grid[y + 1..]
                 .iter()
-                .take_while(|row| row.get(left) != Some(&'└'))
+                .take_while(|row| row.get(left).copied() != corner(set.bottom_left))
                 .map(|row| {
                     let end = right.min(row.len());
                     row.get(left + 1..end).unwrap_or_default().iter().collect()
@@ -2207,8 +2300,8 @@ mod tests {
                 rows.iter().any(|row| row.contains(selected)),
                 "{label}\n{screen}"
             );
-            for (title, row) in shown {
-                let inside = boxed(rows, title);
+            for (title, row, border) in shown {
+                let inside = boxed(rows, title, *border);
                 assert!(
                     inside.iter().any(|line| line.contains(row)),
                     "{label}: {row} in{title}\n{screen}"
@@ -2237,13 +2330,16 @@ mod tests {
             let rows = drawn(&mut model, 60, 15);
 
             let screen = rows.join("\n");
-            let marked: Vec<String> = boxed(&rows, list)
+            let marked: Vec<String> = boxed(&rows, list, border(true))
                 .into_iter()
                 .filter(|row| row.starts_with('>'))
                 .collect();
             assert_eq!(marked.len(), 1, "{screen}");
             assert!(marked[0].contains(name), "{screen}");
-            assert!(!boxed(&rows, &format!(" {name} ")).is_empty(), "{screen}");
+            assert!(
+                !boxed(&rows, &format!(" {name} "), border(false)).is_empty(),
+                "{screen}"
+            );
         }
     }
 
@@ -2254,8 +2350,8 @@ mod tests {
         for tab in [Tab::Overview, Tab::Timeline] {
             let mut model = devices_bench();
             open_tab(&mut model, tab);
-            wide.extend(boxed(&drawn(&mut model, 100, 30), " srl1 "));
-            narrow.extend(boxed(&drawn(&mut model, 60, 15), " srl1 "));
+            wide.extend(boxed(&drawn(&mut model, 100, 30), " srl1 ", border(false)));
+            narrow.extend(boxed(&drawn(&mut model, 60, 15), " srl1 ", border(false)));
         }
         let mut cut = 0;
         for start in ["kind ", "maintenance ", "bgp sessions", "last "] {
@@ -2540,8 +2636,8 @@ mod tests {
         model.apply(Update::Services(0, names(22), Ok(Vec::new())));
         let screen = drawn(&mut model, 100, 30);
 
-        assert!(row_with(&screen, "│>packt").contains(">packt  down 0/22"));
-        assert!(row_with(&screen, "┌ stacks").contains("┌ packt  22 services  "));
+        assert!(row_with(&screen, "║>packt").contains(">packt  down 0/22"));
+        assert!(row_with(&screen, "╔ stacks").contains("┌ packt  22 services  "));
 
         let three = vec![row("a", "running"), row("b", "running"), row("c", "exited")];
         model.apply(Update::Services(
@@ -2551,8 +2647,8 @@ mod tests {
         ));
         let screen = drawn(&mut model, 100, 30);
 
-        assert!(row_with(&screen, "│>packt").contains(">packt  ?"));
-        assert!(row_with(&screen, "┌ stacks").contains("┌ packt  ?  "));
+        assert!(row_with(&screen, "║>packt").contains(">packt  ?"));
+        assert!(row_with(&screen, "╔ stacks").contains("┌ packt  ?  "));
     }
 
     #[test]
@@ -2561,7 +2657,7 @@ mod tests {
         model.apply(Update::Services(0, names(22), Ok(Vec::new())));
         let screen = drawn(&mut model, 60, 15);
 
-        assert!(row_with(&screen, "│>nobs").contains("  down 0/22│"));
+        assert!(row_with(&screen, "║>nobs").contains("  down 0/22║"));
     }
 
     #[test]
@@ -2574,7 +2670,7 @@ mod tests {
         model.apply(Update::Services(0, names(13), Ok(Vec::new())));
         let screen = drawn(&mut model, 60, 15);
 
-        assert!(row_with(&screen, "│>packt").contains("…  down 0/13"));
+        assert!(row_with(&screen, "║>packt").contains("…  down 0/13"));
     }
 
     #[test]
@@ -2583,8 +2679,8 @@ mod tests {
             let mut model = opened(&"a".repeat(length));
             model.apply(Update::Services(0, names(22), Ok(Vec::new())));
             let screen = drawn(&mut model, 100, 30);
-            let top = row_with(&screen, "┌ stacks");
-            let title = &top[top.find("┐┌").unwrap()..];
+            let top = row_with(&screen, "╔ stacks");
+            let title = &top[top.find("╗┌").unwrap()..];
 
             assert!(
                 title.contains(" 22 services") || !title.contains('2'),
@@ -2614,7 +2710,7 @@ mod tests {
         press(&mut model, '?');
         let bottom = |rows: &[String]| {
             rows.iter()
-                .find(|row| row.trim_start().starts_with('└'))
+                .find(|row| row.trim_start().starts_with('╚'))
                 .unwrap()
                 .clone()
         };
@@ -2624,7 +2720,7 @@ mod tests {
             let screen = rows.join("\n");
 
             assert!(
-                bottom(&rows).ends_with(&format!("─ {mark} ─┘")),
+                bottom(&rows).ends_with(&format!("═ {mark} ═╝")),
                 "{mark}\n{screen}"
             );
             assert!(screen.contains(HELP_MORE), "{mark}\n{screen}");
@@ -2637,7 +2733,7 @@ mod tests {
             bottom(&rows)
                 .trim_start()
                 .chars()
-                .all(|c| "└─┘".contains(c)),
+                .all(|c| "╚═╝".contains(c)),
             "{}",
             rows.join("\n")
         );
@@ -3017,7 +3113,7 @@ mod tests {
         for (key, times, mark, line, shown) in steps {
             let screen = turn(&mut model, key, times);
 
-            let edge = format!("─ {mark} ─┘");
+            let edge = format!("═ {mark} ═╝");
             assert!(screen.contains(&edge), "{key} {times}: {edge}\n{screen}");
             assert_eq!(
                 screen.contains(line),
@@ -3054,7 +3150,7 @@ mod tests {
     }
 
     fn box_title(rows: &[String]) -> String {
-        let row = rows.iter().find(|row| row.contains("┌ log")).unwrap();
+        let row = rows.iter().find(|row| row.contains("╔ log")).unwrap();
         row.chars().skip(usize::from(LEFT_NARROW)).collect()
     }
 
@@ -3087,7 +3183,7 @@ mod tests {
         for (key, times, mark, shown, hidden) in steps {
             let screen = turn(&mut model, key, times);
 
-            let edge = format!("─ {mark} ─┘  ");
+            let edge = format!("═ {mark} ═╝  ");
             assert!(screen.contains(&edge), "{key} {times}: {edge}\n{screen}");
             assert!(screen.contains(shown), "{key} {times}: {shown}\n{screen}");
             assert!(
@@ -3127,7 +3223,7 @@ mod tests {
     fn log_marked(model: &mut Model, mark: &str) -> String {
         let rows = drawn(model, 60, 15);
         let screen = rows.join("\n");
-        let edge = format!("─ {mark} ─┘");
+        let edge = format!("═ {mark} ═╝");
         assert!(
             rows.iter().any(|row| row.ends_with(&edge)),
             "{edge}\n{screen}"
@@ -3186,7 +3282,7 @@ mod tests {
         let rows = drawn(&mut model, 60, 15);
 
         let row = row_with(&rows, "word word");
-        assert!(row.ends_with("…│"), "{}", rows.join("\n"));
+        assert!(row.ends_with("…║"), "{}", rows.join("\n"));
     }
 
     #[test]
@@ -3254,7 +3350,7 @@ mod tests {
                 "stacks",
                 || stacks_of(20),
                 'j',
-                "┘",
+                "╝",
                 &[
                     (0, "↓11", ">s01"),
                     (10, "↑2 ↓9", ">s11"),
@@ -3265,56 +3361,56 @@ mod tests {
                 "chapters",
                 || lab_bench(10),
                 'k',
-                "┘",
+                "╝",
                 &[(0, "↑5", ">ch10"), (3, "↑2 ↓3", ">ch7"), (9, "↓5", ">ch1 ")],
             ),
             (
                 "services",
                 || services_of(22),
                 'j',
-                "┘",
+                "╝",
                 &[(0, "↓15", "s01"), (10, "↑4 ↓11", "s11"), (21, "↑15", "s22")],
             ),
             (
                 "devices",
                 || devices_of(30),
                 'j',
-                "┤",
+                "╣",
                 &[(0, "↓25", "d01"), (10, "↑6 ↓19", "d11"), (29, "↑25", "d30")],
             ),
             (
                 "alerts",
                 || alerts_of(10),
                 'j',
-                "┘",
+                "╝",
                 &[(0, "↓8", "a00"), (5, "↑4 ↓4", "a05"), (9, "↑8", "a09")],
             ),
             (
                 "timeline",
                 || timeline_of(20),
                 'j',
-                "┘",
+                "╝",
                 &[(0, "↓13", ">"), (10, "↑4 ↓9", ">"), (19, "↑13", ">")],
             ),
             (
                 "sonda",
                 || sonda_of(10),
                 'j',
-                "┘",
+                "╝",
                 &[(0, "↓7", "n00"), (5, "↑3 ↓4", "n05"), (9, "↑7", "n09")],
             ),
             (
                 "nodes",
                 || nodes_of(10),
                 'j',
-                "┘",
+                "╝",
                 &[(0, "↓5", ">n01"), (5, "↑1 ↓4", ">n06"), (9, "↑5", ">n10")],
             ),
             (
                 "interfaces",
                 || interfaces_of(20),
                 'j',
-                "┘",
+                "╝",
                 &[
                     (0, "↓14", ">e01"),
                     (10, "↑5 ↓9", ">e11"),
@@ -3325,7 +3421,7 @@ mod tests {
                 "chooser",
                 || Model::new(start(many_stacks(20))),
                 'j',
-                "┘",
+                "╝",
                 &[
                     (0, "↓10", ">s01"),
                     (10, "↑1 ↓9", ">s11"),
@@ -3337,10 +3433,10 @@ mod tests {
             for &(times, mark, shown) in steps {
                 let mut model = moved(build(), key, times);
                 let screen = drawn(&mut model, 60, 15).join("\n");
-                let edge = if corner == "┤" {
-                    format!(" {mark} ─┤")
+                let edge = if corner == "╣" {
+                    format!(" {mark} ═╣")
                 } else {
-                    format!("─ {mark} ─┘")
+                    format!("═ {mark} ═╝")
                 };
 
                 assert!(screen.contains(&edge), "{label} {times}: {edge}\n{screen}");
@@ -3455,29 +3551,69 @@ mod tests {
         }
     }
 
+    fn doubles(rows: &[String]) -> Vec<String> {
+        rows.iter()
+            .flat_map(|row| row.split('╔').skip(1))
+            .map(|after| {
+                after
+                    .split('═')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn one_double(rows: &[String], title: &str) -> bool {
+        matches!(&doubles(rows)[..], [shown] if shown.starts_with(title))
+    }
+
     #[test]
-    fn the_pane_of_lines_with_the_focus_draws_a_double_border() {
-        let mut model = lab_bench(1);
-        let mut seen = Vec::new();
-        for _ in 0..3 {
-            let screen = drawn(&mut model, 60, 15).join("\n");
-            seen.push((
-                model.focus(),
-                screen.matches('╔').count(),
-                screen.contains("╔ ch1 ═"),
-            ));
-            focus_tabs(&mut model);
+    fn a_box_on_top_draws_the_double_border_and_the_pane_under_it_the_single_one() {
+        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let builds: [(Build, &str); 3] = [
+            (services_bench, "stacks"),
+            (devices_bench, "devices"),
+            (|| lab_bench(2), "chapters"),
+        ];
+        for (build, under) in builds {
+            let mut model = build();
+            press(&mut model, '?');
+            for (width, height) in [(60, 15), (100, 30)] {
+                let rows = drawn(&mut model, width, height);
+                assert!(one_double(&rows, "keys"), "{under}\n{}", rows.join("\n"));
+            }
+            handle(&mut model, escape);
+            for (width, height) in [(60, 15), (100, 30)] {
+                let rows = drawn(&mut model, width, height);
+                assert!(one_double(&rows, under), "{}", rows.join("\n"));
+            }
         }
 
-        assert_eq!(
-            seen,
-            [
-                (Focus::List, 0, false),
-                (Focus::Tabs, 0, false),
-                (Focus::Lines, 1, true)
-            ]
+        let mut model = devices_bench();
+        open_tab(&mut model, Tab::Timeline);
+        focus_tabs(&mut model);
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         );
+        for (width, height) in [(60, 15), (100, 30)] {
+            let rows = drawn(&mut model, width, height);
+            let screen = rows.join("\n");
+            assert!(one_double(&rows, "log"), "{screen}");
+            assert!(screen.contains("┌ srl1 "), "{screen}");
+        }
+        handle(&mut model, escape);
+        for (width, height) in [(60, 15), (100, 30)] {
+            let rows = drawn(&mut model, width, height);
+            assert!(one_double(&rows, "srl1"), "{}", rows.join("\n"));
+        }
+    }
 
+    #[test]
+    fn in_the_sonda_tab_the_inner_box_with_the_focus_draws_the_double_border_and_the_pane_the_single_one(
+    ) {
         let mut sonda = sonda_details(r#"{"state":"running"}"#, r#"{"name":"cpu"}"#);
         let mut seen = Vec::new();
         let mut screens = Vec::new();
@@ -3490,13 +3626,9 @@ mod tests {
                     .iter()
                     .find_map(|row| row.split_once("││q quit"))
                     .map(|(_, row)| format!("q quit{}", row.trim_end_matches('│').trim_end()));
+                let scenarios = rows.iter().any(|row| row.contains("│╔"));
                 let details = rows.iter().any(|row| row.ends_with("═╗│"));
-                seen.push((
-                    sonda.focus(),
-                    rows.concat().matches('╔').count(),
-                    details,
-                    tab_row,
-                ));
+                seen.push((sonda.focus(), doubles(&rows), scenarios, details, tab_row));
             }
             if sonda.focus() == Focus::Lines {
                 assert_eq!(
@@ -3508,25 +3640,41 @@ mod tests {
         }
 
         let row = |text: &str| Some(text.to_string());
+        let untitled = || vec![String::new()];
+        let stacks = || vec!["stacks 1".to_string()];
         assert_eq!(
             seen,
             [
-                (Focus::Tabs, 0, false, row("q quit  j/k select  r refresh")),
                 (
                     Focus::Tabs,
-                    0,
+                    untitled(),
+                    true,
+                    false,
+                    row("q quit  j/k select  r refresh")
+                ),
+                (
+                    Focus::Tabs,
+                    untitled(),
+                    true,
                     false,
                     row("q quit  j/k select  r refresh  l load  d delete")
                 ),
-                (Focus::Lines, 1, true, row("q quit  r refresh  l load")),
                 (
                     Focus::Lines,
-                    1,
+                    untitled(),
+                    false,
+                    true,
+                    row("q quit  r refresh  l load")
+                ),
+                (
+                    Focus::Lines,
+                    untitled(),
+                    false,
                     true,
                     row("q quit  r refresh  l load  d delete")
                 ),
-                (Focus::List, 0, false, None),
-                (Focus::List, 0, false, None),
+                (Focus::List, stacks(), false, false, None),
+                (Focus::List, stacks(), false, false, None),
             ],
             "{}",
             screens.join("\n\n")
@@ -3535,9 +3683,41 @@ mod tests {
         press(&mut sonda, '?');
         let help = drawn(&mut sonda, 60, 15).join("\n");
         assert!(
-            help.contains("│sonda tab: Tab details  l load  d delete  r refresh"),
+            help.contains("║sonda tab: Tab details  l load  d delete  r refresh"),
             "{help}"
         );
+    }
+
+    #[test]
+    fn a_question_or_the_filter_leaves_the_double_border_on_the_box_that_had_it() {
+        let cases: [(Build, char, &str, &str); 2] = [
+            (services_bench, 'u', "stack", "stacks"),
+            (devices_bench, 'm', "srl", "devices"),
+        ];
+        for (build, question, filter, title) in cases {
+            let mut asked = build();
+            press(&mut asked, question);
+            assert!(asked.question().is_some(), "{title}");
+            let mut filtered = build();
+            press(&mut filtered, '/');
+            filter.chars().for_each(|typed| press(&mut filtered, typed));
+            assert!(filtered.typed_filter().is_some(), "{title}");
+            for mut model in [build(), asked, filtered] {
+                let rows = drawn(&mut model, 60, 15);
+
+                assert!(one_double(&rows, title), "{}", rows.join("\n"));
+            }
+        }
+    }
+
+    #[test]
+    fn the_chooser_draws_the_double_border() {
+        let mut model = Model::new(start(many_stacks(3)));
+        for (width, height) in [(60, 15), (100, 30)] {
+            let rows = drawn(&mut model, width, height);
+
+            assert_eq!(doubles(&rows), ["labs found"], "{}", rows.join("\n"));
+        }
     }
 
     #[test]
@@ -3607,23 +3787,39 @@ mod tests {
             ((0, 1, 1000), "↓999"),
             ((999, 1, 1000), "↑999"),
         ];
-        for count in 0..1000 {
-            for (window, mark) in windows {
-                let rows = painted(LEFT_NARROW, 1, |frame| {
-                    alerts_separator(frame, frame.area(), &count.to_string(), Some(window));
-                });
+        let lines = [
+            (border(false), '├', '─', '┤', "├ alerts 999 ─────────┤"),
+            (border(true), '╠', '═', '╣', "╠ alerts 999 ═════════╣"),
+        ];
+        for (border, left, fill, right, whole) in lines {
+            for count in 0..1000 {
+                for (window, mark) in windows {
+                    let rows = painted(LEFT_NARROW, 1, |frame| {
+                        alerts_separator(
+                            frame,
+                            frame.area(),
+                            &count.to_string(),
+                            Some(window),
+                            border,
+                        );
+                    });
 
-                assert!(
-                    rows[0].starts_with(&format!("├ alerts {count} ")),
-                    "{}",
-                    rows[0]
-                );
-                assert!(rows[0].ends_with(&format!(" {mark} ─┤")), "{}", rows[0]);
+                    assert!(
+                        rows[0].starts_with(&format!("{left} alerts {count} ")),
+                        "{}",
+                        rows[0]
+                    );
+                    assert!(
+                        rows[0].ends_with(&format!(" {mark} {fill}{right}")),
+                        "{}",
+                        rows[0]
+                    );
+                }
             }
+            let rows = painted(LEFT_NARROW, 1, |frame| {
+                alerts_separator(frame, frame.area(), "999", Some((100, 1, 200)), border);
+            });
+            assert_eq!(rows[0], whole);
         }
-        let rows = painted(LEFT_NARROW, 1, |frame| {
-            alerts_separator(frame, frame.area(), "999", Some((100, 1, 200)));
-        });
-        assert_eq!(rows[0], "├ alerts 999 ─────────┤");
     }
 }

@@ -9,17 +9,24 @@ use ratatui::Frame;
 
 use crate::data::{Model, Prompt};
 use crate::screen::{
-    border_below, cut_words, first_row, fit, rows_mark, whole_hints, widest, wrapped, Keep,
+    border, border_below, cut_words, first_row, fit, rows_mark, whole_hints, widest, wrapped, Keep,
 };
 
 const SELECT: &str = "j/k select";
 const KEYS: [&str; 5] = ["q quit", SELECT, "r refresh", "l load", "d delete"];
 
-pub fn draw(frame: &mut Frame, model: &Model, now: Instant) {
-    draw_in(frame, frame.area(), model, now, false);
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Part {
+    Scenarios,
+    Details,
 }
 
-pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant, details_focused: bool) {
+pub fn draw(frame: &mut Frame, model: &Model, now: Instant) {
+    draw_in(frame, frame.area(), model, now, Some(Part::Scenarios));
+}
+
+pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant, focus: Option<Part>) {
+    let details_focused = focus == Some(Part::Details);
     let [top, left, right, bottom] = panes(area);
     frame.render_widget(
         Paragraph::new(top_line(model, now, usize::from(top.width))),
@@ -31,14 +38,13 @@ pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant, detai
     let mut state = TableState::default()
         .with_selected(model.selected_index())
         .with_offset(first);
-    frame.render_stateful_widget(table(model, left.width), left, &mut state);
+    frame.render_stateful_widget(
+        table(model, left.width, border(focus == Some(Part::Scenarios))),
+        left,
+        &mut state,
+    );
     rows_mark(frame, border_below(rows), first, room, model.rows().len());
-    let border = if details_focused {
-        BorderType::Double
-    } else {
-        BorderType::Plain
-    };
-    let block = Block::bordered().border_type(border);
+    let block = Block::bordered().border_type(border(details_focused));
     let inner = block.inner(right);
     frame.render_widget(block, right);
     let lines = details_lines(model, inner.width);
@@ -122,7 +128,7 @@ fn seconds(now: Instant, at: Instant) -> u64 {
     now.saturating_duration_since(at).as_secs()
 }
 
-fn table(model: &Model, width: u16) -> Table<'_> {
+fn table(model: &Model, width: u16, border: BorderType) -> Table<'_> {
     const TITLES: [&str; 5] = ["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"];
     let cells: Vec<[String; 5]> = model
         .rows()
@@ -169,7 +175,7 @@ fn table(model: &Model, width: u16) -> Table<'_> {
     });
     Table::new(rows, constraints)
         .header(Row::new(columns.iter().map(|column| TITLES[*column])))
-        .block(Block::bordered())
+        .block(Block::bordered().border_type(border))
         .highlight_symbol("> ")
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
 }
@@ -405,7 +411,7 @@ mod tests {
         let titles = ["ID", "NAME", "STATE", "ELAPSED", "DEGRADED"];
         for width in 60..=100 {
             let lines = screen(&model(now), now, width, 15);
-            let table = |line: &str| line.split('│').nth(1).unwrap_or_default().to_string();
+            let table = |line: &str| line.split('║').nth(1).unwrap_or_default().to_string();
             let top = line_of(&lines, "NAME");
             let header: Vec<String> = table(&lines[top])
                 .split_whitespace()

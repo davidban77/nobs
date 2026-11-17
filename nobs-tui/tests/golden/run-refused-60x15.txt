@@ -4,9 +4,9 @@
 │ NAME         STATE  ││OVERVIEW                           │
 │ nobs-t-srl1  running││ topology  containerlab/lab.yml    │
 └──────────────── ↓1 ─┘│ project   netobs                  │
-┌ chapters 2 ─────────┐│ nodes     1 of 2 running          │
-│!ch1  up 1/1         ││ services  1 of 1 running          │
-└──────────────── ↓1 ─┘└────────────────────────────── ↓1 ─┘
+╔ chapters 2 ═════════╗│ nodes     1 of 2 running          │
+║!ch1  up 1/1         ║│ services  1 of 1 running          │
+╚════════════════ ↓1 ═╝└────────────────────────────── ↓1 ─┘
 ┌ run  lab deploy --sudo-no-prompt …  exit 1  2s  Esc fold ┐
 │nobs: lab deploy: node containers already exist           │
 │(clab-nobs-t-book-nobs-t-srl1,                            │

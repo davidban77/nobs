@@ -1,23 +1,23 @@
  nobs  nobs-t-packt workshop  sot none                                                     13:42:07
  1 devices  [2 services]                                                             ? keys  q quit
-┌ stacks 1 ────────────────────┐┌ nobs-t-packt  ?  no answer yet ──────────────────────────────────┐
-│>nobs-t-packt  ?              ││OVERVIEW  logs  sonda                                             │
-│                              ││ SERVICE  STATE  HEALTH  PORT  AGE                                │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-│                              ││                                                                  │
-└──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
+╔ stacks 1 ════════════════════╗┌ nobs-t-packt  ?  no answer yet ──────────────────────────────────┐
+║>nobs-t-packt  ?              ║│OVERVIEW  logs  sonda                                             │
+║                              ║│ SERVICE  STATE  HEALTH  PORT  AGE                                │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+║                              ║│                                                                  │
+╚══════════════════════════════╝└──────────────────────────────────────────────────────────────────┘
 ┌ run  nobs-t-packt up  running 2s ────────────────────────────────────────────────────── Esc fold ┐
 │$ nobs --dir /Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt nobs-t-packt │
 │up                                                                                                │

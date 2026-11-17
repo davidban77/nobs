@@ -1,30 +1,30 @@
  nobs  autocon5 workshop  sot infrahub                                                     13:42:07
  1 devices  [2 services]                                                             ? keys  q quit
-┌ stacks 3 ────────────────────┐┌ autocon5  7 services  refreshed 2s ago ──────────────────────────┐
-│>autocon5  up 7/7             ││overview  LOGS  sonda                                 loki  paused│
-│ packt     down 0/2           ││level=info msg="line 10"                                          │
-│ demo      down 0/3           ││level=info msg="line 11"                                          │
-│                              ││level=info msg="line 12"                                          │
-│                              ││level=info msg="line 13"                                          │
-│                              ││level=info msg="line 14"                                          │
-│                              ││level=info msg="line 15"                                          │
-│                              ││level=info msg="line 16"                                          │
-│                              ││level=info msg="line 17"                                          │
-│                              ││level=info msg="line 18"                                          │
-│                              ││level=info msg="line 19"                                          │
-│                              ││level=info msg="line 20"                                          │
-│                              ││level=info msg="line 21"                                          │
-│                              ││level=info msg="line 22"                                          │
-│                              ││level=info msg="line 23"                                          │
-│                              ││level=info msg="line 24"                                          │
-│                              ││level=info msg="line 25"                                          │
-│                              ││level=info msg="line 26"                                          │
-│                              ││level=info msg="line 27"                                          │
-│                              ││level=info msg="line 28"                                          │
-│                              ││level=info msg="line 29"                                          │
-│                              ││level=info msg="line 30"                                          │
-│                              ││level=info msg="line 31"                                          │
-│                              ││level=info msg="line 32"                                          │
-└──────────────────────────────┘└───────────────────────────────────────────────────────── ↑14 ↓3 ─┘
+┌ stacks 3 ────────────────────┐╔ autocon5  7 services  refreshed 2s ago ══════════════════════════╗
+│>autocon5  up 7/7             │║overview  LOGS  sonda                                 loki  paused║
+│ packt     down 0/2           │║level=info msg="line 10"                                          ║
+│ demo      down 0/3           │║level=info msg="line 11"                                          ║
+│                              │║level=info msg="line 12"                                          ║
+│                              │║level=info msg="line 13"                                          ║
+│                              │║level=info msg="line 14"                                          ║
+│                              │║level=info msg="line 15"                                          ║
+│                              │║level=info msg="line 16"                                          ║
+│                              │║level=info msg="line 17"                                          ║
+│                              │║level=info msg="line 18"                                          ║
+│                              │║level=info msg="line 19"                                          ║
+│                              │║level=info msg="line 20"                                          ║
+│                              │║level=info msg="line 21"                                          ║
+│                              │║level=info msg="line 22"                                          ║
+│                              │║level=info msg="line 23"                                          ║
+│                              │║level=info msg="line 24"                                          ║
+│                              │║level=info msg="line 25"                                          ║
+│                              │║level=info msg="line 26"                                          ║
+│                              │║level=info msg="line 27"                                          ║
+│                              │║level=info msg="line 28"                                          ║
+│                              │║level=info msg="line 29"                                          ║
+│                              │║level=info msg="line 30"                                          ║
+│                              │║level=info msg="line 31"                                          ║
+│                              │║level=info msg="line 32"                                          ║
+└──────────────────────────────┘╚═════════════════════════════════════════════════════════ ↑14 ↓3 ═╝
  run  none                                                                                   o open
  f follow  / filter  j/k scroll  [ ] tab  Esc back to list  u up  d down  X destroy  R reset

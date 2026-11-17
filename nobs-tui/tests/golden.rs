@@ -745,7 +745,7 @@ fn sonda_table_at_60(names: &[&str]) -> Vec<String> {
     let rows = lines(&render(model, 60, 15));
     rows[6..7 + names.len()]
         .iter()
-        .map(|row| row.split('│').nth(4).unwrap_or_default().to_string())
+        .map(|row| row.split('║').nth(1).unwrap_or_default().to_string())
         .collect()
 }
 
@@ -1024,7 +1024,7 @@ fn a_failed_maintenance_marks_its_device_row() {
     let screen = lines(&render(model, 100, 30));
 
     assert!(
-        screen.iter().any(|line| line.starts_with("│!  srl1")),
+        screen.iter().any(|line| line.starts_with("║!  srl1")),
         "{}",
         screen.join("\n")
     );
@@ -1451,7 +1451,7 @@ fn draw_in_draws_inside_its_area_and_nowhere_else() {
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
     terminal
-        .draw(|frame| view::draw_in(frame, area, &sonda, at, false))
+        .draw(|frame| view::draw_in(frame, area, &sonda, at, None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -1465,4 +1465,180 @@ fn draw_in_draws_inside_its_area_and_nowhere_else() {
         .filter(|(x, y)| !area.contains(Position::new(*x, *y)) && buffer[(*x, *y)].symbol() != " ")
         .collect();
     assert!(stray.is_empty(), "{stray:?}");
+}
+
+#[derive(Clone, Copy)]
+enum Corner {
+    Title(&'static str),
+    At([(usize, usize); 2]),
+}
+
+type State = (&'static str, fn() -> Shell, Corner);
+
+fn after(mut model: Shell, keys: &[KeyCode]) -> Shell {
+    for key in keys {
+        press(&mut model, *key);
+    }
+    model
+}
+
+fn sonda_only_stack() -> Shell {
+    Shell::new(Start {
+        chooser: false,
+        ..begin(None, vec![sonda_only()], Workbench::Services)
+    })
+}
+
+fn lab_without_a_chapter() -> Shell {
+    let dir = PathBuf::from(BOOK_LAB);
+    let lab = locate(&dir, Some(&dir)).unwrap();
+    let model = Shell::new(Start {
+        chooser: false,
+        ..begin(Some(lab), Vec::new(), Workbench::Lab)
+    });
+    after(model, &[KeyCode::Tab, KeyCode::Tab])
+}
+
+#[test]
+fn the_box_with_the_focus_draws_the_only_double_border_in_every_state() {
+    use Corner::{At, Title};
+    use KeyCode::{Char, Enter, Esc, Tab};
+    let states: [State; 33] = [
+        ("chooser", || model(true, false), Title(" labs found ")),
+        (
+            "services overview list",
+            || model(false, false),
+            Title(" stacks "),
+        ),
+        (
+            "services overview tabs",
+            || after(model(false, false), &[Tab]),
+            Title(" autocon5 "),
+        ),
+        (
+            "services logs tabs",
+            || logs_model(false),
+            Title(" autocon5 "),
+        ),
+        (
+            "services logs list",
+            || after(logs_model(false), &[Tab]),
+            Title(" stacks "),
+        ),
+        (
+            "sonda list",
+            || after(sonda_model(), &[Esc]),
+            Title(" stacks "),
+        ),
+        ("sonda tabs", sonda_model, At([(24, 5), (33, 5)])),
+        (
+            "sonda lines",
+            || after(sonda_model(), &[Tab]),
+            At([(43, 5), (69, 5)]),
+        ),
+        (
+            "sonda without rows",
+            || sonda_failed("refused"),
+            At([(24, 5), (33, 5)]),
+        ),
+        (
+            "sonda prompt",
+            || after(sonda_model(), &[Char('l')]),
+            At([(24, 5), (33, 5)]),
+        ),
+        ("sonda only stack", sonda_only_stack, At([(24, 5), (33, 5)])),
+        ("devices list", devices_model, Title(" devices 2 ")),
+        (
+            "devices without a source",
+            without_a_source,
+            Title(" devices 0 "),
+        ),
+        ("devices overview tabs", || on_tab(0), Title(" srl1 ")),
+        ("devices interfaces tabs", || on_tab(1), Title(" srl1 ")),
+        ("devices timeline tabs", || on_tab(2), Title(" srl1 ")),
+        ("devices logs tabs", || on_tab(3), Title(" srl1 ")),
+        ("entry box", || after(on_tab(2), &[Enter]), Title(" alert ")),
+        (
+            "entry box, then tab",
+            || after(on_tab(2), &[Enter, Tab]),
+            Title(" devices 2 "),
+        ),
+        ("lab list", lab_model, Title(" chapters ")),
+        ("lab tabs", || after(lab_model(), &[Tab]), Title(" nodes ")),
+        (
+            "lab lines",
+            || after(lab_model(), &[Tab, Tab]),
+            Title(" ch1 "),
+        ),
+        (
+            "lab without a chapter",
+            lab_without_a_chapter,
+            At([(23, 2), (42, 2)]),
+        ),
+        ("keys box", || pressed('?'), Title(" keys ")),
+        (
+            "lab keys box",
+            || after(lab_model(), &[Char('?')]),
+            Title(" keys "),
+        ),
+        (
+            "devices keys box",
+            || after(devices_model(), &[Char('?')]),
+            Title(" keys "),
+        ),
+        ("error row", || model(false, true), Title(" stacks ")),
+        ("run pane open", || pressed('o'), Title(" stacks ")),
+        (
+            "run pane folded",
+            || ran(Some(End::Exited(0)), true),
+            Title(" stacks "),
+        ),
+        ("lab run pane open", refused, Title(" chapters ")),
+        (
+            "lab run pane folded",
+            || after(refused(), &[Esc]),
+            Title(" chapters "),
+        ),
+        ("question", || pressed('u'), Title(" stacks ")),
+        (
+            "filter",
+            || after(model(false, false), &[Char('/'), Char('a')]),
+            Title(" stacks "),
+        ),
+    ];
+    for (state, build, corner) in states {
+        for (size, (width, height)) in SIZES.into_iter().enumerate() {
+            let screen = lines(&render(build(), width, height));
+            let text = screen.join("\n");
+            for symbol in ['╔', '╗', '╚', '╝'] {
+                let count = text.matches(symbol).count();
+                assert_eq!(count, 1, "{state} {width}x{height} {symbol}\n{text}");
+            }
+            let (row, line) = screen
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.contains('╔'))
+                .unwrap();
+            let at = line.find('╔').unwrap();
+            let column = line[..at].chars().count();
+            match corner {
+                Title(title) => assert!(
+                    line[at + '╔'.len_utf8()..].starts_with(title),
+                    "{state} {width}x{height} {title}\n{text}"
+                ),
+                At(places) => assert_eq!(
+                    (column, row),
+                    places[size],
+                    "{state} {width}x{height}\n{text}"
+                ),
+            }
+        }
+    }
+    for (width, height) in [(59, 15), (60, 14)] {
+        let text = lines(&render(model(false, false), width, height)).join("\n");
+        assert!(
+            !text.contains(['╔', '╗', '╚', '╝']),
+            "too small {width}x{height}\n{text}"
+        );
+    }
 }

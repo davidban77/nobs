@@ -1475,7 +1475,7 @@ mod tests {
         screen
             .chunks(60)
             .map(String::from_iter)
-            .skip_while(|row| !row.contains("┌ keys"))
+            .skip_while(|row| !row.contains("╔ keys"))
             .skip(1)
             .take_while(|row| !row.contains("sonda tab"))
             .collect()
@@ -1504,6 +1504,9 @@ mod tests {
     fn help_turn(model: &mut Model, size: (u16, u16), keys: &[KeyEvent]) -> Vec<String> {
         let (pollers, updates) = launch(&scripted(Vec::new()), model);
         drawn_turn(model, size, keys, &pollers, &updates)
+            .into_iter()
+            .map(|row| row.replace('║', " "))
+            .collect()
     }
 
     fn quiet_turn(model: &mut Model, size: (u16, u16), keys: &[KeyEvent]) -> Vec<String> {

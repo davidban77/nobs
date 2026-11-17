@@ -3,12 +3,12 @@
 ┌ stacks 3 ───────────┐┌ autocon5  refreshed 2s ago ───────┐
 │>autocon5  up 7/7    ││overview  logs  SONDA              │
 │ packt     down 0/2  ││http://localhost:8085              │
-│ demo      down 0/3  ││┌─────────────────┐┌──────────────┐│
-│                     │││  NAME    STATE  ││state         ││
-│                     │││> cpu     running││"running"     ││
-│                     │││                 ││{             ││
-│                     │││                 ││  "name":     ││
-│                     ││└─────────────────┘└───────── ↓2 ─┘│
+│ demo      down 0/3  ││╔═════════════════╗┌──────────────┐│
+│                     ││║  NAME    STATE  ║│state         ││
+│                     ││║> cpu     running║│"running"     ││
+│                     ││║                 ║│{             ││
+│                     ││║                 ║│  "name":     ││
+│                     ││╚═════════════════╝└───────── ↓2 ─┘│
 │                     ││q quit  j/k select  r refresh      │
 └─────────────────────┘└───────────────────────────────────┘
  run  none                                           o open
