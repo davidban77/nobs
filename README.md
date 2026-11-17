@@ -15,7 +15,7 @@ Five words are used in this part:
 | workbench | one view of the screen for one kind of work: `1 devices`, `2 services` and, in a book lab only, `3 lab`; the keys `1`, `2` and `3` switch between them |
 | action | a nobs command that the screen runs for you when you press its key; an action that changes something asks `y/n` first (see [Actions](#actions)) |
 | stack | one group of containers that Docker Compose starts together: a workshop, one chapter of the book lab, or a labcli lab; the row `sonda only` is listed as a stack too, but it has no containers |
-| focus | the part of the screen that gets your keys, the stack list or the tabs, and in the sonda tab also the right panel; in the lab workbench, the chapters, the nodes or the overview; `Tab` moves it; the overview of the lab workbench and the right panel of the sonda tab have a double border (`╔═╗`) while they have the focus |
+| focus | the part of the screen that gets your keys, the stack list or the tabs, and in the sonda tab also the right panel; in the lab workbench, the chapters, the nodes or the overview; the keys box (`?`) and the box of a timeline entry while they are open; `Tab` moves it; the box that has the focus has a double border (`╔═╗`), and no other box has one |
 | chooser | the list of labs that plain `nobs` shows when it finds no lab |
 
 ### Starting the screen
@@ -455,17 +455,17 @@ This is the test frame of the screen at 60 columns and 15 rows, with made-up dat
 ```
  nobs  autocon5 workshop  sot infrahub             13:42:07
  1 devices  [2 services]                     ? keys  q quit
-┌ stacks 3 ───────────┐┌ autocon5  refreshed 2s ago ───────┐
-│>autocon5  up 7/7    ││OVERVIEW  logs  sonda              │
-│ packt     down      ││ SERVICE    STATE    HLTH      PORT│
-│ demo      down 0/3  ││ grafana    running  ok        3000│
-│                     ││ promethe…  running  ok        9090│
-│                     ││ loki       running  down      3001│
-│                     ││ alertman…  running  ok        9093│
-│                     ││ infrahub   running  http 503  8000│
-│                     ││ prefect    running  ok        4200│
-│                     ││ sonda      running  ok        8085│
-└─────────────────────┘└───────────────────────────────────┘
+╔ stacks 3 ═══════════╗┌ autocon5  refreshed 2s ago ───────┐
+║>autocon5  up 7/7    ║│OVERVIEW  logs  sonda              │
+║ packt     down      ║│ SERVICE    STATE    HLTH      PORT│
+║ demo      down 0/3  ║│ grafana    running  ok        3000│
+║                     ║│ promethe…  running  ok        9090│
+║                     ║│ loki       running  down      3001│
+║                     ║│ alertman…  running  ok        9093│
+║                     ║│ infrahub   running  http 503  8000│
+║                     ║│ prefect    running  ok        4200│
+║                     ║│ sonda      running  ok        8085│
+╚═════════════════════╝└───────────────────────────────────┘
  run  none                                           o open
  Tab focus  j/k move  / filter  l logs  r refresh  u up
 ```
