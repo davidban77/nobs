@@ -1,0 +1,7 @@
+#!/bin/sh
+ar="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-ar"
+if [ ! -x "$ar" ]; then
+    echo "llvm-ar not found: run rustup component add llvm-tools" >&2
+    exit 1
+fi
+exec "$ar" "$@"

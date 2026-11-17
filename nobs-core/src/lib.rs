@@ -4,6 +4,7 @@ pub mod compose;
 pub mod containerlab;
 pub mod count;
 pub mod cycle;
+pub mod device;
 pub mod env;
 pub mod evidence;
 pub mod grafana;
