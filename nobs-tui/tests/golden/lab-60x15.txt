@@ -7,9 +7,9 @@
 │                     ││ nodes     1 of 2 running          │
 │                     ││ services  1 of 1 running          │
 └─────────────────────┘│ last      lab deploy …  exit 0    │
-┌ chapters 2 ─────────┐│                                   │
-│>ch1  up 1/1         ││                                   │
-│ ch2  down 0/1       ││                                   │
-└─────────────────────┘└───────────────────────────────────┘
+╔ chapters 2 ═════════╗│                                   │
+║>ch1  up 1/1         ║│                                   │
+║ ch2  down 0/1       ║│                                   │
+╚═════════════════════╝└───────────────────────────────────┘
  run  lab deploy --sudo-no-prompt …  exit 0  41s     o open
  Tab focus  j/k move  D deploy  X destroy  P purge

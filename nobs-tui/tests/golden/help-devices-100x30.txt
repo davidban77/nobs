@@ -7,19 +7,19 @@
 
 
 
-  ┌ keys  devices workbench ─────────────────────────────────────────────────────────────────────┐
-  │1 2      switch workbench                      /       filter                                 │
-  │Tab      focus list/tabs                       r       refresh now                            │
-  │j k ↑ ↓  move                                  f       follow/pause logs                      │
-  │[ ]      other tab                             o       run pane                               │
-  │- +      timeline window                       ?       close                                  │
-  │x        dismiss the error                     m       maintenance                            │
-  │Esc      close/clear/back                      q       quit; asks in a run                    │
-  │Enter    open / pick alert                     Ctrl-C  stop a run, or quit                    │
-  │                                                                                              │
-  │alerts box: Enter picks the device, opens its timeline                                        │
-  │↑3 ↓13   3 rows hidden above, 13 below                                                        │
-  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+  ╔ keys  devices workbench ═════════════════════════════════════════════════════════════════════╗
+  ║1 2      switch workbench                      /       filter                                 ║
+  ║Tab      focus list/tabs                       r       refresh now                            ║
+  ║j k ↑ ↓  move                                  f       follow/pause logs                      ║
+  ║[ ]      other tab                             o       run pane                               ║
+  ║- +      timeline window                       ?       close                                  ║
+  ║x        dismiss the error                     m       maintenance                            ║
+  ║Esc      close/clear/back                      q       quit; asks in a run                    ║
+  ║Enter    open / pick alert                     Ctrl-C  stop a run, or quit                    ║
+  ║                                                                                              ║
+  ║alerts box: Enter picks the device, opens its timeline                                        ║
+  ║↑3 ↓13   3 rows hidden above, 13 below                                                        ║
+  ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
 
 
 

@@ -3,12 +3,12 @@
 ┌ devices 2 ──────────┐┌ srl1 ─────────────────────────────┐
 │   NAME  HLTH  ALRT  ││overview  ifaces  TIMELINE  logs   │
 │>  srl1  warn     1  ││                                   │
-│ M srl2  ok          ││  ┌ alert  13:41:46 ─ Esc close ┐  │
-│                     ││  │BgpSessionNotUp  firing      │  │
-│                     ││  │alertname=BgpSessionNotUp    │  │
-│                     ││  │device=srl1                  │  │
-├ alerts 2 ───────────┤│  │peer_address=10.1.99.2       │  │
-│srl1  BgpSessionNotUp││  └──────────────────────── ↓1 ─┘  │
+│ M srl2  ok          ││  ╔ alert  13:41:46 ═ Esc close ╗  │
+│                     ││  ║BgpSessionNotUp  firing      ║  │
+│                     ││  ║alertname=BgpSessionNotUp    ║  │
+│                     ││  ║device=srl1                  ║  │
+├ alerts 2 ───────────┤│  ║peer_address=10.1.99.2       ║  │
+│srl1  BgpSessionNotUp││  ╚════════════════════════ ↓1 ═╝  │
 │srl1  BgpSessionNotUp││                                   │
 └─────────────────────┘└────────────────────────────── ↓4 ─┘
  run  none                                           o open
