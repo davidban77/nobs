@@ -85,6 +85,7 @@ pub enum Workbench {
 pub enum Focus {
     List,
     Tabs,
+    Lines,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,6 +432,8 @@ pub struct Model {
     popup_overflow: usize,
     overview_scroll: usize,
     overview_overflow: usize,
+    lab_scroll: usize,
+    lab_overflow: usize,
     program: PathBuf,
     run: Option<Run>,
     question: Option<Question>,
@@ -536,6 +539,8 @@ impl Model {
             popup_overflow: 0,
             overview_scroll: 0,
             overview_overflow: 0,
+            lab_scroll: 0,
+            lab_overflow: 0,
             program,
             run: None,
             question: None,
@@ -827,6 +832,18 @@ impl Model {
     }
 
     fn lab_key(&mut self, code: KeyCode) -> Vec<Command> {
+        if self.focus == Focus::Lines {
+            match code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.lab_scroll = (self.lab_scroll + 1).min(self.lab_overflow);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.lab_scroll = self.lab_scroll.saturating_sub(1);
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
         if self.focus == Focus::Tabs {
             let last = self.nodes.len().saturating_sub(1);
             match code {
@@ -849,6 +866,7 @@ impl Model {
         };
         if let Some(index) = next {
             self.chapter = index;
+            self.lab_scroll = 0;
         }
         Vec::new()
     }
@@ -1013,6 +1031,19 @@ impl Model {
     pub(crate) fn set_popup_overflow(&mut self, lines: usize) {
         self.popup_overflow = lines;
         self.popup_scroll = self.popup_scroll.min(lines);
+    }
+
+    pub(crate) fn lab_scroll(&self) -> usize {
+        self.lab_scroll
+    }
+
+    pub(crate) fn set_lab_overflow(&mut self, lines: usize) {
+        self.lab_overflow = lines;
+        self.lab_scroll = self.lab_scroll.min(lines);
+    }
+
+    pub(crate) fn set_details_overflow(&mut self, lines: usize) {
+        self.sonda.set_details_overflow(lines);
     }
 
     pub fn run_pane(&self) -> bool {
@@ -1283,9 +1314,20 @@ impl Model {
 
     fn asking(&self) -> bool {
         self.workbench == Workbench::Services
-            && self.focus == Focus::Tabs
+            && self.focus != Focus::List
             && self.tab == Tab::Sonda
             && self.sonda.prompt() != &Prompt::None
+    }
+
+    fn has_lines(&self) -> bool {
+        self.workbench == Workbench::Lab
+            || (self.workbench == Workbench::Services && self.tab == Tab::Sonda)
+    }
+
+    fn settle_focus(&mut self) {
+        if self.focus == Focus::Lines && !self.has_lines() {
+            self.focus = Focus::Tabs;
+        }
     }
 
     fn apply_services(
@@ -1393,7 +1435,7 @@ impl Model {
             return Vec::new();
         }
         let sonda_keys = self.workbench == Workbench::Services
-            && self.focus == Focus::Tabs
+            && self.focus != Focus::List
             && self.tab == Tab::Sonda;
         if self.asking() && key.code != KeyCode::Esc {
             return self.sonda_key(key);
@@ -1415,7 +1457,8 @@ impl Model {
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::List => Focus::Tabs,
-                    Focus::Tabs => Focus::List,
+                    Focus::Tabs if self.has_lines() => Focus::Lines,
+                    Focus::Tabs | Focus::Lines => Focus::List,
                 };
             }
             KeyCode::Esc => return self.escape(key),
@@ -1442,6 +1485,7 @@ impl Model {
         if !tabs.is_empty() && !tabs.contains(&self.tab) {
             self.tab = Tab::Overview;
         }
+        self.settle_focus();
         if left_devices {
             return vec![Command::OpenTab(Tab::Overview)];
         }
@@ -1487,7 +1531,7 @@ impl Model {
     }
 
     fn services_key(&mut self, key: KeyEvent) -> Vec<Command> {
-        if self.focus == Focus::Tabs {
+        if self.focus != Focus::List {
             match key.code {
                 KeyCode::Char('[') => return self.go_tab(step(&SERVICES_TABS, self.tab, false)),
                 KeyCode::Char(']') => return self.go_tab(step(&SERVICES_TABS, self.tab, true)),
@@ -1496,12 +1540,22 @@ impl Model {
         }
         match (self.focus, self.tab) {
             (Focus::List, _) => self.list_key(key.code),
+            (Focus::Lines, _) => self.details_key(key),
             (Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Timeline) => {
                 self.overview_key(key.code)
             }
             (Focus::Tabs, Tab::Logs) => self.logs_key(key.code),
             (Focus::Tabs, Tab::Sonda) => self.sonda_key(key),
         }
+    }
+
+    fn details_key(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.sonda.move_details(true),
+            KeyCode::Char('k') | KeyCode::Up => self.sonda.move_details(false),
+            _ => return self.sonda_key(key),
+        }
+        Vec::new()
     }
 
     fn devices_key(&mut self, key: KeyEvent) -> Vec<Command> {
@@ -1707,11 +1761,11 @@ impl Model {
             }
             KeyCode::Char('/') => self.logs_filter.start(),
             KeyCode::Char('j') | KeyCode::Down if !self.logs_following => {
-                self.logs_scroll = self.logs_scroll.saturating_sub(1);
-            }
-            KeyCode::Char('k') | KeyCode::Up if !self.logs_following => {
                 let shown = self.shown_device_logs().len();
                 self.logs_scroll = (self.logs_scroll + 1).min(shown.saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up if !self.logs_following => {
+                self.logs_scroll = self.logs_scroll.saturating_sub(1);
             }
             _ => {}
         }
@@ -1796,6 +1850,7 @@ impl Model {
         } else {
             self.tab = target;
         }
+        self.settle_focus();
         commands
     }
 
@@ -4077,6 +4132,9 @@ pub(crate) mod tests {
             let mut model = Model::new(start(vec![stack]));
             code(&mut model, KeyCode::Enter);
             code(&mut model, KeyCode::Tab);
+            if model.focus() == Focus::Lines {
+                code(&mut model, KeyCode::Tab);
+            }
 
             assert_eq!(ch(&mut model, 'u'), [], "{kind:?}");
             assert_eq!(model.question(), None, "{kind:?}");
@@ -4503,6 +4561,8 @@ pub(crate) mod tests {
         assert_eq!((model.selected_chapter(), model.node_row()), (Some(1), 1));
 
         code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::Lines);
+        code(&mut model, KeyCode::Tab);
         assert_eq!(model.focus(), Focus::List);
         ch(&mut model, 'k');
         assert_eq!((model.selected_chapter(), model.node_row()), (Some(0), 1));
@@ -4518,6 +4578,165 @@ pub(crate) mod tests {
         assert_eq!(
             (model.workbench(), model.focus()),
             (Workbench::Lab, Focus::List)
+        );
+    }
+
+    fn tabbed(model: &mut Model) -> Focus {
+        code(model, KeyCode::Tab);
+        model.focus()
+    }
+
+    #[test]
+    fn tab_goes_from_the_chapters_to_the_nodes_to_the_overview_and_back() {
+        let mut model = book_model();
+        assert_eq!(model.focus(), Focus::List);
+
+        let stops = [tabbed(&mut model), tabbed(&mut model), tabbed(&mut model)];
+
+        assert_eq!(stops, [Focus::Tabs, Focus::Lines, Focus::List]);
+    }
+
+    #[test]
+    fn tab_goes_from_the_stacks_to_the_scenarios_to_the_details_and_back() {
+        let mut model = sonda_tab();
+        code(&mut model, KeyCode::Esc);
+        assert_eq!((model.focus(), model.tab()), (Focus::List, Tab::Sonda));
+
+        let stops = [tabbed(&mut model), tabbed(&mut model), tabbed(&mut model)];
+
+        assert_eq!(stops, [Focus::Tabs, Focus::Lines, Focus::List]);
+    }
+
+    #[test]
+    fn j_and_k_on_a_pane_of_lines_move_no_row_and_keys_elsewhere_move_no_pane() {
+        let mut model = book_model();
+        model.apply(nodes(&["a", "b", "c"]));
+        ch(&mut model, 'j');
+        tabbed(&mut model);
+        tabbed(&mut model);
+        model.set_lab_overflow(3);
+
+        ch(&mut model, 'j');
+        code(&mut model, KeyCode::Down);
+        ch(&mut model, 'k');
+        assert_eq!(
+            (
+                model.selected_chapter(),
+                model.node_row(),
+                model.lab_scroll()
+            ),
+            (Some(1), 0, 1)
+        );
+
+        tabbed(&mut model);
+        ch(&mut model, 'j');
+        assert_eq!((model.selected_chapter(), model.lab_scroll()), (Some(1), 1));
+        tabbed(&mut model);
+        ch(&mut model, 'j');
+        code(&mut model, KeyCode::Down);
+        ch(&mut model, 'k');
+        assert_eq!((model.node_row(), model.lab_scroll()), (1, 1));
+
+        let mut model = sonda_tab();
+        sonda_rows(&mut model);
+        tabbed(&mut model);
+        assert_eq!(ch(&mut model, 'j'), []);
+        assert_eq!(code(&mut model, KeyCode::Down), []);
+        assert_eq!(model.sonda().selected().unwrap().id, "a1");
+    }
+
+    #[test]
+    fn the_action_keys_act_with_the_focus_on_a_pane_of_lines() {
+        let mut model = book_model();
+        ch(&mut model, 'j');
+        tabbed(&mut model);
+        tabbed(&mut model);
+        ch(&mut model, 'D');
+        assert!(model.question().unwrap().text().ends_with(&format!(
+            "-s{NO_BREAK}ch2? It takes the other chapters' services down. y/n"
+        )));
+
+        let mut model = sonda_tab();
+        sonda_rows(&mut model);
+        tabbed(&mut model);
+        assert_eq!(model.focus(), Focus::Lines);
+        assert_eq!(
+            ch(&mut model, 'r'),
+            [Command::Sonda(data::Command::Refresh)]
+        );
+        ch(&mut model, 'l');
+        ch(&mut model, 'j');
+        assert_eq!(model.sonda().prompt(), &Prompt::Path("j".to_string()));
+        code(&mut model, KeyCode::Esc);
+        ch(&mut model, 'd');
+        assert_eq!(model.sonda().prompt(), &Prompt::Delete("a1".to_string()));
+        assert_eq!(
+            ch(&mut model, 'y'),
+            [Command::Sonda(data::Command::Delete("a1".to_string()))]
+        );
+        assert_eq!(model.focus(), Focus::Lines);
+    }
+
+    #[test]
+    fn a_new_chapter_or_scenario_puts_the_pane_at_its_first_line_and_a_shorter_text_keeps_it_inside(
+    ) {
+        let mut model = book_model();
+        tabbed(&mut model);
+        tabbed(&mut model);
+        model.set_lab_overflow(3);
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.lab_scroll(), 2);
+
+        model.set_lab_overflow(1);
+        assert_eq!(model.lab_scroll(), 1);
+
+        code(&mut model, KeyCode::Esc);
+        ch(&mut model, 'j');
+        assert_eq!((model.selected_chapter(), model.lab_scroll()), (Some(1), 0));
+    }
+
+    #[test]
+    fn tab_keeps_two_stops_where_no_pane_of_lines_stands_and_a_new_view_takes_the_focus_off_a_missing_pane(
+    ) {
+        let mut devices = devices_model(workshop_located("infrahub"));
+        let mut overview = opened(&["a"]);
+        with_services(&mut overview, &["grafana"]);
+        let mut logs = opened(&["a"]);
+        with_services(&mut logs, &["grafana"]);
+        ch(&mut logs, 'l');
+        assert_eq!((logs.focus(), logs.tab()), (Focus::Tabs, Tab::Logs));
+        assert_eq!(tabbed(&mut logs), Focus::List);
+        for model in [&mut devices, &mut overview] {
+            assert_eq!(model.focus(), Focus::List);
+            assert_eq!([tabbed(model), tabbed(model)], [Focus::Tabs, Focus::List]);
+        }
+
+        let mut model = sonda_tab();
+        tabbed(&mut model);
+        ch(&mut model, ']');
+        assert_eq!((model.tab(), model.focus()), (Tab::Overview, Focus::Tabs));
+
+        for (key, workbench) in [('1', Workbench::Devices), ('2', Workbench::Services)] {
+            let mut model = book_model();
+            tabbed(&mut model);
+            tabbed(&mut model);
+            ch(&mut model, key);
+            assert_eq!((model.workbench(), model.focus()), (workbench, Focus::Tabs));
+        }
+
+        let mut model = book_model();
+        ch(&mut model, '2');
+        tabbed(&mut model);
+        ch(&mut model, '[');
+        assert_eq!(model.tab(), Tab::Sonda);
+        ch(&mut model, '3');
+        tabbed(&mut model);
+        tabbed(&mut model);
+        ch(&mut model, '2');
+        assert_eq!(
+            (model.workbench(), model.tab(), model.focus()),
+            (Workbench::Services, Tab::Sonda, Focus::Lines)
         );
     }
 
@@ -4567,6 +4786,7 @@ pub(crate) mod tests {
         assert_eq!(model.focus(), Focus::Tabs);
         assert_eq!(ch(&mut model, 'D'), []);
         assert_eq!(model.notice(), Some(running.as_str()));
+        code(&mut model, KeyCode::Tab);
         code(&mut model, KeyCode::Tab);
         assert_eq!(model.focus(), Focus::List);
         assert_eq!(ch(&mut model, 'D'), []);

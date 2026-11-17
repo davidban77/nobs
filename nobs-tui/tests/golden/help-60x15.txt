@@ -8,7 +8,7 @@
   │Enter    open the row      X       destroy            │
   │/        filter            R       reset              │
   │r        refresh now       p       preflight          │
-  │sonda tab: l load  d delete  r refresh                │
+  │sonda tab: Tab details  l load  d delete  r refresh   │
   │↑3 ↓13   3 rows hidden above, 13 below                │
   │j/k more                                              │
   └───────────────────────────────────────────────── ↓4 ─┘

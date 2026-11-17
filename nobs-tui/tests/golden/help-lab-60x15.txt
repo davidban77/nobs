@@ -2,7 +2,7 @@
  1 devices  2 services  [3 lab]              ? keys  q quit
   ┌ keys  lab workbench ─────────────────────────────────┐
   │1 2 3    switch workbench  X       destroy            │
-  │Tab      focus other pane  P       purge              │
+  │Tab      focus next pane   P       purge              │
   │j k ↑ ↓  move              R       prepare            │
   │r        refresh now       U       update             │
   │o        run pane          B       rebuild            │

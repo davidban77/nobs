@@ -189,6 +189,8 @@ fn turns<B: Backend>(
         model.set_help_overflow(screen::help_overflow(model, area));
         model.set_overview_overflow(screen::overview_overflow(model, area));
         model.set_popup_overflow(screen::popup_overflow(model, area));
+        model.set_lab_overflow(screen::lab_overflow(model, area));
+        model.set_details_overflow(screen::sonda_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
             send(handle(model, key), actions, pollers);
         }
@@ -301,7 +303,7 @@ mod tests {
     use crate::book::NodeRow;
     use crate::data::stub::Stub;
     use crate::run::tests::FakeLauncher;
-    use crate::shell::tests::listing;
+    use crate::shell::tests::{defined, listing};
     use crate::shell::RunState;
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");
@@ -1499,15 +1501,31 @@ mod tests {
 
     const HELP_SIZES: [(u16, u16); 3] = [(60, 15), (80, 24), (100, 30)];
 
-    fn help_turn(model: &mut Model, (width, height): (u16, u16), keys: &[KeyEvent]) -> Vec<String> {
+    fn help_turn(model: &mut Model, size: (u16, u16), keys: &[KeyEvent]) -> Vec<String> {
         let (pollers, updates) = launch(&scripted(Vec::new()), model);
+        drawn_turn(model, size, keys, &pollers, &updates)
+    }
+
+    fn quiet_turn(model: &mut Model, size: (u16, u16), keys: &[KeyEvent]) -> Vec<String> {
+        let (pollers, _polled) = launch(&scripted(Vec::new()), model);
+        let (_sender, updates) = mpsc::channel();
+        drawn_turn(model, size, keys, &pollers, &updates)
+    }
+
+    fn drawn_turn(
+        model: &mut Model,
+        (width, height): (u16, u16),
+        keys: &[KeyEvent],
+        pollers: &Pollers,
+        updates: &Receiver<Update>,
+    ) -> Vec<String> {
         let mut terminal = terminal(width, height);
         let mut keys = keys.iter().copied();
         turns(
             &mut terminal,
             model,
-            &pollers,
-            &updates,
+            pollers,
+            updates,
             &mut actions(),
             |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
         )
@@ -1690,6 +1708,55 @@ mod tests {
                 "{size:?}"
             );
         }
+    }
+
+    #[test]
+    fn j_on_the_lab_overview_in_the_loop_draws_the_line_the_overview_hid() {
+        let mut model = lab_model();
+        handle(&mut model, ch('D'));
+        handle(&mut model, ch('y'));
+        model.apply(Update::ActionLine("nobs: lab deploy: refused".to_string()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        model.apply(Update::Services(
+            0,
+            defined(&["grafana"]),
+            Err("exit 1".to_string()),
+        ));
+        let size = (60, 15);
+
+        let before = quiet_turn(&mut model, size, &[key(KeyCode::Tab), key(KeyCode::Tab)]);
+        let after = quiet_turn(&mut model, size, &[ch('j')]);
+
+        let screens = [before.join("\n"), after.join("\n")];
+        assert_eq!(model.focus(), Focus::Lines);
+        assert!(screens[0].contains(" ps ch1: exit 1"), "{}", screens[0]);
+        assert!(!screens[0].contains("║ last"), "{}", screens[0]);
+        assert!(screens[1].contains("║ last"), "{}", screens[1]);
+    }
+
+    #[test]
+    fn j_on_the_sonda_details_in_the_loop_moves_the_text_the_box_hid() {
+        let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
+        handle(&mut model, key(KeyCode::Tab));
+        handle(&mut model, ch('['));
+        let fields: Vec<String> = (1..=30)
+            .map(|index| format!(r#""f{index:02}":1"#))
+            .collect();
+        model.apply(Update::Sonda(data::Update {
+            at: Instant::now(),
+            list: Ok(r#"{"scenarios":[{"id":"id00","name":"n00","state":"running","elapsed_secs":1,"degraded":false}]}"#.to_string()),
+            selected: Some((
+                "id00".to_string(),
+                Ok(r#"{"name":"cpu"}"#.to_string()),
+                Ok(format!("{{{}}}", fields.join(","))),
+            )),
+        }));
+        assert_eq!(model.tab(), Tab::Sonda);
+
+        quiet_turn(&mut model, (60, 15), &[key(KeyCode::Tab), ch('j')]);
+
+        assert_eq!(model.focus(), Focus::Lines);
+        assert_eq!(model.sonda().details_scroll(), 1);
     }
 
     #[test]

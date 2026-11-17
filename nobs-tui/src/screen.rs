@@ -4,7 +4,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
+    Block, BorderType, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
 };
 use ratatui::Frame;
 
@@ -27,7 +27,7 @@ const LEFT_WIDE: u16 = 32;
 const LEFT_DEVICES: u16 = 42;
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
-const HELP_SONDA: &str = "sonda tab: l load  d delete  r refresh";
+const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
 const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
 const HELP_QUIT: [(&str, &str); 2] = [
     ("q", "quit; asks in a run"),
@@ -62,7 +62,7 @@ const HELP_DEVICES: [(&str, &str); 12] = [
     ("?", "close"),
 ];
 const HELP_LAB: [(&str, &str); 7] = [
-    ("Tab", "focus other pane"),
+    ("Tab", "focus next pane"),
     ("j k ↑ ↓", "move"),
     ("r", "refresh now"),
     ("o", "run pane"),
@@ -236,7 +236,7 @@ pub(crate) fn widest<const N: usize, S: AsRef<str>>(
     widths
 }
 
-fn wrapped(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrapped(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows = Vec::new();
     let mut row = String::new();
@@ -375,12 +375,25 @@ fn tone(text: &str) -> Style {
 }
 
 fn services(frame: &mut Frame, area: Rect, model: &Model) {
-    let wide = area.width >= WIDE;
-    let left_width = if wide { LEFT_WIDE } else { LEFT_NARROW };
-    let [left, right] =
-        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area);
+    let [left, right] = service_panes(area);
     stacks(frame, left, model);
-    detail(frame, right, model, wide);
+    detail(frame, right, model, area.width >= WIDE);
+}
+
+fn service_panes(area: Rect) -> [Rect; 2] {
+    let left_width = if area.width >= WIDE {
+        LEFT_WIDE
+    } else {
+        LEFT_NARROW
+    };
+    Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area)
+}
+
+pub(crate) fn sonda_overflow(model: &Model, area: Rect) -> usize {
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, right] = service_panes(body);
+    let [_, content] = tab_content(right);
+    view::details_overflow(model.sonda(), content)
 }
 
 fn stacks(frame: &mut Frame, area: Rect, model: &Model) {
@@ -474,17 +487,20 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     } else {
         format!(" {name}  {age} ")
     };
-    let block = Block::bordered().title_top(title);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let [tab_row, content] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    frame.render_widget(Block::bordered().title_top(title), area);
+    let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     match model.tab() {
         Tab::Overview | Tab::Interfaces | Tab::Timeline => overview(frame, content, model, wide),
         Tab::Logs => logs(frame, content, model),
         Tab::Sonda => {
-            view::draw_in(frame, content, model.sonda(), model.now());
+            view::draw_in(
+                frame,
+                content,
+                model.sonda(),
+                model.now(),
+                model.focus() == Focus::Lines,
+            );
             if model.focus() == Focus::List {
                 let key_row = Rect {
                     y: content.bottom().saturating_sub(1),
@@ -613,9 +629,10 @@ fn logs(frame: &mut Frame, area: Rect, model: &Model) {
     let start = end.saturating_sub(usize::from(area.height));
     let shown: Vec<Line> = lines[start..end]
         .iter()
-        .map(|line| Line::from(*line))
+        .map(|line| Line::from(fit(line, usize::from(area.width))))
         .collect();
     frame.render_widget(Paragraph::new(shown), area);
+    rows_mark(frame, border_below(area), start, end - start, lines.len());
 }
 
 pub(crate) fn first_row(selected: usize, room: usize) -> usize {
@@ -1193,6 +1210,7 @@ fn device_logs(frame: &mut Frame, area: Rect, model: &Model) {
             Line::from(fit(&text, usize::from(area.width)))
         })
         .collect();
+    rows_mark(frame, border_below(area), start, shown.len(), lines.len());
     frame.render_widget(Paragraph::new(shown), area);
 }
 
@@ -1369,9 +1387,7 @@ fn command_rows(run: &Run, width: usize) -> Vec<String> {
 
 fn lab(frame: &mut Frame, area: Rect, model: &Model) {
     let wide = area.width >= WIDE;
-    let left_width = if wide { LEFT_DEVICES } else { LEFT_NARROW };
-    let [left, right] =
-        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(area);
+    let [left, right] = device_panes(area);
     let chapters = model.chapters();
     let chapters_height = u16::try_from(chapters.len() + 2).unwrap_or(u16::MAX);
     let [top, bottom] = Layout::vertical([
@@ -1456,12 +1472,38 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
     let Some(chapter) = model.selected_chapter() else {
         return;
     };
-    let block = Block::bordered().title_top(format!(" {} ", model.stacks()[chapter].name));
-    let inner = block.inner(area);
+    let border = if model.focus() == Focus::Lines {
+        BorderType::Double
+    } else {
+        BorderType::Plain
+    };
+    let block = Block::bordered()
+        .border_type(border)
+        .title_top(format!(" {} ", model.stacks()[chapter].name));
     frame.render_widget(block, area);
-    let [tab_row, content] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    let [tab_row, content] = tab_content(area);
     frame.render_widget(Paragraph::new(Span::styled("OVERVIEW", REVERSE)), tab_row);
+    let lines = lab_lines(model, chapter, usize::from(content.width));
+    let (room, total) = (usize::from(content.height), lines.len());
+    let first = model.lab_scroll().min(total.saturating_sub(room));
+    let shown: Vec<Line> = lines.into_iter().skip(first).collect();
+    frame.render_widget(Paragraph::new(shown), content);
+    rows_mark(frame, border_below(content), first, room, total);
+}
+
+pub(crate) fn lab_overflow(model: &Model, area: Rect) -> usize {
+    let Some(chapter) = model.selected_chapter() else {
+        return 0;
+    };
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, right] = device_panes(body);
+    let [_, content] = tab_content(right);
+    lab_lines(model, chapter, usize::from(content.width))
+        .len()
+        .saturating_sub(usize::from(content.height))
+}
+
+fn lab_lines(model: &Model, chapter: usize, width: usize) -> Vec<Line<'static>> {
     let lab = model.located();
     let topology = lab.map_or("—".to_string(), |lab| {
         let path = lab.topology();
@@ -1485,7 +1527,6 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         StackState::Down { total } => format!("0 of {total} running"),
         StackState::Unknown | StackState::Failed => "?".to_string(),
     };
-    let width = usize::from(content.width);
     let row = |label: &str, value: String| format!(" {label:<8}  {value}");
     let last = model
         .run()
@@ -1503,7 +1544,7 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         None => ("—".to_string(), (String::new(), Style::new())),
     };
     let plain = |label: &str, value: String| fitted(vec![(row(label, value), Style::new())], width);
-    let lines = vec![
+    vec![
         plain("topology", topology),
         plain(
             "project",
@@ -1512,8 +1553,7 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
         plain("nodes", nodes),
         plain("services", services),
         fitted(vec![(row("last", last), Style::new()), end], width),
-    ];
-    frame.render_widget(Paragraph::new(lines), content);
+    ]
 }
 
 fn action_hints(model: &Model) -> Vec<String> {
@@ -1587,7 +1627,7 @@ fn key_hints(model: &Model) -> Vec<String> {
         (Workbench::Devices, Focus::Tabs, Tab::Logs) => {
             log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
         }
-        (Workbench::Devices, Focus::Tabs, _) => {
+        (Workbench::Services, Focus::Lines, _) | (Workbench::Devices, _, _) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Esc back"]
         }
     };
@@ -1903,7 +1943,9 @@ mod tests {
         while model.tab() != tab {
             press(model, ']');
         }
-        handle(model, focus);
+        while model.focus() != Focus::List {
+            handle(model, focus);
+        }
     }
 
     fn lab_bench(count: usize) -> Model {
@@ -2876,8 +2918,7 @@ mod tests {
         model
     }
 
-    fn sonda_of(count: usize) -> Model {
-        let mut model = opened("a");
+    fn scenarios(count: usize) -> String {
         let rows: Vec<String> = (0..count)
             .map(|index| {
                 format!(
@@ -2885,9 +2926,14 @@ mod tests {
                 )
             })
             .collect();
+        format!(r#"{{"scenarios":[{}]}}"#, rows.join(","))
+    }
+
+    fn sonda_of(count: usize) -> Model {
+        let mut model = opened("a");
         model.apply(Update::Sonda(data::Update {
             at: Instant::now(),
-            list: Ok(format!(r#"{{"scenarios":[{}]}}"#, rows.join(","))),
+            list: Ok(scenarios(count)),
             selected: None,
         }));
         open_tab(&mut model, Tab::Sonda);
@@ -3051,6 +3097,98 @@ mod tests {
         }
     }
 
+    fn services_log_of(texts: Vec<String>) -> Model {
+        let mut model = opened("a");
+        model.apply(listing(0, Ok(vec![row("grafana", "running")])));
+        press(&mut model, 'l');
+        let lines = texts
+            .iter()
+            .map(|text| format!("2026-11-09T13:53:32Z {text}"))
+            .collect();
+        model.apply(Update::Logs(0, "grafana".to_string(), Ok(lines)));
+        model
+    }
+
+    fn device_log_of(count: i64) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let lines = (0..count)
+            .map(|index| log_line(index, &format!("line {index:02}")))
+            .collect();
+        model.apply(Update::DeviceLogs("srl1".to_string(), Ok(lines)));
+        open_tab(&mut model, Tab::Logs);
+        focus_tabs(&mut model);
+        model
+    }
+
+    fn forty_lines() -> Vec<String> {
+        (0..40).map(|index| format!("line {index:02}")).collect()
+    }
+
+    fn log_marked(model: &mut Model, mark: &str) -> String {
+        let rows = drawn(model, 60, 15);
+        let screen = rows.join("\n");
+        let edge = format!("─ {mark} ─┘");
+        assert!(
+            rows.iter().any(|row| row.ends_with(&edge)),
+            "{edge}\n{screen}"
+        );
+        screen
+    }
+
+    #[test]
+    fn the_service_log_pane_counts_the_lines_above_and_below() {
+        let mut model = services_log_of(forty_lines());
+        log_marked(&mut model, "↑32");
+        press(&mut model, 'f');
+
+        for (times, mark) in [(3, "↑29 ↓3"), (36, "↓39")] {
+            model = moved(model, 'k', times);
+            log_marked(&mut model, mark);
+        }
+    }
+
+    #[test]
+    fn the_device_log_pane_counts_the_lines_above_and_below() {
+        let mut model = device_log_of(40);
+        log_marked(&mut model, "↓32");
+        press(&mut model, 'f');
+
+        for (times, mark) in [(3, "↑3 ↓29"), (36, "↑39")] {
+            model = moved(model, 'j', times);
+            log_marked(&mut model, mark);
+        }
+    }
+
+    #[test]
+    fn in_the_paused_device_log_j_shows_the_older_lines_below_and_k_the_newer_above() {
+        for (down, up) in [
+            (KeyCode::Char('j'), KeyCode::Char('k')),
+            (KeyCode::Down, KeyCode::Up),
+        ] {
+            let mut model = device_log_of(40);
+            press(&mut model, 'f');
+
+            handle(&mut model, KeyEvent::new(down, KeyModifiers::NONE));
+            let screen = log_marked(&mut model, "↑1 ↓31");
+            assert!(!screen.contains("line 39"), "{down:?}\n{screen}");
+            assert!(screen.contains("line 38"), "{down:?}\n{screen}");
+
+            handle(&mut model, KeyEvent::new(up, KeyModifiers::NONE));
+            let screen = log_marked(&mut model, "↓32");
+            assert!(screen.contains("line 39"), "{up:?}\n{screen}");
+        }
+    }
+
+    #[test]
+    fn a_service_log_line_wider_than_the_pane_ends_with_an_ellipsis() {
+        let mut model = services_log_of(vec!["word ".repeat(30)]);
+
+        let rows = drawn(&mut model, 60, 15);
+
+        let row = row_with(&rows, "word word");
+        assert!(row.ends_with("…│"), "{}", rows.join("\n"));
+    }
+
     #[test]
     fn the_open_box_keeps_the_entry_that_was_opened_when_newer_entries_arrive() {
         let mut model = boxed_entry();
@@ -3101,7 +3239,7 @@ mod tests {
         assert!(boxed.starts_with(" j/k move  Esc close  "), "{boxed}");
 
         let entries = help_entries(&lab_bench(1));
-        assert_eq!(entries[1], ("Tab".to_string(), "focus other pane"));
+        assert_eq!(entries[1], ("Tab".to_string(), "focus next pane"));
         assert!(entries.contains(&("Esc".to_string(), "close/fold/back")));
         assert!(HELP_LAB
             .iter()
@@ -3209,6 +3347,197 @@ mod tests {
                 assert!(screen.contains(shown), "{label} {times}: {shown}\n{screen}");
             }
         }
+    }
+
+    #[test]
+    fn j_on_the_lab_overview_draws_the_hidden_line_and_marks_the_lines_above() {
+        let mut model = lab_bench(1);
+        press(&mut model, 'D');
+        press(&mut model, 'y');
+        model.apply(Update::ActionLine(REFUSAL.to_string()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        model.apply(Update::Services(
+            0,
+            defined(&["grafana"]),
+            Err("exit 1".to_string()),
+        ));
+        focus_tabs(&mut model);
+        focus_tabs(&mut model);
+
+        let before = drawn(&mut model, 60, 15);
+        model.set_lab_overflow(lab_overflow(&model, Rect::new(0, 0, 60, 15)));
+        press(&mut model, 'j');
+        let after = drawn(&mut model, 60, 15);
+
+        let screens = [before.join("\n"), after.join("\n")];
+        assert!(screens[0].contains(" ps ch1: exit 1"), "{}", screens[0]);
+        assert!(!screens[0].contains("║ last"), "{}", screens[0]);
+        assert!(bottom(&before).ends_with("═ ↓1 ═╝"), "{}", screens[0]);
+        assert!(screens[1].contains("║ last"), "{}", screens[1]);
+        assert!(bottom(&after).ends_with("═ ↑1 ═╝"), "{}", screens[1]);
+    }
+
+    fn bottom(rows: &[String]) -> String {
+        rows.iter()
+            .find(|row| row.contains('╚'))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn sonda_details(stats: &str, show: &str) -> Model {
+        let mut model = sonda_of(1);
+        model.apply(Update::Sonda(data::Update {
+            at: Instant::now(),
+            list: Ok(scenarios(1)),
+            selected: Some((
+                "id00".to_string(),
+                Ok(show.to_string()),
+                Ok(stats.to_string()),
+            )),
+        }));
+        model
+    }
+
+    fn details_rows(rows: &[String]) -> Vec<String> {
+        rows.iter()
+            .filter(|row| !row.contains('╔') && !row.contains('╚'))
+            .filter_map(|row| row.split('║').nth(1))
+            .map(|row| row.trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn j_on_the_sonda_details_draws_the_hidden_line_and_marks_the_lines_above() {
+        let mut model = sonda_details(r#"{"state":"running"}"#, r#"{"name":"cpu"}"#);
+        focus_tabs(&mut model);
+
+        let before = drawn(&mut model, 60, 15);
+        model.set_details_overflow(sonda_overflow(&model, Rect::new(0, 0, 60, 15)));
+        press(&mut model, 'j');
+        let after = drawn(&mut model, 60, 15);
+
+        let screens = [before.join("\n"), after.join("\n")];
+        assert_eq!(
+            details_rows(&before),
+            ["state", "\"running\"", "{", "  \"name\":"],
+            "{}",
+            screens[0]
+        );
+        assert!(bottom(&before).contains("═ ↓2 ═╝"), "{}", screens[0]);
+        assert_eq!(
+            details_rows(&after),
+            ["\"running\"", "{", "  \"name\":", "\"cpu\""],
+            "{}",
+            screens[1]
+        );
+        assert!(bottom(&after).contains("═ ↑1 ↓1 ═╝"), "{}", screens[1]);
+    }
+
+    #[test]
+    fn a_wide_details_line_goes_on_in_the_next_line_and_loses_no_letter() {
+        let path = "/srv/sonda/scenarios/interface-flap.yaml";
+        let mut model = sonda_details(
+            r#"{"current_rate":1.0,"total_events":3359}"#,
+            &format!(r#"{{"file":"{path}"}}"#),
+        );
+        focus_tabs(&mut model);
+        let mut rows = details_rows(&drawn(&mut model, 60, 15));
+        let overflow = sonda_overflow(&model, Rect::new(0, 0, 60, 15));
+        model.set_details_overflow(overflow);
+        for _ in 0..overflow {
+            press(&mut model, 'j');
+            rows.extend(details_rows(&drawn(&mut model, 60, 15)).pop());
+        }
+
+        let joined = rows.concat().replace(' ', "");
+        for text in ["current_rate1.0", "total_events3359", path] {
+            assert!(joined.contains(text), "{text}\n{}", rows.join("\n"));
+        }
+    }
+
+    #[test]
+    fn the_pane_of_lines_with_the_focus_draws_a_double_border() {
+        let mut model = lab_bench(1);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let screen = drawn(&mut model, 60, 15).join("\n");
+            seen.push((
+                model.focus(),
+                screen.matches('╔').count(),
+                screen.contains("╔ ch1 ═"),
+            ));
+            focus_tabs(&mut model);
+        }
+
+        assert_eq!(
+            seen,
+            [
+                (Focus::List, 0, false),
+                (Focus::Tabs, 0, false),
+                (Focus::Lines, 1, true)
+            ]
+        );
+
+        let mut sonda = sonda_details(r#"{"state":"running"}"#, r#"{"name":"cpu"}"#);
+        let mut seen = Vec::new();
+        let mut screens = Vec::new();
+        for _ in 0..3 {
+            for width in [60, 100] {
+                let height = if width == 60 { 15 } else { 30 };
+                let rows = drawn(&mut sonda, width, height);
+                screens.push(rows.join("\n"));
+                let tab_row = rows
+                    .iter()
+                    .find_map(|row| row.split_once("││q quit"))
+                    .map(|(_, row)| format!("q quit{}", row.trim_end_matches('│').trim_end()));
+                let details = rows.iter().any(|row| row.ends_with("═╗│"));
+                seen.push((
+                    sonda.focus(),
+                    rows.concat().matches('╔').count(),
+                    details,
+                    tab_row,
+                ));
+            }
+            if sonda.focus() == Focus::Lines {
+                assert_eq!(
+                    key_line(&sonda, 60),
+                    [" Tab focus  j/k move  [ ] tab  Esc back"]
+                );
+            }
+            focus_tabs(&mut sonda);
+        }
+
+        let row = |text: &str| Some(text.to_string());
+        assert_eq!(
+            seen,
+            [
+                (Focus::Tabs, 0, false, row("q quit  j/k select  r refresh")),
+                (
+                    Focus::Tabs,
+                    0,
+                    false,
+                    row("q quit  j/k select  r refresh  l load  d delete")
+                ),
+                (Focus::Lines, 1, true, row("q quit  r refresh  l load")),
+                (
+                    Focus::Lines,
+                    1,
+                    true,
+                    row("q quit  r refresh  l load  d delete")
+                ),
+                (Focus::List, 0, false, None),
+                (Focus::List, 0, false, None),
+            ],
+            "{}",
+            screens.join("\n\n")
+        );
+
+        press(&mut sonda, '?');
+        let help = drawn(&mut sonda, 60, 15).join("\n");
+        assert!(
+            help.contains("│sonda tab: Tab details  l load  d delete  r refresh"),
+            "{help}"
+        );
     }
 
     #[test]

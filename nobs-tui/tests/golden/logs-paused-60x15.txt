@@ -2,10 +2,10 @@
  1 devices  [2 services]                     ? keys  q quit
 ┌ stacks 3 ───────────┐┌ autocon5  refreshed 2s ago ───────┐
 │>autocon5  up 7/7    ││overview  LOGS  sonda  loki  paused│
-│ packt     down 0/2  ││level=warn ts=13:41:58 msg="ingeste│
-│ demo      down 0/3  ││level=info ts=13:41:59 msg="ring st│
-│                     ││level=info ts=13:42:01 msg="ring st│
-│                     ││level=info ts=13:42:01 msg="Loki st│
+│ packt     down 0/2  ││level=warn ts=13:41:58 msg="ingest…│
+│ demo      down 0/3  ││level=info ts=13:41:59 msg="ring s…│
+│                     ││level=info ts=13:42:01 msg="ring s…│
+│                     ││level=info ts=13:42:01 msg="Loki s…│
 │                     ││                                   │
 │                     ││                                   │
 │                     ││                                   │

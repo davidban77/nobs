@@ -4,29 +4,23 @@ use nobs_core::sonda::pretty;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, BorderType, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::data::{Model, Prompt};
 use crate::screen::{
-    border_below, cut_words, first_row, fit, rows_mark, whole_hints, widest, Keep,
+    border_below, cut_words, first_row, fit, rows_mark, whole_hints, widest, wrapped, Keep,
 };
 
-const KEYS: [&str; 5] = ["q quit", "j/k select", "r refresh", "l load", "d delete"];
+const SELECT: &str = "j/k select";
+const KEYS: [&str; 5] = ["q quit", SELECT, "r refresh", "l load", "d delete"];
 
 pub fn draw(frame: &mut Frame, model: &Model, now: Instant) {
-    draw_in(frame, frame.area(), model, now);
+    draw_in(frame, frame.area(), model, now, false);
 }
 
-pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
-    let [top, middle, bottom] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
+pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant, details_focused: bool) {
+    let [top, left, right, bottom] = panes(area);
     frame.render_widget(
         Paragraph::new(top_line(model, now, usize::from(top.width))),
         top,
@@ -39,14 +33,49 @@ pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         .with_offset(first);
     frame.render_stateful_widget(table(model, left.width), left, &mut state);
     rows_mark(frame, border_below(rows), first, room, model.rows().len());
+    let border = if details_focused {
+        BorderType::Double
+    } else {
+        BorderType::Plain
+    };
+    let block = Block::bordered().border_type(border);
+    let inner = block.inner(right);
+    frame.render_widget(block, right);
+    let lines = details_lines(model, inner.width);
+    let (room, total) = (usize::from(inner.height), lines.len());
+    let first = model.details_scroll().min(total.saturating_sub(room));
+    let shown: Vec<Line> = lines.into_iter().skip(first).collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+    rows_mark(frame, border_below(inner), first, room, total);
     frame.render_widget(
-        Paragraph::new(details(model)).block(Block::bordered()),
-        right,
-    );
-    frame.render_widget(
-        Paragraph::new(bottom_line(model, now, usize::from(bottom.width))),
+        Paragraph::new(bottom_line(
+            model,
+            now,
+            usize::from(bottom.width),
+            details_focused,
+        )),
         bottom,
     );
+}
+
+fn panes(area: Rect) -> [Rect; 4] {
+    let [top, middle, bottom] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
+    [top, left, right, bottom]
+}
+
+pub(crate) fn details_overflow(model: &Model, area: Rect) -> usize {
+    let [_, _, right, _] = panes(area);
+    let inner = Block::bordered().inner(right);
+    details_lines(model, inner.width)
+        .len()
+        .saturating_sub(usize::from(inner.height))
 }
 
 fn top_line(model: &Model, now: Instant, width: usize) -> Line<'static> {
@@ -145,29 +174,26 @@ fn table(model: &Model, width: u16) -> Table<'_> {
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
 }
 
-fn details(model: &Model) -> Vec<Line<'static>> {
+fn details_lines(model: &Model, width: u16) -> Vec<Line<'static>> {
     let mut lines = model.stats_body().map(stats_lines).unwrap_or_default();
     if let Some(show) = model.show_body() {
-        lines.extend(
-            pretty(show)
-                .lines()
-                .map(|line| Line::from(line.to_string())),
-        );
+        lines.extend(pretty(show).lines().map(String::from));
     }
     lines
+        .iter()
+        .flat_map(|line| wrapped(line, usize::from(width)))
+        .map(Line::from)
+        .collect()
 }
 
-fn stats_lines(body: &str) -> Vec<Line<'static>> {
+fn stats_lines(body: &str) -> Vec<String> {
     let text = pretty(body);
     match text
         .strip_prefix("{\n")
         .and_then(|inner| inner.strip_suffix("\n}"))
     {
-        Some(fields) => fields.lines().map(|line| Line::from(field(line))).collect(),
-        None => text
-            .lines()
-            .map(|line| Line::from(line.to_string()))
-            .collect(),
+        Some(fields) => fields.lines().map(field).collect(),
+        None => text.lines().map(String::from).collect(),
     }
 }
 
@@ -183,7 +209,7 @@ fn field(line: &str) -> String {
     }
 }
 
-fn bottom_line(model: &Model, now: Instant, width: usize) -> String {
+fn bottom_line(model: &Model, now: Instant, width: usize, details_focused: bool) -> String {
     match model.prompt() {
         Prompt::Path(path) => format!("load: {path}"),
         Prompt::Delete(id) => {
@@ -196,9 +222,14 @@ fn bottom_line(model: &Model, now: Instant, width: usize) -> String {
         }
         Prompt::None => match model.status(now) {
             Some(status) => status.to_string(),
-            None => whole_hints(&KEYS.map(String::from), width)
-                .trim_start()
-                .to_string(),
+            None => {
+                let keys: Vec<String> = KEYS
+                    .into_iter()
+                    .filter(|key| !details_focused || *key != SELECT)
+                    .map(String::from)
+                    .collect();
+                whole_hints(&keys, width).trim_start().to_string()
+            }
         },
     }
 }
