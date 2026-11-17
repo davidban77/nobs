@@ -3624,7 +3624,7 @@ mod tests {
                 screens.push(rows.join("\n"));
                 let tab_row = rows
                     .iter()
-                    .find_map(|row| row.split_once("││q quit"))
+                    .find_map(|row| row.split_once("│q quit"))
                     .map(|(_, row)| format!("q quit{}", row.trim_end_matches('│').trim_end()));
                 let scenarios = rows.iter().any(|row| row.contains("│╔"));
                 let details = rows.iter().any(|row| row.ends_with("═╗│"));
