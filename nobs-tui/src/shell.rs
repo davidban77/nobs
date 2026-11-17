@@ -846,10 +846,11 @@ impl Model {
         let Some(target) = target else {
             return Some(Vec::new());
         };
+        let running = self.active().map(|run| run.words.clone());
         match pieces(action, &target, self) {
-            Some(_) if self.active().is_some() => {
-                let words = self.active().map_or("", |run| run.words.as_str());
-                self.notice = Some(format!("one action at a time: {words} is running"));
+            Some(_) if running.is_some() => {
+                self.notice =
+                    running.map(|words| format!("one action at a time: {words} is running"));
             }
             Some(args) => {
                 self.notice = None;
@@ -4267,6 +4268,23 @@ pub(crate) mod tests {
         assert_eq!(ch(&mut model, 'm'), []);
         assert_eq!(model.question(), None);
         assert_eq!(ch(&mut model, 'y'), []);
+    }
+
+    #[test]
+    fn u_on_a_chapter_with_a_run_going_says_why_and_starts_nothing() {
+        let mut model = book_model();
+        assert!(!ch(&mut model, 'S').is_empty());
+        let words = model.run().unwrap().words.clone();
+        ch(&mut model, '2');
+
+        assert_eq!(ch(&mut model, 'u'), []);
+
+        assert_eq!(
+            model.notice(),
+            Some("u up is for a workshop; a chapter has its actions in the lab workbench")
+        );
+        assert_eq!(model.question(), None);
+        assert_eq!(model.run().unwrap().words, words);
     }
 
     #[test]

@@ -350,7 +350,7 @@ Some keys refuse:
 
 - `u`, `d`, `X`, `R`, `p` or `s` in the services workbench, on a chapter, shows `<key> <hint> is for a workshop; a chapter has its actions in the lab workbench`, for example `u up is for a workshop; a chapter has its actions in the lab workbench`. On a labcli lab or on `sonda only`, it shows `<key> <hint> is for a workshop`, for example `u up is for a workshop`.
 - `m` does nothing in a book lab, nor when the device list is empty.
-- Only one action runs at a time. A second action key shows `one action at a time: <action> is running`.
+- Only one action runs at a time. A second action key that can act shows `one action at a time: <action> is running`.
 
 In the sonda tab, with the focus on the tabs or on the right panel, `d` does not take the stack down. It asks to delete the selected scenario (see [The Sonda tab](#the-sonda-tab)).
 
