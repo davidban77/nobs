@@ -1,0 +1,9 @@
+name: nobs-t-dev
+topology:
+  nodes:
+    nobs-t-srl1:
+      kind: nokia_srlinux
+    nobs-t-srl2:
+      kind: srl
+    nobs-t-ceos1:
+      kind: ceos

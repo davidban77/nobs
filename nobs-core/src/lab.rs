@@ -9,6 +9,7 @@ pub const PROJECT: &str = "netobs";
 pub const NETWORK: &str = "network-observability";
 pub const SUBNET: &str = "198.51.100.0/24";
 pub const CEOS_KINDS: [&str; 2] = ["ceos", "arista_ceos"];
+pub const SRLINUX_KINDS: [&str; 2] = ["nokia_srlinux", "srl"];
 
 const POLL: Duration = Duration::from_secs(5);
 

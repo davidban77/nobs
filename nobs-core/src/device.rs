@@ -1,7 +1,10 @@
+#[cfg(any(test, feature = "fake"))]
+use std::cell::RefCell;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::lab;
 use crate::runner::Output;
 
 pub const ANSWER_LIMIT: Duration = Duration::from_secs(10);
@@ -63,6 +66,65 @@ pub trait Transport {
     fn run(&self, host: &str, credentials: &Credentials, command: &str) -> Result<Output, Error>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Driver {
+    pub running_config: &'static str,
+}
+
+pub fn driver(kind: &str) -> Result<Driver, Error> {
+    if lab::SRLINUX_KINDS.contains(&kind) {
+        Ok(Driver {
+            running_config: "info flat",
+        })
+    } else {
+        Err(Error::NoDriver(kind.to_string()))
+    }
+}
+
+pub fn credentials() -> Result<Credentials, Error> {
+    Ok(Credentials {
+        user: credential("NETWORK_AGENT_USER")?,
+        password: Password::new(credential("NETWORK_AGENT_PASSWORD")?),
+    })
+}
+
+fn credential(name: &str) -> Result<String, Error> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or(Error::MissingCredentials)
+}
+
+#[cfg(any(test, feature = "fake"))]
+pub struct FakeTransport {
+    answer: Result<Output, Error>,
+    calls: RefCell<Vec<(String, String)>>,
+}
+
+#[cfg(any(test, feature = "fake"))]
+impl FakeTransport {
+    pub fn answering(answer: Result<Output, Error>) -> Self {
+        Self {
+            answer,
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn calls(&self) -> Vec<(String, String)> {
+        self.calls.borrow().clone()
+    }
+}
+
+#[cfg(any(test, feature = "fake"))]
+impl Transport for FakeTransport {
+    fn run(&self, host: &str, _credentials: &Credentials, command: &str) -> Result<Output, Error> {
+        self.calls
+            .borrow_mut()
+            .push((host.to_string(), command.to_string()));
+        self.answer.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +173,19 @@ mod tests {
         let printed = format!("{credentials:?}");
         assert!(printed.contains("admin"), "{printed}");
         assert!(!printed.contains("nobs-t-not-a-secret"), "{printed}");
+    }
+
+    #[test]
+    fn each_srlinux_kind_fetches_info_flat_and_any_other_kind_has_no_driver() {
+        for kind in ["nokia_srlinux", "srl"] {
+            assert_eq!(
+                driver(kind),
+                Ok(Driver {
+                    running_config: "info flat"
+                }),
+                "{kind}"
+            );
+        }
+        assert_eq!(driver("ceos"), Err(Error::NoDriver("ceos".to_string())));
     }
 }

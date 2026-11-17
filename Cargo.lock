@@ -1547,6 +1547,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "nobs-core",
+ "nobs-ssh",
  "nobs-tui",
 ]
 

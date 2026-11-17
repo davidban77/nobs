@@ -12,12 +12,13 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
+use nobs_core::device::{self, Transport};
 use nobs_core::env::load_env;
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
 use nobs_core::http;
 use nobs_core::infrahub::{annotation, connect, read_schema, Infrahub, Seed, KINDS};
-use nobs_core::lab::{self, WaitError};
+use nobs_core::lab::{self, TopologyNode, WaitError};
 use nobs_core::lab_vars;
 use nobs_core::layers;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
@@ -29,7 +30,7 @@ use nobs_core::project;
 use nobs_core::prometheus::{self, Prometheus};
 use nobs_core::render::Renderer;
 use nobs_core::reset;
-use nobs_core::runner::Runner;
+use nobs_core::runner::{Output, Runner};
 use nobs_core::settings::Workshop;
 use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
@@ -40,6 +41,7 @@ use nobs_core::time;
 use nobs_core::try_it;
 use nobs_core::webhook;
 use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
+use nobs_ssh::Ssh;
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
 
@@ -148,6 +150,13 @@ pub enum Command {
         flags: ProjectFlags,
         #[command(subcommand)]
         command: ProjectCommand,
+    },
+    #[command(
+        about = "Fetch the configuration of a lab device, or run one command on it, over SSH"
+    )]
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommand,
     },
     #[command(about = "Talk to a running sonda-server over HTTP")]
     Sonda {
@@ -1086,6 +1095,22 @@ pub enum SondaCommand {
     Version,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum DeviceCommand {
+    #[command(about = "Print the running configuration of a device, one set line per setting")]
+    Fetch {
+        #[arg(help = "Node name in the lab's topology file")]
+        name: String,
+    },
+    #[command(about = "Run one command on a device and print its answer")]
+    Run {
+        #[arg(help = "Node name in the lab's topology file")]
+        name: String,
+        #[arg(help = "The command, as one quoted text")]
+        command: String,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct ContainerlabFlags {
     #[arg(
@@ -1488,6 +1513,9 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
     if matches!(cli.command, Some(Command::Utils { .. })) {
         remove_blank_variables(&["NAUTOBOT_URL", "NAUTOBOT_SUPERUSER_API_TOKEN"]);
     }
+    if matches!(cli.command, Some(Command::Device { .. })) {
+        remove_blank_variables(&["NETWORK_AGENT_USER", "NETWORK_AGENT_PASSWORD"]);
+    }
     if matches!(cli.command, Some(Command::External(_))) {
         remove_blank_variables(&[
             "PROMETHEUS_URL",
@@ -1532,6 +1560,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         Command::Lab { command } => return run_lab(command, given, runner),
         Command::Utils { command } => return run_utils(command, given),
         Command::Project { flags, command } => return run_project(flags, command, given, runner),
+        Command::Device { command } => return run_device(command, given, &Ssh),
         Command::Sonda { flags, command } => {
             return with_env(Path::new("."), || run_sonda(flags, command))
         }
@@ -2117,6 +2146,72 @@ fn read_topology(topology: &Path) -> Result<String, i32> {
         );
         1
     })
+}
+
+fn run_device(command: DeviceCommand, given: Option<&Path>, transport: &dyn Transport) -> i32 {
+    let (name, asked) = match command {
+        DeviceCommand::Fetch { name } => (name, None),
+        DeviceCommand::Run { name, command } => (name, Some(command)),
+    };
+    in_lab(given, |located| {
+        let (topology, nodes) = match device_nodes(located) {
+            Ok(found) => found,
+            Err(code) => return code,
+        };
+        match device_answer(&name, asked.as_deref(), &topology, &nodes, transport) {
+            Ok(output) => pass_through(&output, &mut std::io::stdout(), &mut std::io::stderr()),
+            Err(error) => {
+                eprintln!("nobs: ssh {name}: {error}");
+                1
+            }
+        }
+    })
+}
+
+fn device_nodes(located: &Located) -> Result<(PathBuf, Vec<TopologyNode>), i32> {
+    if matches!(located.kind, Kind::Workshop(_)) {
+        eprintln!(
+            "nobs: device commands need a lab with containerlab nodes; {} is a workshop",
+            located.dir.display()
+        );
+        return Err(1);
+    }
+    let topology = located.topology();
+    let text = read_topology(&topology)?;
+    let nodes = lab::topology_nodes(&text).map_err(|error| {
+        eprintln!(
+            "nobs: cannot read topology file: {}: {error}",
+            topology.display()
+        );
+        1
+    })?;
+    Ok((topology, nodes))
+}
+
+fn device_answer(
+    name: &str,
+    asked: Option<&str>,
+    topology: &Path,
+    nodes: &[TopologyNode],
+    transport: &dyn Transport,
+) -> Result<Output, device::Error> {
+    let node = nodes
+        .iter()
+        .find(|node| node.name == name)
+        .ok_or_else(|| device::Error::NotANode(topology.to_path_buf()))?;
+    let driver = device::driver(&node.kind)?;
+    let credentials = device::credentials()?;
+    transport.run(
+        &node.container,
+        &credentials,
+        asked.unwrap_or(driver.running_config),
+    )
+}
+
+fn pass_through(output: &Output, out: &mut impl Write, err: &mut impl Write) -> i32 {
+    let _ = out.write_all(output.stdout.as_bytes());
+    let _ = err.write_all(output.stderr.as_bytes());
+    output.code
 }
 
 fn run_project(
@@ -5356,6 +5451,7 @@ fn network_word(action: NetworkAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nobs_core::device::FakeTransport;
     use nobs_core::runner::FakeRunner;
     use std::net::TcpListener;
 
@@ -6018,5 +6114,147 @@ mod tests {
             let error = screen_start(&here.0, None, flags(None), chooser).unwrap_err();
             assert!(error.ends_with("line 1: empty key"), "{error}");
         }
+    }
+
+    const TEST_PASSWORD: &str = "nobs-t-not-a-secret";
+
+    fn device_lab() -> (PathBuf, Vec<TopologyNode>) {
+        let topology = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/device-lab/containerlab/lab.clab.yml");
+        let nodes = lab::topology_nodes(&fs::read_to_string(&topology).unwrap()).unwrap();
+        (topology, nodes)
+    }
+
+    fn set_credential(name: &str, value: Option<&str>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+
+    fn set_credentials() {
+        set_credential("NETWORK_AGENT_USER", Some("admin"));
+        set_credential("NETWORK_AGENT_PASSWORD", Some(TEST_PASSWORD));
+    }
+
+    fn answer(code: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            code,
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+        }
+    }
+
+    fn call(host: &str, command: &str) -> (String, String) {
+        (host.to_string(), command.to_string())
+    }
+
+    fn passed(output: &Output) -> (i32, String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = pass_through(output, &mut out, &mut err);
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_node_name_reaches_the_transport_as_its_container_and_an_unknown_name_calls_nothing() {
+        set_credentials();
+        let (topology, nodes) = device_lab();
+        let transport = FakeTransport::answering(Ok(answer(0, "", "")));
+
+        device_answer("nobs-t-srl1", None, &topology, &nodes, &transport).unwrap();
+
+        let calls = transport.calls();
+        assert_eq!(calls, [call("clab-nobs-t-dev-nobs-t-srl1", "info flat")]);
+        assert!(!format!("{calls:?}").contains(TEST_PASSWORD));
+
+        let unknown = FakeTransport::answering(Ok(answer(0, "", "")));
+        let result = device_answer("nobs-t-srl9", None, &topology, &nodes, &unknown);
+        assert_eq!(result, Err(device::Error::NotANode(topology.clone())));
+        assert!(unknown.calls().is_empty());
+        assert!(!format!("{result:?}").contains(TEST_PASSWORD));
+    }
+
+    #[test]
+    fn a_missing_or_empty_credential_is_missing_credentials_and_calls_nothing() {
+        let (topology, nodes) = device_lab();
+        for (case, (user, password)) in [
+            (None, Some(TEST_PASSWORD)),
+            (Some("admin"), None),
+            (Some(""), Some(TEST_PASSWORD)),
+            (Some("admin"), Some("")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            set_credential("NETWORK_AGENT_USER", user);
+            set_credential("NETWORK_AGENT_PASSWORD", password);
+            let transport = FakeTransport::answering(Ok(answer(0, "Hostname : srl1\n", "")));
+
+            let result = device_answer("nobs-t-srl1", None, &topology, &nodes, &transport);
+
+            assert_eq!(
+                result,
+                Err(device::Error::MissingCredentials),
+                "case {case}"
+            );
+            assert!(transport.calls().is_empty(), "case {case}");
+            assert!(!format!("{result:?}").contains(TEST_PASSWORD));
+        }
+    }
+
+    #[test]
+    fn fetch_gives_the_recorded_answer_whole_and_pass_through_writes_it_whole_with_code_0() {
+        set_credentials();
+        let (topology, nodes) = device_lab();
+        let recorded = answer(
+            0,
+            "set / acl acl-filter cpm type ipv4 statistics-per-entry true\nset / acl acl-filter cpm type ipv4 entry 10 match ipv4 protocol icmp\n",
+            "",
+        );
+        let transport = FakeTransport::answering(Ok(recorded.clone()));
+
+        let output = device_answer("nobs-t-srl2", None, &topology, &nodes, &transport).unwrap();
+
+        assert_eq!(output, recorded);
+        assert_eq!(
+            transport.calls(),
+            [call("clab-nobs-t-dev-nobs-t-srl2", "info flat")]
+        );
+        let (code, out, err) = passed(&output);
+        assert_eq!(code, 0);
+        assert_eq!(out, recorded.stdout);
+        assert_eq!(err, "");
+        assert!(!out.contains(TEST_PASSWORD));
+    }
+
+    #[test]
+    fn run_hands_the_command_as_one_text_and_passes_stdout_stderr_and_the_code_through() {
+        set_credentials();
+        let (topology, nodes) = device_lab();
+        let parsing = "Parsing error: Unknown token 'nonsense'. Options are [...]\n";
+        let transport = FakeTransport::answering(Ok(answer(1, "Hostname : srl1\n", parsing)));
+
+        let output = device_answer(
+            "nobs-t-srl1",
+            Some("show version"),
+            &topology,
+            &nodes,
+            &transport,
+        )
+        .unwrap();
+
+        assert_eq!(
+            transport.calls(),
+            [call("clab-nobs-t-dev-nobs-t-srl1", "show version")]
+        );
+        let (code, out, err) = passed(&output);
+        assert_eq!(code, 1);
+        assert_eq!(out, "Hostname : srl1\n");
+        assert_eq!(err, parsing);
+        assert!(!out.contains(TEST_PASSWORD) && !err.contains(TEST_PASSWORD));
     }
 }

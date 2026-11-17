@@ -100,6 +100,40 @@ fn the_help_pages_name_the_sonda_group_and_exactly_its_ten_commands() {
     assert_eq!(commands, SONDA_COMMANDS);
 }
 
+const DEVICE_COMMANDS: [&str; 2] = ["fetch", "run"];
+
+#[test]
+fn the_help_pages_name_the_device_group_exactly_its_two_commands_and_their_words() {
+    let root = help(&[]);
+    assert!(
+        commands_block(&root).iter().any(|word| word == "device"),
+        "{root}"
+    );
+    assert!(
+        root.contains(
+            "Fetch the configuration of a lab device, or run one command on it, over SSH"
+        ),
+        "{root}"
+    );
+
+    let group = help(&["device"]);
+    assert_eq!(commands_block(&group), DEVICE_COMMANDS);
+    for words in [
+        "Print the running configuration of a device, one set line per setting",
+        "Run one command on a device and print its answer",
+    ] {
+        assert!(group.contains(words), "{group}");
+    }
+
+    let run = help(&["device", "run"]);
+    for words in [
+        "<NAME>     Node name in the lab's topology file",
+        "<COMMAND>  The command, as one quoted text",
+    ] {
+        assert!(run.contains(words), "{run}");
+    }
+}
+
 #[test]
 fn a_sonda_command_help_shows_the_server_and_key_flags() {
     let help = help(&["sonda", "list"]);
