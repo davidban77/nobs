@@ -443,6 +443,8 @@ pub struct Model {
     logs_following: bool,
     logs_scroll: usize,
     logs_filter: Filter,
+    config_scroll: usize,
+    config_filter: Filter,
     window: u64,
     timeline_row: usize,
     popup: Option<devices::Entry>,
@@ -551,6 +553,8 @@ impl Model {
             logs_following: true,
             logs_scroll: 0,
             logs_filter: Filter::default(),
+            config_scroll: 0,
+            config_filter: Filter::default(),
             window: WINDOW_MINUTES,
             timeline_row: 0,
             popup: None,
@@ -991,6 +995,7 @@ impl Model {
         self.filter.typing
             || self.device_filter.typing
             || self.logs_filter.typing
+            || self.config_filter.typing
             || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
     }
 
@@ -1003,6 +1008,9 @@ impl Model {
         }
         if self.logs_filter.typing {
             return self.logs_filter.text.as_deref();
+        }
+        if self.config_filter.typing {
+            return self.config_filter.text.as_deref();
         }
         self.logs
             .as_ref()
@@ -1365,6 +1373,19 @@ impl Model {
         }
     }
 
+    pub fn config(&self) -> Option<(&str, Option<&Config>, Vec<&str>, usize)> {
+        let device = self.selected_device()?;
+        let kept = self.configs.get(&device.name);
+        let shown = kept.map_or_else(Vec::new, |kept| {
+            kept.lines
+                .iter()
+                .map(String::as_str)
+                .filter(|line| self.config_filter.matches(line))
+                .collect()
+        });
+        Some((device.name.as_str(), kept, shown, self.config_scroll))
+    }
+
     #[cfg(test)]
     pub(crate) fn config_of(&self, device: &str) -> Option<&Config> {
         self.configs.get(device)
@@ -1490,6 +1511,10 @@ impl Model {
         }
         if self.logs_filter.typing {
             self.logs_filter.type_key(key.code);
+            return Vec::new();
+        }
+        if self.config_filter.typing {
+            self.config_filter.type_key(key.code);
             return Vec::new();
         }
         if let Some(logs) = self.logs.as_mut().filter(|logs| logs.filter.typing) {
@@ -1634,6 +1659,7 @@ impl Model {
             Tab::Interfaces => self.interfaces_key(key.code),
             Tab::Timeline => self.timeline_key(key.code),
             Tab::Logs => self.device_logs_key(key.code),
+            Tab::Config => self.config_key(key.code),
             _ => Vec::new(),
         }
     }
@@ -1746,6 +1772,7 @@ impl Model {
             self.device_lines.clear();
             self.rcas.clear();
             self.logs_scroll = 0;
+            self.config_scroll = 0;
             self.timeline_row = 0;
             self.interface_row = 0;
             self.overview_scroll = 0;
@@ -1822,14 +1849,21 @@ impl Model {
                 return vec![Command::FollowDevice(self.logs_following)];
             }
             KeyCode::Char('/') => self.logs_filter.start(),
-            KeyCode::Char('j') | KeyCode::Down if !self.logs_following => {
+            _ if !self.logs_following => {
                 let shown = self.shown_device_logs().len();
-                self.logs_scroll = (self.logs_scroll + 1).min(shown.saturating_sub(1));
-            }
-            KeyCode::Char('k') | KeyCode::Up if !self.logs_following => {
-                self.logs_scroll = self.logs_scroll.saturating_sub(1);
+                scroll_step(code, &mut self.logs_scroll, shown);
             }
             _ => {}
+        }
+        Vec::new()
+    }
+
+    fn config_key(&mut self, code: KeyCode) -> Vec<Command> {
+        if code == KeyCode::Char('/') {
+            self.config_filter.start();
+        } else {
+            let shown = self.config().map_or(0, |(_, _, shown, _)| shown.len());
+            scroll_step(code, &mut self.config_scroll, shown);
         }
         Vec::new()
     }
@@ -2119,6 +2153,14 @@ fn health_of(health: &[Health], name: &str, state: &str) -> Option<String> {
         .iter()
         .find(|entry| entry.service == name)
         .map(|entry| entry.state.clone())
+}
+
+fn scroll_step(code: KeyCode, scroll: &mut usize, shown: usize) {
+    match code {
+        KeyCode::Char('j') | KeyCode::Down => *scroll = (*scroll + 1).min(shown.saturating_sub(1)),
+        KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+        _ => {}
+    }
 }
 
 fn keep_last(lines: &mut Vec<String>) {
@@ -3643,7 +3685,7 @@ pub(crate) mod tests {
         model
     }
 
-    fn lab_devices_model() -> Model {
+    pub(crate) fn lab_devices_model() -> Model {
         let dir = fixture("book-lab");
         let source = lab_vars_source("book-lab/containerlab/lab_vars.yml");
         let mut model = Model::new(Start {
@@ -5391,6 +5433,13 @@ pub(crate) mod tests {
             assert_eq!(model.tab(), tab, "{name}");
             let line = key_line(&model, 200).concat();
             assert!(!line.contains("g get config"), "{name}: {line}");
+            if name != "no device" {
+                let entries = help_entries(&model);
+                assert!(
+                    entries.iter().all(|(key, _)| key != "g"),
+                    "{name}: {entries:?}"
+                );
+            }
         }
         let line = key_line(&lab_devices_model(), 200).concat();
         assert!(line.contains("g get config"), "{line}");
@@ -5419,5 +5468,112 @@ pub(crate) mod tests {
                 Some(&Command::OpenTab(expected))
             );
         }
+    }
+
+    fn entries(count: usize) -> Vec<String> {
+        (1..=count)
+            .map(|entry| {
+                format!(
+                    "set / acl acl-filter cpm type ipv4 entry {} match ipv4 protocol icmp",
+                    entry * 10
+                )
+            })
+            .collect()
+    }
+
+    fn on_config(lines: &[String]) -> Model {
+        let mut model = lab_devices_model();
+        let shown: Vec<&str> = lines.iter().map(String::as_str).collect();
+        fetched(&mut model, &shown, FIRST_FETCH);
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Config));
+        model
+    }
+
+    fn scroll(model: &Model) -> usize {
+        model.config().unwrap().3
+    }
+
+    #[test]
+    fn the_config_pane_moves_filters_and_counts_hidden_lines() {
+        let lines = entries(40);
+        let mut model = on_config(&lines);
+
+        ch(&mut model, 'k');
+        assert_eq!(scroll(&model), 0);
+        ch(&mut model, 'j');
+        code(&mut model, KeyCode::Down);
+        assert_eq!(scroll(&model), 2);
+        code(&mut model, KeyCode::Up);
+        assert_eq!(scroll(&model), 1);
+        for _ in 0..50 {
+            ch(&mut model, 'j');
+        }
+        assert_eq!(scroll(&model), 39);
+
+        ch(&mut model, '/');
+        assert!(model.typing());
+        typed(&mut model, "entry 1");
+        assert_eq!(model.typed_filter(), Some("entry 1"));
+        code(&mut model, KeyCode::Enter);
+        assert!(!model.typing());
+        let (device, kept, shown, _) = model.config().unwrap();
+        assert_eq!(device, "nobs-t-srl1");
+        assert_eq!(kept.unwrap().lines.len(), 40);
+        let wanted: Vec<&str> = lines
+            .iter()
+            .map(String::as_str)
+            .filter(|line| line.contains("entry 1"))
+            .collect();
+        assert_eq!(shown, wanted);
+        assert_eq!(shown.len(), 11);
+        ch(&mut model, 'j');
+        assert_eq!(scroll(&model), 10);
+    }
+
+    #[test]
+    fn q_while_the_config_filter_types_is_text_and_does_not_quit() {
+        let mut model = on_config(&entries(3));
+        ch(&mut model, '/');
+
+        assert_eq!(ch(&mut model, 'q'), []);
+
+        assert!(!model.quit());
+        assert_eq!(model.typed_filter(), Some("q"));
+    }
+
+    #[test]
+    fn help_names_g_and_s_in_a_lab_with_nodes_and_m_as_today() {
+        let named = |model: &Model, key: &str| {
+            help_entries(model)
+                .iter()
+                .filter(|(keys, _)| keys == key)
+                .map(|(_, meaning)| *meaning)
+                .collect::<Vec<_>>()
+        };
+        let lab = lab_devices_model();
+        assert_eq!(named(&lab, "g"), ["get config"]);
+        assert_eq!(named(&lab, "m"), ["maintenance"]);
+
+        let workshop = devices_model(workshop_located("infrahub"));
+        assert_eq!(named(&workshop, "g"), Vec::<&str>::new());
+        assert_eq!(named(&workshop, "m"), ["maintenance"]);
+    }
+
+    #[test]
+    fn the_config_scroll_goes_back_to_the_top_on_another_device() {
+        let mut model = on_config(&entries(10));
+        ch(&mut model, 'j');
+        assert_eq!(scroll(&model), 1);
+
+        code(&mut model, KeyCode::Esc);
+        code(&mut model, KeyCode::Esc);
+        assert_eq!(model.focus(), Focus::List);
+        ch(&mut model, 'j');
+
+        assert_eq!(model.config().unwrap().0, "nobs-t-srl2");
+        assert_eq!(scroll(&model), 0);
     }
 }

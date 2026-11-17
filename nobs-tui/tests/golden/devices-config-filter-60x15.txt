@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab              ? keys  q quit
+┌ devices 2 ──────────┐╔ nobs-t-srl1 ══════════════════════╗
+│   NAME    HLTH  ALRT│║overview  ifaces  CONFIG ›         ║
+│>  nobs-…  ?        ?│║fetched 13:42:07  41 lines         ║
+│   nobs-…  ?        ?│║set / acl acl-filter cpm type ipv4…║
+│                     │║set / acl acl-filter cpm type ipv4…║
+│                     │║set / acl acl-filter cpm type ipv4…║
+│                     │║set / acl acl-filter cpm type ipv4…║
+├ alerts ? ───────────┤║set / acl acl-filter cpm type ipv4…║
+│                     │║set / acl acl-filter cpm type ipv4…║
+│                     │║set / acl acl-filter cpm type ipv4…║
+└─────────────────────┘╚══════════════════════════════ ↓4 ═╝
+ run  device fetch nobs-t-srl1  exit 0  0s           o open
+ filter: entry 1  Enter keep  Esc clear

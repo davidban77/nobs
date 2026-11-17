@@ -467,6 +467,54 @@ fn unpolled_lab_model(lab_dir: &str) -> Shell {
     model
 }
 
+fn lab_devices_model() -> Shell {
+    let dir = PathBuf::from(BOOK_LAB);
+    let mut lab = locate(&dir, Some(&dir)).unwrap();
+    let mut chapters = stacks(Some(&lab), Vec::new()).unwrap();
+    for chapter in &mut chapters {
+        chapter.path = PathBuf::from(LAB_DIR);
+    }
+    lab.dir = PathBuf::from(LAB_DIR);
+    let text = fs::read_to_string(dir.join("containerlab/lab_vars.yml")).unwrap();
+    let source = Fixed::from_lab_vars(&lab_vars::read(&text).unwrap());
+    let devices = source.devices().unwrap();
+    let mut model = Shell::new(Start {
+        chooser: false,
+        source: Some(Arc::new(source)),
+        ..begin(Some(lab), chapters, Workbench::Devices)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
+    model.apply(Update::Devices(Ok(devices)));
+    model
+}
+
+fn on_lab_tab(presses: usize) -> Shell {
+    let mut model = lab_devices_model();
+    press(&mut model, KeyCode::Enter);
+    for _ in 0..presses {
+        press(&mut model, KeyCode::Char(']'));
+    }
+    model
+}
+
+fn config_shown() -> Shell {
+    let mut model = on_lab_tab(0);
+    press(&mut model, KeyCode::Char('g'));
+    let first = "set / acl acl-filter cpm type ipv4 statistics-per-entry true".to_string();
+    let entries = (1..=40).map(|entry| {
+        format!(
+            "set / acl acl-filter cpm type ipv4 entry {} match ipv4 protocol icmp",
+            entry * 10
+        )
+    });
+    for line in [first].into_iter().chain(entries) {
+        model.apply(Update::ActionLine(line));
+    }
+    model.apply(Update::ActionEnded(End::Exited(0)));
+    press(&mut model, KeyCode::Esc);
+    model
+}
+
 fn long_question() -> Shell {
     let packt = Stack {
         path: PathBuf::from(LONG_DIR),
@@ -868,6 +916,42 @@ fn the_devices_logs_with_hidden_lines_frame_is_pinned() {
             .map(|index| loki_line(100 + index, 0, &format!("log line {index:02}")))
             .collect();
         model.apply(Update::DeviceLogs("srl1".to_string(), Ok(older)));
+        model
+    });
+}
+
+#[test]
+fn the_config_hint_frame_is_pinned() {
+    golden("devices-config-hint", || on_lab_tab(2));
+}
+
+#[test]
+fn the_config_frame_is_pinned() {
+    golden("devices-config", config_shown);
+}
+
+#[test]
+fn the_config_filter_frame_is_pinned() {
+    golden("devices-config-filter", || {
+        let mut model = config_shown();
+        press(&mut model, KeyCode::Char('/'));
+        for typed in "entry 1".chars() {
+            press(&mut model, KeyCode::Char(typed));
+        }
+        model
+    });
+}
+
+#[test]
+fn the_lab_logs_tab_line_frame_is_pinned() {
+    pinned(on_lab_tab(4), "devices-lab-logs", 60, 15);
+}
+
+#[test]
+fn the_lab_devices_help_frame_is_pinned() {
+    golden("help-devices-lab", || {
+        let mut model = lab_devices_model();
+        press(&mut model, KeyCode::Char('?'));
         model
     });
 }
