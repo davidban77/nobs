@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -37,6 +37,10 @@ const WORKSHOP_ONE: &str = concat!(
 );
 const BOOK_LAB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/book-lab");
 const LAB_DIR: &str = "/home/me/book-lab";
+const PROJECT_LAB: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tests/fixtures/project-two-node"
+);
 const LONG_LAB_DIR: &str = "/home/me/labs/network-observability/book-lab";
 const ALREADY_EXIST: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
 const LONG_DIR: &str = "/Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt";
@@ -456,6 +460,9 @@ fn unpolled_lab_model(lab_dir: &str) -> Shell {
     }
     let mut model = Shell::new(Start {
         chooser: false,
+        source: Some(Arc::new(lab_vars_source(
+            &dir.join("containerlab/lab_vars.yml"),
+        ))),
         ..begin(Some(lab), chapters, Workbench::Lab)
     });
     model.tick(Instant::now(), clock(), (80, 24));
@@ -467,16 +474,24 @@ fn unpolled_lab_model(lab_dir: &str) -> Shell {
     model
 }
 
+fn lab_vars_source(path: &Path) -> Fixed {
+    let text = fs::read_to_string(path).unwrap();
+    Fixed::from_lab_vars(&lab_vars::read(&text).unwrap())
+}
+
 fn lab_devices_model() -> Shell {
-    let dir = PathBuf::from(BOOK_LAB);
+    devices_model_in(BOOK_LAB, "containerlab/lab_vars.yml", LAB_DIR)
+}
+
+fn devices_model_in(fixture: &str, lab_vars: &str, lab_dir: &str) -> Shell {
+    let dir = PathBuf::from(fixture);
     let mut lab = locate(&dir, Some(&dir)).unwrap();
     let mut chapters = stacks(Some(&lab), Vec::new()).unwrap();
     for chapter in &mut chapters {
-        chapter.path = PathBuf::from(LAB_DIR);
+        chapter.path = PathBuf::from(lab_dir);
     }
-    lab.dir = PathBuf::from(LAB_DIR);
-    let text = fs::read_to_string(dir.join("containerlab/lab_vars.yml")).unwrap();
-    let source = Fixed::from_lab_vars(&lab_vars::read(&text).unwrap());
+    lab.dir = PathBuf::from(lab_dir);
+    let source = lab_vars_source(&dir.join(lab_vars));
     let devices = source.devices().unwrap();
     let mut model = Shell::new(Start {
         chooser: false,
@@ -957,6 +972,16 @@ fn the_entry_frame_is_pinned() {
 #[test]
 fn the_lab_logs_tab_line_frame_is_pinned() {
     pinned(on_lab_tab(4), "devices-lab-logs", 60, 15);
+}
+
+#[test]
+fn the_project_devices_frame_is_pinned() {
+    let model = devices_model_in(
+        PROJECT_LAB,
+        "expected/lab_vars.yml",
+        "/home/me/nobs-t-project",
+    );
+    pinned(model, "devices-project", 100, 30);
 }
 
 #[test]

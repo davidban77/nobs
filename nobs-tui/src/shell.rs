@@ -1299,8 +1299,12 @@ impl Model {
     pub fn sot(&self) -> String {
         match self.lab.as_ref().map(|lab| &lab.kind) {
             Some(Kind::Workshop(workshop)) => workshop.sot.clone(),
-            Some(Kind::BookLab(_)) => "lab_vars".to_string(),
-            Some(Kind::LabcliLab(_)) => "none".to_string(),
+            Some(Kind::BookLab(_) | Kind::LabcliLab(_))
+                if self.source || self.source_error.is_some() =>
+            {
+                "lab_vars".to_string()
+            }
+            Some(Kind::BookLab(_) | Kind::LabcliLab(_)) => "none".to_string(),
             None => {
                 let infrahub = self
                     .stacks
@@ -3614,6 +3618,7 @@ pub(crate) mod tests {
         let book = fixture("book-lab");
         let model = Model::new(Start {
             lab: Some(locate(&book, Some(&book)).unwrap()),
+            source: Some(lab_vars_source("book-lab/containerlab/lab_vars.yml")),
             chooser: false,
             ..start(vec![plain])
         });
@@ -3727,8 +3732,12 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn lab_devices_model() -> Model {
-        let dir = fixture("book-lab");
-        let source = lab_vars_source("book-lab/containerlab/lab_vars.yml");
+        lab_model("book-lab", "book-lab/containerlab/lab_vars.yml")
+    }
+
+    fn lab_model(folder: &str, lab_vars: &str) -> Model {
+        let dir = fixture(folder);
+        let source = lab_vars_source(lab_vars);
         let mut model = Model::new(Start {
             lab: Some(locate(&dir, Some(&dir)).unwrap()),
             source: Some(source.clone()),
@@ -3914,19 +3923,21 @@ pub(crate) mod tests {
 
     #[test]
     fn the_sot_word_comes_from_the_workshop_setting_and_is_lab_vars_in_the_book_lab() {
-        let header = |located: Located| {
+        let header = |located: Located, source: Option<Arc<dyn SourceOfTruth>>| {
             Model::new(Start {
                 lab: Some(located),
+                source,
                 chooser: false,
                 ..start(vec![stack("autocon5", &[])])
             })
             .header()
         };
-        assert!(header(workshop_located("none")).ends_with("sot none"));
-        assert!(header(workshop_located("infrahub")).ends_with("sot infrahub"));
+        assert!(header(workshop_located("none"), None).ends_with("sot none"));
+        assert!(header(workshop_located("infrahub"), None).ends_with("sot infrahub"));
         let book = fixture("book-lab");
         let located = locate(&book, Some(&book)).unwrap();
-        assert!(header(located).ends_with("sot lab_vars"));
+        let source = lab_vars_source("book-lab/containerlab/lab_vars.yml");
+        assert!(header(located, Some(source)).ends_with("sot lab_vars"));
     }
 
     #[test]
@@ -5295,6 +5306,21 @@ pub(crate) mod tests {
             ch(&mut model, 'g'),
             [
                 nobs(&["--dir", &lab, "device", "fetch", "nobs-t-srl2"]),
+                Command::OpenTab(Tab::Config)
+            ]
+        );
+    }
+
+    #[test]
+    fn g_in_a_project_lab_runs_device_fetch_of_the_selected_device() {
+        let lab = fixture("project-two-node").to_string_lossy().into_owned();
+        let mut model = lab_model("project-two-node", "project-two-node/expected/lab_vars.yml");
+        assert!(matches!(model.located().unwrap().kind, Kind::LabcliLab(_)));
+
+        assert_eq!(
+            ch(&mut model, 'g'),
+            [
+                nobs(&["--dir", &lab, "device", "fetch", "nobs-t-srl1"]),
                 Command::OpenTab(Tab::Config)
             ]
         );
