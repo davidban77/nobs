@@ -17,6 +17,8 @@ A paragraph in Markdown is one line, never hard-wrapped.
 
 Once per machine, run `rustup target add aarch64-unknown-linux-musl`.
 
+Once per machine, run `rustup component add llvm-tools`.
+
 Build the static Linux arm64 binary with `cargo build --release --target aarch64-unknown-linux-musl -p nobs-cli`. The file lands at `target/aarch64-unknown-linux-musl/release/nobs`.
 
-`.cargo/config.toml` sets the linker `rust-lld` for that target, because the Mac's own linker cannot make Linux files.
+`.cargo/config.toml` sets the linker `rust-lld` for that target, and `clang` with `tools/llvm-ar` for the C code of the SSH library, because the Mac's own tools cannot make Linux files.

@@ -472,7 +472,7 @@ This is the test frame of the screen at 60 columns and 15 rows, with made-up dat
 
 ## Commands
 
-Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The seven `lab` commands of nobs have the same names as in netobs. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows. The two `utils` commands of nobs have the same names as in netobs, and labcli has no `utils` commands. The two `project` commands are nobs's own: neither labcli nor netobs has them, and the shape of `nobs_project.yml` comes from the project file of labby.
+Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The seven `lab` commands of nobs have the same names as in netobs. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows. The two `utils` commands of nobs have the same names as in netobs, and labcli has no `utils` commands. The two `project` commands are nobs's own: neither labcli nor netobs has them, and the shape of `nobs_project.yml` comes from the project file of labby. The two `device` commands are new in nobs, so their labcli and netobs cells are empty.
 
 | labcli X | netobs X | nobs X |
 |---|---|---|
@@ -503,10 +503,14 @@ Each `docker` command of labcli and netobs has the same name in nobs, and so doe
 | | `netobs utils delete-nautobot` | `nobs utils delete-nautobot` |
 | | | `nobs project render` |
 | | | `nobs project deploy` |
+| | | `nobs device fetch` |
+| | | `nobs device run` |
 
 In `nobs docker exec`, the words after the service are passed to the container as separate arguments, and a flag meant for the command inside the container goes after `--`.
 
 Build the Linux binary with `cargo build --release --target aarch64-unknown-linux-musl -p nobs-cli`; it runs inside the OrbStack Linux machine `clab` and uses the Docker engine of `clab`, and the two Docker engines on the Mac (the one of OrbStack and the one inside `clab`) do not share networks.
+
+Once per machine, the Linux build needs two steps: `rustup target add aarch64-unknown-linux-musl` and `rustup component add llvm-tools`. The second one installs `llvm-ar`, a tool the build uses for the C code of the SSH library.
 
 Run the `containerlab` commands inside the Linux machine `clab`, with the Linux binary: `orb -m clab <path> containerlab deploy`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab with `sudo` unless you give `--no-sudo`. By default, sudo does not pass on the variables of your shell. So nobs reads the topology file, finds each variable it uses as `${NAME}`, and tells sudo to keep it. Set such a variable inside `clab`, for example `orb -m clab env NAME=value <path> containerlab deploy`, or in the `.env` file of the lab folder (of the current folder when you give a `TOPOLOGY` file).
 
@@ -525,7 +529,7 @@ nobs knows four kinds of lab folder:
 
 nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `nobs_project.yml`, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
 
-To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab`, `nobs lab` and `nobs project` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
+To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab`, `nobs lab`, `nobs project` and `nobs device` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
 
 These commands need a lab folder:
 
@@ -533,6 +537,7 @@ These commands need a lab folder:
 - a `nobs containerlab` command without a `TOPOLOGY` file;
 - `nobs lab ...`, which needs the book lab, not any lab folder (see [Book lab](#book-lab));
 - `nobs project ...` (see [Project](#project));
+- `nobs device ...`, which needs a lab with containerlab nodes, not a workshop (see [Device](#device));
 - `nobs <workshop> ...` (see [Workshops](#workshops)).
 
 These commands do not need a lab folder. They work from any folder and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)). `nobs tui` and plain `nobs` do the same: they use `--dir` and `NOBS_DIR` when they are set (see [The screen](#the-screen)).
@@ -2663,6 +2668,61 @@ wrote containerlab/configs/nobs-t-srl1.cfg
 wrote containerlab/configs/nobs-t-srl2.cfg
 ...
 ```
+
+## Device
+
+The `nobs device` group logs in to one device of a lab over SSH and prints what the device answers. SSH is the usual way to log in to a network device and run a command on it. This is not `nobs devices`, which lists the devices of a workshop's source of truth.
+
+| Command | What it does |
+|---|---|
+| `nobs device fetch NAME` | prints the running configuration of the device, one set line per setting |
+| `nobs device run NAME COMMAND` | runs one command on the device and prints its answer |
+
+`NAME` is the node name in the lab's topology file. `COMMAND` is one text: put it in quotes, and nobs hands it to the device with its spaces kept.
+
+```
+$ nobs device fetch srl1
+set / acl acl-filter cpm type ipv4 statistics-per-entry true
+set / acl acl-filter cpm type ipv4 entry 10 match ipv4 protocol icmp
+...
+$ nobs device run srl1 "show version"
+Hostname             : srl1
+Chassis Type         : 7220 IXR-D2L
+OS                   : SR Linux
+...
+$ nobs device run srl1 "show nonsense words"
+Parsing error: Unknown token 'nonsense'. Options are [...]
+$ echo $?
+1
+```
+
+The commands work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). They do not work in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file and connects to the container name that containerlab gives the node.
+
+nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing or empty, nobs names the two variables and opens no connection. nobs never prints the password.
+
+Each command opens one connection: nobs connects, logs in, runs one command and closes the connection. When the device sends nothing for 10 seconds, nobs stops with an error.
+
+A host key is the key a device shows so that the client knows it reaches the right device. nobs does not check the host key of a lab device: it accepts it, as containerlab does for its own nodes.
+
+A driver is the part of nobs that knows the commands of one kind of device. Today only SR Linux has a driver (the kinds `nokia_srlinux` and `srl`). Both commands need a driver, so `nobs device run` on a node of another kind also stops with the `no driver` line. For SR Linux, `fetch` runs `info flat` on the device. This is the flat form: one `set / ...` line for each setting, the form that the templates of a nobs project write. A value that holds line breaks, such as a certificate, goes on in further lines, because nobs prints what the device sends and changes nothing. To keep the configuration, redirect it to a file: `nobs device fetch srl1 > srl1.cfg`. The configuration holds password hashes, so do not commit that file.
+
+What the device says passes through. Its output goes to the standard output of nobs, its error text to the standard error, and its exit status is the exit code of nobs. nobs's own errors print one line and exit with 1:
+
+| Line | When |
+|---|---|
+| `nobs: device commands need a lab with containerlab nodes; <dir> is a workshop` | the lab folder is a workshop |
+| `nobs: topology file not found: <path>` | the lab folder has no topology file |
+| `nobs: cannot read topology file: <path>: <error>` | nobs cannot read the topology file, or it is not a topology |
+| `nobs: ssh <name>: not a node of <topology path>` | the topology file has no node with this name |
+| `nobs: ssh <name>: no driver for the kind <kind> yet` | the node's kind has no driver |
+| `nobs: ssh <name>: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell` | the user or the password is missing or empty |
+| `nobs: ssh <name>: cannot reach <container>: <reason>` | the connection fails, for example because the lab does not run; the reason is the system's text |
+| `nobs: ssh <name>: no answer in 10 seconds` | the device sent nothing for 10 seconds |
+| `nobs: ssh <name>: authentication failed` | the device refused the user or the password |
+| `nobs: ssh <name>: the device sent no exit status` | the device closed the connection without an exit status |
+| `nobs: ssh <name>: <reason>` | any other SSH error, with the text of the SSH library |
+
+When nobs finds no lab folder, it prints the line of [Where nobs runs from](#where-nobs-runs-from) and exits with 1. A usage error, such as `nobs device run srl1` without a command, exits with 2.
 
 ## Sonda
 

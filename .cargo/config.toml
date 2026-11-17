@@ -1,2 +1,7 @@
 [target.aarch64-unknown-linux-musl]
 linker = "rust-lld"
+
+[env]
+CC_aarch64_unknown_linux_musl = "clang"
+AR_aarch64_unknown_linux_musl = { value = "tools/llvm-ar", relative = true }
+CFLAGS_aarch64_unknown_linux_musl = "-U__musl__"

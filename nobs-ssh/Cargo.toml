@@ -1,0 +1,13 @@
+[package]
+name = "nobs-ssh"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+nobs-core = { path = "../nobs-core" }
+russh.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+rand = { version = "=0.10.4", features = ["thread_rng"] }
