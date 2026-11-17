@@ -508,6 +508,8 @@ In `nobs docker exec`, the words after the service are passed to the container a
 
 Build the Linux binary with `cargo build --release --target aarch64-unknown-linux-musl -p nobs-cli`; it runs inside the OrbStack Linux machine `clab` and uses the Docker engine of `clab`, and the two Docker engines on the Mac (the one of OrbStack and the one inside `clab`) do not share networks.
 
+Once per machine, the Linux build needs `rustup component add llvm-tools`, besides the target `rustup target add aarch64-unknown-linux-musl`.
+
 Run the `containerlab` commands inside the Linux machine `clab`, with the Linux binary: `orb -m clab <path> containerlab deploy`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab with `sudo` unless you give `--no-sudo`. By default, sudo does not pass on the variables of your shell. So nobs reads the topology file, finds each variable it uses as `${NAME}`, and tells sudo to keep it. Set such a variable inside `clab`, for example `orb -m clab env NAME=value <path> containerlab deploy`, or in the `.env` file of the lab folder (of the current folder when you give a `TOPOLOGY` file).
 
 ## Where nobs runs from
@@ -2663,6 +2665,61 @@ wrote containerlab/configs/nobs-t-srl1.cfg
 wrote containerlab/configs/nobs-t-srl2.cfg
 ...
 ```
+
+## Device
+
+The `nobs device` group logs in to one device of a lab over SSH and prints what the device answers. SSH is the usual way to log in to a network device and run a command on it.
+
+| Command | What it does |
+|---|---|
+| `nobs device fetch NAME` | prints the running configuration of the device, one set line per setting |
+| `nobs device run NAME COMMAND` | runs one command on the device and prints its answer |
+
+`NAME` is the node name in the lab's topology file. `COMMAND` is one text: put it in quotes, and nobs hands it to the device with its spaces kept.
+
+```
+$ nobs device fetch srl1
+set / acl acl-filter cpm type ipv4 statistics-per-entry true
+set / acl acl-filter cpm type ipv4 entry 10 match ipv4 protocol icmp
+...
+$ nobs device run srl1 "show version"
+Hostname             : srl1
+Chassis Type         : 7220 IXR-D2L
+OS                   : SR Linux
+...
+$ nobs device run srl1 "show nonsense words"
+Parsing error: Unknown token 'nonsense'. Options are [...]
+$ echo $?
+1
+```
+
+The commands work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). They do not work in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file and connects to the container name that containerlab gives the node.
+
+nobs logs in with a user and a password, on port 22. It reads them from `NETWORK_AGENT_USER` and `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A name set in the shell wins over the `.env` file. When one is missing, nobs names the two variables and opens no connection. nobs never prints the password.
+
+Each command opens one connection: nobs connects, logs in, runs one command and closes the connection. When the device sends nothing for 10 seconds, nobs stops with an error.
+
+A host key is the key a device shows so that the client knows it reaches the right device. nobs does not check the host key of a lab device: it accepts it, as containerlab does for its own nodes.
+
+A driver is the part of nobs that knows the commands of one kind of device. Today only SR Linux has a driver (the kinds `nokia_srlinux` and `srl`). For SR Linux, `fetch` runs `info flat` on the device. This is the flat form: one `set / ...` line for each setting, the form that the templates of a nobs project write. A value that holds line breaks, such as a certificate, goes on in further lines, because nobs prints what the device sends and changes nothing. To keep the configuration, redirect it to a file: `nobs device fetch srl1 > srl1.cfg`.
+
+What the device says passes through. Its output goes to the standard output of nobs, its error text to the standard error, and its exit status is the exit code of nobs. nobs's own errors print one line and exit with 1:
+
+| Line | When |
+|---|---|
+| `nobs: device commands need a lab with containerlab nodes; <dir> is a workshop` | the lab folder is a workshop |
+| `nobs: topology file not found: <path>` | the lab folder has no topology file |
+| `nobs: cannot read topology file: <path>: <error>` | nobs cannot read the topology file, or it is not a topology |
+| `nobs: ssh <name>: not a node of <topology path>` | the topology file has no node with this name |
+| `nobs: ssh <name>: no driver for the kind <kind> yet` | the node's kind has no driver |
+| `nobs: ssh <name>: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell` | the user or the password is missing or empty |
+| `nobs: ssh <name>: cannot reach <container>: <reason>` | the connection fails, for example because the lab does not run; the reason is the system's text |
+| `nobs: ssh <name>: no answer in 10 seconds` | the device sent nothing for 10 seconds |
+| `nobs: ssh <name>: authentication failed` | the device refused the user or the password |
+| `nobs: ssh <name>: the device sent no exit status` | the device closed the connection without an exit status |
+| `nobs: ssh <name>: <reason>` | any other SSH error, with the text of the SSH library |
+
+When nobs finds no lab folder, it prints the line of [Where nobs runs from](#where-nobs-runs-from) and exits with 1. A usage error, such as `nobs device run srl1` without a command, exits with 2.
 
 ## Sonda
 
