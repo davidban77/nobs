@@ -13,7 +13,7 @@ use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::device::{self, Transport};
-use nobs_core::env::load_env;
+use nobs_core::env::{load_env, read_env};
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
 use nobs_core::http;
@@ -2163,7 +2163,7 @@ fn run_device(command: DeviceCommand, given: Option<&Path>, transport: &dyn Tran
         match device_answer(&name, asked.as_deref(), &topology, &nodes, transport) {
             Ok(output) => pass_through(&output, &mut std::io::stdout(), &mut std::io::stderr()),
             Err(error) => {
-                eprintln!("nobs: ssh {name}: {error}");
+                eprintln!("{}", device::error_line(&name, &error));
                 1
             }
         }
@@ -5113,6 +5113,15 @@ fn screen_start_with(
                 Kind::LabcliLab(_) if source.is_some() => nobs_tui::Workbench::Devices,
                 _ => home,
             };
+            let shell = [device::USER, device::PASSWORD].map(|name| (name, process(name)));
+            let dir = located.dir.clone();
+            let login = std::sync::Arc::new(move |name: &str| {
+                let set = shell
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .and_then(|(_, value)| value.clone());
+                device::credential(name, set, &read_env(&dir).unwrap_or_default())
+            });
             Ok(nobs_tui::Start {
                 stacks,
                 lab: Some(located),
@@ -5123,6 +5132,7 @@ fn screen_start_with(
                 urls,
                 chooser: false,
                 program,
+                login,
             })
         }
         Err(LocateError::NotFound) if chooser => {
@@ -5139,6 +5149,7 @@ fn screen_start_with(
                 urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
                 chooser: true,
                 program,
+                login: std::sync::Arc::new(|_| None),
             })
         }
         Err(LocateError::NotFound) => Ok(nobs_tui::Start {
@@ -5151,6 +5162,7 @@ fn screen_start_with(
             urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
             chooser: false,
             program,
+            login: std::sync::Arc::new(|_| None),
         }),
         Err(error) => Err(error.to_string()),
     }
@@ -6344,5 +6356,81 @@ mod tests {
             );
             assert!(transport.calls().is_empty(), "{asked:?}");
         }
+    }
+
+    fn login_lab(name: &str, env: &str, setup_env: &str) -> Scratch {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/device-lab");
+        let lab = Scratch::new(name);
+        fs::copy(fixture.join("nobs.toml"), lab.0.join("nobs.toml")).unwrap();
+        fs::create_dir_all(lab.0.join("containerlab")).unwrap();
+        fs::copy(
+            fixture.join("containerlab/lab.clab.yml"),
+            lab.0.join("containerlab/lab.clab.yml"),
+        )
+        .unwrap();
+        fs::write(lab.0.join(".env"), env).unwrap();
+        fs::write(lab.0.join(".setup.env"), setup_env).unwrap();
+        lab
+    }
+
+    #[test]
+    fn the_command_finds_a_login_exactly_when_the_screen_lookup_finds_one() {
+        for (case, (user, env, setup_env)) in [
+            (Some("nobs-t-x"), "NETWORK_AGENT_USER=\n", ""),
+            (Some("  "), "NETWORK_AGENT_USER=nobs-t-x\n", ""),
+            (Some(""), "", "NETWORK_AGENT_USER=nobs-t-x\n"),
+            (Some(" \t"), "", ""),
+            (None, "NETWORK_AGENT_USER=\"  \"\n", ""),
+            (
+                None,
+                "NETWORK_AGENT_USER=\n",
+                "NETWORK_AGENT_USER=nobs-t-x\n",
+            ),
+            (
+                None,
+                "NETWORK_AGENT_USER=nobs-t-x\n",
+                "NETWORK_AGENT_USER=\n",
+            ),
+            (None, "", ""),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let lab = login_lab(&format!("device-login-{case}"), env, setup_env);
+            set_credential(device::USER, user);
+            set_credential(device::PASSWORD, Some(TEST_PASSWORD));
+            let start = screen_start(&lab.0, None, flags(None), false).unwrap();
+            let screen =
+                (start.login)(device::USER).is_some() && (start.login)(device::PASSWORD).is_some();
+            let transport = FakeTransport::answering(Ok(answer(0, "", "")));
+
+            remove_blank_variables(&[device::USER, device::PASSWORD]);
+            run_device(
+                DeviceCommand::Fetch {
+                    name: "nobs-t-srl1".to_string(),
+                },
+                Some(&lab.0),
+                &transport,
+            );
+
+            assert_eq!(!transport.calls().is_empty(), screen, "case {case}");
+        }
+    }
+
+    #[test]
+    fn the_screen_lookup_takes_the_shell_user_before_the_env_file_user() {
+        let lab = login_lab(
+            "device-login-shell-first",
+            "NETWORK_AGENT_USER=nobs-t-y\n",
+            "",
+        );
+        set_credential(device::USER, Some("nobs-t-x"));
+        set_credential(device::PASSWORD, None);
+
+        let start = screen_start(&lab.0, None, flags(None), false).unwrap();
+
+        assert_eq!((start.login)(device::USER).as_deref(), Some("nobs-t-x"));
+        assert_eq!((start.login)(device::PASSWORD), None);
     }
 }

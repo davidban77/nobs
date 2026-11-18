@@ -9,6 +9,10 @@ use crate::runner::Output;
 
 pub const ANSWER_LIMIT: Duration = Duration::from_secs(10);
 
+pub const USER: &str = "NETWORK_AGENT_USER";
+pub const PASSWORD: &str = "NETWORK_AGENT_PASSWORD";
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct Password(String);
 
 impl Password {
@@ -82,17 +86,25 @@ pub fn driver(kind: &str) -> Result<Driver, Error> {
 }
 
 pub fn credentials() -> Result<Credentials, Error> {
+    let found = |name| credential(name, std::env::var(name).ok(), &[]);
     Ok(Credentials {
-        user: credential("NETWORK_AGENT_USER")?,
-        password: Password::new(credential("NETWORK_AGENT_PASSWORD")?),
+        user: found(USER).ok_or(Error::MissingCredentials)?,
+        password: Password::new(found(PASSWORD).ok_or(Error::MissingCredentials)?),
     })
 }
 
-fn credential(name: &str) -> Result<String, Error> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .ok_or(Error::MissingCredentials)
+pub fn credential(name: &str, shell: Option<String>, lab: &[(String, String)]) -> Option<String> {
+    let filled = |value: &String| !value.trim().is_empty();
+    shell.filter(filled).or_else(|| {
+        lab.iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .filter(filled)
+    })
+}
+
+pub fn error_line(name: &str, error: &Error) -> String {
+    format!("nobs: ssh {name}: {error}")
 }
 
 #[cfg(any(test, feature = "fake"))]
@@ -173,6 +185,54 @@ mod tests {
         let printed = format!("{credentials:?}");
         assert!(printed.contains("admin"), "{printed}");
         assert!(!printed.contains("nobs-t-not-a-secret"), "{printed}");
+    }
+
+    #[test]
+    fn a_credential_is_the_shell_value_when_not_blank_else_the_first_lab_value_when_not_blank() {
+        let shell = |value: &str| Some(value.to_string());
+        let lab = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect()
+        };
+        let cases = [
+            (
+                shell("nobs-t-x"),
+                lab(&[(USER, "nobs-t-not-a-secret")]),
+                Some("nobs-t-x"),
+            ),
+            (shell(""), lab(&[(USER, "nobs-t-x")]), Some("nobs-t-x")),
+            (shell("  "), lab(&[(USER, "nobs-t-x")]), Some("nobs-t-x")),
+            (shell(" \t"), lab(&[]), None),
+            (None, lab(&[(USER, "  ")]), None),
+            (shell(""), lab(&[(USER, " ")]), None),
+            (
+                None,
+                lab(&[(USER, "nobs-t-x"), (USER, "nobs-t-not-a-secret")]),
+                Some("nobs-t-x"),
+            ),
+            (None, lab(&[(USER, ""), (USER, "nobs-t-x")]), None),
+            (None, lab(&[(USER, "  "), (USER, "nobs-t-x")]), None),
+            (None, lab(&[(PASSWORD, "nobs-t-x")]), None),
+            (None, lab(&[]), None),
+            (shell(" nobs-t-x "), lab(&[]), Some(" nobs-t-x ")),
+        ];
+        for (case, (shell, lab, found)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                credential(USER, shell, &lab).as_deref(),
+                found,
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_error_line_names_the_device_and_the_error() {
+        assert_eq!(
+            error_line("nobs-t-srl1", &Error::AuthenticationFailed),
+            "nobs: ssh nobs-t-srl1: authentication failed"
+        );
     }
 
     #[test]

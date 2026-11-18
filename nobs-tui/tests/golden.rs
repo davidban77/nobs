@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nobs_core::alertmanager::Alert;
+use nobs_core::device::{PASSWORD, USER};
 use nobs_core::lab::{services, Service};
 use nobs_core::lab_vars;
 use nobs_core::locate::{locate, Kind, Located};
@@ -160,7 +161,31 @@ fn begin(lab: Option<Located>, stacks: Vec<Stack>, home: Workbench) -> Start {
         source_error: None,
         urls: Urls::defaults(),
         program: PathBuf::from("nobs"),
+        login: Arc::new(found),
     }
+}
+
+fn found(name: &str) -> Option<String> {
+    match name {
+        USER => Some("nobs-t-x".to_string()),
+        PASSWORD => Some("nobs-t-not-a-secret".to_string()),
+        _ => None,
+    }
+}
+
+fn login_prompt(password: bool) -> Shell {
+    let mut model = devices_model_finding(BOOK_LAB, "containerlab/lab_vars.yml", LAB_DIR, |_| None);
+    press(&mut model, KeyCode::Char('g'));
+    for typed in "nobs-t-x".chars() {
+        press(&mut model, KeyCode::Char(typed));
+    }
+    if password {
+        press(&mut model, KeyCode::Enter);
+        for typed in "nobs-t-not-a-secret".chars() {
+            press(&mut model, KeyCode::Char(typed));
+        }
+    }
+    model
 }
 
 fn model(chooser: bool, packt_failed: bool) -> Shell {
@@ -485,6 +510,15 @@ fn lab_devices_model() -> Shell {
 }
 
 fn devices_model_in(fixture: &str, lab_vars: &str, lab_dir: &str) -> Shell {
+    devices_model_finding(fixture, lab_vars, lab_dir, found)
+}
+
+fn devices_model_finding(
+    fixture: &str,
+    lab_vars: &str,
+    lab_dir: &str,
+    login: fn(&str) -> Option<String>,
+) -> Shell {
     let dir = PathBuf::from(fixture);
     let mut lab = locate(&dir, Some(&dir)).unwrap();
     let mut chapters = stacks(Some(&lab), Vec::new()).unwrap();
@@ -497,6 +531,7 @@ fn devices_model_in(fixture: &str, lab_vars: &str, lab_dir: &str) -> Shell {
     let mut model = Shell::new(Start {
         chooser: false,
         source: Some(Arc::new(source)),
+        login: Arc::new(login),
         ..begin(Some(lab), chapters, Workbench::Devices)
     });
     model.tick(Instant::now(), clock(), (80, 24));
@@ -1006,6 +1041,12 @@ fn the_entry_frame_is_pinned() {
         }
         model
     });
+}
+
+#[test]
+fn the_login_frames_are_pinned() {
+    golden("devices-login-user", || login_prompt(false));
+    golden("devices-login-password", || login_prompt(true));
 }
 
 #[test]

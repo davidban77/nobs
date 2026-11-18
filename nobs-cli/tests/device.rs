@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use nobs_core::device::{self, Error};
+
 const TEST_PASSWORD: &str = "nobs-t-not-a-secret";
 
 fn fixture(relative: &str) -> PathBuf {
@@ -155,6 +157,84 @@ fn a_missing_or_blank_credential_exits_1_naming_both_variables_and_the_places() 
                 "nobs: ssh nobs-t-srl1: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell",
             );
         }
+    }
+}
+
+#[test]
+fn a_device_error_is_the_error_line_of_nobs_core() {
+    let lab = fixture("device-lab");
+    let topology = lab.join("containerlab/lab.clab.yml");
+    for (name, error, user) in [
+        ("nobs-t-srl9", Error::NotANode(topology), Some("nobs-t-x")),
+        (
+            "nobs-t-ceos1",
+            Error::NoDriver("ceos".to_string()),
+            Some("nobs-t-x"),
+        ),
+        ("nobs-t-srl1", Error::MissingCredentials, None),
+    ] {
+        assert_fails_with(
+            &nobs(
+                &lab,
+                &in_dir(&lab, &["device", "fetch", name]),
+                user,
+                Some(TEST_PASSWORD),
+            ),
+            &device::error_line(name, &error),
+        );
+    }
+}
+
+fn device_lab_with_env(name: &str, env: &str) -> PathBuf {
+    let lab = folder(name);
+    fs::copy(fixture("device-lab/nobs.toml"), lab.join("nobs.toml")).unwrap();
+    fs::copy(
+        fixture("device-lab/containerlab/lab.clab.yml"),
+        lab.join("containerlab/lab.clab.yml"),
+    )
+    .unwrap();
+    fs::write(lab.join(".env"), env).unwrap();
+    lab
+}
+
+#[test]
+fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() {
+    let lab = device_lab_with_env(
+        "device-login-spaces",
+        &format!("NETWORK_AGENT_USER=\"  \"\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
+    );
+
+    for args in both("nobs-t-srl1") {
+        let output = nobs(&lab, &in_dir(&lab, &args), None, None);
+
+        assert_fails_with(
+            &output,
+            &device::error_line("nobs-t-srl1", &Error::MissingCredentials),
+        );
+        assert!(!stderr(&output).contains("cannot reach"));
+    }
+}
+
+#[test]
+fn a_shell_user_of_only_spaces_falls_to_the_dot_env_user() {
+    let lab = device_lab_with_env(
+        "device-login-shell-spaces",
+        &format!("NETWORK_AGENT_USER=nobs-t-x\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
+    );
+    let missing = format!(
+        "{}\n",
+        device::error_line("nobs-t-srl1", &Error::MissingCredentials)
+    );
+
+    for args in both("nobs-t-srl1") {
+        let output = nobs(&lab, &in_dir(&lab, &args), Some("   "), None);
+        let stderr = stderr(&output);
+
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.starts_with("nobs: ssh nobs-t-srl1: "), "{stderr}");
+        assert_ne!(stderr, missing);
+        assert!(output.stdout.is_empty());
+        assert!(!stderr.contains(TEST_PASSWORD));
     }
 }
 

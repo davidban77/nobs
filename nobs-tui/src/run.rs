@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use nobs_core::device;
 use nobs_core::runner::exit_code;
 
-use crate::shell::Update;
+use crate::shell::{Login, Update};
 
 const TICK: Duration = Duration::from_millis(50);
 const PIPES_GRACE: Duration = Duration::from_secs(1);
@@ -22,6 +23,7 @@ pub trait Launcher: Send + Sync {
         &self,
         program: &Path,
         args: &[OsString],
+        login: &Login,
         out: Sender<Update>,
     ) -> io::Result<Box<dyn Running>>;
 }
@@ -55,19 +57,28 @@ impl Launcher for Processes {
         &self,
         program: &Path,
         args: &[OsString],
+        login: &Login,
         out: Sender<Update>,
     ) -> io::Result<Box<dyn Running>> {
-        launch(program, args, out, |group| signal(group, 0))
+        launch(program, args, login, out, |group| signal(group, 0))
     }
 }
 
 fn launch(
     program: &Path,
     args: &[OsString],
+    login: &Login,
     out: Sender<Update>,
     probe: fn(u32) -> io::Result<()>,
 ) -> io::Result<Box<dyn Running>> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    if let Some(user) = &login.user {
+        command.env(device::USER, user);
+    }
+    if let Some(password) = &login.password {
+        command.env(device::PASSWORD, password.expose());
+    }
+    let mut child = command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -200,6 +211,7 @@ pub(crate) mod tests {
     pub(crate) struct FakeLauncher {
         failing: bool,
         calls: Mutex<Vec<(PathBuf, Vec<OsString>)>>,
+        logins: Mutex<Vec<Login>>,
         stops: Arc<AtomicUsize>,
         sender: Mutex<Option<Sender<Update>>>,
     }
@@ -225,6 +237,10 @@ pub(crate) mod tests {
             self.calls.lock().unwrap().clone()
         }
 
+        pub(crate) fn logins(&self) -> Vec<Login> {
+            self.logins.lock().unwrap().clone()
+        }
+
         pub(crate) fn stops(&self) -> usize {
             self.stops.load(Ordering::SeqCst)
         }
@@ -239,12 +255,14 @@ pub(crate) mod tests {
             &self,
             program: &Path,
             args: &[OsString],
+            login: &Login,
             out: Sender<Update>,
         ) -> io::Result<Box<dyn Running>> {
             self.calls
                 .lock()
                 .unwrap()
                 .push((program.to_path_buf(), args.to_vec()));
+            self.logins.lock().unwrap().push(login.clone());
             if self.failing {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -269,8 +287,61 @@ pub(crate) mod tests {
     fn shell(script: &str) -> (Box<dyn Running>, mpsc::Receiver<Update>) {
         let (out, updates) = mpsc::channel();
         let args = ["-c", script].map(OsString::from);
-        let running = Processes.start(Path::new("sh"), &args, out).unwrap();
+        let running = Processes
+            .start(Path::new("sh"), &args, &Login::default(), out)
+            .unwrap();
         (running, updates)
+    }
+
+    fn environment(login: &Login) -> Vec<String> {
+        let (out, updates) = mpsc::channel();
+        let _running = Processes
+            .start(Path::new("/usr/bin/env"), &[], login, out)
+            .unwrap();
+        let mut lines = Vec::new();
+        loop {
+            match updates.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Update::ActionLine(line) => lines.push(line),
+                Update::ActionEnded(_) => return lines,
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_gets_the_login_in_its_environment_and_without_one_neither_variable() {
+        let login = Login {
+            user: Some("nobs-t-x".to_string()),
+            password: Some(device::Password::new("nobs-t-not-a-secret".to_string())),
+        };
+
+        let given = environment(&login);
+        let without = environment(&Login::default());
+
+        assert!(given.contains(&"NETWORK_AGENT_USER=nobs-t-x".to_string()));
+        assert!(given.contains(&"NETWORK_AGENT_PASSWORD=nobs-t-not-a-secret".to_string()));
+        let mut own: Vec<String> = std::env::vars()
+            .filter(|(name, _)| name.starts_with("NETWORK_AGENT_"))
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        let mut inherited: Vec<String> = without
+            .into_iter()
+            .filter(|line| line.starts_with("NETWORK_AGENT_"))
+            .collect();
+        own.sort();
+        inherited.sort();
+        let names = |lines: &[String]| {
+            lines
+                .iter()
+                .map(|line| line.split('=').next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            inherited == own,
+            "{:?} {:?}",
+            names(&inherited),
+            names(&own)
+        );
     }
 
     #[test]
@@ -359,7 +430,7 @@ pub(crate) mod tests {
     fn a_group_the_probe_never_sees_gone_ends_not_stopped_with_its_group() {
         let (out, updates) = mpsc::channel();
         let args = ["-c", "echo $$; sleep 300"].map(OsString::from);
-        let mut running = launch(Path::new("sh"), &args, out, |_| {
+        let mut running = launch(Path::new("sh"), &args, &Login::default(), out, |_| {
             Err(io::Error::from_raw_os_error(libc::EPERM))
         })
         .unwrap();

@@ -19,7 +19,7 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use shell::Model;
+use shell::{Login, Model};
 
 pub mod actions;
 pub mod book;
@@ -107,8 +107,11 @@ impl Actions {
         }
     }
 
-    fn start(&mut self, program: &Path, args: &[OsString]) {
-        match self.launcher.start(program, args, self.sender.clone()) {
+    fn start(&mut self, program: &Path, args: &[OsString], login: &Login) {
+        match self
+            .launcher
+            .start(program, args, login, self.sender.clone())
+        {
             Ok(running) => self.running = Some(running),
             Err(error) => {
                 let _ = self.sender.send(Update::ActionLine(format!(
@@ -209,7 +212,11 @@ pub fn settle(model: &mut Model, area: Rect) {
 fn send(commands: Vec<Command>, actions: &mut Actions, pollers: &Pollers) {
     for command in commands {
         match &command {
-            Command::Run { program, args } => actions.start(program, args),
+            Command::Run {
+                program,
+                args,
+                login,
+            } => actions.start(program, args, login),
             Command::Stop => actions.stop(),
             _ => {}
         }
@@ -298,6 +305,7 @@ mod tests {
 
     use crossterm::event::{KeyCode, KeyModifiers};
     use nobs_core::compose::Compose;
+    use nobs_core::device::Password;
     use nobs_core::lab;
     use nobs_core::locate::{locate, Kind, Located};
     use nobs_core::runner::Output;
@@ -309,7 +317,7 @@ mod tests {
     use crate::book::NodeRow;
     use crate::data::stub::Stub;
     use crate::run::tests::FakeLauncher;
-    use crate::shell::tests::{defined, listing};
+    use crate::shell::tests::{defined, finding, listing, SECRET, USER};
     use crate::shell::RunState;
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");
@@ -426,6 +434,7 @@ mod tests {
             source_error: None,
             urls: Urls::defaults(),
             program: PathBuf::from("nobs"),
+            login: finding(Some(USER), Some(SECRET)),
         }
     }
 
@@ -1088,11 +1097,16 @@ mod tests {
     }
 
     fn devices_in(folder: &str) -> Model {
+        devices_finding(folder, finding(Some(USER), Some(SECRET)))
+    }
+
+    fn devices_finding(folder: &str, login: shell::Lookup) -> Model {
         let dir = fixture(folder);
         let mut model = Model::new(Start {
             lab: Some(locate(&dir, Some(&dir)).unwrap()),
             source: Some(Arc::new(Holding)),
             home: Workbench::Devices,
+            login,
             ..start(vec![stack(&[CLOSED])], false)
         });
         model.apply(Update::Devices(Ok(vec![device("srl1")])));
@@ -1175,6 +1189,31 @@ mod tests {
         }
 
         assert_eq!(seen, wanted);
+    }
+
+    #[test]
+    fn a_typed_login_reaches_the_launcher_and_none_of_its_arguments() {
+        let launcher = Arc::new(FakeLauncher::new());
+        let mut actions = Actions::new(launcher.clone());
+        let mut model = devices_finding("book-lab", finding(None, None));
+        let keys: Vec<KeyEvent> = [ch('g')]
+            .into_iter()
+            .chain(USER.chars().map(ch))
+            .chain([key(KeyCode::Enter)])
+            .chain(SECRET.chars().map(ch))
+            .chain([key(KeyCode::Enter)])
+            .collect();
+
+        press(&mut model, &mut actions, &keys).unwrap_err();
+
+        let typed = Login {
+            user: Some(USER.to_string()),
+            password: Some(Password::new(SECRET.to_string())),
+        };
+        assert_eq!(launcher.logins(), [typed]);
+        let calls = launcher.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(!format!("{calls:?}").contains(SECRET), "{calls:?}");
     }
 
     #[test]

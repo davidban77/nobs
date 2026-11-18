@@ -17,8 +17,8 @@ use crate::actions::{self, arguments, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    kind_text, Cursor, Focus, Model, Run, RunMeasure, RunState, StackKind, StackState, Tab,
-    Workbench, NO_BREAK, SERVICES_TABS,
+    kind_text, Cursor, Focus, LoginEntry, Model, Run, RunMeasure, RunState, StackKind, StackState,
+    Tab, Workbench, NO_BREAK, SERVICES_TABS,
 };
 use crate::view;
 
@@ -1789,6 +1789,17 @@ fn action_hints(model: &Model) -> Vec<String> {
 }
 
 pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
+    if let Some(entry) = model.login_entry() {
+        let (label, text, hint) = match entry {
+            LoginEntry::User { text, hint } => {
+                ("user for the devices".to_string(), text.to_string(), hint)
+            }
+            LoginEntry::Password { user, dots, hint } => {
+                (format!("password for {user}"), "•".repeat(dots), hint)
+            }
+        };
+        return entry_line(&label, &text, [hint, "Esc cancel"], width);
+    }
     if let Some((device, text)) = model.entry() {
         let label = format!("run on {device}");
         return entry_line(&label, text, ["Enter run", "Esc cancel"], width);
@@ -3018,6 +3029,7 @@ mod tests {
             started: Instant::now(),
             ended: None,
             state: RunState::Running,
+            typed: false,
         };
         let command = command_rows(&run, 58);
         let refusal = wrapped(REFUSAL, 58);
@@ -3050,6 +3062,7 @@ mod tests {
             started: Instant::now(),
             ended: None,
             state,
+            typed: false,
         };
         let refused = run(vec![REFUSAL.to_string()], RunState::Ended(End::Exited(1)));
         let running = run(

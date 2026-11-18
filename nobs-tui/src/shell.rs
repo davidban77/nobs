@@ -9,6 +9,7 @@ use std::vec::Drain;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::alertmanager::Alert;
+use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
 use nobs_core::evidence;
 use nobs_core::lab;
@@ -21,7 +22,7 @@ use nobs_core::sot::{Device, Session, SourceOfTruth};
 use nobs_core::status::Urls;
 use nobs_core::time;
 
-use crate::actions::{flat, pieces, Ask, Row, Target, ACTIONS};
+use crate::actions::{flat, pieces, Action, Ask, Row, Target, ACTIONS};
 use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
@@ -47,6 +48,7 @@ const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
 const RUNNING: &str = "running";
 
 pub type ShownDeviceLogs<'a> = (&'a str, Vec<(i64, &'a str)>, bool, usize);
+pub(crate) type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Start {
@@ -59,6 +61,7 @@ pub struct Start {
     pub source_error: Option<String>,
     pub urls: Urls,
     pub program: PathBuf,
+    pub login: Lookup,
 }
 
 impl fmt::Debug for Start {
@@ -73,8 +76,15 @@ impl fmt::Debug for Start {
             .field("source_error", &self.source_error)
             .field("urls", &self.urls)
             .field("program", &self.program)
+            .field("login", &"..")
             .finish()
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Login {
+    pub user: Option<String>,
+    pub password: Option<Password>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +269,7 @@ pub enum Command {
     Run {
         program: PathBuf,
         args: Vec<OsString>,
+        login: Login,
     },
     Stop,
 }
@@ -280,6 +291,7 @@ pub struct Run {
     pub started: Instant,
     pub ended: Option<Instant>,
     pub state: RunState,
+    pub(crate) typed: bool,
 }
 
 struct RunView {
@@ -404,10 +416,32 @@ impl Filter {
     }
 }
 
+#[derive(PartialEq, Eq)]
+enum Step {
+    User { then_password: bool },
+    Password { user: String },
+    Command,
+}
+
 struct Asked {
     args: Vec<Vec<OsString>>,
     target: Target,
     text: Filter,
+    step: Step,
+    action: &'static Action,
+    typed: Login,
+}
+
+pub(crate) enum LoginEntry<'a> {
+    User {
+        text: &'a str,
+        hint: &'static str,
+    },
+    Password {
+        user: &'a str,
+        dots: usize,
+        hint: &'static str,
+    },
 }
 
 struct DeviceLine {
@@ -501,6 +535,8 @@ pub struct Model {
     node_row: usize,
     interface_row: usize,
     quitting: bool,
+    login: Login,
+    lookup: Lookup,
 }
 
 impl Model {
@@ -515,6 +551,7 @@ impl Model {
             source_error,
             urls: _,
             program,
+            login,
         } = start;
         let chapter = stacks
             .iter()
@@ -613,6 +650,8 @@ impl Model {
             node_row: 0,
             interface_row: 0,
             quitting: false,
+            login: Login::default(),
+            lookup: login,
         }
     }
 
@@ -789,6 +828,11 @@ impl Model {
         } else if !self.failed.contains(&run.target) {
             self.failed.push(run.target.clone());
         }
+        let refused = matches!(&run.target, Target::Device(name)
+            if run.lines.last() == Some(&device::error_line(name, &device::Error::AuthenticationFailed)));
+        if run.typed && end == End::Exited(1) && refused {
+            self.login = Login::default();
+        }
         if self.quitting {
             self.quit = true;
         }
@@ -814,7 +858,9 @@ impl Model {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match question {
-            Question::Pending { args, target, .. } if yes => self.start_run(args, target, false),
+            Question::Pending { args, target, .. } if yes => {
+                self.start_run(args, target, false, Login::default())
+            }
             Question::Pending { args, .. } => {
                 self.notice = Some(format!("not run: {}", words(&args)));
                 Vec::new()
@@ -831,7 +877,17 @@ impl Model {
         }
     }
 
-    fn start_run(&mut self, args: Vec<Vec<OsString>>, target: Target, keeps: bool) -> Vec<Command> {
+    fn start_run(
+        &mut self,
+        args: Vec<Vec<OsString>>,
+        target: Target,
+        keeps: bool,
+        login: Login,
+    ) -> Vec<Command> {
+        let typed = login != Login::default();
+        if typed {
+            self.login = login.clone();
+        }
         self.run = Some(Run {
             words: words(&args),
             command: joined(&args),
@@ -841,6 +897,7 @@ impl Model {
             started: self.now,
             ended: None,
             state: RunState::Running,
+            typed,
         });
         self.run_view = RunView {
             drawn: self.run_view.drawn,
@@ -850,7 +907,73 @@ impl Model {
         vec![Command::Run {
             program: self.program.clone(),
             args: flat(&args),
+            login,
         }]
+    }
+
+    fn act(
+        &mut self,
+        action: &'static Action,
+        args: Vec<Vec<OsString>>,
+        target: Target,
+        login: Login,
+    ) -> Vec<Command> {
+        let login = if action.login {
+            login
+        } else {
+            Login::default()
+        };
+        let saying = match action.ask {
+            Ask::No => {
+                let mut commands = self.start_run(args, target, action.keeps, login);
+                if action.keeps {
+                    self.tab = Tab::Config;
+                    commands.push(Command::OpenTab(Tab::Config));
+                }
+                return commands;
+            }
+            Ask::Yes => None,
+            Ask::Saying(saying) => Some(saying),
+            Ask::Text => {
+                self.ask(action, args, target, Step::Command, login);
+                return Vec::new();
+            }
+        };
+        self.question = Some(Question::Pending {
+            args,
+            target,
+            saying,
+        });
+        Vec::new()
+    }
+
+    fn ask(
+        &mut self,
+        action: &'static Action,
+        args: Vec<Vec<OsString>>,
+        target: Target,
+        step: Step,
+        typed: Login,
+    ) {
+        let mut text = Filter::default();
+        text.start();
+        self.asked = Some(Asked {
+            args,
+            target,
+            text,
+            step,
+            action,
+            typed,
+        });
+    }
+
+    fn asked_step(&self, typed: &Login) -> Option<Step> {
+        let found = |name: &str| (self.lookup)(name);
+        let then_password = typed.password.is_none() && found(device::PASSWORD).is_none();
+        match typed.user.clone().or_else(|| found(device::USER)) {
+            None => Some(Step::User { then_password }),
+            Some(user) => then_password.then_some(Step::Password { user }),
+        }
     }
 
     pub(crate) fn action_target(&self, row: Row) -> Option<Target> {
@@ -891,29 +1014,16 @@ impl Model {
             }
             Some(args) => {
                 self.notice = None;
-                let saying = match action.ask {
-                    Ask::No => {
-                        let mut commands = self.start_run(args, target, action.keeps);
-                        if action.keeps {
-                            self.tab = Tab::Config;
-                            commands.push(Command::OpenTab(Tab::Config));
-                        }
-                        return Some(commands);
-                    }
-                    Ask::Yes => None,
-                    Ask::Saying(saying) => Some(saying),
-                    Ask::Text => {
-                        let mut text = Filter::default();
-                        text.start();
-                        self.asked = Some(Asked { args, target, text });
-                        return Some(Vec::new());
-                    }
+                let login = self.login.clone();
+                let step = if action.login {
+                    self.asked_step(&login)
+                } else {
+                    None
                 };
-                self.question = Some(Question::Pending {
-                    args,
-                    target,
-                    saying,
-                });
+                match step {
+                    Some(step) => self.ask(action, args, target, step, login),
+                    None => return Some(self.act(action, args, target, login)),
+                }
             }
             None if action.row == Row::Stack => {
                 let mut notice = format!("{} {} is for a workshop", action.key, action.hint);
@@ -1053,11 +1163,33 @@ impl Model {
     }
 
     pub(crate) fn entry(&self) -> Option<(&str, &str)> {
-        let asked = self.asked.as_ref()?;
+        let asked = self
+            .asked
+            .as_ref()
+            .filter(|asked| asked.step == Step::Command)?;
         let Target::Device(device) = &asked.target else {
             return None;
         };
         Some((device, asked.text.text.as_deref().unwrap_or_default()))
+    }
+
+    pub(crate) fn login_entry(&self) -> Option<LoginEntry<'_>> {
+        let asked = self.asked.as_ref()?;
+        let text = asked.text.text.as_deref().unwrap_or_default();
+        let command_follows = asked.action.ask == Ask::Text;
+        let hint = |next: bool| if next { "Enter next" } else { "Enter run" };
+        match &asked.step {
+            Step::User { then_password } => Some(LoginEntry::User {
+                text,
+                hint: hint(*then_password || command_follows),
+            }),
+            Step::Password { user } => Some(LoginEntry::Password {
+                user,
+                dots: text.chars().count(),
+                hint: hint(command_follows),
+            }),
+            Step::Command => None,
+        }
     }
 
     pub fn typed_filter(&self) -> Option<&str> {
@@ -1612,11 +1744,32 @@ impl Model {
                 self.asked = Some(asked);
                 return Vec::new();
             }
-            let Some(text) = asked.text.text else {
+            let Some(text) = asked.text.text.take() else {
                 return Vec::new();
             };
-            asked.args.push(vec![OsString::from(text)]);
-            return self.start_run(asked.args, asked.target, false);
+            let name = match asked.step {
+                Step::Command => {
+                    asked.args.push(vec![OsString::from(text)]);
+                    return self.start_run(asked.args, asked.target, false, asked.typed);
+                }
+                Step::User { .. } => device::USER,
+                Step::Password { .. } => device::PASSWORD,
+            };
+            let Some(value) = device::credential(name, Some(text), &[]) else {
+                return Vec::new();
+            };
+            if name == device::USER {
+                asked.typed.user = Some(value);
+            } else {
+                asked.typed.password = Some(Password::new(value));
+            }
+            return match self.asked_step(&asked.typed) {
+                Some(step) => {
+                    self.ask(asked.action, asked.args, asked.target, step, asked.typed);
+                    Vec::new()
+                }
+                None => self.act(asked.action, asked.args, asked.target, asked.typed),
+            };
         }
         if self.filter.typing {
             self.filter.type_key(key.code);
@@ -2401,6 +2554,20 @@ pub(crate) mod tests {
         }
     }
 
+    pub(crate) const USER: &str = "nobs-t-x";
+    pub(crate) const SECRET: &str = "nobs-t-not-a-secret";
+
+    pub(crate) fn finding(user: Option<&'static str>, password: Option<&'static str>) -> Lookup {
+        Arc::new(move |name| {
+            match name {
+                device::USER => user,
+                device::PASSWORD => password,
+                _ => None,
+            }
+            .map(str::to_string)
+        })
+    }
+
     pub(crate) fn start(stacks: Vec<Stack>) -> Start {
         Start {
             lab: None,
@@ -2412,6 +2579,7 @@ pub(crate) mod tests {
             source_error: None,
             urls: Urls::defaults(),
             program: PathBuf::from("/bin/nobs"),
+            login: finding(Some(USER), Some(SECRET)),
         }
     }
 
@@ -3841,6 +4009,10 @@ pub(crate) mod tests {
     }
 
     fn lab_model(folder: &str, lab_vars: &str) -> Model {
+        lab_model_finding(folder, lab_vars, finding(Some(USER), Some(SECRET)))
+    }
+
+    fn lab_model_finding(folder: &str, lab_vars: &str, login: Lookup) -> Model {
         let dir = fixture(folder);
         let source = lab_vars_source(lab_vars);
         let mut model = Model::new(Start {
@@ -3848,6 +4020,7 @@ pub(crate) mod tests {
             source: Some(source.clone()),
             home: Workbench::Devices,
             chooser: false,
+            login,
             ..start(vec![stack("a", &[])])
         });
         model.apply(Update::Devices(Ok(source.devices().unwrap())));
@@ -4210,6 +4383,7 @@ pub(crate) mod tests {
         Command::Run {
             program: PathBuf::from("/bin/nobs"),
             args: os(args),
+            login: Login::default(),
         }
     }
 
@@ -4589,6 +4763,7 @@ pub(crate) mod tests {
             let run = Command::Run {
                 program: PathBuf::from("/bin/nobs"),
                 args: arguments(action, &target, &model).unwrap(),
+                login: Login::default(),
             };
             let commands = ch(&mut model, action.key);
             if action.ask == Ask::Text {
@@ -5890,6 +6065,570 @@ pub(crate) mod tests {
             assert!(!model.typing(), "{keys:?}");
             assert_eq!(model.question(), None, "{keys:?}");
         }
+    }
+
+    fn asking(user: Option<&'static str>, password: Option<&'static str>) -> Model {
+        lab_model_finding(
+            "book-lab",
+            "book-lab/containerlab/lab_vars.yml",
+            finding(user, password),
+        )
+    }
+
+    fn login(user: Option<&str>, password: Option<&str>) -> Login {
+        Login {
+            user: user.map(str::to_string),
+            password: password.map(|text| Password::new(text.to_string())),
+        }
+    }
+
+    fn entered(model: &mut Model, text: &str) -> Vec<Command> {
+        typed(model, text);
+        code(model, KeyCode::Enter)
+    }
+
+    fn logged_in(model: &mut Model) -> Vec<Command> {
+        let mut commands = ch(model, 'g');
+        commands.extend(entered(model, USER));
+        commands.extend(entered(model, SECRET));
+        commands
+    }
+
+    fn fetch(lab: &str, login: Login) -> Vec<Command> {
+        vec![
+            Command::Run {
+                program: PathBuf::from("/bin/nobs"),
+                args: os(&["--dir", lab, "device", "fetch", "nobs-t-srl1"]),
+                login,
+            },
+            Command::OpenTab(Tab::Config),
+        ]
+    }
+
+    fn device_run(lab: &str, login: Login) -> Command {
+        Command::Run {
+            program: PathBuf::from("/bin/nobs"),
+            args: os(&["--dir", lab, "device", "run", "nobs-t-srl1", "show version"]),
+            login,
+        }
+    }
+
+    fn refusal() -> String {
+        device::error_line("nobs-t-srl1", &device::Error::AuthenticationFailed)
+    }
+
+    const USER_STEP: &str = " user for the devices:   Enter next  Esc cancel";
+
+    fn frame(model: &Model) -> String {
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::screen::draw(frame, model))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn g_without_a_login_asks_the_user_then_the_password_then_runs_with_the_login() {
+        let lab = book_dir();
+        let mut model = asking(None, None);
+
+        assert_eq!(ch(&mut model, 'g'), []);
+        assert!(model.run().is_none());
+        assert_eq!(model.question(), None);
+        assert_eq!(model.entry(), None);
+        assert_eq!(key_line(&model, 100), [USER_STEP]);
+        assert_eq!(entered(&mut model, USER), []);
+        assert!(model.run().is_none());
+        assert_eq!(
+            key_line(&model, 100),
+            [" password for nobs-t-x:   Enter run  Esc cancel"]
+        );
+
+        let commands = entered(&mut model, SECRET);
+
+        assert_eq!(commands, fetch(&lab, login(Some(USER), Some(SECRET))));
+        assert_eq!(model.tab(), Tab::Config);
+        assert_eq!(model.run().unwrap().words, "device fetch nobs-t-srl1");
+        assert!(!model.typing());
+    }
+
+    #[test]
+    fn s_without_a_login_asks_the_login_then_the_command_then_runs() {
+        let lab = book_dir();
+        let mut model = asking(None, None);
+
+        assert_eq!(ch(&mut model, 's'), []);
+        assert_eq!(key_line(&model, 100), [USER_STEP]);
+        assert_eq!(entered(&mut model, USER), []);
+        assert_eq!(
+            key_line(&model, 100),
+            [" password for nobs-t-x:   Enter next  Esc cancel"]
+        );
+        assert_eq!(entered(&mut model, SECRET), []);
+        assert_eq!(model.entry(), Some(("nobs-t-srl1", "")));
+        assert!(model.run().is_none());
+
+        let commands = entered(&mut model, "show version");
+
+        assert_eq!(
+            commands,
+            [device_run(&lab, login(Some(USER), Some(SECRET)))]
+        );
+    }
+
+    #[test]
+    fn only_the_missing_part_is_asked_and_a_whole_login_asks_nothing() {
+        let lab = book_dir();
+        let mut user_found = asking(Some(USER), None);
+        assert_eq!(ch(&mut user_found, 'g'), []);
+        assert_eq!(
+            key_line(&user_found, 100),
+            [" password for nobs-t-x:   Enter run  Esc cancel"]
+        );
+        assert_eq!(
+            entered(&mut user_found, SECRET),
+            fetch(&lab, login(None, Some(SECRET)))
+        );
+
+        let mut password_found = asking(None, Some(SECRET));
+        assert_eq!(ch(&mut password_found, 'g'), []);
+        assert_eq!(
+            key_line(&password_found, 100),
+            [" user for the devices:   Enter run  Esc cancel"]
+        );
+        assert_eq!(
+            entered(&mut password_found, USER),
+            fetch(&lab, login(Some(USER), None))
+        );
+
+        let mut whole = asking(Some(USER), Some(SECRET));
+        assert_eq!(ch(&mut whole, 'g'), fetch(&lab, Login::default()));
+        let mut whole = asking(Some(USER), Some(SECRET));
+        assert_eq!(ch(&mut whole, 's'), []);
+        assert_eq!(whole.entry(), Some(("nobs-t-srl1", "")));
+    }
+
+    #[test]
+    fn the_password_shows_one_dot_each_and_reaches_no_frame_argument_line_notice_or_debug() {
+        let mut model = asking(None, None);
+        let mut frames = Vec::new();
+        let mut commands = ch(&mut model, 'g');
+        commands.extend(entered(&mut model, USER));
+        for letter in SECRET.chars() {
+            commands.extend(ch(&mut model, letter));
+            frames.push(frame(&model));
+        }
+        let dots = "•".repeat(SECRET.chars().count());
+        assert_eq!(
+            key_line(&model, 100),
+            [format!(
+                " password for nobs-t-x: {dots}  Enter run  Esc cancel"
+            )]
+        );
+        assert!(frames.last().unwrap().contains(&dots));
+
+        commands.extend(code(&mut model, KeyCode::Enter));
+        frames.push(frame(&model));
+        commands.extend(ch(&mut model, 'g'));
+        let notice = model.notice().unwrap_or_default().to_string();
+        model.apply(Update::ActionError(refusal()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        frames.push(frame(&model));
+
+        let args: Vec<OsString> = commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::Run { args, .. } => Some(args.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(args.len(), 5);
+        assert!(notice.starts_with("one action at a time"), "{notice}");
+        for text in [
+            frames.concat(),
+            format!("{commands:?}"),
+            format!("{args:?}"),
+            notice,
+            format!("{:?}", model.run()),
+            model.run().unwrap().lines.concat(),
+        ] {
+            assert!(!text.contains(SECRET), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_typed_login_the_device_did_not_refuse_serves_every_later_g_and_s() {
+        let lab = book_dir();
+        let typed = login(Some(USER), Some(SECRET));
+        for end in [End::Exited(0), End::Exited(2), End::Stopped] {
+            let mut model = asking(None, None);
+            assert_eq!(logged_in(&mut model), fetch(&lab, typed.clone()));
+            answered(&mut model, &["Hostname : srl1"], end);
+
+            assert_eq!(ch(&mut model, 'g'), fetch(&lab, typed.clone()), "{end:?}");
+            answered(&mut model, &[], End::Exited(0));
+            assert_eq!(ch(&mut model, 's'), [], "{end:?}");
+            assert_eq!(model.entry(), Some(("nobs-t-srl1", "")), "{end:?}");
+            assert_eq!(
+                entered(&mut model, "show version"),
+                [device_run(&lab, typed.clone())],
+                "{end:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_typed_login_is_forgotten_and_no_other_end_forgets_it() {
+        let lab = book_dir();
+        let mut model = asking(None, None);
+        logged_in(&mut model);
+        model.apply(Update::ActionError(refusal()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        assert_eq!(model.run().unwrap().lines, [refusal()]);
+
+        assert_eq!(ch(&mut model, 'g'), []);
+        assert_eq!(key_line(&model, 100), [USER_STEP]);
+
+        let unreachable = device::Error::Unreachable {
+            host: "clab-nobs-t-dev-nobs-t-srl1".to_string(),
+            reason: "timed out".to_string(),
+        };
+        let kept = [
+            (
+                device::error_line("nobs-t-srl1", &unreachable),
+                End::Exited(1),
+            ),
+            (
+                device::error_line("nobs-t-srl1", &device::Error::NoAnswer),
+                End::Exited(1),
+            ),
+            (
+                device::error_line("nobs-t-srl1", &device::Error::NoDriver("ceos".into())),
+                End::Exited(1),
+            ),
+            (
+                device::error_line("nobs-t-srl1", &device::Error::MissingCredentials),
+                End::Exited(1),
+            ),
+            (
+                "nobs: cannot run nobs: fake launcher failure".to_string(),
+                End::Exited(1),
+            ),
+            ("Parsing error: Unknown token".to_string(), End::Exited(1)),
+            (refusal(), End::Stopped),
+            (refusal(), End::Exited(2)),
+            (
+                device::error_line("nobs-t-srl2", &device::Error::AuthenticationFailed),
+                End::Exited(1),
+            ),
+        ];
+        for (line, end) in kept {
+            let mut model = asking(None, None);
+            logged_in(&mut model);
+            model.apply(Update::ActionError(line.clone()));
+            model.apply(Update::ActionEnded(end));
+
+            assert_eq!(
+                ch(&mut model, 'g'),
+                fetch(&lab, login(Some(USER), Some(SECRET))),
+                "{line} {end:?}"
+            );
+        }
+        let kept = [
+            vec![Update::ActionLine(
+                "Error: authentication failed".to_string(),
+            )],
+            vec![
+                Update::ActionError(refusal()),
+                Update::ActionLine("Hostname : srl1".to_string()),
+            ],
+        ];
+        for updates in kept {
+            let mut model = asking(None, None);
+            logged_in(&mut model);
+            let seen = format!("{updates:?}");
+            for update in updates {
+                model.apply(update);
+            }
+            model.apply(Update::ActionEnded(End::Exited(1)));
+
+            assert_eq!(
+                ch(&mut model, 'g'),
+                fetch(&lab, login(Some(USER), Some(SECRET))),
+                "{seen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_login_found_in_the_shell_or_the_files_opens_nothing_and_shows_the_line_each_time()
+    {
+        let lab = book_dir();
+        let mut model = asking(Some(USER), Some(SECRET));
+        for round in 0..2 {
+            assert_eq!(
+                ch(&mut model, 'g'),
+                fetch(&lab, Login::default()),
+                "{round}"
+            );
+            model.apply(Update::ActionError(refusal()));
+            model.apply(Update::ActionEnded(End::Exited(1)));
+
+            assert_eq!(model.run().unwrap().lines, [refusal()], "{round}");
+            assert!(model.login_entry().is_none(), "{round}");
+            assert!(!model.typing(), "{round}");
+        }
+    }
+
+    #[test]
+    fn at_each_login_step_the_keys_do_what_they_do_in_the_entry_of_s() {
+        for password_step in [false, true] {
+            let open = || {
+                let mut model = asking(None, None);
+                ch(&mut model, 'g');
+                if password_step {
+                    entered(&mut model, USER);
+                }
+                model
+            };
+            let mut model = open();
+            model.apply(Update::Alerts(Err("refused".to_string())));
+            let before = (model.workbench(), model.focus(), model.tab());
+            for letter in "q g x ? 1  r o".chars() {
+                assert_eq!(ch(&mut model, letter), [], "{letter}");
+            }
+            for key in [KeyCode::Tab, KeyCode::Up, KeyCode::Backspace] {
+                assert_eq!(code(&mut model, key), [], "{key:?}");
+            }
+            assert!(!model.quit());
+            assert!(!model.help());
+            assert!(model.run().is_none());
+            assert!(model.typing());
+            assert!(model.error().is_some());
+            assert_eq!((model.workbench(), model.focus(), model.tab()), before);
+            let shown = if password_step {
+                "•".repeat(13)
+            } else {
+                "q g x ? 1  r ".to_string()
+            };
+            let line = key_line(&model, 100).concat();
+            assert!(line.contains(&format!(": {shown}  Enter")), "{line}");
+
+            for keys in [
+                vec![KeyCode::Esc],
+                vec![KeyCode::Char('w'), KeyCode::Esc],
+                vec![KeyCode::Enter],
+                vec![KeyCode::Char('w'), KeyCode::Backspace, KeyCode::Enter],
+            ] {
+                let mut model = open();
+                let commands: Vec<Command> =
+                    keys.iter().flat_map(|key| code(&mut model, *key)).collect();
+
+                assert_eq!(commands, [], "{password_step} {keys:?}");
+                assert!(model.run().is_none(), "{password_step} {keys:?}");
+                assert!(!model.typing(), "{password_step} {keys:?}");
+                assert!(model.login_entry().is_none(), "{password_step} {keys:?}");
+                assert_eq!(ch(&mut model, 'g'), [], "{password_step} {keys:?}");
+                assert_eq!(
+                    key_line(&model, 100),
+                    [USER_STEP],
+                    "{password_step} {keys:?}"
+                );
+            }
+
+            let mut model = open();
+            let control_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+            assert_eq!(handle(&mut model, control_c), [Command::Quit]);
+            assert!(model.quit());
+        }
+    }
+
+    #[test]
+    fn a_typed_value_of_only_spaces_is_no_login_part_and_enter_on_it_cancels_the_prompt() {
+        let lab = book_dir();
+        for password_step in [false, true] {
+            let mut model = asking(None, None);
+            ch(&mut model, 'g');
+            if password_step {
+                entered(&mut model, USER);
+            }
+
+            assert_eq!(entered(&mut model, "   "), [], "{password_step}");
+
+            assert!(model.run().is_none(), "{password_step}");
+            assert!(model.login_entry().is_none(), "{password_step}");
+            assert!(!model.typing(), "{password_step}");
+            assert_eq!(ch(&mut model, 'g'), [], "{password_step}");
+            assert_eq!(key_line(&model, 100), [USER_STEP], "{password_step}");
+        }
+
+        let mut model = asking(None, None);
+        ch(&mut model, 'g');
+        entered(&mut model, " nobs-t-x ");
+        assert_eq!(
+            entered(&mut model, SECRET),
+            fetch(&lab, login(Some(" nobs-t-x "), Some(SECRET)))
+        );
+    }
+
+    #[test]
+    fn for_s_the_typed_login_is_kept_only_when_the_command_runs() {
+        let lab = book_dir();
+        for cancel in [KeyCode::Esc, KeyCode::Enter] {
+            let mut model = asking(None, None);
+            ch(&mut model, 's');
+            entered(&mut model, USER);
+            entered(&mut model, SECRET);
+            assert_eq!(model.entry(), Some(("nobs-t-srl1", "")));
+
+            assert_eq!(code(&mut model, cancel), [], "{cancel:?}");
+
+            assert!(model.run().is_none(), "{cancel:?}");
+            assert_eq!(ch(&mut model, 'g'), [], "{cancel:?}");
+            assert_eq!(key_line(&model, 100), [USER_STEP], "{cancel:?}");
+        }
+
+        let mut model = asking(None, None);
+        ch(&mut model, 's');
+        entered(&mut model, USER);
+        entered(&mut model, SECRET);
+        entered(&mut model, "show version");
+        answered(&mut model, &[], End::Exited(0));
+        assert_eq!(
+            ch(&mut model, 'g'),
+            fetch(&lab, login(Some(USER), Some(SECRET)))
+        );
+    }
+
+    #[test]
+    fn a_refusal_line_ending_a_run_that_did_not_carry_the_kept_login_keeps_it() {
+        let lab = book_dir();
+        let typed = login(Some(USER), Some(SECRET));
+        let mut model = asking(None, None);
+        assert_eq!(logged_in(&mut model), fetch(&lab, typed.clone()));
+        answered(&mut model, &[], End::Exited(0));
+        let maintenance = ACTIONS.iter().find(|action| action.key == 'm').unwrap();
+        assert!(!maintenance.login);
+
+        let asked = model.act(
+            maintenance,
+            vec![vec![OsString::from("maintenance")]],
+            Target::Device("nobs-t-srl1".to_string()),
+            typed.clone(),
+        );
+        assert_eq!(asked, []);
+        let started = ch(&mut model, 'y');
+        assert!(matches!(&started[..], [Command::Run { login, .. }] if *login == Login::default()));
+        model.apply(Update::ActionError(refusal()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        assert_eq!(model.run().unwrap().lines, [refusal()]);
+
+        assert_eq!(ch(&mut model, 'g'), fetch(&lab, typed));
+    }
+
+    #[test]
+    fn the_login_prompt_opens_only_where_the_key_would_act() {
+        let mut no_device = asking(None, None);
+        no_device.apply(Update::Devices(Ok(Vec::new())));
+        let source = workshop_source();
+        let mut workshop = Model::new(Start {
+            lab: Some(workshop_located("infrahub")),
+            source: Some(source.clone()),
+            home: Workbench::Devices,
+            chooser: false,
+            login: finding(None, None),
+            ..start(vec![stack("a", &[])])
+        });
+        workshop.apply(Update::Devices(Ok(source.devices().unwrap())));
+        for (name, mut model) in [("no device", no_device), ("workshop", workshop)] {
+            for key in ['g', 's'] {
+                assert_eq!(ch(&mut model, key), [], "{name} {key}");
+                assert!(model.login_entry().is_none(), "{name} {key}");
+                assert!(!model.typing(), "{name} {key}");
+            }
+        }
+
+        for key in ['g', 's'] {
+            let mut busy = asking(None, None);
+            ch(&mut busy, '2');
+            running(&mut busy);
+            ch(&mut busy, '1');
+
+            assert_eq!(ch(&mut busy, key), [], "{key}");
+
+            assert_eq!(
+                busy.notice(),
+                Some("one action at a time: a up is running"),
+                "{key}"
+            );
+            assert!(busy.login_entry().is_none(), "{key}");
+            assert!(!busy.typing(), "{key}");
+        }
+    }
+
+    #[test]
+    fn an_action_that_does_not_log_in_starts_without_the_kept_login() {
+        let mut model = asking(None, None);
+        logged_in(&mut model);
+        answered(&mut model, &[], End::Exited(0));
+        ch(&mut model, '2');
+
+        let mut commands = ch(&mut model, 's');
+        answered(&mut model, &[], End::Exited(0));
+        ch(&mut model, 'u');
+        commands.extend(ch(&mut model, 'y'));
+
+        let logins: Vec<&Login> = commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::Run { login, .. } => Some(login),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logins, [&Login::default(), &Login::default()]);
+    }
+
+    #[test]
+    fn the_login_is_looked_up_again_at_each_key() {
+        let lab = book_dir();
+        let held = Arc::new(std::sync::Mutex::new((Some(USER), Some(SECRET))));
+        let seen = Arc::clone(&held);
+        let mut model = lab_model_finding(
+            "book-lab",
+            "book-lab/containerlab/lab_vars.yml",
+            Arc::new(move |name| {
+                let (user, password) = *seen.lock().unwrap();
+                finding(user, password)(name)
+            }),
+        );
+        let found = |user, password| *held.lock().unwrap() = (user, password);
+
+        assert_eq!(ch(&mut model, 'g'), fetch(&lab, Login::default()));
+        answered(&mut model, &[], End::Exited(0));
+
+        found(None, None);
+        assert_eq!(ch(&mut model, 'g'), []);
+        assert_eq!(key_line(&model, 100), [USER_STEP]);
+        code(&mut model, KeyCode::Esc);
+
+        found(Some(USER), None);
+        assert_eq!(ch(&mut model, 'g'), []);
+        assert_eq!(
+            key_line(&model, 100),
+            [" password for nobs-t-x:   Enter run  Esc cancel"]
+        );
+        code(&mut model, KeyCode::Esc);
+
+        found(Some(USER), Some(SECRET));
+        assert_eq!(ch(&mut model, 'g'), fetch(&lab, Login::default()));
     }
 
     fn measured(overflow: usize, cut_rows: usize) -> Option<RunMeasure> {
