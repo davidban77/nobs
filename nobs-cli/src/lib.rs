@@ -6358,10 +6358,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_command_finds_a_login_exactly_when_the_screen_lookup_finds_one() {
+    fn login_lab(name: &str, env: &str, setup_env: &str) -> Scratch {
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/device-lab");
+        let lab = Scratch::new(name);
+        fs::copy(fixture.join("nobs.toml"), lab.0.join("nobs.toml")).unwrap();
+        fs::create_dir_all(lab.0.join("containerlab")).unwrap();
+        fs::copy(
+            fixture.join("containerlab/lab.clab.yml"),
+            lab.0.join("containerlab/lab.clab.yml"),
+        )
+        .unwrap();
+        fs::write(lab.0.join(".env"), env).unwrap();
+        fs::write(lab.0.join(".setup.env"), setup_env).unwrap();
+        lab
+    }
+
+    #[test]
+    fn the_command_finds_a_login_exactly_when_the_screen_lookup_finds_one() {
         for (case, (user, env, setup_env)) in [
             (Some("nobs-t-x"), "NETWORK_AGENT_USER=\n", ""),
             (Some("  "), "NETWORK_AGENT_USER=nobs-t-x\n", ""),
@@ -6383,30 +6397,40 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let lab = Scratch::new(&format!("device-login-{case}"));
-            fs::copy(fixture.join("nobs.toml"), lab.0.join("nobs.toml")).unwrap();
-            fs::create_dir_all(lab.0.join("containerlab")).unwrap();
-            fs::copy(
-                fixture.join("containerlab/lab.clab.yml"),
-                lab.0.join("containerlab/lab.clab.yml"),
-            )
-            .unwrap();
-            fs::write(lab.0.join(".env"), env).unwrap();
-            fs::write(lab.0.join(".setup.env"), setup_env).unwrap();
+            let lab = login_lab(&format!("device-login-{case}"), env, setup_env);
             set_credential(device::USER, user);
             set_credential(device::PASSWORD, Some(TEST_PASSWORD));
             let start = screen_start(&lab.0, None, flags(None), false).unwrap();
             let screen =
                 (start.login)(device::USER).is_some() && (start.login)(device::PASSWORD).is_some();
-            let dir = lab.0.to_string_lossy().into_owned();
-            let cli =
-                Cli::try_parse_from(["nobs", "--dir", &dir, "device", "fetch", "nobs-t-srl1"])
-                    .unwrap();
+            let transport = FakeTransport::answering(Ok(answer(0, "", "")));
 
-            let code = run(cli, &FakeRunner::failing());
+            remove_blank_variables(&[device::USER, device::PASSWORD]);
+            run_device(
+                DeviceCommand::Fetch {
+                    name: "nobs-t-srl1".to_string(),
+                },
+                Some(&lab.0),
+                &transport,
+            );
 
-            assert_eq!(code, 1, "case {case}");
-            assert_eq!(device::credentials().is_ok(), screen, "case {case}");
+            assert_eq!(!transport.calls().is_empty(), screen, "case {case}");
         }
+    }
+
+    #[test]
+    fn the_screen_lookup_takes_the_shell_user_before_the_env_file_user() {
+        let lab = login_lab(
+            "device-login-shell-first",
+            "NETWORK_AGENT_USER=nobs-t-y\n",
+            "",
+        );
+        set_credential(device::USER, Some("nobs-t-x"));
+        set_credential(device::PASSWORD, None);
+
+        let start = screen_start(&lab.0, None, flags(None), false).unwrap();
+
+        assert_eq!((start.login)(device::USER).as_deref(), Some("nobs-t-x"));
+        assert_eq!((start.login)(device::PASSWORD), None);
     }
 }

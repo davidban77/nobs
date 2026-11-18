@@ -2707,7 +2707,7 @@ The commands work in a lab with containerlab nodes, on the machine that runs the
 
 nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing, empty or only spaces, nobs names the two variables and opens no connection. nobs never prints the password.
 
-In the screen, `g` and `s` ask on the key line for what is missing: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g` or `s`. A login from the shell or the `.env` file is never asked for again: fix it there.
+In the screen, `g` and `s` ask on the key line for what is missing: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g` or `s`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
 
 Each command opens one connection: nobs connects, logs in, runs one command and closes the connection. When the device sends nothing for 10 seconds, nobs stops with an error.
 

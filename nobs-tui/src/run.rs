@@ -320,8 +320,28 @@ pub(crate) mod tests {
 
         assert!(given.contains(&"NETWORK_AGENT_USER=nobs-t-x".to_string()));
         assert!(given.contains(&"NETWORK_AGENT_PASSWORD=nobs-t-not-a-secret".to_string()));
-        let named = |line: &String| line.starts_with("NETWORK_AGENT_");
-        assert!(!without.iter().any(named), "{without:?}");
+        let mut own: Vec<String> = std::env::vars()
+            .filter(|(name, _)| name.starts_with("NETWORK_AGENT_"))
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        let mut inherited: Vec<String> = without
+            .into_iter()
+            .filter(|line| line.starts_with("NETWORK_AGENT_"))
+            .collect();
+        own.sort();
+        inherited.sort();
+        let names = |lines: &[String]| {
+            lines
+                .iter()
+                .map(|line| line.split('=').next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            inherited == own,
+            "{:?} {:?}",
+            names(&inherited),
+            names(&own)
+        );
     }
 
     #[test]

@@ -6325,6 +6325,10 @@ pub(crate) mod tests {
             ("Parsing error: Unknown token".to_string(), End::Exited(1)),
             (refusal(), End::Stopped),
             (refusal(), End::Exited(2)),
+            (
+                device::error_line("nobs-t-srl2", &device::Error::AuthenticationFailed),
+                End::Exited(1),
+            ),
         ];
         for (line, end) in kept {
             let mut model = asking(None, None);
@@ -6336,6 +6340,30 @@ pub(crate) mod tests {
                 ch(&mut model, 'g'),
                 fetch(&lab, login(Some(USER), Some(SECRET))),
                 "{line} {end:?}"
+            );
+        }
+        let kept = [
+            vec![Update::ActionLine(
+                "Error: authentication failed".to_string(),
+            )],
+            vec![
+                Update::ActionError(refusal()),
+                Update::ActionLine("Hostname : srl1".to_string()),
+            ],
+        ];
+        for updates in kept {
+            let mut model = asking(None, None);
+            logged_in(&mut model);
+            let seen = format!("{updates:?}");
+            for update in updates {
+                model.apply(update);
+            }
+            model.apply(Update::ActionEnded(End::Exited(1)));
+
+            assert_eq!(
+                ch(&mut model, 'g'),
+                fetch(&lab, login(Some(USER), Some(SECRET))),
+                "{seen}"
             );
         }
     }
