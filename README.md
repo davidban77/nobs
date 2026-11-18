@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run fourteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run sixteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -42,7 +42,7 @@ The screen reads the `.env` file of each stack itself, so the settings of one st
 
 | Part | Where | What it shows |
 |---|---|---|
-| header | the first line | `nobs`, the name and the kind of the lab, and the `sot` word (`sot` is short for source of truth: the system that holds the intended state of the network): `sot infrahub` or `sot none` as the `sot` setting of `nobs.toml` says in a workshop, `sot lab_vars` in a book lab, `sot none` in a labcli lab (see [The devices workbench](#the-devices-workbench)); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address |
+| header | the first line | `nobs`, the name and the kind of the lab, and the `sot` word (`sot` is short for source of truth: the system that holds the intended state of the network): `sot infrahub` or `sot none` as the `sot` setting of `nobs.toml` says in a workshop, `sot lab_vars` in a book lab and in a labcli lab that has the file `containerlab/lab_vars.yml`, `sot none` in a labcli lab without it (see [The devices workbench](#the-devices-workbench)); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address |
 | switcher | the second line | `1 devices` and `2 services`, and `3 lab` in a book lab, with the open workbench in brackets; `? keys  q quit` at the right end; in the chooser `choose a lab, or q to quit` |
 | body | the middle | the open workbench, or the chooser |
 | run line | the line above the last | `run  none` before the first action, else the last action and its state, for example `run  lab deploy --sudo-no-prompt -s ch1  exit 0  41s`; `o open` at the right end; when the run pane is open, the pane takes the place of the run line, and when the open pane has room for only one row, the run line stays and shows `Esc fold` at the right end (see [Actions](#actions)); the chooser has no run line |
@@ -54,13 +54,13 @@ When a list has more rows than its pane can show, the border under the list ends
 
 ### The devices workbench
 
-The devices workbench is workbench `1`. It shows the devices of the lab, one row for each, with their health and their alerts, and four tabs for the device you select. It only reads, except for the action `m` (see [Actions](#actions)). A workshop opens on it. A book lab opens on the lab workbench. A labcli lab, the chooser and `sonda only` open on the services workbench.
+The devices workbench is workbench `1`. It shows the devices of the lab, one row for each, with their health and their alerts, and four tabs for the device you select, five in a lab with containerlab nodes, where the Config tab keeps the configuration that `g` got. It only reads, except for the action `m` and for `s`, which runs the command you type on the device (see [Actions](#actions)). A workshop opens on it. A book lab opens on the lab workbench. A labcli lab whose `containerlab/lab_vars.yml` nobs can read opens on the devices workbench. A lab made by `nobs project` has this file. Any other labcli lab, the chooser and `sonda only` open on the services workbench. A book lab and a labcli lab that has the file `containerlab/lab_vars.yml`, such as a lab made by `nobs project`, take their devices from that file, and the header says `sot lab_vars`.
 
 The data comes from five systems. The first is the source of truth, the `sot` of the header. It holds what the lab should look like: its devices, their interfaces, their BGP sessions and the maintenance flag of each device.
 
 | System | What the workbench takes from it | Name on the red error line |
 |---|---|---|
-| source of truth (here Infrahub, or the file `containerlab/lab_vars.yml` in a book lab) | the devices and what they should look like | `sot` |
+| source of truth (here Infrahub, or the file `containerlab/lab_vars.yml` in a book lab or a labcli lab that has it) | the devices and what they should look like | `sot` |
 | Prometheus (stores numbers measured over time) | the live state of the BGP sessions and of the interfaces | `prometheus` |
 | Alertmanager (holds the alerts) | the alerts | `alertmanager` |
 | Loki (stores log lines) | the log lines of a device, and its RCA records (the root cause analysis that the automation of the workshop writes into Loki) | `loki` |
@@ -112,7 +112,9 @@ The left side is the list of devices, titled `devices <n>`, with the alerts box 
 
 The alerts box lists every alert of the lab, newest first. From 100 columns, a row shows the name of the alert, the device, the state (`firing`, `silenced` or `inhibited`) and the age, for example `BgpSessionNotUp  srl1  firing  21s`. At 60 columns, a row shows the device first and then the name, for example `srl1  BgpSessionNotUp`. A silenced or inhibited alert is dim. The title shows the number of alerts, or `?` when Alertmanager did not answer. `j` and `k` walk down the list of devices and then into the alerts box. `Enter` on an alert selects its device and opens the timeline tab of that device.
 
-The right side has four tabs, `overview`, `interfaces`, `timeline` and `logs`, with the open tab in capital letters. `Enter` on a device moves the focus to the tabs, on the overview tab.
+The right side has four tabs, `overview`, `interfaces`, `timeline` and `logs`, with the open tab in capital letters. In a lab with containerlab nodes it has five, with `config` between `interfaces` and `timeline`. `Enter` on a device moves the focus to the tabs, on the overview tab.
+
+The Config tab shows the configuration that the last good `g` got for the selected device. Its first line is `fetched <time>  <n> lines`. Before the first good `g`, it says `press g to get the running config`. A failed or stopped `g` leaves the tab as it was. `j` and `k` scroll it, and `/` filters its lines.
 
 The overview tab shows these lines, from the top:
 
@@ -305,7 +307,7 @@ When the line comes back later, those minutes have passed. Do the same steps aga
 
 ### Actions
 
-An action is a nobs command that the screen runs for you. There are fourteen:
+An action is a nobs command that the screen runs for you. There are sixteen:
 
 | Key | Where it works | Command it runs | When you press the key |
 |---|---|---|---|
@@ -316,6 +318,8 @@ An action is a nobs command that the screen runs for you. There are fourteen:
 | `p` | the same as `u` | `nobs --dir <workshop folder> <workshop> preflight` | asks `y/n` and says `It flaps srl1, leaves it in maintenance and can take 13 minutes.` |
 | `s` | the same as `u` | `nobs --dir <workshop folder> <workshop> status` | runs at once |
 | `m` | the devices workbench of a workshop, with a device selected | `nobs --dir <workshop folder> <workshop> maintenance -d <device> --state`, or `--clear` when the device is in maintenance | asks `y/n` |
+| `g` | the devices workbench, in a lab with containerlab nodes, with a device selected | `nobs --dir <lab folder> device fetch <device>` | runs at once; a good answer goes to the Config tab |
+| `s` | the same as `g` | `nobs --dir <lab folder> device run <device> "<command>"` | asks for the command on the key line, `Enter` runs it, `Esc` cancels |
 | `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes, every node and the other chapters' services.` |
 | `P` | the lab workbench; it acts on the whole lab, so it needs no chapter | `nobs --dir <lab folder> lab purge --sudo-no-prompt` | asks `y/n` and says `It takes every scenario down and removes their volumes.` |
@@ -342,13 +346,13 @@ run nobs --dir /home/me/ws/packt packt destroy? It removes the stack's volumes. 
 
 Only `y` runs it. Any other key runs nothing, and the line says `not run:` and the command without its `--dir` folder, for example `not run: packt up`.
 
-`s` and `S` only read, so they ask nothing. They start at once, and their output shows in the run pane.
+`s` of the services workbench, `g` and `S` only read, so they ask nothing. They start at once, and their output shows in the run pane. `s` of the devices workbench asks for a command on the key line.
 
 Some keys refuse:
 
 - `u`, `d`, `X`, `R`, `p` or `s` in the services workbench, on a chapter, shows `<key> <hint> is for a workshop; a chapter has its actions in the lab workbench`, for example `u up is for a workshop; a chapter has its actions in the lab workbench`. On a labcli lab or on `sonda only`, it shows `<key> <hint> is for a workshop`, for example `u up is for a workshop`.
-- `m` does nothing in a book lab, nor when the device list is empty.
-- Only one action runs at a time. A second action key shows `one action at a time: <action> is running`.
+- `m` does nothing in a book lab, nor when the device list is empty. `g` and `s` of the devices workbench do nothing in a workshop.
+- Only one action runs at a time. While an action runs, a key that could start another action shows `one action at a time: <action> is running`. A key that cannot act here does what this list says, also while an action runs.
 
 In the sonda tab, with the focus on the tabs or on the right panel, `d` does not take the stack down. It asks to delete the selected scenario (see [The Sonda tab](#the-sonda-tab)).
 
@@ -361,7 +365,7 @@ When the action starts, the run pane opens by itself. The title of the pane show
 | `stopped` | yellow | you stopped it with Ctrl-C |
 | `not stopped` | red | you stopped it, but a program it started still runs (see below) |
 
-The pane starts with the command line, `$ nobs --dir <folder> …`. A long command line wraps onto more than one row. Under it come the lines the action prints, as they come. A line that starts with `nobs:` is red. A long line, and a long command line, breaks between words; only a word longer than the row breaks at the row's end. The pane shows the whole command line, and under it the newest output, when the whole command line and the newest output line fit together. When they do not, the pane shows only the newest output rows, so the oldest line in view may show only its end. The pane gives way to the workbench: it takes only the rows the workbench does not need to show its selected row, and with fewer than 3 rows it folds to the one run line. It cannot scroll back, so the first lines of a long action go out of view. To see every line of an action, run the same command in a terminal instead of from the screen. The `y/n` question before an action that changes something shows the whole command. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
+The pane starts with the command line, `$ nobs --dir <folder> …`. A long command line wraps onto more than one row. Under it come the lines the action prints, as they come. A line that starts with `nobs:` is red. A long line, and a long command line, breaks between words; only a word longer than the row breaks at the row's end. The pane shows the whole command line, and under it the newest output, when the whole command line and the newest output line fit together. When they do not, the pane shows only the newest output rows, so the oldest line in view may show only its end. The pane gives way to the workbench: it takes only the rows the workbench does not need to show its selected row, and with fewer than 3 rows it folds to the one run line. It cannot scroll back: the pane shows the newest rows, so of a long answer, such as the configuration that `g` gets, you see the end. The Config tab keeps every line of that configuration. To see every line of an action, run the same command in a terminal instead of from the screen. The `y/n` question before an action that changes something shows the whole command. The pane holds only the lines of the last action. `o` opens and folds the pane, and `Esc` folds it. To fold the pane is to close it back to the one run line. When the screen cannot start nobs, the pane shows `nobs: cannot run nobs: <error>` and ends with `exit 1`.
 
 An action that worked, at 100 columns:
 
@@ -407,16 +411,17 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 |---|---|
 | `1` `2` `3` | open the devices workbench, the services workbench or the lab workbench; `3` works only in a book lab |
 | `Tab` | move the focus between the stack list and the tabs; in the sonda tab, from the stack list to the tabs, then to the right panel, then back to the stack list; in the devices workbench, between the device list and the tabs; in the lab workbench, from the chapters to the nodes, then to the overview, then back to the chapters |
-| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, the row in the interfaces tab and the row in the timeline tab; in the lab workbench, the chapter or the node; in the overview tab of a device, in the box of a timeline row, in the overview of the lab workbench and in the right panel of the sonda tab, move the text by one line; scroll a paused log |
-| `[` `]` | open the previous or the next tab, when the focus is on the tabs, or on the right panel of the sonda tab; the devices workbench has four tabs |
+| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, the row in the interfaces tab and the row in the timeline tab; in the lab workbench, the chapter or the node; in the overview tab of a device, in the box of a timeline row, in the overview of the lab workbench and in the right panel of the sonda tab, move the text by one line; scroll a paused log and the Config tab |
+| `[` `]` | open the previous or the next tab, when the focus is on the tabs, or on the right panel of the sonda tab; the devices workbench has four tabs, five in a lab with containerlab nodes |
 | `Enter` | in the list, move the focus to the tabs; in the overview tab, open the logs of the selected service; in the chooser, open the row; in the devices workbench, on a device move the focus to the tabs, on an alert select its device and open the timeline tab, and in the timeline tab open the full text of the row; in a question or a filter, confirm it |
-| `/` | filter the stacks or the devices by name, or the lines of the log; while you type, `Enter` keeps the filter and `Esc` clears it; when the filter hides the selected stack or device, the selection moves to the first row shown, and the right side follows; when the filter shows no row, the selection stays |
+| `/` | filter the stacks or the devices by name, or the lines of the log or of the Config tab; while you type, `Enter` keeps the filter and `Esc` clears it; when the filter hides the selected stack or device, the selection moves to the first row shown, and the right side follows; when the filter shows no row, the selection stays |
 | `r` | ask for new data now; in the sonda tab, ask the server for the list |
 | `l` | open the logs of the selected service; in the sonda tab, ask for the path of a scenario file |
 | `f` | pause the log, or follow it again; this works in the logs tab of the devices workbench too |
 | `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab uses the same window |
 | `u` `d` `X` `R` `p` `s` | in the services workbench, on the selected workshop stack: ask to run `nobs <workshop> up`, `down`, `destroy`, `reset` or `preflight`, or run `status` at once; `down` removes the containers and keeps the volumes (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
 | `m` | ask to set or clear the maintenance flag of the selected device |
+| `g` `s` | in the devices workbench, in a lab with containerlab nodes, on the selected device: run `nobs device fetch` at once and open the Config tab, or ask for a command on the key line and run `nobs device run` (see [Actions](#actions)) |
 | `D` `X` `P` `R` `U` `B` `S` | in the lab workbench: ask to deploy, destroy, prepare, update or rebuild the selected chapter, or to purge the whole lab; `S` shows the chapter at once (see [Actions](#actions)) |
 | `y` | answer yes to the open question; any other key answers no |
 | `o` | open or fold the run pane |
@@ -2677,6 +2682,8 @@ The `nobs device` group logs in to one device of a lab over SSH and prints what 
 |---|---|
 | `nobs device fetch NAME` | prints the running configuration of the device, one set line per setting |
 | `nobs device run NAME COMMAND` | runs one command on the device and prints its answer |
+
+On the screen, `g` and `s` on the devices workbench run these two commands for the selected device.
 
 `NAME` is the node name in the lab's topology file. `COMMAND` is one text: put it in quotes, and nobs hands it to the device with its spaces kept.
 

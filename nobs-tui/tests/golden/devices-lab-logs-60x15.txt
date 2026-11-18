@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab              ? keys  q quit
+┌ devices 2 ──────────┐╔ nobs-t-srl1 ══════════════════════╗
+│   NAME    HLTH  ALRT│║‹ ifaces  config  timeline  LOGS   ║
+│>  nobs-…  ?        ?│║                                   ║
+│   nobs-…  ?        ?│║                                   ║
+│                     │║                                   ║
+│                     │║                                   ║
+│                     │║                                   ║
+├ alerts ? ───────────┤║                                   ║
+│                     │║                                   ║
+│                     │║                                   ║
+└─────────────────────┘╚═══════════════════════════════════╝
+ run  none                                           o open
+ f pause  / filter  j/k scroll  [ ] tab  Esc back to list

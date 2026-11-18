@@ -13,12 +13,12 @@ use nobs_core::count::counted;
 use nobs_core::locate::Located;
 use nobs_core::time;
 
-use crate::actions::{arguments, Target, ACTIONS};
+use crate::actions::{self, arguments, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
     kind_text, Cursor, Focus, Model, Run, RunState, StackKind, StackState, Tab, Workbench,
-    DEVICE_TABS, NO_BREAK, SERVICES_TABS,
+    NO_BREAK, SERVICES_TABS,
 };
 use crate::view;
 
@@ -27,6 +27,8 @@ const LEFT_NARROW: u16 = 23;
 const LEFT_WIDE: u16 = 32;
 const LEFT_DEVICES: u16 = 42;
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
+const CONFIG_HINT: &str = "press g to get the running config";
+const PANE_HINTS: [&str; 4] = ["/ filter", "j/k scroll", "[ ] tab", "Esc back to list"];
 const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
 const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
 const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
@@ -235,7 +237,7 @@ fn workbench_least(model: &Model) -> u16 {
     };
     let tab_rows = match (model.workbench(), model.tab()) {
         (Workbench::Lab, _) => 1,
-        (Workbench::Services, Tab::Overview) | (_, Tab::Timeline) => 2,
+        (Workbench::Services, Tab::Overview) | (_, Tab::Timeline | Tab::Config) => 2,
         (_, Tab::Overview | Tab::Logs) => 1,
         (_, Tab::Interfaces) => 3,
         (_, Tab::Sonda) => 6,
@@ -552,7 +554,9 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     match model.tab() {
-        Tab::Overview | Tab::Interfaces | Tab::Timeline => overview(frame, content, model, wide),
+        Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline => {
+            overview(frame, content, model, wide)
+        }
         Tab::Logs => logs(frame, content, model),
         Tab::Sonda => {
             view::draw_in(
@@ -580,23 +584,11 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
 fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let on_devices = model.workbench() == Workbench::Devices;
     let shown: &[Tab] = if on_devices {
-        &DEVICE_TABS
+        model.device_tabs()
     } else {
         &SERVICES_TABS
     };
-    let mut spans = Vec::new();
-    for (index, tab) in shown.iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::raw("  "));
-        }
-        let name = tab.title(wide);
-        spans.push(if *tab == model.tab() {
-            Span::styled(name.to_uppercase(), REVERSE)
-        } else {
-            Span::raw(name)
-        });
-    }
-    let line = Line::from(spans);
+    let line = tab_line(shown, model.tab(), wide, usize::from(area.width));
     let room = usize::from(area.width).saturating_sub(line.width() + 2);
     frame.render_widget(Paragraph::new(line), area);
     let logs = if model.tab() != Tab::Logs {
@@ -619,6 +611,53 @@ fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         if let Some(status) = status {
             right(frame, area, Line::from(status), 0);
         }
+    }
+}
+
+fn tab_line(tabs: &[Tab], open: Tab, wide: bool, width: usize) -> Line<'static> {
+    let titles: Vec<&str> = tabs.iter().map(|tab| tab.title(wide)).collect();
+    let at = tabs.iter().position(|tab| *tab == open).unwrap_or(0);
+    let (first, end) = tab_window(&titles, at, width);
+    let mut spans = Vec::new();
+    if first > 0 {
+        spans.push(Span::raw("‹ "));
+    }
+    for (index, tab) in tabs.iter().enumerate().take(end).skip(first) {
+        if index > first {
+            spans.push(Span::raw("  "));
+        }
+        let name = tab.title(wide);
+        spans.push(if *tab == open {
+            Span::styled(name.to_uppercase(), REVERSE)
+        } else {
+            Span::raw(name)
+        });
+    }
+    if end < tabs.len() {
+        spans.push(Span::raw(" ›"));
+    }
+    Line::from(spans)
+}
+
+fn tab_window(titles: &[&str], open: usize, width: usize) -> (usize, usize) {
+    let fits = |first: usize, end: usize| {
+        let names: usize = titles[first..end]
+            .iter()
+            .map(|title| title.chars().count() + 2)
+            .sum();
+        let marks = 2 * (usize::from(first > 0) + usize::from(end < titles.len()));
+        names - 2 + marks <= width
+    };
+    let mut first = 0;
+    loop {
+        let end = (first + 2..=titles.len())
+            .rev()
+            .find(|end| fits(first, *end))
+            .unwrap_or(first + 1);
+        if open < end || first >= open {
+            return (first, end);
+        }
+        first += 1;
     }
 }
 
@@ -967,6 +1006,7 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Tab::Timeline => timeline(frame, content, model),
         Tab::Logs => device_logs(frame, content, model),
         Tab::Interfaces => device_interfaces(frame, content, model, wide),
+        Tab::Config => config_pane(frame, content, model),
         Tab::Sonda => {}
     }
 }
@@ -1288,16 +1328,44 @@ fn device_logs(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     };
     let start = if following { 0 } else { scroll };
-    let shown: Vec<Line> = lines
-        .iter()
-        .skip(start)
-        .take(usize::from(area.height))
-        .map(|(nanoseconds, text)| {
-            let text = format!("{}  {text}", devices::clock_of(*nanoseconds));
-            Line::from(fit(&text, usize::from(area.width)))
-        })
-        .collect();
-    rows_mark(frame, border_below(area), start, shown.len(), lines.len());
+    let rows = lines.iter().map(|(nanoseconds, text)| {
+        let text = format!("{}  {text}", devices::clock_of(*nanoseconds));
+        Line::from(fit(&text, usize::from(area.width)))
+    });
+    pane_rows(frame, area, rows, start, lines.len());
+}
+
+fn config_pane(frame: &mut Frame, area: Rect, model: &Model) {
+    let Some((_, kept, lines, scroll)) = model.config() else {
+        return;
+    };
+    let width = usize::from(area.width);
+    let Some(kept) = kept else {
+        let hint = fitted(vec![(CONFIG_HINT.to_string(), DIM)], width);
+        frame.render_widget(Paragraph::new(hint), area);
+        return;
+    };
+    let [header, rows_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let fetched = format!(
+        "fetched {}  {}",
+        kept.fetched,
+        counted(kept.lines.len(), "line")
+    );
+    frame.render_widget(Paragraph::new(Line::from(fit(&fetched, width))), header);
+    let rows = lines.iter().map(|line| Line::from(fit(line, width)));
+    pane_rows(frame, rows_area, rows, scroll, lines.len());
+}
+
+fn pane_rows<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    rows: impl Iterator<Item = Line<'a>>,
+    start: usize,
+    total: usize,
+) {
+    let shown: Vec<Line> = rows.skip(start).take(usize::from(area.height)).collect();
+    rows_mark(frame, border_below(area), start, shown.len(), total);
     frame.render_widget(Paragraph::new(shown), area);
 }
 
@@ -1659,8 +1727,12 @@ fn action_hints(model: &Model) -> Vec<String> {
 }
 
 pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
+    if let Some((device, text)) = model.entry() {
+        let label = format!("run on {device}");
+        return entry_line(&label, text, ["Enter run", "Esc cancel"], width);
+    }
     if let Some(text) = model.typed_filter() {
-        return filter_line(text, width);
+        return entry_line("filter", text, ["Enter keep", "Esc clear"], width);
     }
     if let Some(question) = model.question() {
         return wrapped(&format!(" {}", question.text()), width);
@@ -1687,7 +1759,11 @@ fn key_hints(model: &Model) -> Vec<String> {
         (Workbench::Services, Focus::List, _) => {
             vec!["Tab focus", "j/k move", "/ filter", "l logs", "r refresh"]
         }
-        (Workbench::Services, Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Timeline) => {
+        (
+            Workbench::Services,
+            Focus::Tabs,
+            Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline,
+        ) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Enter logs", "Esc back"]
         }
         (Workbench::Services, Focus::Tabs, Tab::Logs) => {
@@ -1716,6 +1792,7 @@ fn key_hints(model: &Model) -> Vec<String> {
         (Workbench::Devices, Focus::Tabs, Tab::Logs) => {
             log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
         }
+        (Workbench::Devices, Focus::Tabs, Tab::Config) => PANE_HINTS.to_vec(),
         (Workbench::Services, Focus::Lines, _) | (Workbench::Devices, _, _) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Esc back"]
         }
@@ -1725,13 +1802,7 @@ fn key_hints(model: &Model) -> Vec<String> {
 
 fn log_hints(paused: bool) -> Vec<&'static str> {
     let follow = if paused { "f follow" } else { "f pause" };
-    vec![
-        follow,
-        "/ filter",
-        "j/k scroll",
-        "[ ] tab",
-        "Esc back to list",
-    ]
+    [follow].into_iter().chain(PANE_HINTS).collect()
 }
 
 pub(crate) fn whole_hints(hints: &[String], width: usize) -> String {
@@ -1754,9 +1825,9 @@ fn push_whole(line: &mut String, hint: &str, width: usize) -> bool {
     true
 }
 
-fn filter_line(text: &str, width: usize) -> Vec<String> {
-    let mut rows = wrapped(&format!(" filter: {text}"), width);
-    for hint in ["Enter keep", "Esc clear"] {
+fn entry_line(label: &str, text: &str, keys: [&str; 2], width: usize) -> Vec<String> {
+    let mut rows = wrapped(&format!(" {label}: {text}"), width);
+    for hint in keys {
         let fits = rows
             .last_mut()
             .is_some_and(|row| push_whole(row, hint, width));
@@ -1780,6 +1851,7 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench)
+        .filter(|action| action.row != actions::Row::Node || model.lab_with_nodes())
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
     [(switch.join(" "), "switch workbench")]
@@ -1943,10 +2015,49 @@ mod tests {
     use crate::book::NodeRow;
     use crate::data;
     use crate::shell::tests::{
-        alert, defined, devices_model, fixture, listing, row, sonda_rows, stack, start,
-        workshop_located,
+        alert, defined, devices_model, fixture, lab_devices_model, listing, row, sonda_rows, stack,
+        start, workshop_located,
     };
-    use crate::shell::{handle, stacks, Stack, Start, Update};
+    use crate::shell::{handle, stacks, Stack, Start, Update, DEVICE_TABS};
+
+    fn tab_text(tabs: &[Tab], open: Tab) -> String {
+        tab_line(tabs, open, false, 35)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn the_tab_line_keeps_the_open_title_and_marks_hidden_ones() {
+        let lab = lab_devices_model();
+        let five = lab.device_tabs();
+        let lab_lines: Vec<String> = five.iter().map(|tab| tab_text(five, *tab)).collect();
+        assert_eq!(
+            lab_lines,
+            [
+                "OVERVIEW  ifaces  config ›",
+                "overview  IFACES  config ›",
+                "overview  ifaces  CONFIG ›",
+                "‹ ifaces  config  TIMELINE  logs",
+                "‹ ifaces  config  timeline  LOGS",
+            ]
+        );
+
+        let workshop_lines: Vec<String> = DEVICE_TABS
+            .iter()
+            .map(|tab| tab_text(&DEVICE_TABS, *tab))
+            .collect();
+        assert_eq!(
+            workshop_lines,
+            [
+                "OVERVIEW  ifaces  timeline  logs",
+                "overview  IFACES  timeline  logs",
+                "overview  ifaces  TIMELINE  logs",
+                "overview  ifaces  timeline  LOGS",
+            ]
+        );
+    }
 
     const REFUSAL: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
     const LAB_DIR: &str = "/home/me/My Labs/network observability/the book lab/second edition/chapter files/copy for the screen";
@@ -2830,6 +2941,7 @@ mod tests {
             ),
             target: Target::Chapter(0),
             lines: vec![REFUSAL.to_string()],
+            output: None,
             started: Instant::now(),
             ended: None,
             state: RunState::Running,
@@ -2861,6 +2973,7 @@ mod tests {
                 .to_string(),
             target: Target::Chapter(0),
             lines,
+            output: None,
             started: Instant::now(),
             ended: None,
             state,
@@ -3471,6 +3584,51 @@ mod tests {
         assert!(bottom(&before).ends_with("═ ↓1 ═╝"), "{}", screens[0]);
         assert!(screens[1].contains("║ last"), "{}", screens[1]);
         assert!(bottom(&after).ends_with("═ ↑1 ═╝"), "{}", screens[1]);
+    }
+
+    #[test]
+    fn the_answer_of_s_stands_in_the_run_pane_with_its_exit_status() {
+        let answers: [(&str, &[&str], &[&str], i32); 2] = [
+            (
+                "show version",
+                &[
+                    "Hostname             : srl1",
+                    "OS                   : SR Linux",
+                ],
+                &[],
+                0,
+            ),
+            (
+                "show nonsense words",
+                &[],
+                &["Parsing error: Unknown token 'nonsense'. Options are [...]"],
+                1,
+            ),
+        ];
+        for (command, out, error, code) in answers {
+            let mut model = lab_devices_model();
+            press(&mut model, 's');
+            command.chars().for_each(|typed| press(&mut model, typed));
+            handle(
+                &mut model,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            for line in out {
+                model.apply(Update::ActionLine(line.to_string()));
+            }
+            for line in error {
+                model.apply(Update::ActionError(line.to_string()));
+            }
+            model.apply(Update::ActionEnded(End::Exited(code)));
+
+            let screen = drawn(&mut model, 100, 30).join("\n").replace(NO_BREAK, " ");
+
+            let title = format!(" run  device run nobs-t-srl1 {command}  exit {code}");
+            assert!(screen.contains(&title), "{title}\n{screen}");
+            for line in out.iter().chain(error) {
+                assert!(screen.contains(line), "{line}\n{screen}");
+            }
+        }
     }
 
     fn bottom(rows: &[String]) -> String {

@@ -8,6 +8,7 @@ use crate::shell::{Model, StackKind, Workbench};
 pub enum Row {
     Stack,
     Device,
+    Node,
     Chapter,
     Lab,
 }
@@ -17,6 +18,7 @@ pub enum Ask {
     No,
     Yes,
     Saying(&'static str),
+    Text,
 }
 
 #[derive(Debug)]
@@ -28,11 +30,12 @@ pub struct Action {
     pub hint: &'static str,
     pub ask: Ask,
     pub sudo: bool,
+    pub keeps: bool,
 }
 
 const OTHER_CHAPTERS_DOWN: &str = "takes the other chapters' services down";
 
-pub const ACTIONS: [Action; 14] = [
+pub const ACTIONS: [Action; 16] = [
     Action {
         key: 'u',
         workbench: Workbench::Services,
@@ -41,6 +44,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "up",
         ask: Ask::Yes,
         sudo: false,
+        keeps: false,
     },
     Action {
         key: 'd',
@@ -50,6 +54,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "down",
         ask: Ask::Yes,
         sudo: false,
+        keeps: false,
     },
     Action {
         key: 'X',
@@ -59,6 +64,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "destroy",
         ask: Ask::Saying("removes the stack's volumes"),
         sudo: false,
+        keeps: false,
     },
     Action {
         key: 'R',
@@ -68,6 +74,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "reset",
         ask: Ask::Saying("clears silences, maintenance and cascade scenarios"),
         sudo: false,
+        keeps: false,
     },
     Action {
         key: 'p',
@@ -77,6 +84,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "preflight",
         ask: Ask::Saying("flaps srl1, leaves it in maintenance and can take 13 minutes"),
         sudo: false,
+        keeps: false,
     },
     Action {
         key: 's',
@@ -86,6 +94,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "status",
         ask: Ask::No,
         sudo: false,
+        keeps: false,
     },
     Action {
         key: 'm',
@@ -95,6 +104,27 @@ pub const ACTIONS: [Action; 14] = [
         hint: "maintenance",
         ask: Ask::Yes,
         sudo: false,
+        keeps: false,
+    },
+    Action {
+        key: 'g',
+        workbench: Workbench::Devices,
+        row: Row::Node,
+        words: &["device", "fetch"],
+        hint: "get config",
+        ask: Ask::No,
+        sudo: false,
+        keeps: true,
+    },
+    Action {
+        key: 's',
+        workbench: Workbench::Devices,
+        row: Row::Node,
+        words: &["device", "run"],
+        hint: "run command",
+        ask: Ask::Text,
+        sudo: false,
+        keeps: false,
     },
     Action {
         key: 'D',
@@ -104,6 +134,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "deploy",
         ask: Ask::Saying(OTHER_CHAPTERS_DOWN),
         sudo: true,
+        keeps: false,
     },
     Action {
         key: 'X',
@@ -113,6 +144,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "destroy",
         ask: Ask::Saying("removes the chapter's volumes, every node and the other chapters' services"),
         sudo: true,
+        keeps: false,
     },
     Action {
         key: 'P',
@@ -122,6 +154,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "purge",
         ask: Ask::Saying("takes every scenario down and removes their volumes"),
         sudo: true,
+        keeps: false,
     },
     Action {
         key: 'R',
@@ -131,6 +164,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "prepare",
         ask: Ask::Saying("takes every scenario down first"),
         sudo: true,
+        keeps: false,
     },
     Action {
         key: 'U',
@@ -142,6 +176,7 @@ pub const ACTIONS: [Action; 14] = [
             "recreates every service of the chapter and its unnamed volumes, and takes the other chapters' services down",
         ),
         sudo: false,
+        keeps: false,
     },
     Action {
         key: 'B',
@@ -151,6 +186,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "rebuild",
         ask: Ask::Saying(OTHER_CHAPTERS_DOWN),
         sudo: false,
+        keeps: false,
     },
     Action {
         key: 'S',
@@ -160,6 +196,7 @@ pub const ACTIONS: [Action; 14] = [
         hint: "show",
         ask: Ask::No,
         sudo: true,
+        keeps: false,
     },
 ];
 
@@ -226,6 +263,11 @@ pub(crate) fn pieces(
                 .chain(words)
                 .chain([pair("-d", name), vec![OsString::from(flag)]])
                 .collect();
+            (lab.dir.clone().into(), args)
+        }
+        (Row::Node, Target::Device(name)) => {
+            let lab = model.located().filter(|_| model.lab_with_nodes())?;
+            let args = words.chain([vec![OsString::from(name)]]).collect();
             (lab.dir.clone().into(), args)
         }
         (Row::Chapter, Target::Chapter(index)) => {

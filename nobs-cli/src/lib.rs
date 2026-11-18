@@ -5093,6 +5093,7 @@ fn screen_start_with(
                 })
             };
             let urls = Urls::from_lookup(lookup);
+            let path = located.dir.join("containerlab").join("lab_vars.yml");
             let (source, source_error): (Option<std::sync::Arc<dyn SourceOfTruth>>, _) =
                 match &located.kind {
                     Kind::Workshop(workshop) if workshop.sot == "none" => (None, None),
@@ -5102,25 +5103,14 @@ fn screen_start_with(
                             Err(text) => (None, Some(text)),
                         }
                     }
-                    Kind::BookLab(_) => {
-                        let path = located.dir.join("containerlab").join("lab_vars.yml");
-                        match fs::read_to_string(&path)
-                            .map_err(|error| error.to_string())
-                            .and_then(|text| lab_vars::read(&text))
-                        {
-                            Ok(vars) => (
-                                Some(std::sync::Arc::new(sot::Fixed::from_lab_vars(&vars))
-                                    as std::sync::Arc<dyn SourceOfTruth>),
-                                None,
-                            ),
-                            Err(error) => (None, Some(format!("{}: {error}", path.display()))),
-                        }
-                    }
+                    Kind::BookLab(_) => lab_vars_source(&path),
+                    Kind::LabcliLab(_) if path.exists() => lab_vars_source(&path),
                     Kind::LabcliLab(_) => (None, None),
                 };
             let home = match located.kind {
                 Kind::Workshop(_) => nobs_tui::Workbench::Devices,
                 Kind::BookLab(_) => nobs_tui::Workbench::Lab,
+                Kind::LabcliLab(_) if source.is_some() => nobs_tui::Workbench::Devices,
                 _ => home,
             };
             Ok(nobs_tui::Start {
@@ -5163,6 +5153,20 @@ fn screen_start_with(
             program,
         }),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+fn lab_vars_source(path: &Path) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
+    match fs::read_to_string(path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| lab_vars::read(&text))
+    {
+        Ok(vars) => (
+            Some(std::sync::Arc::new(sot::Fixed::from_lab_vars(&vars))
+                as std::sync::Arc<dyn SourceOfTruth>),
+            None,
+        ),
+        Err(error) => (None, Some(format!("{}: {error}", path.display()))),
     }
 }
 
@@ -6068,6 +6072,86 @@ mod tests {
         assert!(start.source_error.is_none());
         let header = nobs_tui::Shell::new(start).header();
         assert!(header.ends_with("sot none"), "{header}");
+    }
+
+    fn project_lab(name: &str, files: &[(&str, &str)]) -> Scratch {
+        let scratch = Scratch::new(name);
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/project-two-node");
+        fs::copy(
+            fixture.join("nobs_project.yml"),
+            scratch.0.join("nobs_project.yml"),
+        )
+        .unwrap();
+        fs::create_dir_all(scratch.0.join("containerlab")).unwrap();
+        for (from, to) in files {
+            fs::copy(fixture.join(from), scratch.0.join("containerlab").join(to)).unwrap();
+        }
+        scratch
+    }
+
+    #[test]
+    fn a_project_lab_shows_its_devices_from_lab_vars() {
+        let lab = project_lab(
+            "screen-project",
+            &[
+                ("expected/lab_vars.yml", "lab_vars.yml"),
+                ("expected/lab.clab.yml", "lab.clab.yml"),
+            ],
+        );
+
+        let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
+
+        assert_eq!(start.home, nobs_tui::Workbench::Devices);
+        assert!(start.source_error.is_none());
+        let names: Vec<_> = start
+            .source
+            .as_ref()
+            .unwrap()
+            .devices()
+            .unwrap()
+            .into_iter()
+            .map(|device| device.name)
+            .collect();
+        assert_eq!(names, ["nobs-t-srl1", "nobs-t-srl2"]);
+        let header = nobs_tui::Shell::new(start).header();
+        assert!(header.ends_with("sot lab_vars"), "{header}");
+    }
+
+    #[test]
+    fn a_labcli_lab_without_lab_vars_shows_what_it_shows_today() {
+        let lab = project_lab(
+            "screen-project-no-vars",
+            &[("expected/lab.clab.yml", "lab.clab.yml")],
+        );
+
+        let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
+
+        assert_eq!(start.home, nobs_tui::Workbench::Services);
+        assert!(start.source.is_none());
+        assert!(start.source_error.is_none());
+        let header = nobs_tui::Shell::new(start).header();
+        assert!(header.ends_with("sot none"), "{header}");
+    }
+
+    #[test]
+    fn an_unreadable_lab_vars_in_a_project_lab_gives_the_book_lab_error() {
+        let lab = project_lab(
+            "screen-project-bad-vars",
+            &[("expected/lab.clab.yml", "lab.clab.yml")],
+        );
+        let path = lab.0.join("containerlab").join("lab_vars.yml");
+        fs::write(&path, "nodes: [\n").unwrap();
+        let error = lab_vars::read("nodes: [\n").unwrap_err();
+
+        let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
+
+        assert_eq!(start.home, nobs_tui::Workbench::Services);
+        assert!(start.source.is_none());
+        assert_eq!(
+            start.source_error,
+            Some(format!("{}: {error}", path.display()))
+        );
     }
 
     #[test]

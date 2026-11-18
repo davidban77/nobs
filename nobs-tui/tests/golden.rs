@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -37,6 +37,10 @@ const WORKSHOP_ONE: &str = concat!(
 );
 const BOOK_LAB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/book-lab");
 const LAB_DIR: &str = "/home/me/book-lab";
+const PROJECT_LAB: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tests/fixtures/project-two-node"
+);
 const LONG_LAB_DIR: &str = "/home/me/labs/network-observability/book-lab";
 const ALREADY_EXIST: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
 const LONG_DIR: &str = "/Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt";
@@ -456,6 +460,9 @@ fn unpolled_lab_model(lab_dir: &str) -> Shell {
     }
     let mut model = Shell::new(Start {
         chooser: false,
+        source: Some(Arc::new(lab_vars_source(
+            &dir.join("containerlab/lab_vars.yml"),
+        ))),
         ..begin(Some(lab), chapters, Workbench::Lab)
     });
     model.tick(Instant::now(), clock(), (80, 24));
@@ -464,6 +471,62 @@ fn unpolled_lab_model(lab_dir: &str) -> Shell {
         ps(&[("grafana", "running", 3000, "41 seconds ago")]),
     ));
     model.apply(Update::Services(1, defined(&CH2), Ok(Vec::new())));
+    model
+}
+
+fn lab_vars_source(path: &Path) -> Fixed {
+    let text = fs::read_to_string(path).unwrap();
+    Fixed::from_lab_vars(&lab_vars::read(&text).unwrap())
+}
+
+fn lab_devices_model() -> Shell {
+    devices_model_in(BOOK_LAB, "containerlab/lab_vars.yml", LAB_DIR)
+}
+
+fn devices_model_in(fixture: &str, lab_vars: &str, lab_dir: &str) -> Shell {
+    let dir = PathBuf::from(fixture);
+    let mut lab = locate(&dir, Some(&dir)).unwrap();
+    let mut chapters = stacks(Some(&lab), Vec::new()).unwrap();
+    for chapter in &mut chapters {
+        chapter.path = PathBuf::from(lab_dir);
+    }
+    lab.dir = PathBuf::from(lab_dir);
+    let source = lab_vars_source(&dir.join(lab_vars));
+    let devices = source.devices().unwrap();
+    let mut model = Shell::new(Start {
+        chooser: false,
+        source: Some(Arc::new(source)),
+        ..begin(Some(lab), chapters, Workbench::Devices)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
+    model.apply(Update::Devices(Ok(devices)));
+    model
+}
+
+fn on_lab_tab(presses: usize) -> Shell {
+    let mut model = lab_devices_model();
+    press(&mut model, KeyCode::Enter);
+    for _ in 0..presses {
+        press(&mut model, KeyCode::Char(']'));
+    }
+    model
+}
+
+fn config_shown() -> Shell {
+    let mut model = on_lab_tab(0);
+    press(&mut model, KeyCode::Char('g'));
+    let first = "set / acl acl-filter cpm type ipv4 statistics-per-entry true".to_string();
+    let entries = (1..=40).map(|entry| {
+        format!(
+            "set / acl acl-filter cpm type ipv4 entry {} match ipv4 protocol icmp",
+            entry * 10
+        )
+    });
+    for line in [first].into_iter().chain(entries) {
+        model.apply(Update::ActionLine(line));
+    }
+    model.apply(Update::ActionEnded(End::Exited(0)));
+    press(&mut model, KeyCode::Esc);
     model
 }
 
@@ -873,6 +936,64 @@ fn the_devices_logs_with_hidden_lines_frame_is_pinned() {
 }
 
 #[test]
+fn the_config_hint_frame_is_pinned() {
+    golden("devices-config-hint", || on_lab_tab(2));
+}
+
+#[test]
+fn the_config_frame_is_pinned() {
+    golden("devices-config", config_shown);
+}
+
+#[test]
+fn the_config_filter_frame_is_pinned() {
+    golden("devices-config-filter", || {
+        let mut model = config_shown();
+        press(&mut model, KeyCode::Char('/'));
+        for typed in "entry 1".chars() {
+            press(&mut model, KeyCode::Char(typed));
+        }
+        model
+    });
+}
+
+#[test]
+fn the_entry_frame_is_pinned() {
+    golden("devices-entry", || {
+        let mut model = lab_devices_model();
+        press(&mut model, KeyCode::Char('s'));
+        for typed in "show version".chars() {
+            press(&mut model, KeyCode::Char(typed));
+        }
+        model
+    });
+}
+
+#[test]
+fn the_lab_logs_tab_line_frame_is_pinned() {
+    pinned(on_lab_tab(4), "devices-lab-logs", 60, 15);
+}
+
+#[test]
+fn the_project_devices_frame_is_pinned() {
+    let model = devices_model_in(
+        PROJECT_LAB,
+        "expected/lab_vars.yml",
+        "/home/me/nobs-t-project",
+    );
+    pinned(model, "devices-project", 100, 30);
+}
+
+#[test]
+fn the_lab_devices_help_frame_is_pinned() {
+    golden("help-devices-lab", || {
+        let mut model = lab_devices_model();
+        press(&mut model, KeyCode::Char('?'));
+        model
+    });
+}
+
+#[test]
 fn the_devices_without_a_source_frame_is_pinned() {
     golden("devices-none", without_a_source);
 }
@@ -1257,7 +1378,7 @@ fn a_narrow_key_line_ends_in_a_whole_hint() {
 fn asked(action: &Action) -> Shell {
     let mut model = match action.row {
         Row::Stack => services_model(),
-        Row::Device => maintenance_model(false),
+        Row::Device | Row::Node => maintenance_model(false),
         Row::Chapter | Row::Lab => lab_model(),
     };
     press(&mut model, KeyCode::Char(action.key));

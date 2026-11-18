@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab              ? keys  q quit
+┌ devices 2 ──────────┐╔ nobs-t-srl1 ══════════════════════╗
+│   NAME    HLTH  ALRT│║overview  ifaces  CONFIG ›         ║
+│>  nobs-…  ?        ?│║press g to get the running config  ║
+│   nobs-…  ?        ?│║                                   ║
+│                     │║                                   ║
+│                     │║                                   ║
+│                     │║                                   ║
+├ alerts ? ───────────┤║                                   ║
+│                     │║                                   ║
+│                     │║                                   ║
+└─────────────────────┘╚═══════════════════════════════════╝
+ run  none                                           o open
+ / filter  j/k scroll  [ ] tab  Esc back to list

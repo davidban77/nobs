@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,13 @@ const WINDOW_MIN: u64 = 1;
 const WINDOW_MAX: u64 = 1440;
 pub(crate) const SERVICES_TABS: [Tab; 3] = [Tab::Overview, Tab::Logs, Tab::Sonda];
 pub(crate) const DEVICE_TABS: [Tab; 4] = [Tab::Overview, Tab::Interfaces, Tab::Timeline, Tab::Logs];
+const LAB_DEVICE_TABS: [Tab; 5] = [
+    Tab::Overview,
+    Tab::Interfaces,
+    Tab::Config,
+    Tab::Timeline,
+    Tab::Logs,
+];
 const MIN_SIZE: (u16, u16) = (60, 15);
 const STACK_SONDA_URL: &str = "http://localhost:8085";
 const SONDA_ENV: &str = "SONDA_SERVER_URL";
@@ -92,6 +100,7 @@ pub enum Focus {
 pub enum Tab {
     Overview,
     Interfaces,
+    Config,
     Timeline,
     Logs,
     Sonda,
@@ -103,6 +112,7 @@ impl Tab {
             Tab::Overview => "overview",
             Tab::Interfaces if wide => "interfaces",
             Tab::Interfaces => "ifaces",
+            Tab::Config => "config",
             Tab::Timeline => "timeline",
             Tab::Logs => "logs",
             Tab::Sonda => "sonda",
@@ -223,6 +233,7 @@ pub enum Update {
     Rcas(String, Result<Vec<Line>, String>),
     FlowRuns(Result<Vec<FlowRun>, String>),
     ActionLine(String),
+    ActionError(String),
     ActionEnded(run::End),
     Nodes(Result<Vec<book::NodeRow>, String>),
 }
@@ -263,9 +274,16 @@ pub struct Run {
     pub command: String,
     pub target: Target,
     pub lines: Vec<String>,
+    pub output: Option<Vec<String>>,
     pub started: Instant,
     pub ended: Option<Instant>,
     pub state: RunState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    pub lines: Vec<String>,
+    pub fetched: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,6 +377,12 @@ impl Filter {
     }
 }
 
+struct Asked {
+    args: Vec<Vec<OsString>>,
+    target: Target,
+    text: Filter,
+}
+
 struct DeviceLine {
     line: Line,
     shown: String,
@@ -425,6 +449,8 @@ pub struct Model {
     logs_following: bool,
     logs_scroll: usize,
     logs_filter: Filter,
+    config_scroll: usize,
+    config_filter: Filter,
     window: u64,
     timeline_row: usize,
     popup: Option<devices::Entry>,
@@ -437,8 +463,10 @@ pub struct Model {
     program: PathBuf,
     run: Option<Run>,
     question: Option<Question>,
+    asked: Option<Asked>,
     notice: Option<String>,
     failed: Vec<Target>,
+    configs: BTreeMap<String, Config>,
     chapter: usize,
     nodes: Vec<book::NodeRow>,
     nodes_ok: bool,
@@ -532,6 +560,8 @@ impl Model {
             logs_following: true,
             logs_scroll: 0,
             logs_filter: Filter::default(),
+            config_scroll: 0,
+            config_filter: Filter::default(),
             window: WINDOW_MINUTES,
             timeline_row: 0,
             popup: None,
@@ -544,8 +574,10 @@ impl Model {
             program,
             run: None,
             question: None,
+            asked: None,
             notice: None,
             failed: Vec::new(),
+            configs: BTreeMap::new(),
             chapter,
             nodes: Vec::new(),
             nodes_ok: false,
@@ -677,6 +709,14 @@ impl Model {
             Update::FlowRuns(Err(text)) => self.fail("prefect", text),
             Update::ActionLine(line) => {
                 if let Some(run) = self.run.as_mut() {
+                    if let Some(output) = run.output.as_mut() {
+                        output.push(line.clone());
+                    }
+                    push_line(run, line);
+                }
+            }
+            Update::ActionError(line) => {
+                if let Some(run) = self.run.as_mut() {
                     push_line(run, line);
                 }
             }
@@ -704,6 +744,12 @@ impl Model {
         run.ended = Some(self.now);
         if let End::NotStopped { group } = end {
             push_line(run, format!("nobs: {}", not_stopped(group)));
+        }
+        let output = run.output.take();
+        if let (End::Exited(0), Some(lines), Target::Device(device)) = (end, output, &run.target) {
+            let fetched = self.clock.clone();
+            self.configs
+                .insert(device.clone(), Config { lines, fetched });
         }
         if end == End::Exited(0) {
             self.failed.retain(|held| *held != run.target);
@@ -735,7 +781,7 @@ impl Model {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match question {
-            Question::Pending { args, target, .. } if yes => self.start_run(args, target),
+            Question::Pending { args, target, .. } if yes => self.start_run(args, target, false),
             Question::Pending { args, .. } => {
                 self.notice = Some(format!("not run: {}", words(&args)));
                 Vec::new()
@@ -752,12 +798,13 @@ impl Model {
         }
     }
 
-    fn start_run(&mut self, args: Vec<Vec<OsString>>, target: Target) -> Vec<Command> {
+    fn start_run(&mut self, args: Vec<Vec<OsString>>, target: Target, keeps: bool) -> Vec<Command> {
         self.run = Some(Run {
             words: words(&args),
             command: joined(&args),
             target,
             lines: Vec::new(),
+            output: keeps.then(Vec::new),
             started: self.now,
             ended: None,
             state: RunState::Running,
@@ -777,7 +824,7 @@ impl Model {
                 Some(Target::Stack(self.selected))
             }
             Row::Stack => None,
-            Row::Device => self
+            Row::Device | Row::Node => self
                 .selected_device()
                 .map(|device| Target::Device(device.name.clone())),
             Row::Chapter => self.selected_chapter().map(Target::Chapter),
@@ -796,20 +843,34 @@ impl Model {
         if action.row == Row::Stack && target.is_none() {
             return None;
         }
-        if let Some(run) = self.active() {
-            self.notice = Some(format!("one action at a time: {} is running", run.words));
-            return Some(Vec::new());
-        }
         let Some(target) = target else {
             return Some(Vec::new());
         };
+        let running = self.active().map(|run| run.words.clone());
         match pieces(action, &target, self) {
+            Some(_) if running.is_some() => {
+                self.notice =
+                    running.map(|words| format!("one action at a time: {words} is running"));
+            }
             Some(args) => {
                 self.notice = None;
                 let saying = match action.ask {
-                    Ask::No => return Some(self.start_run(args, target)),
+                    Ask::No => {
+                        let mut commands = self.start_run(args, target, action.keeps);
+                        if action.keeps {
+                            self.tab = Tab::Config;
+                            commands.push(Command::OpenTab(Tab::Config));
+                        }
+                        return Some(commands);
+                    }
                     Ask::Yes => None,
                     Ask::Saying(saying) => Some(saying),
+                    Ask::Text => {
+                        let mut text = Filter::default();
+                        text.start();
+                        self.asked = Some(Asked { args, target, text });
+                        return Some(Vec::new());
+                    }
                 };
                 self.question = Some(Question::Pending {
                     args,
@@ -946,10 +1007,20 @@ impl Model {
     }
 
     pub fn typing(&self) -> bool {
-        self.filter.typing
+        self.asked.is_some()
+            || self.filter.typing
             || self.device_filter.typing
             || self.logs_filter.typing
+            || self.config_filter.typing
             || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
+    }
+
+    pub(crate) fn entry(&self) -> Option<(&str, &str)> {
+        let asked = self.asked.as_ref()?;
+        let Target::Device(device) = &asked.target else {
+            return None;
+        };
+        Some((device, asked.text.text.as_deref().unwrap_or_default()))
     }
 
     pub fn typed_filter(&self) -> Option<&str> {
@@ -961,6 +1032,9 @@ impl Model {
         }
         if self.logs_filter.typing {
             return self.logs_filter.text.as_deref();
+        }
+        if self.config_filter.typing {
+            return self.config_filter.text.as_deref();
         }
         self.logs
             .as_ref()
@@ -1220,8 +1294,12 @@ impl Model {
     pub fn sot(&self) -> String {
         match self.lab.as_ref().map(|lab| &lab.kind) {
             Some(Kind::Workshop(workshop)) => workshop.sot.clone(),
-            Some(Kind::BookLab(_)) => "lab_vars".to_string(),
-            Some(Kind::LabcliLab(_)) => "none".to_string(),
+            Some(Kind::BookLab(_) | Kind::LabcliLab(_))
+                if self.source || self.source_error.is_some() =>
+            {
+                "lab_vars".to_string()
+            }
+            Some(Kind::BookLab(_) | Kind::LabcliLab(_)) => "none".to_string(),
             None => {
                 let infrahub = self
                     .stacks
@@ -1306,6 +1384,39 @@ impl Model {
             self.lab.as_ref().map(|lab| &lab.kind),
             Some(Kind::BookLab(_))
         )
+    }
+
+    pub fn lab_with_nodes(&self) -> bool {
+        matches!(
+            self.lab.as_ref().map(|lab| &lab.kind),
+            Some(Kind::BookLab(_) | Kind::LabcliLab(_))
+        )
+    }
+
+    pub(crate) fn device_tabs(&self) -> &'static [Tab] {
+        if self.lab_with_nodes() {
+            &LAB_DEVICE_TABS
+        } else {
+            &DEVICE_TABS
+        }
+    }
+
+    pub fn config(&self) -> Option<(&str, Option<&Config>, Vec<&str>, usize)> {
+        let device = self.selected_device()?;
+        let kept = self.configs.get(&device.name);
+        let shown = kept.map_or_else(Vec::new, |kept| {
+            kept.lines
+                .iter()
+                .map(String::as_str)
+                .filter(|line| self.config_filter.matches(line))
+                .collect()
+        });
+        Some((device.name.as_str(), kept, shown, self.config_scroll))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn config_of(&self, device: &str) -> Option<&Config> {
+        self.configs.get(device)
     }
 
     fn types_q(&self) -> bool {
@@ -1418,6 +1529,18 @@ impl Model {
     }
 
     fn workbench_key(&mut self, key: KeyEvent) -> Vec<Command> {
+        if let Some(mut asked) = self.asked.take() {
+            asked.text.type_key(key.code);
+            if asked.text.typing {
+                self.asked = Some(asked);
+                return Vec::new();
+            }
+            let Some(text) = asked.text.text else {
+                return Vec::new();
+            };
+            asked.args.push(vec![OsString::from(text)]);
+            return self.start_run(asked.args, asked.target, false);
+        }
         if self.filter.typing {
             self.filter.type_key(key.code);
             return self.show_cursor();
@@ -1428,6 +1551,10 @@ impl Model {
         }
         if self.logs_filter.typing {
             self.logs_filter.type_key(key.code);
+            return Vec::new();
+        }
+        if self.config_filter.typing {
+            self.config_filter.type_key(key.code);
             return Vec::new();
         }
         if let Some(logs) = self.logs.as_mut().filter(|logs| logs.filter.typing) {
@@ -1478,7 +1605,7 @@ impl Model {
             self.focus = Focus::List;
         }
         let tabs: &[Tab] = match workbench {
-            Workbench::Devices => &DEVICE_TABS,
+            Workbench::Devices => self.device_tabs(),
             Workbench::Services => &SERVICES_TABS,
             Workbench::Lab => &[],
         };
@@ -1541,7 +1668,7 @@ impl Model {
         match (self.focus, self.tab) {
             (Focus::List, _) => self.list_key(key.code),
             (Focus::Lines, _) => self.details_key(key),
-            (Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Timeline) => {
+            (Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline) => {
                 self.overview_key(key.code)
             }
             (Focus::Tabs, Tab::Logs) => self.logs_key(key.code),
@@ -1572,12 +1699,13 @@ impl Model {
             Tab::Interfaces => self.interfaces_key(key.code),
             Tab::Timeline => self.timeline_key(key.code),
             Tab::Logs => self.device_logs_key(key.code),
+            Tab::Config => self.config_key(key.code),
             _ => Vec::new(),
         }
     }
 
     fn open_device_tab(&mut self, forward: bool) -> Vec<Command> {
-        self.tab = step(&DEVICE_TABS, self.tab, forward);
+        self.tab = step(self.device_tabs(), self.tab, forward);
         let mut commands: Vec<Command> = self
             .selected_device()
             .map(|device| Command::SelectDevice(device.name.clone()))
@@ -1684,6 +1812,7 @@ impl Model {
             self.device_lines.clear();
             self.rcas.clear();
             self.logs_scroll = 0;
+            self.config_scroll = 0;
             self.timeline_row = 0;
             self.interface_row = 0;
             self.overview_scroll = 0;
@@ -1760,14 +1889,21 @@ impl Model {
                 return vec![Command::FollowDevice(self.logs_following)];
             }
             KeyCode::Char('/') => self.logs_filter.start(),
-            KeyCode::Char('j') | KeyCode::Down if !self.logs_following => {
+            _ if !self.logs_following => {
                 let shown = self.shown_device_logs().len();
-                self.logs_scroll = (self.logs_scroll + 1).min(shown.saturating_sub(1));
-            }
-            KeyCode::Char('k') | KeyCode::Up if !self.logs_following => {
-                self.logs_scroll = self.logs_scroll.saturating_sub(1);
+                scroll_step(code, &mut self.logs_scroll, shown);
             }
             _ => {}
+        }
+        Vec::new()
+    }
+
+    fn config_key(&mut self, code: KeyCode) -> Vec<Command> {
+        if code == KeyCode::Char('/') {
+            self.config_filter.start();
+        } else {
+            let shown = self.config().map_or(0, |(_, _, shown, _)| shown.len());
+            scroll_step(code, &mut self.config_scroll, shown);
         }
         Vec::new()
     }
@@ -2057,6 +2193,14 @@ fn health_of(health: &[Health], name: &str, state: &str) -> Option<String> {
         .iter()
         .find(|entry| entry.service == name)
         .map(|entry| entry.state.clone())
+}
+
+fn scroll_step(code: KeyCode, scroll: &mut usize, shown: usize) {
+    match code {
+        KeyCode::Char('j') | KeyCode::Down => *scroll = (*scroll + 1).min(shown.saturating_sub(1)),
+        KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+        _ => {}
+    }
 }
 
 fn keep_last(lines: &mut Vec<String>) {
@@ -3469,6 +3613,7 @@ pub(crate) mod tests {
         let book = fixture("book-lab");
         let model = Model::new(Start {
             lab: Some(locate(&book, Some(&book)).unwrap()),
+            source: Some(lab_vars_source("book-lab/containerlab/lab_vars.yml")),
             chooser: false,
             ..start(vec![plain])
         });
@@ -3499,9 +3644,13 @@ pub(crate) mod tests {
         assert_eq!(model.focus(), Focus::List);
     }
 
-    pub(crate) fn workshop_source() -> Arc<dyn SourceOfTruth> {
-        let text = fs::read_to_string(fixture("workshop-one/lab_vars.yml")).unwrap();
+    fn lab_vars_source(relative: &str) -> Arc<dyn SourceOfTruth> {
+        let text = fs::read_to_string(fixture(relative)).unwrap();
         Arc::new(Fixed::from_lab_vars(&lab_vars::read(&text).unwrap()))
+    }
+
+    pub(crate) fn workshop_source() -> Arc<dyn SourceOfTruth> {
+        lab_vars_source("workshop-one/lab_vars.yml")
     }
 
     pub(crate) fn workshop_located(sot: &str) -> Located {
@@ -3574,6 +3723,24 @@ pub(crate) mod tests {
             "BgpSessionNotUp",
             "2026-11-09T13:53:32Z",
         )])));
+        model
+    }
+
+    pub(crate) fn lab_devices_model() -> Model {
+        lab_model("book-lab", "book-lab/containerlab/lab_vars.yml")
+    }
+
+    fn lab_model(folder: &str, lab_vars: &str) -> Model {
+        let dir = fixture(folder);
+        let source = lab_vars_source(lab_vars);
+        let mut model = Model::new(Start {
+            lab: Some(locate(&dir, Some(&dir)).unwrap()),
+            source: Some(source.clone()),
+            home: Workbench::Devices,
+            chooser: false,
+            ..start(vec![stack("a", &[])])
+        });
+        model.apply(Update::Devices(Ok(source.devices().unwrap())));
         model
     }
 
@@ -3751,19 +3918,21 @@ pub(crate) mod tests {
 
     #[test]
     fn the_sot_word_comes_from_the_workshop_setting_and_is_lab_vars_in_the_book_lab() {
-        let header = |located: Located| {
+        let header = |located: Located, source: Option<Arc<dyn SourceOfTruth>>| {
             Model::new(Start {
                 lab: Some(located),
+                source,
                 chooser: false,
                 ..start(vec![stack("autocon5", &[])])
             })
             .header()
         };
-        assert!(header(workshop_located("none")).ends_with("sot none"));
-        assert!(header(workshop_located("infrahub")).ends_with("sot infrahub"));
+        assert!(header(workshop_located("none"), None).ends_with("sot none"));
+        assert!(header(workshop_located("infrahub"), None).ends_with("sot infrahub"));
         let book = fixture("book-lab");
         let located = locate(&book, Some(&book)).unwrap();
-        assert!(header(located).ends_with("sot lab_vars"));
+        let source = lab_vars_source("book-lab/containerlab/lab_vars.yml");
+        assert!(header(located, Some(source)).ends_with("sot lab_vars"));
     }
 
     #[test]
@@ -4102,6 +4271,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn u_on_a_chapter_with_a_run_going_says_why_and_starts_nothing() {
+        let mut model = book_model();
+        assert!(!ch(&mut model, 'S').is_empty());
+        let words = model.run().unwrap().words.clone();
+        ch(&mut model, '2');
+
+        assert_eq!(ch(&mut model, 'u'), []);
+
+        assert_eq!(
+            model.notice(),
+            Some("u up is for a workshop; a chapter has its actions in the lab workbench")
+        );
+        assert_eq!(model.question(), None);
+        assert_eq!(model.run().unwrap().words, words);
+    }
+
+    #[test]
     fn u_and_d_on_a_stack_that_is_not_a_workshop_run_nothing_and_say_why() {
         let mut model = book_model();
         ch(&mut model, '2');
@@ -4192,12 +4378,13 @@ pub(crate) mod tests {
         assert_eq!(model.error(), None);
     }
 
-    const READING: [&str; 2] = ["status", "show"];
+    const READING: [&str; 3] = ["status", "show", "fetch"];
 
     fn on_its_row(row: Row) -> Model {
         match row {
             Row::Stack => opened(&["nobs-t-packt"]),
             Row::Device => devices_model(workshop_located("infrahub")),
+            Row::Node => lab_devices_model(),
             Row::Chapter | Row::Lab => book_model(),
         }
     }
@@ -4215,6 +4402,7 @@ pub(crate) mod tests {
                 ch(&mut model, '1');
                 model
             }
+            Row::Node => devices_model(workshop_located("infrahub")),
             Row::Chapter | Row::Lab => Model::new(Start {
                 lab: Some(workshop_located("infrahub")),
                 home: Workbench::Lab,
@@ -4282,7 +4470,7 @@ pub(crate) mod tests {
         for action in &ACTIONS {
             let saying = match action.ask {
                 Ask::Saying(saying) => Some(saying),
-                Ask::No | Ask::Yes => None,
+                Ask::No | Ask::Yes | Ask::Text => None,
             };
             assert_eq!(saying, agreed_clause(action), "{}", action.key);
             let mut model = on_its_row(action.row);
@@ -4293,12 +4481,20 @@ pub(crate) mod tests {
                 args: arguments(action, &target, &model).unwrap(),
             };
             let commands = ch(&mut model, action.key);
+            if action.ask == Ask::Text {
+                assert_eq!(commands, [], "{}", action.key);
+                assert_eq!(model.question(), None, "{}", action.key);
+                assert!(model.entry().is_some(), "{}", action.key);
+                continue;
+            }
             if action
                 .words
                 .last()
                 .is_some_and(|word| READING.contains(word))
             {
-                assert_eq!(commands, [run], "{}", action.key);
+                let opened = action.keeps.then_some(Command::OpenTab(Tab::Config));
+                let expected: Vec<Command> = [run].into_iter().chain(opened).collect();
+                assert_eq!(commands, expected, "{}", action.key);
                 assert_eq!(model.question(), None, "{}", action.key);
                 continue;
             }
@@ -4357,6 +4553,13 @@ pub(crate) mod tests {
                     KeyCode::Enter,
                     KeyCode::Esc,
                     KeyCode::Char(']'),
+                ],
+                Row::Node => &[
+                    KeyCode::Char('j'),
+                    KeyCode::Enter,
+                    KeyCode::Char(']'),
+                    KeyCode::Char(']'),
+                    KeyCode::Esc,
                 ],
                 Row::Chapter | Row::Lab => &[],
             };
@@ -5049,5 +5252,533 @@ pub(crate) mod tests {
         assert_eq!(model.nodes(), rows);
         model.apply(Update::Nodes(Ok(rows)));
         assert_eq!(model.error(), None);
+    }
+
+    const CONFIG_LINES: [&str; 2] = [
+        "set / acl acl-filter cpm type ipv4 statistics-per-entry true",
+        "set / acl acl-filter cpm type ipv4 entry 10 match ipv4 protocol icmp",
+    ];
+    const FAILED_GETS: [&str; 3] = [
+        "nobs: ssh srl1: authentication failed",
+        "nobs: ssh ceos1: no driver for the kind ceos yet",
+        "nobs: ssh srl1: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell",
+    ];
+    const FIRST_FETCH: &str = "13:40:51";
+
+    fn at_clock(model: &mut Model, text: &str) {
+        let seconds = text
+            .split(':')
+            .fold(0, |total, part| total * 60 + part.parse::<u64>().unwrap());
+        model.tick(
+            Instant::now(),
+            UNIX_EPOCH + Duration::from_secs(seconds),
+            (100, 30),
+        );
+    }
+
+    fn answered(model: &mut Model, lines: &[&str], end: End) {
+        for line in lines {
+            model.apply(Update::ActionLine(line.to_string()));
+        }
+        model.apply(Update::ActionEnded(end));
+    }
+
+    fn fetched(model: &mut Model, lines: &[&str], clock: &str) {
+        at_clock(model, clock);
+        ch(model, 'g');
+        answered(model, lines, End::Exited(0));
+    }
+
+    fn kept(lines: &[&str], fetched: &str) -> Option<Config> {
+        Some(Config {
+            lines: lines.iter().map(ToString::to_string).collect(),
+            fetched: fetched.to_string(),
+        })
+    }
+
+    #[test]
+    fn g_in_a_lab_with_nodes_runs_device_fetch_of_the_selected_device() {
+        let lab = book_dir();
+        let mut model = lab_devices_model();
+
+        let commands = ch(&mut model, 'g');
+
+        assert_eq!(
+            commands,
+            [
+                nobs(&["--dir", &lab, "device", "fetch", "nobs-t-srl1"]),
+                Command::OpenTab(Tab::Config)
+            ]
+        );
+        assert_eq!(model.question(), None);
+        assert_eq!(model.run().unwrap().words, "device fetch nobs-t-srl1");
+        answered(&mut model, &[], End::Exited(0));
+        ch(&mut model, 'j');
+        assert_eq!(
+            ch(&mut model, 'g'),
+            [
+                nobs(&["--dir", &lab, "device", "fetch", "nobs-t-srl2"]),
+                Command::OpenTab(Tab::Config)
+            ]
+        );
+    }
+
+    #[test]
+    fn g_in_a_project_lab_runs_device_fetch_of_the_selected_device() {
+        let lab = fixture("project-two-node").to_string_lossy().into_owned();
+        let mut model = lab_model("project-two-node", "project-two-node/expected/lab_vars.yml");
+        assert!(matches!(model.located().unwrap().kind, Kind::LabcliLab(_)));
+
+        assert_eq!(
+            ch(&mut model, 'g'),
+            [
+                nobs(&["--dir", &lab, "device", "fetch", "nobs-t-srl1"]),
+                Command::OpenTab(Tab::Config)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_get_shows_the_command_line_word_for_word_and_exit_1() {
+        for line in FAILED_GETS {
+            let mut model = lab_devices_model();
+            fetched(&mut model, &CONFIG_LINES, FIRST_FETCH);
+            at_clock(&mut model, "13:45:00");
+
+            ch(&mut model, 'g');
+            model.apply(Update::ActionError(line.to_string()));
+            model.apply(Update::ActionEnded(End::Exited(1)));
+
+            let run = model.run().unwrap();
+            assert_eq!(run.lines, [line]);
+            assert_eq!(run.state, RunState::Ended(End::Exited(1)));
+            assert_eq!(
+                model.config_of("nobs-t-srl1").cloned(),
+                kept(&CONFIG_LINES, FIRST_FETCH)
+            );
+        }
+    }
+
+    #[test]
+    fn with_a_run_going_g_and_s_give_the_one_action_notice_and_open_nothing() {
+        let mut model = lab_devices_model();
+        ch(&mut model, 'g');
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.tab(), Tab::Overview);
+
+        assert_eq!(ch(&mut model, 'g'), []);
+
+        assert_eq!(
+            model.notice(),
+            Some("one action at a time: device fetch nobs-t-srl1 is running")
+        );
+        assert_eq!(model.tab(), Tab::Overview);
+        assert_eq!(model.run().unwrap().words, "device fetch nobs-t-srl1");
+        assert_eq!(ch(&mut model, 's'), []);
+        assert_eq!(
+            model.notice(),
+            Some("one action at a time: device fetch nobs-t-srl1 is running")
+        );
+        assert_eq!(model.entry(), None);
+        assert_eq!(model.run().unwrap().words, "device fetch nobs-t-srl1");
+
+        for key in ['g', 's'] {
+            let mut model = lab_devices_model();
+            ch(&mut model, '2');
+            running(&mut model);
+            ch(&mut model, '1');
+            assert_eq!(ch(&mut model, key), [], "{key}");
+            assert_eq!(
+                model.notice(),
+                Some("one action at a time: a up is running"),
+                "{key}"
+            );
+            assert_eq!(model.tab(), Tab::Overview, "{key}");
+            assert_eq!(model.entry(), None, "{key}");
+            assert_eq!(model.run().unwrap().words, "a up", "{key}");
+        }
+    }
+
+    #[test]
+    fn a_good_get_keeps_every_line_in_order_with_time_and_count() {
+        let lines: Vec<String> = (0..2005)
+            .map(|entry| {
+                format!("set / acl acl-filter cpm type ipv4 entry {entry} match ipv4 protocol icmp")
+            })
+            .collect();
+        let shown: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut model = lab_devices_model();
+
+        fetched(&mut model, &shown, FIRST_FETCH);
+
+        let config = model.config_of("nobs-t-srl1").unwrap();
+        assert_eq!(config.lines.len(), 2005);
+        assert_eq!(config.lines[0], lines[0]);
+        assert!(config.lines == lines, "the lines are not in order");
+        assert_eq!(config.fetched, FIRST_FETCH);
+        assert_eq!(model.run().unwrap().lines.len(), LOG_LINES);
+    }
+
+    #[test]
+    fn a_failed_or_stopped_get_leaves_the_tab_as_it_was() {
+        for end in [
+            End::Exited(1),
+            End::Stopped,
+            End::NotStopped { group: 4242 },
+        ] {
+            let mut model = lab_devices_model();
+            at_clock(&mut model, FIRST_FETCH);
+            ch(&mut model, 'g');
+            answered(&mut model, &CONFIG_LINES[..1], end);
+            assert_eq!(model.config_of("nobs-t-srl1"), None, "{end:?}");
+
+            fetched(&mut model, &CONFIG_LINES, FIRST_FETCH);
+            at_clock(&mut model, "13:45:00");
+            ch(&mut model, 'g');
+            answered(&mut model, &CONFIG_LINES[1..], end);
+
+            assert_eq!(
+                model.config_of("nobs-t-srl1").cloned(),
+                kept(&CONFIG_LINES, FIRST_FETCH),
+                "{end:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_text_never_reaches_the_tab() {
+        let mut model = lab_devices_model();
+        at_clock(&mut model, FIRST_FETCH);
+        ch(&mut model, 'g');
+
+        model.apply(Update::ActionLine(CONFIG_LINES[0].to_string()));
+        model.apply(Update::ActionError(FAILED_GETS[0].to_string()));
+        model.apply(Update::ActionLine(CONFIG_LINES[1].to_string()));
+        model.apply(Update::ActionEnded(End::Exited(0)));
+
+        assert_eq!(
+            model.config_of("nobs-t-srl1").cloned(),
+            kept(&CONFIG_LINES, FIRST_FETCH)
+        );
+        assert_eq!(
+            model.run().unwrap().lines,
+            [CONFIG_LINES[0], FAILED_GETS[0], CONFIG_LINES[1]]
+        );
+    }
+
+    #[test]
+    fn an_answer_lands_on_the_device_it_was_asked_from() {
+        let mut model = lab_devices_model();
+        at_clock(&mut model, FIRST_FETCH);
+        ch(&mut model, 'g');
+
+        ch(&mut model, 'j');
+        assert_eq!(model.selected_device().unwrap().name, "nobs-t-srl2");
+        answered(&mut model, &CONFIG_LINES, End::Exited(0));
+
+        assert_eq!(
+            model.config_of("nobs-t-srl1").cloned(),
+            kept(&CONFIG_LINES, FIRST_FETCH)
+        );
+        assert_eq!(model.config_of("nobs-t-srl2"), None);
+    }
+
+    #[test]
+    fn two_devices_keep_their_own_configuration() {
+        let mut model = lab_devices_model();
+        fetched(&mut model, &CONFIG_LINES[..1], FIRST_FETCH);
+        ch(&mut model, 'j');
+        fetched(&mut model, &CONFIG_LINES[1..], "13:42:07");
+        ch(&mut model, 'k');
+
+        assert_eq!(
+            model.config_of("nobs-t-srl1").cloned(),
+            kept(&CONFIG_LINES[..1], FIRST_FETCH)
+        );
+        assert_eq!(
+            model.config_of("nobs-t-srl2").cloned(),
+            kept(&CONFIG_LINES[1..], "13:42:07")
+        );
+    }
+
+    #[test]
+    fn in_a_workshop_g_and_s_do_nothing_and_are_not_shown() {
+        let source = workshop_source();
+        let mut no_lab = Model::new(Start {
+            source: Some(source.clone()),
+            home: Workbench::Devices,
+            chooser: false,
+            ..start(vec![stack("a", &[])])
+        });
+        no_lab.apply(Update::Devices(Ok(source.devices().unwrap())));
+        let mut no_device = lab_devices_model();
+        no_device.apply(Update::Devices(Ok(Vec::new())));
+        let models = [
+            ("workshop", devices_model(workshop_located("infrahub"))),
+            ("no lab", no_lab),
+            ("no device", no_device),
+        ];
+        for (name, mut model) in models {
+            for (key, hint) in [('g', "g get config"), ('s', "s run command")] {
+                let tab = model.tab();
+
+                assert_eq!(ch(&mut model, key), [], "{name} {key}");
+
+                assert!(model.run().is_none(), "{name} {key}");
+                assert_eq!(model.question(), None, "{name} {key}");
+                assert_eq!(model.entry(), None, "{name} {key}");
+                assert_eq!(model.notice(), None, "{name} {key}");
+                assert_eq!(model.tab(), tab, "{name} {key}");
+                let line = key_line(&model, 200).concat();
+                assert!(!line.contains(hint), "{name}: {line}");
+                if name != "no device" {
+                    let entries = help_entries(&model);
+                    assert!(
+                        entries.iter().all(|(seen, _)| *seen != key.to_string()),
+                        "{name}: {entries:?}"
+                    );
+                }
+            }
+        }
+        let line = key_line(&lab_devices_model(), 200).concat();
+        assert!(line.contains("g get config  s run command"), "{line}");
+
+        let mut busy = devices_model(workshop_located("infrahub"));
+        ch(&mut busy, 'm');
+        ch(&mut busy, 'y');
+        let words = busy.run().unwrap().words.clone();
+        for key in ['g', 's'] {
+            assert_eq!(ch(&mut busy, key), [], "run going {key}");
+            assert_eq!(busy.notice(), None, "run going {key}");
+            assert_eq!(busy.entry(), None, "run going {key}");
+            assert_eq!(busy.run().unwrap().words, words, "run going {key}");
+        }
+    }
+
+    #[test]
+    fn in_a_book_lab_m_with_a_run_going_gives_no_notice_and_starts_nothing() {
+        let mut model = lab_devices_model();
+        ch(&mut model, 'g');
+
+        assert_eq!(ch(&mut model, 'm'), []);
+
+        assert_eq!(model.notice(), None);
+        assert_eq!(model.question(), None);
+        assert_eq!(model.run().unwrap().words, "device fetch nobs-t-srl1");
+    }
+
+    #[test]
+    fn g_opens_the_config_tab_and_a_refused_g_does_not() {
+        let mut model = lab_devices_model();
+        assert_eq!((model.focus(), model.tab()), (Focus::List, Tab::Overview));
+
+        let commands = ch(&mut model, 'g');
+
+        assert_eq!(commands.last(), Some(&Command::OpenTab(Tab::Config)));
+        assert_eq!((model.focus(), model.tab()), (Focus::List, Tab::Config));
+        assert!(model.run_pane());
+
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.tab(), Tab::Overview);
+        assert_eq!(ch(&mut model, 'g'), []);
+        assert_eq!(model.tab(), Tab::Overview);
+
+        answered(&mut model, &CONFIG_LINES, End::Exited(0));
+        for expected in [Tab::Interfaces, Tab::Config, Tab::Timeline] {
+            assert_eq!(
+                ch(&mut model, ']').last(),
+                Some(&Command::OpenTab(expected))
+            );
+        }
+    }
+
+    fn entries(count: usize) -> Vec<String> {
+        (1..=count)
+            .map(|entry| {
+                format!(
+                    "set / acl acl-filter cpm type ipv4 entry {} match ipv4 protocol icmp",
+                    entry * 10
+                )
+            })
+            .collect()
+    }
+
+    fn on_config(lines: &[String]) -> Model {
+        let mut model = lab_devices_model();
+        let shown: Vec<&str> = lines.iter().map(String::as_str).collect();
+        fetched(&mut model, &shown, FIRST_FETCH);
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Config));
+        model
+    }
+
+    fn scroll(model: &Model) -> usize {
+        model.config().unwrap().3
+    }
+
+    #[test]
+    fn the_config_pane_moves_filters_and_counts_hidden_lines() {
+        let lines = entries(40);
+        let mut model = on_config(&lines);
+
+        ch(&mut model, 'k');
+        assert_eq!(scroll(&model), 0);
+        ch(&mut model, 'j');
+        code(&mut model, KeyCode::Down);
+        assert_eq!(scroll(&model), 2);
+        code(&mut model, KeyCode::Up);
+        assert_eq!(scroll(&model), 1);
+        for _ in 0..50 {
+            ch(&mut model, 'j');
+        }
+        assert_eq!(scroll(&model), 39);
+
+        ch(&mut model, '/');
+        assert!(model.typing());
+        typed(&mut model, "entry 1");
+        assert_eq!(model.typed_filter(), Some("entry 1"));
+        code(&mut model, KeyCode::Enter);
+        assert!(!model.typing());
+        let (device, kept, shown, _) = model.config().unwrap();
+        assert_eq!(device, "nobs-t-srl1");
+        assert_eq!(kept.unwrap().lines.len(), 40);
+        let wanted: Vec<&str> = lines
+            .iter()
+            .map(String::as_str)
+            .filter(|line| line.contains("entry 1"))
+            .collect();
+        assert_eq!(shown, wanted);
+        assert_eq!(shown.len(), 11);
+        ch(&mut model, 'j');
+        assert_eq!(scroll(&model), 10);
+    }
+
+    #[test]
+    fn q_while_the_config_filter_types_is_text_and_does_not_quit() {
+        let mut model = on_config(&entries(3));
+        ch(&mut model, '/');
+
+        assert_eq!(ch(&mut model, 'q'), []);
+
+        assert!(!model.quit());
+        assert_eq!(model.typed_filter(), Some("q"));
+    }
+
+    #[test]
+    fn help_names_g_and_s_in_a_lab_with_nodes_and_m_as_today() {
+        let named = |model: &Model, key: &str| {
+            help_entries(model)
+                .iter()
+                .filter(|(keys, _)| keys == key)
+                .map(|(_, meaning)| *meaning)
+                .collect::<Vec<_>>()
+        };
+        let lab = lab_devices_model();
+        assert_eq!(named(&lab, "g"), ["get config"]);
+        assert_eq!(named(&lab, "s"), ["run command"]);
+        assert_eq!(named(&lab, "m"), ["maintenance"]);
+
+        let workshop = devices_model(workshop_located("infrahub"));
+        assert_eq!(named(&workshop, "g"), Vec::<&str>::new());
+        assert_eq!(named(&workshop, "s"), Vec::<&str>::new());
+        assert_eq!(named(&workshop, "m"), ["maintenance"]);
+    }
+
+    #[test]
+    fn the_config_scroll_goes_back_to_the_top_on_another_device() {
+        let mut model = on_config(&entries(10));
+        ch(&mut model, 'j');
+        assert_eq!(scroll(&model), 1);
+
+        code(&mut model, KeyCode::Esc);
+        code(&mut model, KeyCode::Esc);
+        assert_eq!(model.focus(), Focus::List);
+        ch(&mut model, 'j');
+
+        assert_eq!(model.config().unwrap().0, "nobs-t-srl2");
+        assert_eq!(scroll(&model), 0);
+    }
+
+    #[test]
+    fn s_runs_device_run_with_the_text_as_one_argument() {
+        let lab = book_dir();
+        let mut model = lab_devices_model();
+
+        assert_eq!(ch(&mut model, 's'), []);
+        assert_eq!(model.entry(), Some(("nobs-t-srl1", "")));
+        typed(&mut model, "show version");
+        assert_eq!(model.entry(), Some(("nobs-t-srl1", "show version")));
+        let commands = code(&mut model, KeyCode::Enter);
+
+        assert_eq!(
+            commands,
+            [nobs(&[
+                "--dir",
+                &lab,
+                "device",
+                "run",
+                "nobs-t-srl1",
+                "show version"
+            ])]
+        );
+        assert_eq!(model.entry(), None);
+        assert!(!model.typing());
+        assert_eq!(model.tab(), Tab::Overview);
+        assert_eq!(
+            model.run().unwrap().words.replace(NO_BREAK, " "),
+            "device run nobs-t-srl1 show version"
+        );
+    }
+
+    #[test]
+    fn the_entry_of_s_takes_every_key_as_text() {
+        let mut model = lab_devices_model();
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        ch(&mut model, 's');
+        let before = (model.workbench(), model.focus(), model.tab());
+
+        for typed in "q g x ? 1  r o".chars() {
+            assert_eq!(ch(&mut model, typed), [], "{typed}");
+        }
+
+        assert!(!model.quit());
+        assert!(model.run().is_none());
+        assert!(!model.help());
+        assert!(!model.run_pane());
+        assert!(model.error().is_some());
+        assert_eq!((model.workbench(), model.focus(), model.tab()), before);
+        assert_eq!(model.entry(), Some(("nobs-t-srl1", "q g x ? 1  r o")));
+        let commands = code(&mut model, KeyCode::Enter);
+        let Some(Command::Run { args, .. }) = commands.first() else {
+            panic!("{commands:?}");
+        };
+        assert_eq!(commands.len(), 1);
+        assert_eq!(args.last(), Some(&OsString::from("q g x ? 1  r o")));
+    }
+
+    #[test]
+    fn esc_and_an_empty_text_run_nothing() {
+        for keys in [
+            vec![KeyCode::Char('s'), KeyCode::Char('w'), KeyCode::Esc],
+            vec![KeyCode::Char('s'), KeyCode::Enter],
+            vec![
+                KeyCode::Char('s'),
+                KeyCode::Char('w'),
+                KeyCode::Backspace,
+                KeyCode::Enter,
+            ],
+        ] {
+            let mut model = lab_devices_model();
+            let commands: Vec<Command> =
+                keys.iter().flat_map(|key| code(&mut model, *key)).collect();
+
+            assert_eq!(commands, [], "{keys:?}");
+            assert!(model.run().is_none(), "{keys:?}");
+            assert_eq!(model.entry(), None, "{keys:?}");
+            assert!(!model.typing(), "{keys:?}");
+            assert_eq!(model.question(), None, "{keys:?}");
+        }
     }
 }
