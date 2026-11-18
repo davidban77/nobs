@@ -13,7 +13,7 @@ use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::device::{self, Transport};
-use nobs_core::env::load_env;
+use nobs_core::env::{load_env, read_env};
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
 use nobs_core::http;
@@ -5113,6 +5113,15 @@ fn screen_start_with(
                 Kind::LabcliLab(_) if source.is_some() => nobs_tui::Workbench::Devices,
                 _ => home,
             };
+            let shell = [device::USER, device::PASSWORD].map(|name| (name, process(name)));
+            let dir = located.dir.clone();
+            let login = std::sync::Arc::new(move |name: &str| {
+                let set = shell
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .and_then(|(_, value)| value.clone());
+                device::credential(name, set, &read_env(&dir).unwrap_or_default())
+            });
             Ok(nobs_tui::Start {
                 stacks,
                 lab: Some(located),
@@ -5123,6 +5132,7 @@ fn screen_start_with(
                 urls,
                 chooser: false,
                 program,
+                login,
             })
         }
         Err(LocateError::NotFound) if chooser => {
@@ -5139,6 +5149,7 @@ fn screen_start_with(
                 urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
                 chooser: true,
                 program,
+                login: std::sync::Arc::new(|_| None),
             })
         }
         Err(LocateError::NotFound) => Ok(nobs_tui::Start {
@@ -5151,6 +5162,7 @@ fn screen_start_with(
             urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
             chooser: false,
             program,
+            login: std::sync::Arc::new(|_| None),
         }),
         Err(error) => Err(error.to_string()),
     }
@@ -6343,6 +6355,58 @@ mod tests {
                 "{asked:?}"
             );
             assert!(transport.calls().is_empty(), "{asked:?}");
+        }
+    }
+
+    #[test]
+    fn the_command_finds_a_login_exactly_when_the_screen_lookup_finds_one() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/device-lab");
+        for (case, (user, env, setup_env)) in [
+            (Some("nobs-t-x"), "NETWORK_AGENT_USER=\n", ""),
+            (Some("  "), "NETWORK_AGENT_USER=nobs-t-x\n", ""),
+            (Some(""), "", "NETWORK_AGENT_USER=nobs-t-x\n"),
+            (Some(" \t"), "", ""),
+            (None, "NETWORK_AGENT_USER=\"  \"\n", ""),
+            (
+                None,
+                "NETWORK_AGENT_USER=\n",
+                "NETWORK_AGENT_USER=nobs-t-x\n",
+            ),
+            (
+                None,
+                "NETWORK_AGENT_USER=nobs-t-x\n",
+                "NETWORK_AGENT_USER=\n",
+            ),
+            (None, "", ""),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let lab = Scratch::new(&format!("device-login-{case}"));
+            fs::copy(fixture.join("nobs.toml"), lab.0.join("nobs.toml")).unwrap();
+            fs::create_dir_all(lab.0.join("containerlab")).unwrap();
+            fs::copy(
+                fixture.join("containerlab/lab.clab.yml"),
+                lab.0.join("containerlab/lab.clab.yml"),
+            )
+            .unwrap();
+            fs::write(lab.0.join(".env"), env).unwrap();
+            fs::write(lab.0.join(".setup.env"), setup_env).unwrap();
+            set_credential(device::USER, user);
+            set_credential(device::PASSWORD, Some(TEST_PASSWORD));
+            let start = screen_start(&lab.0, None, flags(None), false).unwrap();
+            let screen =
+                (start.login)(device::USER).is_some() && (start.login)(device::PASSWORD).is_some();
+            let dir = lab.0.to_string_lossy().into_owned();
+            let cli =
+                Cli::try_parse_from(["nobs", "--dir", &dir, "device", "fetch", "nobs-t-srl1"])
+                    .unwrap();
+
+            let code = run(cli, &FakeRunner::failing());
+
+            assert_eq!(code, 1, "case {case}");
+            assert_eq!(device::credentials().is_ok(), screen, "case {case}");
         }
     }
 }

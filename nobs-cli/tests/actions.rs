@@ -1,8 +1,10 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{CommandFactory, Parser};
 use nobs_cli::{Cli, Command, WorkshopCli};
+use nobs_core::device::{PASSWORD, USER};
 use nobs_core::locate::{locate, Kind, Located};
 use nobs_core::sot::Device;
 use nobs_core::status::Urls;
@@ -35,6 +37,11 @@ fn model(lab: Located, stacks: Vec<Stack>) -> Shell {
         source_error: None,
         urls: Urls::defaults(),
         program: PathBuf::from("nobs"),
+        login: Arc::new(|name| match name {
+            USER => Some("nobs-t-x".to_string()),
+            PASSWORD => Some("nobs-t-not-a-secret".to_string()),
+            _ => None,
+        }),
     })
 }
 

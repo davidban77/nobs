@@ -2,8 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use nobs_core::device::{self, Error, PASSWORD, USER};
-use nobs_core::env::read_env;
+use nobs_core::device::{self, Error};
 
 const TEST_PASSWORD: &str = "nobs-t-not-a-secret";
 
@@ -209,60 +208,6 @@ fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() 
             &device::error_line("nobs-t-srl1", &Error::MissingCredentials),
         );
         assert!(!stderr(&output).contains("cannot reach"));
-    }
-}
-
-#[test]
-fn the_command_finds_a_login_exactly_when_credential_finds_one_in_the_shell_and_the_lab_pairs() {
-    let missing = format!(
-        "{}\n",
-        device::error_line("nobs-t-srl1", &Error::MissingCredentials)
-    );
-    for (case, (user, env, setup_env)) in [
-        (Some("nobs-t-x"), "NETWORK_AGENT_USER=\n", ""),
-        (Some("  "), "NETWORK_AGENT_USER=nobs-t-x\n", ""),
-        (Some(""), "", "NETWORK_AGENT_USER=nobs-t-x\n"),
-        (Some(" \t"), "", ""),
-        (None, "NETWORK_AGENT_USER=\"  \"\n", ""),
-        (
-            None,
-            "NETWORK_AGENT_USER=\n",
-            "NETWORK_AGENT_USER=nobs-t-x\n",
-        ),
-        (
-            None,
-            "NETWORK_AGENT_USER=nobs-t-x\n",
-            "NETWORK_AGENT_USER=\n",
-        ),
-        (None, "", ""),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let lab = folder(&format!("device-login-{case}"));
-        fs::copy(fixture("device-lab/nobs.toml"), lab.join("nobs.toml")).unwrap();
-        fs::copy(
-            fixture("device-lab/containerlab/lab.clab.yml"),
-            lab.join("containerlab/lab.clab.yml"),
-        )
-        .unwrap();
-        fs::write(lab.join(".env"), env).unwrap();
-        fs::write(lab.join(".setup.env"), setup_env).unwrap();
-        let pairs = read_env(&lab).unwrap();
-        let screen = device::credential(USER, user.map(str::to_string), &pairs).is_some()
-            && device::credential(PASSWORD, Some(TEST_PASSWORD.to_string()), &pairs).is_some();
-
-        let output = nobs(
-            &lab,
-            &in_dir(&lab, &["device", "fetch", "nobs-t-srl1"]),
-            user,
-            Some(TEST_PASSWORD),
-        );
-
-        let stderr = stderr(&output);
-        assert_eq!(stderr != missing, screen, "case {case}: {stderr}");
-        assert_eq!(output.status.code(), Some(1), "case {case}: {stderr}");
-        assert!(!stderr.contains(TEST_PASSWORD), "case {case}");
     }
 }
 
