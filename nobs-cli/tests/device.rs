@@ -2,6 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use nobs_core::device::{self, Error, PASSWORD, USER};
+use nobs_core::env::read_env;
+
 const TEST_PASSWORD: &str = "nobs-t-not-a-secret";
 
 fn fixture(relative: &str) -> PathBuf {
@@ -155,6 +158,111 @@ fn a_missing_or_blank_credential_exits_1_naming_both_variables_and_the_places() 
                 "nobs: ssh nobs-t-srl1: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell",
             );
         }
+    }
+}
+
+#[test]
+fn a_device_error_is_the_error_line_of_nobs_core() {
+    let lab = fixture("device-lab");
+    let topology = lab.join("containerlab/lab.clab.yml");
+    for (name, error, user) in [
+        ("nobs-t-srl9", Error::NotANode(topology), Some("nobs-t-x")),
+        (
+            "nobs-t-ceos1",
+            Error::NoDriver("ceos".to_string()),
+            Some("nobs-t-x"),
+        ),
+        ("nobs-t-srl1", Error::MissingCredentials, None),
+    ] {
+        assert_fails_with(
+            &nobs(
+                &lab,
+                &in_dir(&lab, &["device", "fetch", name]),
+                user,
+                Some(TEST_PASSWORD),
+            ),
+            &device::error_line(name, &error),
+        );
+    }
+}
+
+#[test]
+fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() {
+    let lab = folder("device-login-spaces");
+    fs::copy(fixture("device-lab/nobs.toml"), lab.join("nobs.toml")).unwrap();
+    fs::copy(
+        fixture("device-lab/containerlab/lab.clab.yml"),
+        lab.join("containerlab/lab.clab.yml"),
+    )
+    .unwrap();
+    fs::write(
+        lab.join(".env"),
+        format!("NETWORK_AGENT_USER=\"  \"\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
+    )
+    .unwrap();
+
+    for args in both("nobs-t-srl1") {
+        let output = nobs(&lab, &in_dir(&lab, &args), None, None);
+
+        assert_fails_with(
+            &output,
+            &device::error_line("nobs-t-srl1", &Error::MissingCredentials),
+        );
+        assert!(!stderr(&output).contains("cannot reach"));
+    }
+}
+
+#[test]
+fn the_command_finds_a_login_exactly_when_credential_finds_one_in_the_shell_and_the_lab_pairs() {
+    let missing = format!(
+        "{}\n",
+        device::error_line("nobs-t-srl1", &Error::MissingCredentials)
+    );
+    for (case, (user, env, setup_env)) in [
+        (Some("nobs-t-x"), "NETWORK_AGENT_USER=\n", ""),
+        (Some("  "), "NETWORK_AGENT_USER=nobs-t-x\n", ""),
+        (Some(""), "", "NETWORK_AGENT_USER=nobs-t-x\n"),
+        (Some(" \t"), "", ""),
+        (None, "NETWORK_AGENT_USER=\"  \"\n", ""),
+        (
+            None,
+            "NETWORK_AGENT_USER=\n",
+            "NETWORK_AGENT_USER=nobs-t-x\n",
+        ),
+        (
+            None,
+            "NETWORK_AGENT_USER=nobs-t-x\n",
+            "NETWORK_AGENT_USER=\n",
+        ),
+        (None, "", ""),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let lab = folder(&format!("device-login-{case}"));
+        fs::copy(fixture("device-lab/nobs.toml"), lab.join("nobs.toml")).unwrap();
+        fs::copy(
+            fixture("device-lab/containerlab/lab.clab.yml"),
+            lab.join("containerlab/lab.clab.yml"),
+        )
+        .unwrap();
+        fs::write(lab.join(".env"), env).unwrap();
+        fs::write(lab.join(".setup.env"), setup_env).unwrap();
+        let pairs = read_env(&lab).unwrap();
+        let screen = device::credential(USER, user.map(str::to_string), &pairs).is_some()
+            && device::credential(PASSWORD, Some(TEST_PASSWORD.to_string()), &pairs).is_some();
+
+        let output = nobs(
+            &lab,
+            &in_dir(&lab, &["device", "fetch", "nobs-t-srl1"]),
+            user,
+            Some(TEST_PASSWORD),
+        );
+
+        let stderr = stderr(&output);
+        assert_eq!(stderr != missing, screen, "case {case}: {stderr}");
+        assert_eq!(output.status.code(), Some(1), "case {case}: {stderr}");
+        assert!(!stderr.contains(TEST_PASSWORD), "case {case}");
     }
 }
 

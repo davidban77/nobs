@@ -2163,7 +2163,7 @@ fn run_device(command: DeviceCommand, given: Option<&Path>, transport: &dyn Tran
         match device_answer(&name, asked.as_deref(), &topology, &nodes, transport) {
             Ok(output) => pass_through(&output, &mut std::io::stdout(), &mut std::io::stderr()),
             Err(error) => {
-                eprintln!("nobs: ssh {name}: {error}");
+                eprintln!("{}", device::error_line(&name, &error));
                 1
             }
         }
