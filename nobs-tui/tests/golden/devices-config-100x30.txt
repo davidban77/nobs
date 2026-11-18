@@ -2,8 +2,8 @@
  [1 devices]  2 services  3 lab                                                      ? keys  q quit
 ┌ devices 2 ─────────────────────────────┐╔ nobs-t-srl1 ═══════════════════════════════════════════╗
 │   NAME         KIND  HLTH  SYNC  ALRT  │║overview  interfaces  CONFIG  timeline  logs            ║
-│>  nobs-t-srl1  —     ?     —        ?  │║fetched 13:42:07  41 lines                              ║
-│   nobs-t-srl2  —     ?     —        ?  │║set / acl acl-filter cpm type ipv4 statistics-per-entry…║
+│>  nobs-t-srl1  —     —     —        —  │║fetched 13:42:07  41 lines                              ║
+│   nobs-t-srl2  —     —     —        —  │║set / acl acl-filter cpm type ipv4 statistics-per-entry…║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 10 match ipv4 …║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 20 match ipv4 …║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 30 match ipv4 …║
@@ -18,8 +18,8 @@
 │                                        │║set / acl acl-filter cpm type ipv4 entry 120 match ipv4…║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 130 match ipv4…║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 140 match ipv4…║
-├ alerts ? ──────────────────────────────┤║set / acl acl-filter cpm type ipv4 entry 150 match ipv4…║
-│                                        │║set / acl acl-filter cpm type ipv4 entry 160 match ipv4…║
+├ alerts — ──────────────────────────────┤║set / acl acl-filter cpm type ipv4 entry 150 match ipv4…║
+│no alerts in this lab                   │║set / acl acl-filter cpm type ipv4 entry 160 match ipv4…║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 170 match ipv4…║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 180 match ipv4…║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 190 match ipv4…║

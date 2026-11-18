@@ -2,13 +2,13 @@
  [1 devices]  2 services  3 lab              ? keys  q quit
 ┌ devices 2 ──────────┐╔ nobs-t-srl1 ══════════════════════╗
 │   NAME    HLTH  ALRT│║‹ ifaces  config  timeline  LOGS   ║
-│>  nobs-…  ?        ?│║                                   ║
-│   nobs-…  ?        ?│║                                   ║
+│>  nobs-…  —        —│║no logs in this lab                ║
+│   nobs-…  —        —│║                                   ║
 │                     │║                                   ║
 │                     │║                                   ║
 │                     │║                                   ║
-├ alerts ? ───────────┤║                                   ║
-│                     │║                                   ║
+├ alerts — ───────────┤║                                   ║
+│no alerts in this lab│║                                   ║
 │                     │║                                   ║
 └─────────────────────┘╚═══════════════════════════════════╝
  run  none                                           o open

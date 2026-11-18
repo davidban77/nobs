@@ -61,10 +61,12 @@ The data comes from five systems. The first is the source of truth, the `sot` of
 | System | What the workbench takes from it | Name on the red error line |
 |---|---|---|
 | source of truth (here Infrahub, or the file `containerlab/lab_vars.yml` in a book lab or a labcli lab that has it) | the devices and what they should look like | `sot` |
-| Prometheus (stores numbers measured over time) | the live state of the BGP sessions and of the interfaces | `prometheus` |
-| Alertmanager (holds the alerts) | the alerts | `alertmanager` |
-| Loki (stores log lines) | the log lines of a device, and its RCA records (the root cause analysis that the automation of the workshop writes into Loki) | `loki` |
-| Prefect (runs the automation flows) | the flow runs, a flow run being one run of a flow | `prefect` |
+| Prometheus (stores numbers measured over time) | the live state of the BGP sessions and of the interfaces | `metrics` |
+| Alertmanager (holds the alerts) | the alerts | `alerts` |
+| Loki (stores log lines) | the log lines of a device, and its RCA records (the root cause analysis that the automation of the workshop writes into Loki) | `logs` |
+| Prefect (runs the automation flows) | the flow runs, a flow run being one run of a flow | `flows` |
+
+A place whose service the lab does not have shows a dash and a grey sentence, such as `no alerts in this lab`; while the stack that holds it is down it says `the stack is down`. No red line shows in either case.
 
 nobs finds each address the way `status` does: the shell variable, then the `.env` file in the folder of the lab, then the default address (see [status](#status)).
 
@@ -96,7 +98,7 @@ The left side is the list of devices, titled `devices <n>`, with the alerts box 
 | `KIND` | `srl` or `ceos`, the kind of the device; another kind is shown as the source of truth gives it, cut to 4 characters (`linux` becomes `lin…`); `—` when the source of truth does not say |
 | `HLTH` | the health of the device, from its intended BGP sessions and the live state in Prometheus; see below |
 | `SYNC` | `—` for now; a later version will fill it |
-| `ALRT` | how many alerts of the device are firing; empty when none; red when one of them is critical; `?` when Alertmanager did not answer |
+| `ALRT` | how many alerts of the device are firing; empty when none; red when one of them is critical; `?` when the alerts service did not answer |
 
 `HLTH` has five values:
 
@@ -105,7 +107,7 @@ The left side is the list of devices, titled `devices <n>`, with the alerts box 
 | `ok` | green | every intended BGP session is up |
 | `warn` | yellow | an intended session is not up, or Prometheus has no value for it |
 | `down` | red | Prometheus has no value for the device at all |
-| `?` | dim | Prometheus did not answer |
+| `?` | dim | the metrics service did not answer |
 | `—` | dim | the device has no intended BGP session, so there is nothing to judge |
 
 `KIND` and `SYNC` appear from 100 columns.
@@ -124,7 +126,7 @@ The overview tab shows these lines, from the top:
 | source | `maintenance no   sot infrahub   seen 2s ago` | the maintenance flag, the `sot` word, and how long ago the source of truth answered |
 | count | `bgp sessions  3 intended  2 established  1 other` | how many BGP sessions the source of truth intends, how many of them are up, and how many are in another state or have no state |
 | one per session | `10.1.99.2  ipv4-unicast  active  ! expected established` | the peer, the address family (the kind of routes the session carries, here IPv4) and the live state |
-| alert | `alerts   BgpSessionNotUp  warning  21s` | the newest firing alert of the device, with its severity and age; `alerts   none` when there is none; `alerts   ?` when Alertmanager did not answer |
+| alert | `alerts   BgpSessionNotUp  warning  21s` | the newest firing alert of the device, with its severity and age; `alerts   none` when there is none; `alerts   ?` when the alerts service did not answer |
 
 The live state of a session comes from Prometheus. It is `up`, `down`, `idle`, `connect` or `active`, or `unknown` for any other value. It is `—` when Prometheus has no value and `?` when Prometheus did not answer. The source of truth calls the up state `established`, so `established` and `up` mean the same. When the overview has more lines than its pane can show, its bottom border says how many lines are hidden, for example `↓5`. While the focus is on the tabs, `j` and `k` move the overview by one line.
 
@@ -136,7 +138,7 @@ The interfaces tab shows one row per interface from the source of truth. A row i
 |---|---|
 | `NAME` | the name of the interface |
 | `INTENT` | the state the source of truth wants for the interface, for example `up` or `down`; `—` when it does not say; from 100 columns |
-| `ADMIN` | the admin state from Prometheus, which says whether the interface is switched on in its configuration: `up` or `down`; `unknown` for another value; `—` when Prometheus has no value; `?` when it did not answer |
+| `ADMIN` | the admin state from Prometheus, which says whether the interface is switched on in its configuration: `up` or `down`; `unknown` for another value; `—` when Prometheus has no value; `?` when the metrics service did not answer |
 | `OPER` | the oper state from Prometheus, which says whether the link really works; the same values as `ADMIN` |
 | `PEER` | the peer of the BGP session whose address lies in the subnet of the interface; empty when there is none; from 100 columns |
 | `BGP` | the live state of that session, with the same words as the overview tab; empty when there is no session |
@@ -145,7 +147,7 @@ The timeline tab merges what happened to the device in a time window, at first t
 
 The logs tab shows the Loki lines of the device, newest first, each with its time in UTC, without the RCA records, which the timeline tab shows as `rca`. nobs asks for the last 200 lines at first, then again every 2 seconds while the log follows, and keeps the last 2,000. At the right end of the tab row it shows `<device>  following` or `<device>  paused`. When the row is too short it shows only `following` or `paused`, and at 60 columns it shows nothing. `f` pauses and resumes, `j` and `k` scroll a paused log (`j` shows the older lines below, `k` the newer lines above), and `/` filters the lines (type the text, then `Enter` keeps the filter and `Esc` clears it). When the log has more lines than the tab can show, the bottom border counts the hidden lines above and below, for example `↑29 ↓3`. A line in JSON shows its `message` field instead of the whole line.
 
-With `sot = "none"` in `nobs.toml`, the lab has no source of truth. The list and the body of the tab then show one dim line, `no source of truth (sot = "none")`, and the alerts box is still filled, because nobs asks Alertmanager whatever the source is. A labcli lab shows the same line.
+With `sot = "none"` in `nobs.toml`, the lab has no source of truth. The list and the body of the tab then show one dim line, `no source of truth (sot = "none")`, and the alerts box is filled when the lab has an alerts service. A labcli lab shows the same line.
 
 The `sot` word of the header is found like this: in a workshop, it is the `sot` setting of `nobs.toml` (`infrahub` or `none`); in a book lab, it is `lab_vars`, and the devices come from `containerlab/lab_vars.yml`, which nobs reads once when the screen opens; in a labcli lab, it is `none`. A workshop that you open from the chooser has no source of truth in the devices workbench, whatever its `nobs.toml` says. Its header shows `sot infrahub` when its `.env` file sets `INFRAHUB_ADDRESS`, else `sot none`. In both cases the workbench shows the dim line `no source of truth (sot = "none")`. To get the devices, start plain `nobs` in the workshop folder.
 
@@ -434,7 +436,7 @@ While a question or a filter is open, `q` is typed or answers the question, and 
 
 ### Errors
 
-When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails, and `config <stack>` when the list of services it defines fails (in both cases the stack then shows `?`). When only `config <stack>` fails, the services table still shows the containers from the new `ps` answer, but not the rows with `—`, because nobs does not know which services the file defines. It is `logs <service>` when the log call fails. In the devices workbench the source is `sot`, `prometheus`, `alertmanager`, `loki` or `prefect`, the five systems it asks. In the lab workbench the source is `nodes` when `docker ps -a` or the topology file fails. A value whose source did not answer shows `?` and never its last value: `HLTH` and the live states show `?` when Prometheus failed, and `ALRT` shows `?` when Alertmanager failed. Apart from that, the lists and lines already shown stay on the screen until the next answer. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda`, `poll`, `sot`, `prometheus`, `alertmanager`, `loki`, `prefect` or `nodes`. When more than one source fails, the line shows the one that failed first, with its newest error and age. It stays until that source answers again or you press `x`. Then the source that failed next shows. A `ps` or `config` line also goes away when the next call of the same kind for that stack works.
+When a data call fails, the screen keeps the last good data and shows one red line under the switcher: `<source>: <error>  <n>s ago`. The source is `ps <stack>` when the container list of a stack fails, and `config <stack>` when the list of services it defines fails (in both cases the stack then shows `?`). When only `config <stack>` fails, the services table still shows the containers from the new `ps` answer, but not the rows with `—`, because nobs does not know which services the file defines. It is `logs <service>` when the log call fails. In the devices workbench the source is `sot`, `metrics`, `alerts`, `logs` or `flows`, the five kinds of data it asks for. In the lab workbench the source is `nodes` when `docker ps -a` or the topology file fails. A value whose source did not answer shows `?` and never its last value: `HLTH` and the live states show `?` when the metrics service failed, and `ALRT` shows `?` when the alerts service failed. Apart from that, the lists and lines already shown stay on the screen until the next answer. The error is the last line Docker wrote on stderr, or `exit <code>` when it wrote nothing, or `cannot run docker: <error>` when Docker cannot start, or `cannot read ps output: <error>`. The sonda tab shows its own errors on its top line. When a part of nobs that gathers data stops, the line reads `<part>: polling stopped  <n>s ago`, where the part is `ps`, `health`, `logs`, `sonda`, `poll`, `sot`, `metrics`, `alerts`, `flows` or `nodes`. When more than one source fails, the line shows the one that failed first, with its newest error and age. It stays until that source answers again or you press `x`. Then the source that failed next shows. A `ps` or `config` line also goes away when the next call of the same kind for that stack works.
 
 ### Size
 

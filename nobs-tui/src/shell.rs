@@ -857,7 +857,11 @@ impl Model {
                     "nodes" => self.nodes_ok = false,
                     _ => {}
                 }
-                self.fail(&source, "polling stopped".to_string());
+                let part = SERVICES
+                    .iter()
+                    .find(|row| row.tool.eq_ignore_ascii_case(&source))
+                    .map_or(source.as_str(), |row| row.word);
+                self.fail(part, "polling stopped".to_string());
             }
             Update::Devices(Ok(list)) => {
                 self.devices = list;
@@ -1552,6 +1556,10 @@ impl Model {
         }
     }
 
+    pub(crate) fn source_service(&self) -> Option<status::Service> {
+        self.source_service
+    }
+
     pub fn devices_at(&self) -> Option<Instant> {
         self.devices_at
     }
@@ -1600,12 +1608,25 @@ impl Model {
         let Some(device) = self.selected_device() else {
             return Vec::new();
         };
-        let logs: Vec<(i64, &str)> = self.held_device_logs().collect();
+        let answers = |service| self.reach(service) == Reach::Answers;
+        let (rcas, logs): (&[Line], Vec<(i64, &str)>) = if answers(status::Service::Logs) {
+            (&self.rcas, self.held_device_logs().collect())
+        } else {
+            (&[], Vec::new())
+        };
         devices::merge(
             &device.name,
-            &self.alerts,
-            &self.runs,
-            &self.rcas,
+            if answers(status::Service::Alerts) {
+                &self.alerts
+            } else {
+                &[]
+            },
+            if answers(status::Service::Flows) {
+                &self.runs
+            } else {
+                &[]
+            },
+            rcas,
             &logs,
             Duration::from_secs(self.window * 60),
             self.wall,
@@ -2606,7 +2627,7 @@ pub(crate) fn watched(stack: &Stack) -> bool {
     stack.kind != StackKind::Sonda
 }
 
-fn row(service: status::Service) -> &'static ServiceRow {
+pub(crate) fn row(service: status::Service) -> &'static ServiceRow {
     SERVICES
         .iter()
         .find(|row| row.service == service)
@@ -2614,15 +2635,7 @@ fn row(service: status::Service) -> &'static ServiceRow {
 }
 
 fn error_source(service: status::Service) -> &'static str {
-    match service {
-        status::Service::Metrics => "prometheus",
-        status::Service::Logs => "loki",
-        status::Service::Alerts => "alertmanager",
-        status::Service::Flows => "prefect",
-        status::Service::Sot => "sot",
-        status::Service::Sonda => "sonda",
-        status::Service::Grafana => "grafana",
-    }
+    row(service).word
 }
 
 fn health_of(health: &[Health], name: &str, state: &str) -> Option<String> {
@@ -4368,7 +4381,7 @@ pub(crate) mod tests {
 
         assert_eq!(model.device_rows()[0].health, devices::Health::Unknown);
         assert!(model.session_states().iter().all(|(_, state)| state == "?"));
-        assert_eq!(model.error().unwrap().0, "prometheus");
+        assert_eq!(model.error().unwrap().0, "metrics");
 
         model.apply(Update::Alerts(Ok(vec![alert(
             "srl1",
@@ -4381,14 +4394,14 @@ pub(crate) mod tests {
 
         assert_eq!(model.device_rows()[0].alerts, None);
         assert_eq!(model.alerts().len(), 1);
-        assert_eq!(model.error().unwrap().0, "prometheus");
+        assert_eq!(model.error().unwrap().0, "metrics");
 
         assert!(model.device_logs().unwrap().2);
 
         model.apply(Update::Stopped("loki".to_string()));
 
         assert!(!model.device_logs().unwrap().2);
-        assert_eq!(model.error().unwrap().0, "prometheus");
+        assert_eq!(model.error().unwrap().0, "metrics");
     }
 
     #[test]
@@ -4421,7 +4434,7 @@ pub(crate) mod tests {
         model.apply(Update::Metrics(Err("cannot reach http://x".to_string())));
         assert_eq!(model.device_rows()[0].health, devices::Health::Unknown);
         let (source, text, _) = model.error().unwrap();
-        assert_eq!(source, "prometheus");
+        assert_eq!(source, "metrics");
         assert!(text.contains("cannot reach"), "{text}");
 
         model.apply(Update::Metrics(Ok(peer_samples(1.0))));
@@ -4433,7 +4446,7 @@ pub(crate) mod tests {
         assert_eq!(model.alerts().len(), 1);
         assert!(!model.alerts_ok());
         model.apply(Update::Metrics(Ok(peer_samples(1.0))));
-        assert_eq!(model.error().unwrap().0, "alertmanager");
+        assert_eq!(model.error().unwrap().0, "alerts");
         model.apply(Update::Alerts(Ok(Vec::new())));
         assert_eq!(model.error(), None);
     }
@@ -4529,7 +4542,7 @@ pub(crate) mod tests {
             "srl1".to_string(),
             Err("loki down".to_string()),
         ));
-        assert_eq!(model.error().unwrap().0, "loki");
+        assert_eq!(model.error().unwrap().0, "logs");
 
         model.apply(Update::DeviceLogs(
             "srl2".to_string(),
@@ -4547,7 +4560,7 @@ pub(crate) mod tests {
             "srl1".to_string(),
             Err("loki down".to_string()),
         ));
-        assert_eq!(model.error().unwrap().0, "loki");
+        assert_eq!(model.error().unwrap().0, "logs");
 
         model.apply(Update::Rcas("srl2".to_string(), Ok(vec![])));
 
@@ -4820,18 +4833,12 @@ pub(crate) mod tests {
             model.apply(update);
         }
 
-        assert_eq!(
-            model.error(),
-            Some(("alertmanager", "alertmanager two", at(2)))
-        );
+        assert_eq!(model.error(), Some(("alerts", "alertmanager two", at(2))));
         model.apply(Update::Alerts(Ok(Vec::new())));
-        assert_eq!(model.error(), Some(("prometheus", "prometheus two", at(3))));
+        assert_eq!(model.error(), Some(("metrics", "prometheus two", at(3))));
         model.tick(at(4), UNIX_EPOCH, (80, 24));
         model.apply(Update::Metrics(Err("prometheus three".to_string())));
-        assert_eq!(
-            model.error(),
-            Some(("prometheus", "prometheus three", at(4)))
-        );
+        assert_eq!(model.error(), Some(("metrics", "prometheus three", at(4))));
     }
 
     #[test]
@@ -4845,9 +4852,9 @@ pub(crate) mod tests {
         model.apply(Update::Devices(Err("sot down".to_string())));
         model.apply(Update::Alerts(Err("refused again".to_string())));
 
-        assert_eq!(model.error(), Some(("alertmanager", "refused again", at)));
+        assert_eq!(model.error(), Some(("alerts", "refused again", at)));
         model.apply(Update::Alerts(Ok(Vec::new())));
-        assert_eq!(model.error(), Some(("prometheus", "polling stopped", at)));
+        assert_eq!(model.error(), Some(("metrics", "polling stopped", at)));
         ch(&mut model, 'x');
         assert_eq!(model.error(), Some(("sot", "sot down", at)));
         ch(&mut model, 'x');

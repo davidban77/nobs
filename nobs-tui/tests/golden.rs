@@ -17,7 +17,7 @@ use nobs_core::sot::{Fixed, SourceOfTruth};
 use nobs_core::status::{self, Urls};
 use nobs_tui::actions::{Action, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
-use nobs_tui::shell::{stacks, Health};
+use nobs_tui::shell::{stacks, Health, Reach};
 use nobs_tui::{
     data, draw, handle, settle, view, End, Focus, Shell, SondaTarget, Stack, StackKind, Start,
     Update, Workbench,
@@ -540,6 +540,9 @@ fn devices_model_finding(
         ..begin(Some(lab), chapters, Workbench::Devices)
     });
     model.tick(Instant::now(), clock(), (80, 24));
+    for index in 0..model.stacks().len() {
+        model.apply(Update::Services(index, defined(&[]), Ok(Vec::new())));
+    }
     model.apply(Update::Devices(Ok(devices)));
     model
 }
@@ -1081,6 +1084,335 @@ fn the_lab_devices_help_frame_is_pinned() {
 #[test]
 fn the_devices_without_a_source_frame_is_pinned() {
     golden("devices-none", without_a_source);
+}
+
+fn workshop_down() -> Shell {
+    let dir = PathBuf::from(WORKSHOP_DIR);
+    let mut lab = locate(&dir, Some(&dir)).unwrap();
+    lab.dir = PathBuf::from("/home/me/ws/autocon5");
+    if let Kind::Workshop(workshop) = &mut lab.kind {
+        workshop.name = "autocon5".to_string();
+        workshop.sot = "infrahub".to_string();
+    }
+    let source = lab_vars_source(Path::new(WORKSHOP_ONE));
+    let mut model = Shell::new(Start {
+        chooser: false,
+        source: Some(Arc::new(source)),
+        source_service: Some(status::Service::Sot),
+        ..begin(Some(lab), vec![stack("autocon5", &[])], Workbench::Devices)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
+    let names: Vec<&str> = status::SERVICES.iter().map(|row| row.compose).collect();
+    model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
+    model
+}
+
+#[test]
+fn the_workshop_with_its_stack_down_frame_is_pinned() {
+    golden("devices-workshop-down", workshop_down);
+}
+
+fn without_a_compose_file() -> Shell {
+    let dir = PathBuf::from(PROJECT_LAB);
+    let mut lab = locate(&dir, Some(&dir)).unwrap();
+    let mut chapters = stacks(Some(&lab), Vec::new()).unwrap();
+    for chapter in &mut chapters {
+        chapter.path = PathBuf::from("/home/me/nobs-t-project");
+    }
+    lab.dir = PathBuf::from("/home/me/nobs-t-project");
+    let mut model = Shell::new(Start {
+        chooser: false,
+        ..begin(Some(lab), chapters, Workbench::Services)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
+    model.apply(Update::Services(0, defined(&[]), Ok(Vec::new())));
+    model
+}
+
+#[test]
+fn the_services_frame_of_a_lab_without_a_compose_file_is_pinned() {
+    pinned(without_a_compose_file(), "services-no-compose", 100, 30);
+}
+
+#[test]
+fn a_lab_without_a_compose_file_says_it_has_no_services_and_shows_no_ps_red_line() {
+    let screen = lines(&render(without_a_compose_file(), 100, 30));
+
+    assert!(
+        screen
+            .iter()
+            .any(|line| line.contains("no services in this lab")),
+        "{}",
+        screen.join("\n")
+    );
+    assert!(
+        !screen.iter().any(|line| line.starts_with(" ps ")),
+        "{}",
+        screen.join("\n")
+    );
+}
+
+const STATES: [Reach; 5] = [
+    Reach::Unknown,
+    Reach::NotInLab,
+    Reach::StackDown,
+    Reach::Answers,
+    Reach::NoAnswer,
+];
+
+fn shown_rows() -> impl Iterator<Item = &'static status::Row> {
+    status::SERVICES
+        .iter()
+        .filter(|row| row.service != status::Service::Grafana)
+}
+
+fn answers_of(
+    service: status::Service,
+    devices: Vec<nobs_core::sot::Device>,
+    at: Instant,
+) -> Vec<Update> {
+    let srl1 = || "srl1".to_string();
+    match service {
+        status::Service::Metrics => vec![Update::Metrics(Ok(metrics()))],
+        status::Service::Alerts => vec![Update::Alerts(Ok(alerts()))],
+        status::Service::Logs => vec![
+            Update::DeviceLogs(srl1(), Ok(device_logs())),
+            Update::Rcas(srl1(), Ok(rcas())),
+        ],
+        status::Service::Flows => vec![Update::FlowRuns(Ok(flow_runs()))],
+        status::Service::Sot => vec![Update::Devices(Ok(devices))],
+        status::Service::Sonda => vec![Update::Sonda(data::Update {
+            at,
+            list: Ok(SCENARIOS.to_string()),
+            selected: None,
+        })],
+        status::Service::Grafana => Vec::new(),
+    }
+}
+
+fn failure_of(service: status::Service, at: Instant) -> Update {
+    let text = "cannot reach http://localhost:1: connection refused".to_string();
+    match service {
+        status::Service::Metrics => Update::Metrics(Err(text)),
+        status::Service::Alerts => Update::Alerts(Err(text)),
+        status::Service::Logs => Update::DeviceLogs("srl1".to_string(), Err(text)),
+        status::Service::Flows => Update::FlowRuns(Err(text)),
+        status::Service::Sot => Update::Devices(Err(text)),
+        status::Service::Sonda | status::Service::Grafana => Update::Sonda(data::Update {
+            at,
+            list: Err(text),
+            selected: None,
+        }),
+    }
+}
+
+fn lab_where(row: &status::Row, reach: Reach) -> Shell {
+    let source = lab_vars_source(Path::new(WORKSHOP_ONE));
+    let devices = source.devices().unwrap();
+    let sot = row.service == status::Service::Sot;
+    let mut model = Shell::new(Start {
+        chooser: false,
+        source: Some(Arc::new(source)),
+        source_service: sot.then_some(row.service),
+        ..begin(None, vec![stack("ws", &[])], Workbench::Services)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
+    match reach {
+        Reach::Unknown => {}
+        Reach::NotInLab => {
+            model.apply(Update::Services(0, defined(&[]), Ok(Vec::new())));
+        }
+        Reach::StackDown => {
+            model.apply(Update::Services(0, defined(&[row.compose]), Ok(Vec::new())));
+        }
+        Reach::Answers | Reach::NoAnswer => {
+            model.apply(listing(
+                0,
+                ps(&[(row.compose, "running", 1, "1 second ago")]),
+            ));
+        }
+    }
+    if !sot {
+        model.apply(Update::Devices(Ok(devices.clone())));
+    }
+    let at = model.now();
+    if reach == Reach::Answers || (reach == Reach::NoAnswer && !sot) {
+        for update in answers_of(row.service, devices, at) {
+            model.apply(update);
+        }
+    }
+    if reach != Reach::Answers {
+        model.apply(failure_of(row.service, at));
+    }
+    model
+}
+
+fn places(row: &status::Row, reach: Reach) -> Vec<String> {
+    let mut model = lab_where(row, reach);
+    press(&mut model, KeyCode::Char('1'));
+    let mut screens = vec![lines(&render(model, 100, 30)).join("\n")];
+    for presses in 0..5 {
+        let mut model = lab_where(row, reach);
+        press(&mut model, KeyCode::Char('1'));
+        press(&mut model, KeyCode::Enter);
+        for _ in 0..presses {
+            press(&mut model, KeyCode::Char(']'));
+        }
+        screens.push(lines(&render(model, 100, 30)).join("\n"));
+    }
+    for presses in 0..3 {
+        let mut model = lab_where(row, reach);
+        press(&mut model, KeyCode::Tab);
+        for _ in 0..presses {
+            press(&mut model, KeyCode::Char(']'));
+        }
+        screens.push(lines(&render(model, 100, 30)).join("\n"));
+    }
+    screens
+}
+
+fn panes_of(line: &str) -> Vec<&str> {
+    line.split(['│', '║']).collect()
+}
+
+fn cells_after<'a>(screen: &'a str, pane: usize, first: &str) -> Vec<&'a str> {
+    screen
+        .lines()
+        .filter_map(|line| panes_of(line).get(pane).copied())
+        .map(|text| text.split_whitespace().collect::<Vec<_>>())
+        .find(|cells| {
+            cells
+                .iter()
+                .any(|cell| cell.trim_start_matches('>') == first)
+        })
+        .unwrap_or_default()
+}
+
+fn value(reach: Reach, answered: &'static str) -> &'static str {
+    match reach {
+        Reach::Answers => answered,
+        Reach::NoAnswer => "?",
+        Reach::Unknown | Reach::NotInLab | Reach::StackDown => "—",
+    }
+}
+
+#[test]
+fn one_state_drives_every_place_that_shows_the_data_of_a_service() {
+    for row in shown_rows() {
+        for reach in STATES {
+            let screens = places(row, reach);
+            let all = screens.join("\n");
+            let label = format!("{} {reach:?}\n{all}", row.word);
+            let no_word = format!("no {} in this lab", row.word);
+            match reach {
+                Reach::NotInLab => assert!(all.contains(&no_word), "{label}"),
+                Reach::StackDown => assert!(all.contains("the stack is down"), "{label}"),
+                Reach::Unknown | Reach::Answers | Reach::NoAnswer => {
+                    assert!(!all.contains(&no_word), "{label}");
+                    assert!(!all.contains("the stack is down"), "{label}");
+                }
+            }
+            let red = format!(" {}: ", row.word);
+            let red_line = all.lines().any(|line| line.starts_with(&red));
+            let failed = reach == Reach::NoAnswer && row.service != status::Service::Sonda;
+            assert_eq!(red_line, failed, "{label}");
+            let answered = reach == Reach::Answers;
+            let list = &screens[0];
+            match row.service {
+                status::Service::Metrics => {
+                    let health = cells_after(list, 1, "srl1").get(3).copied();
+                    assert_eq!(health, Some(value(reach, "warn")), "{label}");
+                    let bgp = cells_after(list, 3, "10.1.2.2").get(2).copied();
+                    assert_eq!(bgp, Some(value(reach, "up")), "{label}");
+                    let interface = cells_after(&all, 3, "ethernet-1/1");
+                    let states = (interface.get(2).copied(), interface.get(5).copied());
+                    let up = Some(value(reach, "up"));
+                    assert_eq!(states, (up, up), "{label}");
+                }
+                status::Service::Alerts => {
+                    let cells = cells_after(list, 1, "srl1");
+                    assert_eq!(cells.get(5).copied(), Some(value(reach, "1")), "{label}");
+                    let title = format!(" alerts {} ", value(reach, "2"));
+                    assert!(list.contains(&title), "{label}");
+                    let line = format!("alerts   {}", value(reach, "BgpSessionNotUp"));
+                    assert!(list.contains(&line), "{label}");
+                    assert_eq!(list.contains("BgpSessionNotUp  srl1"), answered, "{label}");
+                    assert_eq!(all.contains("alert  BgpSessionNotUp"), answered, "{label}");
+                }
+                status::Service::Logs => {
+                    assert_eq!(all.contains("state changed to idle"), answered, "{label}");
+                    assert_eq!(all.contains("AI RCA"), answered, "{label}");
+                }
+                status::Service::Flows => {
+                    assert_eq!(all.contains("evidence | srl1"), answered, "{label}");
+                }
+                status::Service::Sot => {
+                    assert_eq!(
+                        !cells_after(list, 1, "srl1").is_empty(),
+                        answered,
+                        "{label}"
+                    );
+                    let waiting = matches!(reach, Reach::Unknown | Reach::NoAnswer);
+                    assert_eq!(list.contains("no answer yet"), waiting, "{label}");
+                }
+                status::Service::Sonda => {
+                    let sonda = &screens[screens.len() - 3..].join("\n");
+                    let kept = matches!(reach, Reach::Answers | Reach::NoAnswer);
+                    assert_eq!(sonda.contains("running 12"), kept, "{label}");
+                    let refused = sonda.contains("connection refused");
+                    assert_eq!(refused, reach == Reach::NoAnswer, "{label}");
+                }
+                status::Service::Grafana => {}
+            }
+        }
+    }
+}
+
+const TOOLS: [&str; 4] = ["prometheus", "loki", "alertmanager", "prefect"];
+
+fn tools_not_named_as_real_things(line: &str) -> Vec<&'static str> {
+    let lower = line.to_lowercase();
+    TOOLS
+        .iter()
+        .flat_map(|tool| lower.match_indices(tool).map(|(at, _)| (at, *tool)))
+        .filter(|(at, tool)| {
+            let (before, after) = (&lower[..*at], &lower[at + tool.len()..]);
+            let after = after.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '-');
+            let service_row = before.trim_end_matches([' ', '>']).ends_with(['│', '║'])
+                && after.starts_with("  ");
+            let followed = after.starts_with("  following") || after.starts_with("  paused");
+            let log_line = before.contains("msg=\"");
+            !(service_row || followed || log_line)
+        })
+        .map(|(_, tool)| tool)
+        .collect()
+}
+
+#[test]
+fn no_frame_and_no_red_line_names_a_tool_except_as_the_name_of_a_real_thing() {
+    let mut found = Vec::new();
+    let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    for entry in fs::read_dir(folder).unwrap() {
+        let path = entry.unwrap().path();
+        for line in fs::read_to_string(&path).unwrap().lines() {
+            for tool in tools_not_named_as_real_things(line) {
+                found.push(format!("{} {tool}: {line}", path.display()));
+            }
+        }
+    }
+    for row in shown_rows() {
+        for reach in STATES {
+            for screen in places(row, reach) {
+                for line in screen.lines() {
+                    for tool in tools_not_named_as_real_things(line) {
+                        found.push(format!("{} {reach:?} {tool}: {line}", row.word));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
 #[test]

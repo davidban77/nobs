@@ -2247,7 +2247,7 @@ mod tests {
             model.alerts_ok()
                 && model
                     .error()
-                    .is_some_and(|(source, ..)| source == "prometheus")
+                    .is_some_and(|(source, ..)| source == "metrics")
         };
 
         let down = turn_until(
