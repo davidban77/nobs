@@ -4133,6 +4133,43 @@ mod tests {
     }
 
     #[test]
+    fn a_workbench_without_body_rows_leaves_every_cell_of_the_run_pane_to_the_pane() {
+        let mut cases = 0;
+        for bench in benches() {
+            for &(tab, _) in bench.tabs {
+                for (width, height) in [(60, 15), (100, 30)] {
+                    let label = format!("{} {tab:?} {width}x{height}", bench.selected);
+                    let mut model = staged(&bench, tab, false, Keys::Hints, true);
+                    for line in numbered(60) {
+                        model.apply(Update::ActionLine(line));
+                    }
+                    tab_to_run(&mut model, width, height);
+                    settled(&mut model, width, height);
+                    let (_, [_, _, _, body, pane, _]) =
+                        regions(&model, Rect::new(0, 0, width, height));
+                    let cells = |paint: &dyn Fn(&mut Frame)| {
+                        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                        terminal.draw(|frame| paint(frame)).unwrap();
+                        let buffer = terminal.backend().buffer();
+                        pane.positions()
+                            .map(|at| (buffer[at].symbol().to_string(), buffer[at].style()))
+                            .collect::<Vec<_>>()
+                    };
+                    let screen = cells(&|frame| draw(frame, &model));
+                    let alone = cells(&|frame| run_pane(frame, pane, &model));
+
+                    assert_eq!(model.focus(), Focus::Run, "{label}");
+                    assert_eq!(body.height, 0, "{label}");
+                    assert!(pane.height > 2, "{label}");
+                    assert_eq!(screen, alone, "{label}");
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 18);
+    }
+
+    #[test]
     fn the_marks_of_the_run_pane_count_the_rows_hidden_above_and_below() {
         let mut model = answered(&numbered(40));
         tab_to_run(&mut model, 60, 15);
