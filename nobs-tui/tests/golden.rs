@@ -18,7 +18,8 @@ use nobs_tui::actions::{Action, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
 use nobs_tui::shell::{stacks, Health};
 use nobs_tui::{
-    data, draw, handle, view, End, Shell, SondaTarget, Stack, StackKind, Start, Update, Workbench,
+    data, draw, handle, settle, view, End, Focus, Shell, SondaTarget, Stack, StackKind, Start,
+    Update, Workbench,
 };
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -599,6 +600,40 @@ fn ran(end: Option<End>, folded: bool) -> Shell {
     model
 }
 
+fn answered(mut model: Shell, count: usize) -> Shell {
+    for index in 1..=count {
+        model.apply(Update::ActionLine(format!(" Step {index:02}  done")));
+    }
+    later(&mut model, 41);
+    model.apply(Update::ActionEnded(End::Exited(0)));
+    model
+}
+
+fn settled(model: &mut Shell, width: u16, height: u16) {
+    model.tick(model.now(), clock(), (width, height));
+    settle(model, Rect::new(0, 0, width, height));
+}
+
+fn focused(mut model: Shell, width: u16, height: u16) -> Shell {
+    settled(&mut model, width, height);
+    for _ in 0..4 {
+        if model.focus() == Focus::Run {
+            break;
+        }
+        press(&mut model, KeyCode::Tab);
+        settled(&mut model, width, height);
+    }
+    model
+}
+
+fn scrolled(mut model: Shell, presses: usize, width: u16, height: u16) -> Shell {
+    for _ in 0..presses {
+        press(&mut model, KeyCode::Char('k'));
+        settled(&mut model, width, height);
+    }
+    model
+}
+
 fn not_stopped() -> Shell {
     let mut model = ran(None, false);
     handle(
@@ -658,10 +693,14 @@ fn mismatch(name: &str, width: u16, height: u16, actual: &[String]) -> Option<St
 }
 
 fn golden(name: &str, build: impl Fn() -> Shell) {
+    golden_at(name, |_, _| build());
+}
+
+fn golden_at(name: &str, build: impl Fn(u16, u16) -> Shell) {
     let failures: Vec<String> = SIZES
         .into_iter()
         .filter_map(|(width, height)| {
-            let actual = lines(&render(build(), width, height));
+            let actual = lines(&render(build(width, height), width, height));
             mismatch(name, width, height, &actual)
         })
         .collect();
@@ -1047,6 +1086,50 @@ fn the_finished_action_frames_are_pinned() {
 fn the_failed_action_frames_are_pinned() {
     golden("run-exit-1", || ran(Some(End::Exited(1)), false));
     golden("run-exit-1-folded", || ran(Some(End::Exited(1)), true));
+}
+
+#[test]
+fn the_run_pane_with_the_focus_frames_are_pinned() {
+    let over = |width, height| focused(answered(ran(None, false), 38), width, height);
+    golden_at("run-focus-short", |width, height| {
+        let up = [KeyCode::Char('u'), KeyCode::Char('y')];
+        focused(answered(after(model(false, false), &up), 1), width, height)
+    });
+    golden_at("run-focus-fits", |width, height| {
+        focused(answered(ran(None, false), 12), width, height)
+    });
+    golden_at("run-focus-over", over);
+    golden_at("run-focus-moved", |width, height| {
+        scrolled(over(width, height), 3, width, height)
+    });
+    golden_at("run-focus-top", |width, height| {
+        scrolled(over(width, height), 50, width, height)
+    });
+}
+
+#[test]
+fn other_workbenches_draw_above_a_run_pane_with_the_focus() {
+    use KeyCode::{Char, Enter};
+    let lab = answered(after(lab_model(), &[Char('D'), Char('y')]), 9);
+    let typed: Vec<KeyCode> = [Char('s')]
+        .into_iter()
+        .chain("show version".chars().map(Char))
+        .chain([Enter])
+        .collect();
+    let devices = answered(after(lab_devices_model(), &typed), 6);
+
+    pinned(focused(lab, 100, 30), "run-focus-lab", 100, 30);
+    pinned(focused(devices, 60, 15), "run-focus-devices", 60, 15);
+}
+
+#[test]
+fn the_help_frame_with_the_run_pane_drawn_is_pinned() {
+    golden_at("help-run", |width, height| {
+        let mut model = ran(Some(End::Exited(0)), false);
+        settled(&mut model, width, height);
+        press(&mut model, KeyCode::Char('?'));
+        model
+    });
 }
 
 #[test]
@@ -1624,7 +1707,7 @@ fn lab_without_a_chapter() -> Shell {
 fn the_box_with_the_focus_draws_the_only_double_border_in_every_state() {
     use Corner::{At, Title};
     use KeyCode::{Char, Enter, Esc, Tab};
-    let states: [State; 33] = [
+    let states: [State; 34] = [
         ("chooser", || model(true, false), Title(" labs found ")),
         (
             "services overview list",
@@ -1713,6 +1796,11 @@ fn the_box_with_the_focus_draws_the_only_double_border_in_every_state() {
             "run pane folded",
             || ran(Some(End::Exited(0)), true),
             Title(" stacks "),
+        ),
+        (
+            "run pane with the focus",
+            || focused(ran(Some(End::Exited(0)), false), 100, 30),
+            Title(" run "),
         ),
         ("lab run pane open", refused, Title(" chapters ")),
         (
