@@ -373,8 +373,8 @@ An action that worked, at 100 columns:
 ┌ run  packt up  exit 0  39s ──────────────────────────────────────────────────────────── Esc fold ┐
 │$ nobs --dir /home/me/ws/packt packt up                                                           │
 │Prometheus    http://localhost:9090                                                               │
-│Alertmanager  http://localhost:9093                                                               │
 │Loki          http://localhost:3001                                                               │
+│Alertmanager  http://localhost:9093                                                               │
 │Infrahub      http://localhost:8000                                                               │
 │Prefect       http://localhost:4200                                                               │
 │Sonda         http://localhost:8085                                                               │
@@ -638,8 +638,8 @@ After `up`, and after a `restart` with no services, nobs prints the addresses of
 |---|---|
 | Grafana | `http://localhost:3000` |
 | Prometheus | `http://localhost:9090` |
-| Alertmanager | `http://localhost:9093` |
 | Loki | `http://localhost:3001` |
+| Alertmanager | `http://localhost:9093` |
 | Infrahub | `http://localhost:8000` |
 | Prefect | `http://localhost:4200` |
 | Sonda | `http://localhost:8085` |
@@ -649,8 +649,8 @@ Each line is the service name, padded to 14 characters, and then the address:
 ```
 Grafana       http://localhost:3000
 Prometheus    http://localhost:9090
-Alertmanager  http://localhost:9093
 Loki          http://localhost:3001
+Alertmanager  http://localhost:9093
 Infrahub      http://localhost:8000
 Prefect       http://localhost:4200
 Sonda         http://localhost:8085
@@ -709,7 +709,7 @@ For each service, nobs sends one HTTP GET request (a request that only reads) to
 | Alertmanager | `/-/ready` | `--am-url` | `ALERTMANAGER_URL` | `http://localhost:9093` |
 | Infrahub | `/health` | `--infrahub-url` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
 | Prefect | `/api/health` | `--prefect-url` | `PREFECT_API_URL` | `http://localhost:4200` |
-| Sonda | `/health` | `--sonda-url` | none | `http://localhost:8085` |
+| Sonda | `/health` | `--sonda-url` | `SONDA_SERVER_URL` | `http://localhost:8085` |
 
 For each address, nobs looks at the flag, then the variable when there is one, then the default address. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. So an empty shell variable does not hide the value in `.env`. A trailing `/` on an address is dropped. When the Infrahub address names `infrahub-server`, the name the containers use among themselves, nobs probes `http://localhost:8000` instead.
 
@@ -812,9 +812,9 @@ When no silence is left to show, nobs prints one line and no table, and exits wi
 | Exit code | When |
 |---|---|
 | 0 | nobs printed the table, or the line that says there is nothing to show |
-| 1 | Alertmanager did not answer: `nobs: cannot reach Alertmanager at <address>: <error>` |
-| 1 | Alertmanager answered with a status code of 400 or more: `nobs: Alertmanager at <address> answered <status>` |
-| 1 | the answer is not a JSON list: `nobs: Alertmanager at <address> answered with a body nobs cannot read: <reason>` |
+| 1 | the alerts service did not answer: `nobs: cannot reach the alerts service at <address>: <error>` |
+| 1 | Alertmanager answered with a status code of 400 or more: `nobs: the alerts service at <address> answered <status>` |
+| 1 | the answer is not a JSON list: `nobs: the alerts service at <address> answered with a body nobs cannot read: <reason>` |
 | 2 | a `--label` without `=`, or a flag nobs does not know |
 
 ### load-infrahub, schema load and maintenance
@@ -1089,7 +1089,7 @@ The last block shows the first row of this table that fits:
 | Exit code | When |
 |---|---|
 | 0 | `rca` printed records or the line that says there are none; `evidence` printed its four blocks |
-| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query Loki at <address>: <reason>`. `<reason>` is one of three texts: why nobs could not connect; `Loki answered <status> on /loki/api/v1/query_range: <answer>`, where `<answer>` is the first 200 characters of the answer; or `Loki answered with text nobs cannot read: <error>`, where `<error>` says what was wrong with the answer |
+| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query Loki at <address>: <reason>`. `<reason>` is one of three texts: why nobs could not connect; `the logs service answered <status> on /loki/api/v1/query_range: <answer>`, where `<answer>` is the first 200 characters of the answer; or `the logs service answered with text nobs cannot read: <error>`, where `<error>` says what was wrong with the answer |
 | 1 | `evidence` has no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 2 | a flag nobs does not know, a missing `DEVICE` or `PEER` for `evidence`, or a value that is not a whole number of 0 or more for `--last`, `--minutes`, `--log-minutes` or `--log-limit` |
 
@@ -1161,7 +1161,7 @@ reason: SoT expects peer up, but metrics show mismatch
 | `Prefect flow runs (last <minutes>m)` | the flow runs of this device and peer that started within `--minutes`, the newest first, at most 5 runs, each with its child runs | `No quarantine_bgp / resolved_bgp runs for <device>:<peer> in the last <minutes>m.` | `Prefect query failed: <error>` |
 | `Most recent decision` | the newest decision record in Loki for this device and peer within `--minutes` | `No decision audit records for <device> → <peer> in the last <minutes>m.` | `Loki query failed: <error>` |
 
-In the last column, `<error>` is the text of the failed call, and `<address>` is the address nobs used, without a trailing `/` (and, for Prefect, without a trailing `/api`). For Alertmanager it is `cannot reach Alertmanager at <address>: <reason>`, `Alertmanager at <address> answered <status>` or `Alertmanager at <address> answered with a body nobs cannot read: <problem>`. For Prefect it is `cannot reach <address>: <reason>`, `Prefect answered <status> on /api/flow_runs/filter: <answer>` or `Prefect answered with text nobs cannot read: <problem>`. For Loki it is `cannot reach <address>: <reason>`, `Loki answered <status> on /loki/api/v1/query_range: <answer>` or `Loki answered with text nobs cannot read: <problem>`. `<reason>` is why nobs could not connect, `<answer>` is the first 200 characters of the answer, and `<problem>` says what was wrong with the answer. The `page` fetch error uses the Alertmanager texts.
+In the last column, `<error>` is the text of the failed call, and `<address>` is the address nobs used, without a trailing `/` (and, for Prefect, without a trailing `/api`). For Alertmanager it is `cannot reach the alerts service at <address>: <reason>`, `the alerts service at <address> answered <status>` or `the alerts service at <address> answered with a body nobs cannot read: <problem>`. For Prefect it is `cannot reach <address>: <reason>`, `the flows service answered <status> on /api/flow_runs/filter: <answer>` or `the flows service answered with text nobs cannot read: <problem>`. For Loki it is `cannot reach <address>: <reason>`, `the logs service answered <status> on /loki/api/v1/query_range: <answer>` or `the logs service answered with text nobs cannot read: <problem>`. `<reason>` is why nobs could not connect, `<answer>` is the first 200 characters of the answer, and `<problem>` says what was wrong with the answer. The `page` fetch error uses the Alertmanager texts.
 
 Each alert in the first panel gives two lines. The first is `BgpSessionNotUp · <severity> · state=<state> · age <age>`. `<severity>` is the `severity` label, or `?` when the alert has none. `<state>` is `firing` when Alertmanager sent the state `active`, `pending` for `unprocessed`, `?` when it sent none, and otherwise the state as it sent it, for example `suppressed`. `<age>` is the time since the alert started, written as in the `alerts` table (`42s`, `3m05s`, `2h07m` or `1d3h`), or `?` when nobs cannot read the start time. The second line is `silencedBy: <id>…` with the first 12 characters of the first silence that mutes the alert, followed by ` (+<n> more)` when `<n>` more silences mute it, or `silencedBy: (none)`.
 
@@ -1510,7 +1510,7 @@ When nobs cannot expire a silence or delete a scenario, it prints nothing and do
 | `nobs: Sonda /scenarios fetch failed: <error> — skipping wedge check` | step 6 could not read the list of scenarios, and ends |
 | `nobs: Loki probe failed: <error> — skipping sonda-logs check` | step 7 could not ask Loki, and ends |
 
-In these lines, `<error>` is the text of the failed call. For Infrahub it is `cannot reach <url>: <reason>` or `Infrahub answered <status> on <path>: <body>`. For Alertmanager it is `cannot reach Alertmanager at <url>: <reason>` or `Alertmanager at <url> answered <status>`. For Sonda it is `cannot reach <url>: <reason>`, `sonda answered <status>: <body>` or `sonda answered a list nobs cannot read: <reason>`. For Loki it is `cannot reach <url>: <reason>` or `Loki answered <status> on <path>: <body>`. `<reason>` is why nobs could not connect, and `<body>` is the answer as the server sent it.
+In these lines, `<error>` is the text of the failed call. For Infrahub it is `cannot reach <url>: <reason>` or `Infrahub answered <status> on <path>: <body>`. For Alertmanager it is `cannot reach the alerts service at <url>: <reason>` or `the alerts service at <url> answered <status>`. For Sonda it is `cannot reach <url>: <reason>`, `sonda answered <status>: <body>` or `sonda answered a list nobs cannot read: <reason>`. For Loki it is `cannot reach <url>: <reason>` or `the logs service answered <status> on <path>: <body>`. `<reason>` is why nobs could not connect, and `<body>` is the answer as the server sent it.
 
 | Exit code | When |
 |---|---|

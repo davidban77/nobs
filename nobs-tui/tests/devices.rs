@@ -470,6 +470,7 @@ fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
         infrahub: address(),
         prefect: address(),
         sonda: address(),
+        set: Vec::new(),
     };
     let (pollers, updates) = Pollers::start(
         Arc::new(Silent),
@@ -555,6 +556,7 @@ fn the_services_follow_does_not_stop_the_device_logs_and_the_device_follow_does(
         infrahub: address(),
         prefect: address(),
         sonda: address(),
+        set: Vec::new(),
     };
     let (pollers, updates) = Pollers::start(
         Arc::new(Silent),

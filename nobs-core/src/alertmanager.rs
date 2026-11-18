@@ -47,12 +47,14 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Unreachable { url, reason } => {
-                write!(f, "cannot reach Alertmanager at {url}: {reason}")
+                write!(f, "cannot reach the alerts service at {url}: {reason}")
             }
-            Error::Status { url, status } => write!(f, "Alertmanager at {url} answered {status}"),
+            Error::Status { url, status } => {
+                write!(f, "the alerts service at {url} answered {status}")
+            }
             Error::Body { url, reason } => write!(
                 f,
-                "Alertmanager at {url} answered with a body nobs cannot read: {reason}"
+                "the alerts service at {url} answered with a body nobs cannot read: {reason}"
             ),
         }
     }
@@ -505,7 +507,7 @@ mod tests {
                 reason: "connection refused".to_string()
             }
             .to_string(),
-            "cannot reach Alertmanager at http://am:9093: connection refused"
+            "cannot reach the alerts service at http://am:9093: connection refused"
         );
         assert_eq!(
             Error::Status {
@@ -513,7 +515,7 @@ mod tests {
                 status: 503
             }
             .to_string(),
-            "Alertmanager at http://am:9093 answered 503"
+            "the alerts service at http://am:9093 answered 503"
         );
         assert_eq!(
             Error::Body {
@@ -521,7 +523,7 @@ mod tests {
                 reason: "the reply is not a list".to_string()
             }
             .to_string(),
-            "Alertmanager at http://am:9093 answered with a body nobs cannot read: the reply is not a list"
+            "the alerts service at http://am:9093 answered with a body nobs cannot read: the reply is not a list"
         );
     }
 }

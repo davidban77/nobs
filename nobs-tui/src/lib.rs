@@ -626,6 +626,7 @@ mod tests {
             infrahub: address(),
             prefect: address(),
             sonda: address(),
+            set: Vec::new(),
         }
     }
 

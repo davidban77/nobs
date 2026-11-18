@@ -36,11 +36,11 @@ use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
 use nobs_core::sot::{self, Device, Maintenance, Session, SourceOfTruth};
-use nobs_core::status::{self, probe_all, Probe, State, Urls};
+use nobs_core::status::{self, probe_all, Probe, Service, State, Urls, SERVICES};
 use nobs_core::time;
 use nobs_core::try_it;
 use nobs_core::webhook;
-use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
+use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap};
 use nobs_ssh::Ssh;
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
@@ -1033,7 +1033,7 @@ pub struct StatusFlags {
     #[arg(
         long,
         value_name = "URL",
-        help = "Address of Sonda; nobs looks at --sonda-url, then http://localhost:8085"
+        help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
     )]
     sonda_url: Option<String>,
 }
@@ -1853,8 +1853,8 @@ fn guard(located: &Located, here: &Path, given: Option<&Path>, runner: &dyn Runn
 }
 
 fn print_urls() {
-    for (name, url) in URLS {
-        println!("{name:<14}{url}");
+    for row in SERVICES {
+        println!("{:<14}{}", row.tool, row.default);
     }
 }
 
@@ -3205,6 +3205,7 @@ fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
         infrahub: given(flags.infrahub_url).unwrap_or(from.infrahub),
         prefect: given(flags.prefect_url).unwrap_or(from.prefect),
         sonda: given(flags.sonda_url).unwrap_or(from.sonda),
+        set: from.set,
     }
 }
 
@@ -5146,7 +5147,7 @@ fn screen_start_with(
                 home,
                 source: None,
                 source_error: None,
-                urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
+                urls: sonda_only_urls(process),
                 chooser: true,
                 program,
                 login: std::sync::Arc::new(|_| None),
@@ -5159,13 +5160,21 @@ fn screen_start_with(
             home,
             source: None,
             source_error: None,
-            urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
+            urls: sonda_only_urls(process),
             chooser: false,
             program,
             login: std::sync::Arc::new(|_| None),
         }),
         Err(error) => Err(error.to_string()),
     }
+}
+
+fn sonda_only_urls(lookup: impl Fn(&str) -> Option<String>) -> Urls {
+    let mut urls = Urls::from_lookup(lookup);
+    if !urls.is_set(Service::Sonda) {
+        urls.set.push(Service::Sonda);
+    }
+    urls
 }
 
 fn lab_vars_source(path: &Path) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
@@ -5546,6 +5555,12 @@ mod tests {
             loki: "http://var-loki".to_string(),
             alertmanager: "http://var-alertmanager".to_string(),
             infrahub: "http://var-infrahub".to_string(),
+            set: vec![
+                Service::Metrics,
+                Service::Logs,
+                Service::Alerts,
+                Service::Sot,
+            ],
             ..Urls::defaults()
         }
     }
@@ -5582,7 +5597,19 @@ mod tests {
                 infrahub: "http://flag-infrahub".to_string(),
                 prefect: "http://flag-prefect".to_string(),
                 sonda: "http://flag-sonda".to_string(),
+                set: with_variables_only().set,
             }
+        );
+    }
+
+    #[test]
+    fn the_sonda_only_screen_counts_sonda_as_set_once() {
+        assert_eq!(sonda_only_urls(|_| None).set, [Service::Sonda]);
+        let given =
+            sonda_only_urls(|name| (name == "SONDA_SERVER_URL").then(|| "http://s:9".to_string()));
+        assert_eq!(
+            (given.sonda.as_str(), given.set),
+            ("http://s:9", vec![Service::Sonda])
         );
     }
 
