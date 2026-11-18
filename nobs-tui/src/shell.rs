@@ -1181,12 +1181,15 @@ impl Model {
         view.cut.clear();
         view.drawn = true;
         view.overflow = measure.overflow;
+        let scroll = view
+            .scroll
+            .saturating_sub(measure.cut_rows)
+            .min(measure.overflow);
+        view.following = view.following || scroll == measure.overflow;
         view.scroll = if view.following {
             measure.overflow
         } else {
-            view.scroll
-                .saturating_sub(measure.cut_rows)
-                .min(measure.overflow)
+            scroll
         };
     }
 
@@ -5907,6 +5910,25 @@ pub(crate) mod tests {
         for index in lines {
             model.apply(Update::ActionLine(format!("line {index}")));
         }
+    }
+
+    #[test]
+    fn a_moved_up_view_clamped_by_a_smaller_overflow_is_at_the_end_and_follows_again() {
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+        pushed(&mut model, 0..20);
+        model.set_run_view(measured(10, 0));
+        to_run_pane(&mut model);
+        for _ in 0..3 {
+            ch(&mut model, 'k');
+        }
+        assert_eq!((model.run_scroll(), model.run_view.following), (7, false));
+
+        model.set_run_view(measured(4, 0));
+        assert_eq!(model.run_scroll(), 4);
+        model.set_run_view(measured(12, 0));
+
+        assert_eq!((model.run_scroll(), model.run_view.following), (12, true));
     }
 
     fn shown_line(model: &Model) -> &str {

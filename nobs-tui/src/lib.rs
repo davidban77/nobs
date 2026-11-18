@@ -1790,6 +1790,27 @@ mod tests {
     }
 
     #[test]
+    fn a_line_drained_in_a_turn_shows_in_that_turns_frame_of_a_following_run_pane() {
+        let mut model = lab_model();
+        handle(&mut model, ch('D'));
+        handle(&mut model, ch('y'));
+        for index in 1..=30 {
+            model.apply(Update::ActionLine(format!("step {index:02}")));
+        }
+        quiet_turn(&mut model, (60, 15), &[key(KeyCode::Tab); 3]);
+        let (pollers, _polled) = launch(&scripted(Vec::new()), &model);
+        let (sender, updates) = mpsc::channel();
+        sender
+            .send(Update::ActionLine("step 31".to_string()))
+            .unwrap();
+
+        let rows = drawn_turn(&mut model, (60, 15), &[], &pollers, &updates).join("\n");
+
+        assert_eq!(model.focus(), Focus::Run);
+        assert!(rows.contains("step 31"), "{rows}");
+    }
+
+    #[test]
     fn j_on_the_sonda_details_in_the_loop_moves_the_text_the_box_hid() {
         let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
         handle(&mut model, key(KeyCode::Tab));

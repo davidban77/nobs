@@ -171,9 +171,7 @@ pub fn draw(frame: &mut Frame, model: &Model) {
             error_row,
         );
     }
-    if body.height > 0 {
-        workbench(frame, body, model);
-    }
+    workbench(frame, body, model);
     match bottom.height {
         0 => {}
         1 => run_line(frame, bottom, model),
@@ -1548,16 +1546,25 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn run_all_rows(run: &Run, width: usize) -> Vec<Line<'static>> {
-    let command = command_rows(run, width)
+    let output = run.lines.iter().flat_map(|line| line_rows(line, width));
+    command_lines(run, width)
         .into_iter()
-        .map(|row| Line::styled(row, DIM));
-    let output = run.lines.iter().flat_map(|line| {
-        let style = line_style(line);
-        wrapped(line, width)
-            .into_iter()
-            .map(move |row| Line::styled(row, style))
-    });
-    command.chain(output).collect()
+        .chain(output)
+        .collect()
+}
+
+fn command_lines(run: &Run, width: usize) -> Vec<Line<'static>> {
+    command_rows(run, width)
+        .into_iter()
+        .map(|row| Line::styled(row, DIM))
+        .collect()
+}
+
+fn line_rows(line: &str, width: usize) -> impl DoubleEndedIterator<Item = Line<'static>> {
+    let style = line_style(line);
+    wrapped(line, width)
+        .into_iter()
+        .map(move |row| Line::styled(row, style))
 }
 
 fn line_style(line: &str) -> Style {
@@ -1569,29 +1576,23 @@ fn line_style(line: &str) -> Style {
 }
 
 fn run_rows(run: &Run, width: usize, height: usize) -> Vec<Line<'static>> {
-    let command = command_rows(run, width);
+    let command = command_lines(run, width);
     let last = run
         .lines
         .last()
         .map_or(0, |line| wrapped(line, width).len());
-    let shown = if command.len() + last <= height {
+    let mut lines = if command.len() + last <= height {
         command
     } else {
         Vec::new()
     };
-    let mut lines: Vec<Line> = shown
-        .into_iter()
-        .map(|row| Line::styled(row, DIM))
-        .collect();
     let room = height.saturating_sub(lines.len());
     let mut tail: Vec<Line> = Vec::new();
     for line in run.lines.iter().rev() {
         if tail.len() >= room {
             break;
         }
-        let style = line_style(line);
-        let rows = wrapped(line, width);
-        tail.extend(rows.into_iter().rev().map(|row| Line::styled(row, style)));
+        tail.extend(line_rows(line, width).rev());
     }
     tail.truncate(room);
     tail.reverse();
