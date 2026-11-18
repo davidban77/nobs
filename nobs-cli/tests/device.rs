@@ -212,6 +212,35 @@ fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() 
 }
 
 #[test]
+fn a_shell_user_of_only_spaces_falls_to_the_dot_env_user() {
+    let lab = folder("device-login-shell-spaces");
+    fs::copy(fixture("device-lab/nobs.toml"), lab.join("nobs.toml")).unwrap();
+    fs::copy(
+        fixture("device-lab/containerlab/lab.clab.yml"),
+        lab.join("containerlab/lab.clab.yml"),
+    )
+    .unwrap();
+    fs::write(
+        lab.join(".env"),
+        format!("NETWORK_AGENT_USER=nobs-t-x\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
+    )
+    .unwrap();
+
+    for args in both("nobs-t-srl1") {
+        let output = nobs(&lab, &in_dir(&lab, &args), Some("   "), None);
+        let stderr = stderr(&output);
+
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.starts_with("nobs: ssh nobs-t-srl1: cannot reach "),
+            "{stderr}"
+        );
+        assert!(output.stdout.is_empty());
+        assert!(!stderr.contains(TEST_PASSWORD));
+    }
+}
+
+#[test]
 fn device_alone_or_a_missing_argument_is_a_usage_error_with_exit_2() {
     let lab = fixture("device-lab");
     for args in [

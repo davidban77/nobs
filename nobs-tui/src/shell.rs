@@ -6509,6 +6509,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_refusal_line_ending_a_run_that_did_not_carry_the_kept_login_keeps_it() {
+        let lab = book_dir();
+        let typed = login(Some(USER), Some(SECRET));
+        let mut model = asking(None, None);
+        assert_eq!(logged_in(&mut model), fetch(&lab, typed.clone()));
+        answered(&mut model, &[], End::Exited(0));
+        let maintenance = ACTIONS.iter().find(|action| action.key == 'm').unwrap();
+        assert!(!maintenance.login);
+
+        let asked = model.act(
+            maintenance,
+            vec![vec![OsString::from("maintenance")]],
+            Target::Device("nobs-t-srl1".to_string()),
+            typed.clone(),
+        );
+        assert_eq!(asked, []);
+        let started = ch(&mut model, 'y');
+        assert!(matches!(&started[..], [Command::Run { login, .. }] if *login == Login::default()));
+        model.apply(Update::ActionError(refusal()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        assert_eq!(model.run().unwrap().lines, [refusal()]);
+
+        assert_eq!(ch(&mut model, 'g'), fetch(&lab, typed));
+    }
+
+    #[test]
     fn the_login_prompt_opens_only_where_the_key_would_act() {
         let mut no_device = asking(None, None);
         no_device.apply(Update::Devices(Ok(Vec::new())));
