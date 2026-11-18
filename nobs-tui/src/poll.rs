@@ -120,8 +120,9 @@ impl Pollers {
         };
         let health = {
             let stacks = Arc::clone(&stacks);
+            let server = sonda.server.clone();
             spawn("health", &updates, move |inbox, out| {
-                health(&stacks, selected, inbox, out)
+                health(&stacks, selected, server.as_deref(), inbox, out)
             })
         };
         let logs = {
@@ -317,6 +318,7 @@ fn ps(
 fn health(
     stacks: &[Stack],
     mut selected: usize,
+    server: Option<&str>,
     inbox: &Receiver<Command>,
     out: &Sender<Update>,
 ) -> bool {
@@ -343,7 +345,7 @@ fn health(
         }
         if let Some(stack) = stacks.get(selected) {
             if out
-                .send(Update::Health(selected, probe(stack, &asked)))
+                .send(Update::Health(selected, probe(stack, server, &asked)))
                 .is_err()
             {
                 return true;
@@ -686,13 +688,16 @@ fn answer<T>(
         .map_or_else(|| format!("exit {}", output.code), str::to_string))
 }
 
-fn probe(stack: &Stack, asked: &[Service]) -> Vec<Health> {
-    let urls = Urls::from_lookup(|name| {
-        std::env::var(name)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| env_value(&stack.env, name).map(str::to_string))
-    });
+fn probe(stack: &Stack, server: Option<&str>, asked: &[Service]) -> Vec<Health> {
+    let urls = Urls {
+        sonda: sonda_url(server, Some(stack)),
+        ..Urls::from_lookup(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| env_value(&stack.env, name).map(str::to_string))
+        })
+    };
     SERVICES
         .iter()
         .zip(status::targets(&urls))

@@ -416,6 +416,7 @@ mod tests {
                 .iter()
                 .map(|(name, value)| (name.to_string(), value.to_string()))
                 .collect(),
+            shows_sonda: false,
         }
     }
 
@@ -936,7 +937,7 @@ mod tests {
         }
 
         let health = next(&updates, Duration::from_secs(10), |update| match update {
-            Update::Health(0, list) => Some(list),
+            Update::Health(0, list) if list.len() == 3 => Some(list),
             _ => None,
         });
 
@@ -2120,7 +2121,11 @@ mod tests {
     #[test]
     fn a_lab_without_a_compose_file_or_a_set_address_sends_no_request_and_shows_no_red_line() {
         let counter = Counter::start();
-        let env = every_setting(&counter.url);
+        let sonda = nobs_core::status::row(Service::Sonda).setting;
+        let env: Vec<_> = every_setting(&counter.url)
+            .into_iter()
+            .filter(|(name, _)| Some(*name) != sonda)
+            .collect();
         let runner = scripted(Vec::new());
         let begin = Start {
             source: Some(Arc::new(Dialing(counter.url.clone()))),
@@ -2128,7 +2133,7 @@ mod tests {
             urls: at(&counter.url, Vec::new()),
             ..start(vec![stack(&env)], false)
         };
-        let (mut model, pollers, updates) = polled(begin, runner.clone(), None);
+        let (mut model, pollers, updates) = polled(begin, runner.clone(), Some(&counter.url));
 
         turn_until(
             &mut model,
@@ -2365,5 +2370,100 @@ mod tests {
         pollers.send(Command::Quit);
 
         assert_eq!(healths(&model), vec![Some("ok".to_string()); 3]);
+    }
+
+    fn counted_by_the_pollers_only(begin: Start, names: &[&'static str]) -> (Model, bool) {
+        let counted = Counter::start();
+        let (mut model, pollers, updates) =
+            polled(begin, Docker::new(names, true), Some(&counted.url));
+        let asked = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| counted.count() > 0,
+        );
+        pollers.send(Command::Quit);
+        (model, asked)
+    }
+
+    #[test]
+    fn outside_a_lab_a_stack_without_sonda_and_nothing_set_does_not_ask_sonda() {
+        let begin = start(vec![composed(&[])], true);
+
+        let (model, asked) = counted_by_the_pollers_only(begin, &["prometheus"]);
+
+        assert_eq!(model.reach(Service::Sonda), shell::Reach::NotInLab);
+        assert!(!asked);
+    }
+
+    #[test]
+    fn outside_a_lab_a_stack_whose_env_sets_the_sonda_address_is_asked_there() {
+        let counter = Counter::start();
+        let sonda = nobs_core::status::row(Service::Sonda).setting.unwrap();
+        let begin = start(vec![composed(&[(sonda, counter.url.as_str())])], true);
+        let (mut model, pollers, updates) = polled(begin, Docker::new(&["prometheus"], true), None);
+
+        let asked = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| counter.count() > 0,
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(model.reach(Service::Sonda), shell::Reach::Answers);
+        assert!(asked);
+    }
+
+    #[test]
+    fn the_sonda_only_stack_is_asked_with_nothing_set() {
+        let sonda_only = Stack {
+            kind: StackKind::Sonda,
+            shows_sonda: true,
+            ..stack(&[])
+        };
+        let begin = start(vec![sonda_only], true);
+
+        let (model, asked) = counted_by_the_pollers_only(begin, &[]);
+
+        assert_eq!(model.reach(Service::Sonda), shell::Reach::Answers);
+        assert!(asked);
+    }
+
+    #[test]
+    fn the_sonda_health_check_follows_the_server_flag() {
+        let stub = Stub::start(&[("GET", "/health", 200, "")]);
+        let begin = Start {
+            sonda: SondaTarget {
+                server: Some(stub.url().to_string()),
+                api_key: None,
+            },
+            ..start(vec![composed(&[])], false)
+        };
+        let (mut model, pollers, updates) = polled(
+            begin,
+            Docker::new(&["sonda-server"], true),
+            Some(stub.url()),
+        );
+        let health = |model: &Model| {
+            model
+                .services()
+                .iter()
+                .find(|service| service.name == "sonda-server")
+                .and_then(|service| service.health.clone())
+        };
+
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_secs(5),
+            |model| health(model).is_some(),
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(health(&model), Some("ok".to_string()));
     }
 }

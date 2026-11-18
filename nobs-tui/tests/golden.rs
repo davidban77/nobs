@@ -83,6 +83,7 @@ fn stack(name: &str, env: &[(&str, &str)]) -> Stack {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect(),
+        shows_sonda: false,
     }
 }
 
@@ -140,6 +141,7 @@ fn sonda_only() -> Stack {
             "SONDA_SERVER_URL".to_string(),
             "http://localhost:8080".to_string(),
         )],
+        shows_sonda: true,
     }
 }
 
@@ -201,7 +203,13 @@ fn model_with(
 ) -> Shell {
     let start = Instant::now();
     let mut stacks = vec![
-        stack("autocon5", &[("INFRAHUB_ADDRESS", "http://localhost:8000")]),
+        stack(
+            "autocon5",
+            &[
+                ("INFRAHUB_ADDRESS", "http://localhost:8000"),
+                ("SONDA_SERVER_URL", "http://localhost:8085"),
+            ],
+        ),
         stack("packt", &[]),
         stack("demo", &[]),
     ];
@@ -211,7 +219,7 @@ fn model_with(
     let mut model = Shell::new(Start {
         source,
         urls: Urls {
-            set: vec![status::Service::Flows, status::Service::Sonda],
+            set: vec![status::Service::Flows],
             ..Urls::defaults()
         },
         ..begin(lab, stacks, Workbench::Services)

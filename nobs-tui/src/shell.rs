@@ -42,7 +42,6 @@ const LAB_DEVICE_TABS: [Tab; 5] = [
     Tab::Logs,
 ];
 const MIN_SIZE: (u16, u16) = (60, 15);
-const SONDA_ENV: &str = "SONDA_SERVER_URL";
 const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
 const RUNNING: &str = "running";
 pub(crate) const DOCKER_LOGS: &str = "docker logs";
@@ -169,6 +168,7 @@ pub struct Stack {
     pub compose: PathBuf,
     pub project: Option<String>,
     pub env: Vec<(String, String)>,
+    pub shows_sonda: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -726,7 +726,13 @@ impl Model {
         if !up && !holders.is_empty() {
             return Reach::StackDown;
         }
-        if !up && !self.urls.is_set(service) {
+        let set = match service {
+            status::Service::Sonda => (0..self.stacks.len())
+                .filter(of_the_lab)
+                .any(|index| sonda_set(self.server.as_deref(), &self.stacks[index])),
+            _ => self.urls.is_set(service),
+        };
+        if !up && !set {
             return Reach::NotInLab;
         }
         let failed = match service {
@@ -2528,6 +2534,7 @@ pub fn sonda_only(here: &Path) -> Result<Stack, String> {
         compose: here.to_path_buf(),
         project: None,
         env: read_env(here)?,
+        shows_sonda: true,
     })
 }
 
@@ -2548,6 +2555,7 @@ fn workshop_stack(name: String, dir: PathBuf) -> Stack {
         env: read_env(&dir).unwrap_or_default(),
         name,
         path: dir,
+        shows_sonda: false,
     }
 }
 
@@ -2563,6 +2571,7 @@ fn book_stacks(lab: &Located) -> Result<Vec<Stack>, String> {
             path: lab.dir.clone(),
             project: lab.project().map(str::to_string),
             env: env.clone(),
+            shows_sonda: false,
         })
         .collect())
 }
@@ -2575,6 +2584,7 @@ fn lab_stack(lab: &Located) -> Result<Stack, String> {
         compose: lab.compose(None),
         project: lab.project().map(str::to_string),
         env: read_env(&lab.dir)?,
+        shows_sonda: false,
     })
 }
 
@@ -2608,11 +2618,19 @@ pub(crate) fn env_value<'a>(env: &'a [(String, String)], name: &str) -> Option<&
         .filter(|value| !value.trim().is_empty())
 }
 
+fn sonda_address<'a>(flag: Option<&'a str>, stack: Option<&'a Stack>) -> Option<&'a str> {
+    flag.or_else(|| {
+        let setting = status::row(status::Service::Sonda).setting?;
+        stack.and_then(|stack| env_value(&stack.env, setting))
+    })
+}
+
+fn sonda_set(flag: Option<&str>, stack: &Stack) -> bool {
+    stack.shows_sonda || sonda_address(flag, Some(stack)).is_some()
+}
+
 pub(crate) fn sonda_url(flag: Option<&str>, stack: Option<&Stack>) -> String {
-    if let Some(url) = flag {
-        return url.to_string();
-    }
-    match stack.and_then(|stack| env_value(&stack.env, SONDA_ENV)) {
+    match sonda_address(flag, stack) {
         Some(url) => url.to_string(),
         None if stack.is_some_and(|stack| stack.kind != StackKind::Sonda) => {
             status::row(status::Service::Sonda).default.to_string()
@@ -2728,6 +2746,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|(name, value)| (name.to_string(), value.to_string()))
                 .collect(),
+            shows_sonda: false,
         }
     }
 
@@ -3111,7 +3130,7 @@ pub(crate) mod tests {
     #[test]
     fn the_chooser_sonda_row_is_a_stack_of_the_list_and_opens_the_sonda_tab() {
         let sonda = Stack {
-            env: vec![(SONDA_ENV.to_string(), "http://s:9".to_string())],
+            env: vec![("SONDA_SERVER_URL".to_string(), "http://s:9".to_string())],
             ..sonda_stack()
         };
         let mut model = Model::new(start(vec![stack("a", &[]), sonda]));
@@ -4834,13 +4853,7 @@ pub(crate) mod tests {
 
     #[test]
     fn outside_a_lab_the_state_of_every_service_is_read_from_the_selected_stack_only() {
-        let mut model = Model::new(Start {
-            urls: Urls {
-                set: vec![status::Service::Sonda],
-                ..Urls::defaults()
-            },
-            ..start(vec![stack("a", &[]), stack("b", &[]), sonda_stack()])
-        });
+        let mut model = Model::new(start(vec![stack("a", &[]), stack("b", &[]), sonda_stack()]));
         let reach = |model: &Model| {
             [status::Service::Metrics, status::Service::Sonda].map(|service| model.reach(service))
         };
@@ -4872,7 +4885,7 @@ pub(crate) mod tests {
 
         assert_eq!(before_a_answers, [Reach::Unknown, Reach::Unknown]);
         assert_eq!(at_a, [Reach::StackDown, Reach::StackDown]);
-        assert_eq!(at_b, [Reach::Answers, Reach::Answers]);
+        assert_eq!(at_b, [Reach::Answers, Reach::NotInLab]);
         assert_eq!(at_sonda, [Reach::NotInLab, Reach::Answers]);
         assert!(asks(&to_b, true), "{to_b:?}");
         assert!(asks(&to_sonda, false), "{to_sonda:?}");

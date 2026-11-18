@@ -2307,16 +2307,13 @@ mod tests {
         let stacks = (1..=12)
             .map(|index| Stack {
                 path: PathBuf::from(LAB_DIR),
-                ..stack(&format!("stack-{index:02}"), &[])
+                ..stack(
+                    &format!("stack-{index:02}"),
+                    &[("SONDA_SERVER_URL", "http://localhost:8085")],
+                )
             })
             .collect();
-        let mut model = Model::new(Start {
-            urls: nobs_core::status::Urls {
-                set: vec![Service::Sonda],
-                ..nobs_core::status::Urls::defaults()
-            },
-            ..start(stacks)
-        });
+        let mut model = Model::new(start(stacks));
         handle(
             &mut model,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),

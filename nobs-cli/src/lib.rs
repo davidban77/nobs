@@ -5066,10 +5066,8 @@ fn screen_start_with(
 ) -> Result<nobs_tui::Start, String> {
     let program = std::env::current_exe()
         .map_err(|error| format!("cannot find the running program: {error}"))?;
-    let flagged = given(flags.server);
-    let sonda_flag = flagged.is_some();
     let sonda = nobs_tui::SondaTarget {
-        server: flagged.or_else(|| given(process("SONDA_SERVER_URL"))),
+        server: given(flags.server).or_else(|| given(process("SONDA_SERVER_URL"))),
         api_key: given(flags.api_key).or_else(|| given(process("SONDA_API_KEY"))),
     };
     let home = nobs_tui::Workbench::Services;
@@ -5096,11 +5094,6 @@ fn screen_start_with(
                 })
             };
             let urls = Urls::from_lookup(lookup);
-            let urls = if sonda_flag {
-                with_sonda_set(urls)
-            } else {
-                urls
-            };
             let path = located.dir.join("containerlab").join("lab_vars.yml");
             let ((source, source_error), source_service): (
                 (Option<std::sync::Arc<dyn SourceOfTruth>>, _),
@@ -5161,7 +5154,7 @@ fn screen_start_with(
                 source: None,
                 source_error: None,
                 source_service: None,
-                urls: sonda_only_urls(process),
+                urls: Urls::from_lookup(process),
                 chooser: true,
                 program,
                 login: std::sync::Arc::new(|_| None),
@@ -5175,24 +5168,13 @@ fn screen_start_with(
             source: None,
             source_error: None,
             source_service: None,
-            urls: sonda_only_urls(process),
+            urls: Urls::from_lookup(process),
             chooser: false,
             program,
             login: std::sync::Arc::new(|_| None),
         }),
         Err(error) => Err(error.to_string()),
     }
-}
-
-fn sonda_only_urls(lookup: impl Fn(&str) -> Option<String>) -> Urls {
-    with_sonda_set(Urls::from_lookup(lookup))
-}
-
-fn with_sonda_set(mut urls: Urls) -> Urls {
-    if !urls.is_set(Service::Sonda) {
-        urls.set.push(Service::Sonda);
-    }
-    urls
 }
 
 fn lab_vars_source(path: &Path) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
@@ -5617,17 +5599,6 @@ mod tests {
                 sonda: "http://flag-sonda".to_string(),
                 set: with_variables_only().set,
             }
-        );
-    }
-
-    #[test]
-    fn the_sonda_only_screen_counts_sonda_as_set_once() {
-        assert_eq!(sonda_only_urls(|_| None).set, [Service::Sonda]);
-        let given =
-            sonda_only_urls(|name| (name == "SONDA_SERVER_URL").then(|| "http://s:9".to_string()));
-        assert_eq!(
-            (given.sonda.as_str(), given.set),
-            ("http://s:9", vec![Service::Sonda])
         );
     }
 
@@ -6181,13 +6152,19 @@ mod tests {
             "screen-project-server",
             &[("expected/lab.clab.yml", "lab.clab.yml")],
         );
-        let set = |server| {
+        let reach = |server| {
             let start = screen_start_with(&lab.0, None, flags(server), false, &|_| None).unwrap();
-            start.urls.set
+            let mut shell = nobs_tui::Shell::new(start);
+            shell.apply(nobs_tui::Update::Services(
+                0,
+                Ok(Vec::new()),
+                Ok(Vec::new()),
+            ));
+            shell.reach(Service::Sonda)
         };
 
-        assert_eq!(set(Some("http://s:9")), [Service::Sonda]);
-        assert_eq!(set(None), []);
+        assert_eq!(reach(Some("http://s:9")), nobs_tui::shell::Reach::Answers);
+        assert_eq!(reach(None), nobs_tui::shell::Reach::NotInLab);
     }
 
     #[test]
