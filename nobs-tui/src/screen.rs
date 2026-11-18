@@ -4161,19 +4161,27 @@ mod tests {
             assert_eq!(screen, alone, "{label}");
             cases += 1;
         };
-        for bench in benches() {
-            let tabs: &[Tab] = match (bench.build)().workbench() {
-                Workbench::Devices => (bench.build)().device_tabs(),
-                Workbench::Services => &SERVICES_TABS,
-                Workbench::Lab => &[Tab::Overview],
-            };
-            for &tab in tabs {
-                for (width, height) in sizes {
-                    let label = format!("{} {tab:?} {width}x{height}", bench.selected);
-                    let model = staged(&bench, tab, false, Keys::Hints, true);
-                    check(label, tab, width, height, model);
+        for (workbench, _, _) in WORKBENCHES {
+            let mut set_up = lab_devices_model().workbench() == workbench;
+            for bench in benches() {
+                if (bench.build)().workbench() != workbench {
+                    continue;
+                }
+                set_up = true;
+                let tabs: &[Tab] = match workbench {
+                    Workbench::Devices => (bench.build)().device_tabs(),
+                    Workbench::Services => &SERVICES_TABS,
+                    Workbench::Lab => &[Tab::Overview],
+                };
+                for &tab in tabs {
+                    for (width, height) in sizes {
+                        let label = format!("{} {tab:?} {width}x{height}", bench.selected);
+                        let model = staged(&bench, tab, false, Keys::Hints, true);
+                        check(label, tab, width, height, model);
+                    }
                 }
             }
+            assert!(set_up, "no setup for {workbench:?}");
         }
         for &tab in lab_devices_model().device_tabs() {
             for (width, height) in sizes {
