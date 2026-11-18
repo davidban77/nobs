@@ -36,7 +36,7 @@ The screen needs a terminal. When the input or the output of plain `nobs` is not
 
 When nobs cannot read a `nobs.toml` file, or `--dir` or `NOBS_DIR` names a folder that is not a lab or workshop, plain `nobs` and `nobs tui` print `nobs: <reason>` as every command does, and exit with 1, before the screen opens.
 
-The screen reads the `.env` file of each stack itself, so the settings of one stack never reach another stack.
+The screen reads the `.env` file of each stack itself, and asks each stack's Sonda at the address of that stack. In a lab, when the `.env` file of one stack sets `SONDA_SERVER_URL`, the whole lab counts as having Sonda.
 
 ### The five parts of the screen
 
@@ -66,7 +66,7 @@ The data comes from five systems. The first is the source of truth, the `sot` of
 | Loki (stores log lines) | the log lines of a device, and its RCA records (the root cause analysis that the automation of the workshop writes into Loki) | `logs` |
 | Prefect (runs the automation flows) | the flow runs, a flow run being one run of a flow | `flows` |
 
-A place whose service the lab does not have shows a dash and a grey sentence, such as `no alerts in this lab`; while the stack that holds it is down it says `the stack is down`. No red line shows in either case.
+A place whose service the lab does not have shows a dash and a grey sentence, such as `no alerts in this lab`. While the stack that holds the service is down, it says `the stack is down`. In both cases nobs does not ask the service, and no red line shows. The other sentences are `no metrics in this lab` (overview tab), `no logs in this lab` (logs tab), one line for each missing kind in the timeline tab (`no alerts in this lab`, `no logs in this lab`, `no flows in this lab`), `no sot in this lab` (device list), `no sonda in this lab` (Sonda tab) and `no services in this lab` (list of stacks in the services workbench, when no stack defines a service).
 
 nobs finds each address the way `status` does: the shell variable, then the `.env` file in the folder of the lab, then the default address (see [status](#status)).
 
@@ -108,11 +108,11 @@ The left side is the list of devices, titled `devices <n>`, with the alerts box 
 | `warn` | yellow | an intended session is not up, or Prometheus has no value for it |
 | `down` | red | Prometheus has no value for the device at all |
 | `?` | dim | the metrics service did not answer |
-| `—` | dim | the device has no intended BGP session, so there is nothing to judge |
+| `—` | dim | the device has no intended BGP session, so there is nothing to judge; or the lab has no metrics service, or its stack is down |
 
 `KIND` and `SYNC` appear from 100 columns.
 
-The alerts box lists every alert of the lab, newest first. From 100 columns, a row shows the name of the alert, the device, the state (`firing`, `silenced` or `inhibited`) and the age, for example `BgpSessionNotUp  srl1  firing  21s`. At 60 columns, a row shows the device first and then the name, for example `srl1  BgpSessionNotUp`. A silenced or inhibited alert is dim. The title shows the number of alerts, or `?` when Alertmanager did not answer. `j` and `k` walk down the list of devices and then into the alerts box. `Enter` on an alert selects its device and opens the timeline tab of that device.
+The alerts box lists every alert of the lab, newest first. From 100 columns, a row shows the name of the alert, the device, the state (`firing`, `silenced` or `inhibited`) and the age, for example `BgpSessionNotUp  srl1  firing  21s`. At 60 columns, a row shows the device first and then the name, for example `srl1  BgpSessionNotUp`. A silenced or inhibited alert is dim. The title shows the number of alerts, `?` when the alerts service did not answer, or `—` when the lab has no alerts service or its stack is down. `j` and `k` walk down the list of devices and then into the alerts box. `Enter` on an alert selects its device and opens the timeline tab of that device.
 
 The right side has four tabs, `overview`, `interfaces`, `timeline` and `logs`, with the open tab in capital letters. In a lab with containerlab nodes it has five, with `config` between `interfaces` and `timeline`. `Enter` on a device moves the focus to the tabs, on the overview tab.
 
@@ -128,7 +128,7 @@ The overview tab shows these lines, from the top:
 | one per session | `10.1.99.2  ipv4-unicast  active  ! expected established` | the peer, the address family (the kind of routes the session carries, here IPv4) and the live state |
 | alert | `alerts   BgpSessionNotUp  warning  21s` | the newest firing alert of the device, with its severity and age; `alerts   none` when there is none; `alerts   ?` when the alerts service did not answer |
 
-The live state of a session comes from Prometheus. It is `up`, `down`, `idle`, `connect` or `active`, or `unknown` for any other value. It is `—` when Prometheus has no value and `?` when Prometheus did not answer. The source of truth calls the up state `established`, so `established` and `up` mean the same. When the overview has more lines than its pane can show, its bottom border says how many lines are hidden, for example `↓5`. While the focus is on the tabs, `j` and `k` move the overview by one line.
+The live state of a session comes from Prometheus. It is `up`, `down`, `idle`, `connect` or `active`, or `unknown` for any other value. It is `—` when the metrics service has no value, or when the lab has no metrics service or its stack is down. It is `?` when the metrics service did not answer. The source of truth calls the up state `established`, so `established` and `up` mean the same. When the overview has more lines than its pane can show, its bottom border says how many lines are hidden, for example `↓5`. While the focus is on the tabs, `j` and `k` move the overview by one line.
 
 When the live state is not the intended one, the line ends with `! expected <state>` in yellow. This mark is not shown when the state is `?` or `—`, because those say nothing yet.
 
@@ -186,7 +186,7 @@ The overview tab is a table with one row for each container that Docker Compose 
 | `PORT` | the first published port | `docker compose ps --all --format json` |
 | `AGE` | how long the container has run | the same call |
 
-The HTTP check is the probe of `nobs <workshop> status`. It sends one HTTP GET request to each of the seven services that command asks (see [status](#status)), and it finds each address in the same way: the shell variable, then the `.env` file of the stack, then the default address. The seven services are `grafana`, `prometheus`, `loki`, `alertmanager`, `infrahub`, `prefect` and `sonda`. Every other service shows `—` under `HEALTH`. `ok` means the service answered with a status code below 400, `http <code>` means 400 or more, and `down` means no answer.
+The HTTP check is the probe of `nobs <workshop> status`. It sends one HTTP GET request to each of the seven services that command asks (see [status](#status)), and it finds each address in the same way: the shell variable, then the `.env` file of the stack, then the default address. For Sonda, `--server` comes first, then the shell variable, then the `.env` file of the stack, then the default address. It checks a service only while the lab has it and its stack is up. The seven services have these names in the compose file: `grafana`, `prometheus`, `loki`, `alertmanager`, `infrahub-server`, `prefect-server` and `sonda-server`. Every other service shows `—` under `HEALTH`. `ok` means the service answered with a status code below 400, `http <code>` means 400 or more, and `down` means no answer.
 
 A state is shown in colour: green for `running` and `ok`; yellow for `paused`, `restarting` and every `http <code>`; red for `down`, `exited` and `dead`; dim for `created`. `AGE` is dim.
 
@@ -207,6 +207,8 @@ The logs tab shows the log of one service. Press `Enter` or `l` on a service in 
 | the RCA records of the selected device (Loki) | every 2 seconds, while the timeline tab is open |
 | the flow runs (Prefect) | every 5 seconds, while the timeline tab is open |
 | the nodes of a book lab (`docker ps -a`) | every 5 seconds |
+
+The screen asks a service only while the lab has it and the stack that holds it is up (see [The devices workbench](#the-devices-workbench)).
 
 ### The Sonda tab
 
@@ -815,7 +817,7 @@ When no silence is left to show, nobs prints one line and no table, and exits wi
 |---|---|
 | 0 | nobs printed the table, or the line that says there is nothing to show |
 | 1 | the alerts service did not answer: `nobs: cannot reach the alerts service at <address>: <error>` |
-| 1 | Alertmanager answered with a status code of 400 or more: `nobs: the alerts service at <address> answered <status>` |
+| 1 | the alerts service answered with a status code of 400 or more: `nobs: the alerts service at <address> answered <status>` |
 | 1 | the answer is not a JSON list: `nobs: the alerts service at <address> answered with a body nobs cannot read: <reason>` |
 | 2 | a `--label` without `=`, or a flag nobs does not know |
 
@@ -1163,7 +1165,7 @@ reason: SoT expects peer up, but metrics show mismatch
 | `Prefect flow runs (last <minutes>m)` | the flow runs of this device and peer that started within `--minutes`, the newest first, at most 5 runs, each with its child runs | `No quarantine_bgp / resolved_bgp runs for <device>:<peer> in the last <minutes>m.` | `Prefect query failed: <error>` |
 | `Most recent decision` | the newest decision record in Loki for this device and peer within `--minutes` | `No decision audit records for <device> → <peer> in the last <minutes>m.` | `Loki query failed: <error>` |
 
-In the last column, `<error>` is the text of the failed call, and `<address>` is the address nobs used, without a trailing `/` (and, for Prefect, without a trailing `/api`). For Alertmanager it is `cannot reach the alerts service at <address>: <reason>`, `the alerts service at <address> answered <status>` or `the alerts service at <address> answered with a body nobs cannot read: <problem>`. For Prefect it is `cannot reach <address>: <reason>`, `the flows service answered <status> on /api/flow_runs/filter: <answer>` or `the flows service answered with text nobs cannot read: <problem>`. For Loki it is `cannot reach <address>: <reason>`, `the logs service answered <status> on /loki/api/v1/query_range: <answer>` or `the logs service answered with text nobs cannot read: <problem>`. `<reason>` is why nobs could not connect, `<answer>` is the first 200 characters of the answer, and `<problem>` says what was wrong with the answer. The `page` fetch error uses the Alertmanager texts.
+In the last column, `<error>` is the text of the failed call, and `<address>` is the address nobs used, without a trailing `/` (and, for Prefect, without a trailing `/api`). For Alertmanager it is `cannot reach the alerts service at <address>: <reason>`, `the alerts service at <address> answered <status>` or `the alerts service at <address> answered with a body nobs cannot read: <problem>`. For Prefect it is `cannot reach <address>: <reason>`, `the flows service answered <status> on /api/flow_runs/filter: <answer>` or `the flows service answered with text nobs cannot read: <problem>`. For Loki it is `cannot reach <address>: <reason>`, `the logs service answered <status> on /loki/api/v1/query_range: <answer>` or `the logs service answered with text nobs cannot read: <problem>`. `<reason>` is why nobs could not connect, `<answer>` is the first 200 characters of the answer, and `<problem>` says what was wrong with the answer. The `page` fetch error uses the texts of the alerts service.
 
 Each alert in the first panel gives two lines. The first is `BgpSessionNotUp · <severity> · state=<state> · age <age>`. `<severity>` is the `severity` label, or `?` when the alert has none. `<state>` is `firing` when Alertmanager sent the state `active`, `pending` for `unprocessed`, `?` when it sent none, and otherwise the state as it sent it, for example `suppressed`. `<age>` is the time since the alert started, written as in the `alerts` table (`42s`, `3m05s`, `2h07m` or `1d3h`), or `?` when nobs cannot read the start time. The second line is `silencedBy: <id>…` with the first 12 characters of the first silence that mutes the alert, followed by ` (+<n> more)` when `<n>` more silences mute it, or `silencedBy: (none)`.
 
