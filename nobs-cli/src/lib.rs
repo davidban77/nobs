@@ -5095,19 +5095,24 @@ fn screen_start_with(
             };
             let urls = Urls::from_lookup(lookup);
             let path = located.dir.join("containerlab").join("lab_vars.yml");
-            let (source, source_error): (Option<std::sync::Arc<dyn SourceOfTruth>>, _) =
-                match &located.kind {
-                    Kind::Workshop(workshop) if workshop.sot == "none" => (None, None),
-                    Kind::Workshop(workshop) => {
-                        match sot::open(workshop, None, None, None, &lookup).1 {
-                            Ok(source) => (Some(std::sync::Arc::from(source)), None),
-                            Err(text) => (None, Some(text)),
-                        }
+            let ((source, source_error), source_service): (
+                (Option<std::sync::Arc<dyn SourceOfTruth>>, _),
+                _,
+            ) = match &located.kind {
+                Kind::Workshop(workshop) if workshop.sot == "none" => ((None, None), None),
+                Kind::Workshop(workshop) => {
+                    match sot::open(workshop, None, None, None, &lookup).1 {
+                        Ok(source) => (
+                            (Some(std::sync::Arc::from(source)), None),
+                            Some(Service::Sot),
+                        ),
+                        Err(text) => ((None, Some(text)), None),
                     }
-                    Kind::BookLab(_) => lab_vars_source(&path),
-                    Kind::LabcliLab(_) if path.exists() => lab_vars_source(&path),
-                    Kind::LabcliLab(_) => (None, None),
-                };
+                }
+                Kind::BookLab(_) => (lab_vars_source(&path), None),
+                Kind::LabcliLab(_) if path.exists() => (lab_vars_source(&path), None),
+                Kind::LabcliLab(_) => ((None, None), None),
+            };
             let home = match located.kind {
                 Kind::Workshop(_) => nobs_tui::Workbench::Devices,
                 Kind::BookLab(_) => nobs_tui::Workbench::Lab,
@@ -5130,6 +5135,7 @@ fn screen_start_with(
                 home,
                 source,
                 source_error,
+                source_service,
                 urls,
                 chooser: false,
                 program,
@@ -5147,6 +5153,7 @@ fn screen_start_with(
                 home,
                 source: None,
                 source_error: None,
+                source_service: None,
                 urls: sonda_only_urls(process),
                 chooser: true,
                 program,
@@ -5160,6 +5167,7 @@ fn screen_start_with(
             home,
             source: None,
             source_error: None,
+            source_service: None,
             urls: sonda_only_urls(process),
             chooser: false,
             program,

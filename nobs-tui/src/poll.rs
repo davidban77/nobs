@@ -16,12 +16,12 @@ use nobs_core::prometheus::Prometheus;
 use nobs_core::runner::{Output, Runner};
 use nobs_core::sonda::Sonda;
 use nobs_core::sot::SourceOfTruth;
-use nobs_core::status::{probe_all, State, Urls};
+use nobs_core::status::{self, Service, State, Urls, SERVICES};
 
 use crate::book;
 use crate::data;
 use crate::shell::{
-    env_value, sonda_url, Command, Health, SondaTarget, Stack, StackKind, Tab, Update,
+    env_value, sonda_url, watched, Command, Health, SondaTarget, Stack, StackKind, Tab, Update,
     WINDOW_MINUTES,
 };
 
@@ -98,7 +98,7 @@ impl Pollers {
         stacks: Vec<Stack>,
         selected: usize,
         sonda: SondaTarget,
-        source: Option<Arc<dyn SourceOfTruth>>,
+        source: Option<(Arc<dyn SourceOfTruth>, Option<Service>)>,
         urls: Option<Urls>,
         topology: Option<PathBuf>,
     ) -> (Pollers, Receiver<Update>) {
@@ -107,7 +107,7 @@ impl Pollers {
         let nodes = topology.map(|topology| {
             let runner = Arc::clone(&runner);
             spawn("nodes", &updates, move |inbox, out| {
-                every(NODES_PERIOD, inbox, out, || {
+                every(NODES_PERIOD, false, inbox, out, || {
                     Update::Nodes(nodes(runner.as_ref(), &topology))
                 })
             })
@@ -136,16 +136,16 @@ impl Pollers {
         let alertmanager = urls.as_ref().map(|urls| {
             let client = Alertmanager::new(&urls.alertmanager);
             spawn("alertmanager", &updates, move |inbox, out| {
-                every(ALERTS_PERIOD, inbox, out, || {
+                every(ALERTS_PERIOD, true, inbox, out, || {
                     Update::Alerts(client.alerts(true, true).map_err(|error| error.to_string()))
                 })
             })
         });
         let with_source = urls.as_ref().zip(source);
-        let sot = with_source.as_ref().map(|(_, source)| {
-            let source = Arc::clone(source);
+        let sot = with_source.as_ref().map(|(_, (source, source_service))| {
+            let (source, source_service) = (Arc::clone(source), *source_service);
             spawn("sot", &updates, move |inbox, out| {
-                every(SOT_PERIOD, inbox, out, || {
+                every(SOT_PERIOD, source_service.is_some(), inbox, out, || {
                     Update::Devices(source.devices().map_err(|error| error.to_string()))
                 })
             })
@@ -153,7 +153,7 @@ impl Pollers {
         let prometheus = with_source.as_ref().map(|(urls, _)| {
             let client = Prometheus::new(&urls.prometheus);
             spawn("prometheus", &updates, move |inbox, out| {
-                every(METRICS_PERIOD, inbox, out, || {
+                every(METRICS_PERIOD, true, inbox, out, || {
                     Update::Metrics(
                         client
                             .samples(METRICS_QUERY)
@@ -213,6 +213,15 @@ impl Pollers {
                 (&[], &[&self.loki, &self.prefect])
             }
             Command::Run { .. } | Command::Stop => (&[], &[]),
+            Command::Ask(service, _) => match service {
+                Service::Metrics => (&[&self.health], &[&self.prometheus]),
+                Service::Logs => (&[&self.health], &[&self.loki]),
+                Service::Alerts => (&[&self.health], &[&self.alertmanager]),
+                Service::Flows => (&[&self.health], &[&self.prefect]),
+                Service::Sot => (&[&self.health], &[&self.sot]),
+                Service::Sonda => (&[&self.health, &self.sonda], &[]),
+                Service::Grafana => (&[&self.health], &[]),
+            },
         };
         for source in services
             .iter()
@@ -265,10 +274,13 @@ fn ps(
         for (index, stack) in stacks
             .iter()
             .enumerate()
-            .filter(|(_, stack)| stack.kind != StackKind::Sonda)
+            .filter(|(_, stack)| watched(stack))
         {
-            let defined = defined(runner, stack);
-            let listed = services(runner, stack);
+            let (defined, listed) = if stack.compose.is_file() {
+                (defined(runner, stack), services(runner, stack))
+            } else {
+                (Ok(Vec::new()), Ok(Vec::new()))
+            };
             if out.send(Update::Services(index, defined, listed)).is_err() {
                 return true;
             }
@@ -290,24 +302,36 @@ fn health(
     inbox: &Receiver<Command>,
     out: &Sender<Update>,
 ) -> bool {
+    let mut asked: Vec<Service> = Vec::new();
+    let mut next = None;
     loop {
+        match wait(inbox, next) {
+            Wake::Stop => return true,
+            Wake::Timeout | Wake::Command(Command::Refresh) => {}
+            Wake::Command(Command::SelectStack(index)) => selected = index,
+            Wake::Command(Command::Ask(service, on)) => {
+                asked.retain(|held| *held != service);
+                if on {
+                    asked.push(service);
+                }
+                next = Some(Instant::now());
+                continue;
+            }
+            Wake::Command(_) => continue,
+        }
+        if asked.is_empty() {
+            next = None;
+            continue;
+        }
         if let Some(stack) = stacks.get(selected) {
-            if out.send(Update::Health(selected, probe(stack))).is_err() {
+            if out
+                .send(Update::Health(selected, probe(stack, &asked)))
+                .is_err()
+            {
                 return true;
             }
         }
-        let next = Instant::now() + HEALTH_PERIOD;
-        loop {
-            match wait(inbox, Some(next)) {
-                Wake::Stop => return true,
-                Wake::Timeout | Wake::Command(Command::Refresh) => break,
-                Wake::Command(Command::SelectStack(index)) => {
-                    selected = index;
-                    break;
-                }
-                Wake::Command(_) => {}
-            }
-        }
+        next = Some(Instant::now() + HEALTH_PERIOD);
     }
 }
 
@@ -365,22 +389,28 @@ fn logs(
 
 fn every(
     period: Duration,
+    gated: bool,
     inbox: &Receiver<Command>,
     out: &Sender<Update>,
     mut poll: impl FnMut() -> Update,
 ) -> bool {
+    let mut asked = !gated;
+    let mut next = asked.then(Instant::now);
     loop {
+        match wait(inbox, next) {
+            Wake::Stop => return true,
+            Wake::Timeout | Wake::Command(Command::Refresh) => {}
+            Wake::Command(Command::Ask(_, on)) if gated => asked = on,
+            Wake::Command(_) => continue,
+        }
+        if !asked {
+            next = None;
+            continue;
+        }
         if out.send(poll()).is_err() {
             return true;
         }
-        let next = Instant::now() + period;
-        loop {
-            match wait(inbox, Some(next)) {
-                Wake::Stop => return true,
-                Wake::Timeout | Wake::Command(Command::Refresh) => break,
-                Wake::Command(_) => {}
-            }
-        }
+        next = Some(Instant::now() + period);
     }
 }
 
@@ -389,11 +419,16 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
     let mut tab = Tab::Overview;
     let mut window = WINDOW_MINUTES;
     let mut following = true;
+    let mut asked = false;
     let mut next = None;
     loop {
         let polling = match wait(inbox, next) {
             Wake::Stop => return true,
             Wake::Timeout | Wake::Command(Command::Refresh) => true,
+            Wake::Command(Command::Ask(_, on)) => {
+                asked = on;
+                on
+            }
             Wake::Command(Command::SelectDevice(name)) => {
                 device = Some(name);
                 true
@@ -412,8 +447,8 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
             }
             Wake::Command(_) => continue,
         };
-        let asked = tab == Tab::Timeline || (tab == Tab::Logs && following);
-        let Some(name) = device.as_deref().filter(|_| polling && asked) else {
+        let wanted = tab == Tab::Timeline || (tab == Tab::Logs && following);
+        let Some(name) = device.as_deref().filter(|_| polling && asked && wanted) else {
             next = None;
             continue;
         };
@@ -446,6 +481,7 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
 
 fn flows(client: &Prefect, inbox: &Receiver<Command>, out: &Sender<Update>) -> bool {
     let mut timeline = false;
+    let mut asked = false;
     let mut next = None;
     loop {
         let polling = match wait(inbox, next) {
@@ -455,9 +491,13 @@ fn flows(client: &Prefect, inbox: &Receiver<Command>, out: &Sender<Update>) -> b
                 timeline = opened == Tab::Timeline;
                 true
             }
+            Wake::Command(Command::Ask(_, on)) => {
+                asked = on;
+                on
+            }
             Wake::Command(_) => continue,
         };
-        if !(polling && timeline) {
+        if !(polling && asked && timeline) {
             next = None;
             continue;
         }
@@ -473,27 +513,50 @@ fn flows(client: &Prefect, inbox: &Receiver<Command>, out: &Sender<Update>) -> b
 
 fn forward_sonda(
     stacks: &[Stack],
-    selected: usize,
+    mut selected: usize,
     target: &SondaTarget,
     inbox: &Receiver<Command>,
     out: &Sender<Update>,
 ) -> bool {
-    let (mut poller, mut updates, mut notes) = start_sonda(stacks, selected, target);
+    let mut sonda: Option<(data::Poller, Receiver<data::Update>, Receiver<data::Note>)> = None;
     loop {
-        match wait(inbox, Some(Instant::now() + FORWARD_WAIT)) {
+        let until = sonda.is_some().then(|| Instant::now() + FORWARD_WAIT);
+        match wait(inbox, until) {
             Wake::Stop => {
-                poller.send(data::Command::Stop);
+                if let Some((poller, ..)) = &sonda {
+                    poller.send(data::Command::Stop);
+                }
                 return true;
             }
             Wake::Timeout => {}
-            Wake::Command(Command::Sonda(command)) => poller.send(command),
-            Wake::Command(Command::Refresh) => poller.send(data::Command::Refresh),
+            Wake::Command(Command::Sonda(command)) => {
+                if let Some((poller, ..)) = &sonda {
+                    poller.send(command);
+                }
+            }
+            Wake::Command(Command::Refresh) => {
+                if let Some((poller, ..)) = &sonda {
+                    poller.send(data::Command::Refresh);
+                }
+            }
             Wake::Command(Command::SelectStack(index)) => {
-                poller.send(data::Command::Stop);
-                (poller, updates, notes) = start_sonda(stacks, index, target);
+                selected = index;
+                if let Some((poller, ..)) = sonda.take() {
+                    poller.send(data::Command::Stop);
+                    sonda = Some(start_sonda(stacks, selected, target));
+                }
+            }
+            Wake::Command(Command::Ask(_, on)) => {
+                if let Some((poller, ..)) = sonda.take() {
+                    poller.send(data::Command::Stop);
+                }
+                sonda = on.then(|| start_sonda(stacks, selected, target));
             }
             Wake::Command(_) => {}
         }
+        let Some((_, updates, notes)) = &sonda else {
+            continue;
+        };
         loop {
             match updates.try_recv() {
                 Ok(update) => {
@@ -605,18 +668,20 @@ fn answer<T>(
         .map_or_else(|| format!("exit {}", output.code), str::to_string))
 }
 
-fn probe(stack: &Stack) -> Vec<Health> {
+fn probe(stack: &Stack, asked: &[Service]) -> Vec<Health> {
     let urls = Urls::from_lookup(|name| {
         std::env::var(name)
             .ok()
             .filter(|value| !value.trim().is_empty())
             .or_else(|| env_value(&stack.env, name).map(str::to_string))
     });
-    probe_all(&urls)
-        .into_iter()
-        .map(|probe| Health {
-            service: probe.target.name.to_lowercase(),
-            state: match probe.state {
+    SERVICES
+        .iter()
+        .zip(status::targets(&urls))
+        .filter(|(row, _)| asked.contains(&row.service))
+        .map(|(row, target)| Health {
+            service: row.compose.to_string(),
+            state: match status::probe(&target).state {
                 State::Ok => "ok".to_string(),
                 State::Http(code) => format!("http {code}"),
                 State::Down(_) => "down".to_string(),

@@ -14,7 +14,7 @@ use nobs_core::loki::Line as LokiLine;
 use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
 use nobs_core::sot::{Fixed, SourceOfTruth};
-use nobs_core::status::Urls;
+use nobs_core::status::{self, Urls};
 use nobs_tui::actions::{Action, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
 use nobs_tui::shell::{stacks, Health};
@@ -159,6 +159,7 @@ fn begin(lab: Option<Located>, stacks: Vec<Stack>, home: Workbench) -> Start {
         chooser: true,
         source: None,
         source_error: None,
+        source_service: None,
         urls: Urls::defaults(),
         program: PathBuf::from("nobs"),
         login: Arc::new(found),
@@ -209,6 +210,10 @@ fn model_with(
     }
     let mut model = Shell::new(Start {
         source,
+        urls: Urls {
+            set: vec![status::Service::Flows, status::Service::Sonda],
+            ..Urls::defaults()
+        },
         ..begin(lab, stacks, Workbench::Services)
     });
     if !chooser {

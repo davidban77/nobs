@@ -19,7 +19,7 @@ use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
 use nobs_core::sonda::Sonda;
 use nobs_core::sot::{Device, Session, SourceOfTruth};
-use nobs_core::status::Urls;
+use nobs_core::status::{self, Row as ServiceRow, Urls, SERVICES};
 use nobs_core::time;
 
 use crate::actions::{flat, pieces, Action, Ask, Row, Target, ACTIONS};
@@ -42,7 +42,6 @@ const LAB_DEVICE_TABS: [Tab; 5] = [
     Tab::Logs,
 ];
 const MIN_SIZE: (u16, u16) = (60, 15);
-const STACK_SONDA_URL: &str = "http://localhost:8085";
 const SONDA_ENV: &str = "SONDA_SERVER_URL";
 const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
 const RUNNING: &str = "running";
@@ -59,6 +58,7 @@ pub struct Start {
     pub chooser: bool,
     pub source: Option<Arc<dyn SourceOfTruth>>,
     pub source_error: Option<String>,
+    pub source_service: Option<status::Service>,
     pub urls: Urls,
     pub program: PathBuf,
     pub login: Lookup,
@@ -74,6 +74,7 @@ impl fmt::Debug for Start {
             .field("chooser", &self.chooser)
             .field("source", &self.source.as_ref().map(|_| ".."))
             .field("source_error", &self.source_error)
+            .field("source_service", &self.source_service)
             .field("urls", &self.urls)
             .field("program", &self.program)
             .field("login", &"..")
@@ -211,6 +212,15 @@ impl StackState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    Unknown,
+    NotInLab,
+    StackDown,
+    Answers,
+    NoAnswer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     pub name: String,
@@ -272,6 +282,7 @@ pub enum Command {
         login: Login,
     },
     Stop,
+    Ask(status::Service, bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +481,9 @@ pub struct Model {
     lab: Option<Located>,
     stacks: Vec<Stack>,
     states: Vec<StackState>,
+    defined: Vec<Option<Vec<String>>>,
+    urls: Urls,
+    asks: Vec<status::Service>,
     selected: usize,
     workbench: Workbench,
     focus: Focus,
@@ -496,6 +510,7 @@ pub struct Model {
     exit_code: i32,
     source: bool,
     source_error: Option<String>,
+    source_service: Option<status::Service>,
     devices: Vec<Device>,
     devices_at: Option<Instant>,
     device: usize,
@@ -549,7 +564,8 @@ impl Model {
             chooser,
             source,
             source_error,
-            urls: _,
+            source_service,
+            urls,
             program,
             login,
         } = start;
@@ -570,12 +586,15 @@ impl Model {
         let now = Instant::now();
         let errors = source_error
             .clone()
-            .map(|text| ("sot".to_string(), text, now))
+            .map(|text| (error_source(status::Service::Sot).to_string(), text, now))
             .into_iter()
             .collect();
         Model {
             lab,
             states: vec![StackState::Unknown; stacks.len()],
+            defined: vec![None; stacks.len()],
+            urls,
+            asks: Vec::new(),
             stacks,
             selected,
             workbench: home,
@@ -611,6 +630,7 @@ impl Model {
             exit_code: 0,
             source: source.is_some(),
             source_error,
+            source_service,
             devices: Vec::new(),
             devices_at: None,
             device: 0,
@@ -667,6 +687,142 @@ impl Model {
     }
 
     pub fn apply(&mut self, update: Update) -> Vec<Command> {
+        if self
+            .answer_of(&update)
+            .is_some_and(|service| !self.asking().contains(&service))
+        {
+            return Vec::new();
+        }
+        let mut commands = self.take(update);
+        commands.extend(self.ask_changes());
+        commands
+    }
+
+    pub fn reach(&self, service: status::Service) -> Reach {
+        let compose = row(service).compose;
+        let holders: Vec<&StackState> = self
+            .defined
+            .iter()
+            .zip(&self.states)
+            .filter(|(defined, _)| {
+                defined
+                    .as_ref()
+                    .is_some_and(|names| names.iter().any(|name| name == compose))
+            })
+            .map(|(_, state)| state)
+            .collect();
+        let up = holders
+            .iter()
+            .any(|state| matches!(state, StackState::Up { .. }));
+        let unknown = self
+            .stacks
+            .iter()
+            .zip(&self.defined)
+            .any(|(stack, defined)| watched(stack) && defined.is_none())
+            || holders
+                .iter()
+                .any(|state| !matches!(state, StackState::Up { .. } | StackState::Down { .. }));
+        if !up && unknown {
+            return Reach::Unknown;
+        }
+        if !up && !holders.is_empty() {
+            return Reach::StackDown;
+        }
+        if !up && !self.urls.is_set(service) {
+            return Reach::NotInLab;
+        }
+        let failed = match service {
+            status::Service::Sonda => self.sonda.error().is_some(),
+            _ => self
+                .errors
+                .iter()
+                .any(|(source, ..)| source == error_source(service)),
+        };
+        if failed {
+            Reach::NoAnswer
+        } else {
+            Reach::Answers
+        }
+    }
+
+    pub(crate) fn asking(&self) -> Vec<status::Service> {
+        SERVICES
+            .iter()
+            .map(|row| row.service)
+            .filter(|service| matches!(self.reach(*service), Reach::Answers | Reach::NoAnswer))
+            .collect()
+    }
+
+    pub(crate) fn ask_changes(&mut self) -> Vec<Command> {
+        let asking = self.asking();
+        let mut commands = Vec::new();
+        for row in &SERVICES {
+            let on = asking.contains(&row.service);
+            if on == self.asks.contains(&row.service) {
+                continue;
+            }
+            if !on {
+                self.forget(row.service);
+            }
+            commands.push(Command::Ask(row.service, on));
+        }
+        self.asks = asking;
+        commands
+    }
+
+    fn answer_of(&self, update: &Update) -> Option<status::Service> {
+        match update {
+            Update::Metrics(_) => Some(status::Service::Metrics),
+            Update::Alerts(_) => Some(status::Service::Alerts),
+            Update::DeviceLogs(..) | Update::Rcas(..) => Some(status::Service::Logs),
+            Update::FlowRuns(_) => Some(status::Service::Flows),
+            Update::Devices(_) => self.source_service,
+            Update::Sonda(_) => Some(status::Service::Sonda),
+            _ => None,
+        }
+    }
+
+    fn forget(&mut self, service: status::Service) {
+        let compose = row(service).compose;
+        self.health.retain(|entry| entry.service != compose);
+        self.rate_services();
+        match service {
+            status::Service::Metrics => self.metrics = None,
+            status::Service::Logs => {
+                self.device_lines.clear();
+                self.rcas.clear();
+            }
+            status::Service::Alerts => {
+                self.alerts.clear();
+                self.alerts_ok = false;
+                if let Cursor::Alert(_) = self.cursor {
+                    self.cursor = Cursor::Device(self.device);
+                }
+            }
+            status::Service::Flows => self.runs.clear(),
+            status::Service::Sonda => {
+                self.sonda = data::Model::new(self.sonda.server().to_string());
+            }
+            status::Service::Sot if self.source_service == Some(service) => {
+                self.devices.clear();
+                self.devices_at = None;
+                self.device = 0;
+                if let Cursor::Device(_) = self.cursor {
+                    self.cursor = Cursor::Device(0);
+                }
+            }
+            status::Service::Sot | status::Service::Grafana => return,
+        }
+        self.clear_error(error_source(service));
+    }
+
+    fn rate_services(&mut self) {
+        for service in &mut self.services {
+            service.health = health_of(&self.health, &service.name, &service.state);
+        }
+    }
+
+    fn take(&mut self, update: Update) -> Vec<Command> {
         match update {
             Update::Services(index, defined, listed) => self.apply_services(index, defined, listed),
             Update::Health(index, list) => {
@@ -674,9 +830,7 @@ impl Model {
                     return Vec::new();
                 }
                 self.health = list;
-                for service in &mut self.services {
-                    service.health = health_of(&self.health, &service.name, &service.state);
-                }
+                self.rate_services();
             }
             Update::Logs(index, service, Ok(lines)) => {
                 self.clear_error(&format!("logs {service}"));
@@ -713,23 +867,23 @@ impl Model {
                 if let Cursor::Device(at) = self.cursor {
                     self.cursor = Cursor::Device(at.min(last));
                 }
-                self.clear_error("sot");
+                self.clear_error(error_source(status::Service::Sot));
                 return self.show_cursor();
             }
-            Update::Devices(Err(text)) => self.fail("sot", text),
+            Update::Devices(Err(text)) => self.fail(error_source(status::Service::Sot), text),
             Update::Metrics(Ok(samples)) => {
                 self.metrics = Some(samples);
-                self.clear_error("prometheus");
+                self.clear_error(error_source(status::Service::Metrics));
             }
             Update::Metrics(Err(text)) => {
                 self.metrics = None;
-                self.fail("prometheus", text);
+                self.fail(error_source(status::Service::Metrics), text);
             }
             Update::Alerts(Ok(mut list)) => {
                 list.sort_by_key(|alert| Reverse(time::parse_rfc3339(&alert.starts_at)));
                 self.alerts = list;
                 self.alerts_ok = true;
-                self.clear_error("alertmanager");
+                self.clear_error(error_source(status::Service::Alerts));
                 if let Cursor::Alert(at) = self.cursor {
                     return match self.alerts.len() {
                         0 => {
@@ -745,10 +899,10 @@ impl Model {
             }
             Update::Alerts(Err(text)) => {
                 self.alerts_ok = false;
-                self.fail("alertmanager", text);
+                self.fail(error_source(status::Service::Alerts), text);
             }
             Update::DeviceLogs(device, Ok(lines)) => {
-                self.clear_error("loki");
+                self.clear_error(error_source(status::Service::Logs));
                 if !self.is_selected(&device) {
                     return Vec::new();
                 }
@@ -762,19 +916,21 @@ impl Model {
                     .sort_by_key(|held| Reverse(held.line.nanoseconds));
                 self.device_lines.truncate(LOG_LINES);
             }
-            Update::DeviceLogs(_, Err(text)) => self.fail("loki", text),
+            Update::DeviceLogs(_, Err(text)) => {
+                self.fail(error_source(status::Service::Logs), text);
+            }
             Update::Rcas(device, Ok(lines)) => {
-                self.clear_error("loki");
+                self.clear_error(error_source(status::Service::Logs));
                 if self.is_selected(&device) {
                     self.rcas = lines;
                 }
             }
-            Update::Rcas(_, Err(text)) => self.fail("loki", text),
+            Update::Rcas(_, Err(text)) => self.fail(error_source(status::Service::Logs), text),
             Update::FlowRuns(Ok(runs)) => {
                 self.runs = runs;
-                self.clear_error("prefect");
+                self.clear_error(error_source(status::Service::Flows));
             }
-            Update::FlowRuns(Err(text)) => self.fail("prefect", text),
+            Update::FlowRuns(Err(text)) => self.fail(error_source(status::Service::Flows), text),
             Update::ActionLine(line) => {
                 if let Some(run) = self.run.as_mut() {
                     if let Some(output) = run.output.as_mut() {
@@ -1629,10 +1785,10 @@ impl Model {
     }
 
     fn types_q(&self) -> bool {
-        !self.too_small() && (self.typing() || self.asking())
+        !self.too_small() && (self.typing() || self.prompting())
     }
 
-    fn asking(&self) -> bool {
+    fn prompting(&self) -> bool {
         self.workbench == Workbench::Services
             && self.focus != Focus::List
             && self.tab == Tab::Sonda
@@ -1661,6 +1817,7 @@ impl Model {
         };
         let listed = self.answered(&format!("ps {name}"), listed);
         let defined = self.answered(&format!("config {name}"), defined);
+        self.defined[index] = defined.clone();
         self.states[index] = match (&defined, &listed) {
             (Some(defined), Some(listed)) => StackState::of(defined, listed),
             _ => StackState::Failed,
@@ -1794,7 +1951,7 @@ impl Model {
         let sonda_keys = self.workbench == Workbench::Services
             && matches!(self.focus, Focus::Tabs | Focus::Lines)
             && self.tab == Tab::Sonda;
-        if self.asking() && key.code != KeyCode::Esc {
+        if self.prompting() && key.code != KeyCode::Esc {
             return self.sonda_key(key);
         }
         if self.focus != Focus::Run {
@@ -2439,9 +2596,32 @@ pub(crate) fn sonda_url(flag: Option<&str>, stack: Option<&Stack>) -> String {
     match stack.and_then(|stack| env_value(&stack.env, SONDA_ENV)) {
         Some(url) => url.to_string(),
         None if stack.is_some_and(|stack| stack.kind != StackKind::Sonda) => {
-            STACK_SONDA_URL.to_string()
+            row(status::Service::Sonda).default.to_string()
         }
         None => Sonda::DEFAULT_URL.to_string(),
+    }
+}
+
+pub(crate) fn watched(stack: &Stack) -> bool {
+    stack.kind != StackKind::Sonda
+}
+
+fn row(service: status::Service) -> &'static ServiceRow {
+    SERVICES
+        .iter()
+        .find(|row| row.service == service)
+        .expect("SERVICES lists every service")
+}
+
+fn error_source(service: status::Service) -> &'static str {
+    match service {
+        status::Service::Metrics => "prometheus",
+        status::Service::Logs => "loki",
+        status::Service::Alerts => "alertmanager",
+        status::Service::Flows => "prefect",
+        status::Service::Sot => "sot",
+        status::Service::Sonda => "sonda",
+        status::Service::Grafana => "grafana",
     }
 }
 
@@ -2577,6 +2757,7 @@ pub(crate) mod tests {
             chooser: true,
             source: None,
             source_error: None,
+            source_service: None,
             urls: Urls::defaults(),
             program: PathBuf::from("/bin/nobs"),
             login: finding(Some(USER), Some(SECRET)),
@@ -2602,6 +2783,10 @@ pub(crate) mod tests {
     fn sonda_tab() -> Model {
         Model::new(Start {
             chooser: false,
+            urls: Urls {
+                set: vec![status::Service::Sonda],
+                ..Urls::defaults()
+            },
             ..start(vec![sonda_stack()])
         })
     }
@@ -2614,6 +2799,12 @@ pub(crate) mod tests {
             port: None,
             age: None,
         }
+    }
+
+    pub(crate) fn every_service_up(index: usize) -> Update {
+        let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
+        let rows = names.iter().map(|name| row(name, RUNNING)).collect();
+        Update::Services(index, defined(&names), Ok(rows))
     }
 
     pub(crate) fn defined(names: &[&str]) -> Result<Vec<String>, String> {
@@ -3995,6 +4186,7 @@ pub(crate) mod tests {
             chooser: false,
             ..start(vec![stack("a", &[])])
         });
+        model.apply(every_service_up(0));
         model.apply(Update::Devices(Ok(source.devices().unwrap())));
         model.apply(Update::Alerts(Ok(vec![alert(
             "srl2",
@@ -6020,6 +6212,7 @@ pub(crate) mod tests {
     #[test]
     fn the_entry_of_s_takes_every_key_as_text() {
         let mut model = lab_devices_model();
+        model.apply(every_service_up(0));
         model.apply(Update::Alerts(Err("refused".to_string())));
         ch(&mut model, 's');
         let before = (model.workbench(), model.focus(), model.tab());
@@ -6400,6 +6593,7 @@ pub(crate) mod tests {
                 model
             };
             let mut model = open();
+            model.apply(every_service_up(0));
             model.apply(Update::Alerts(Err("refused".to_string())));
             let before = (model.workbench(), model.focus(), model.tab());
             for letter in "q g x ? 1  r o".chars() {

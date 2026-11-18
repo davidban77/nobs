@@ -2099,8 +2099,8 @@ mod tests {
     use crate::book::NodeRow;
     use crate::data;
     use crate::shell::tests::{
-        alert, defined, devices_model, fixture, lab_devices_model, listing, row, sonda_rows, stack,
-        start, workshop_located,
+        alert, defined, devices_model, every_service_up, fixture, lab_devices_model, listing, row,
+        sonda_rows, stack, start, workshop_located,
     };
     use crate::shell::{handle, stacks, Stack, Start, Update, DEVICE_TABS};
 
@@ -2211,6 +2211,7 @@ mod tests {
             press(&mut model, 'j');
         }
         model.apply(listing(11, Ok(vec![row("grafana", "running")])));
+        model.apply(every_service_up(0));
         sonda_rows(&mut model);
         model
     }
@@ -2720,6 +2721,7 @@ mod tests {
     #[test]
     fn a_long_error_keeps_its_source_its_reason_and_its_age() {
         let mut model = Model::new(start(vec![stack("a", &[])]));
+        model.apply(every_service_up(0));
         model.apply(Update::Metrics(Err(
             "cannot reach http://localhost:9090: io: Connection refused (os error 61)".to_string(),
         )));
@@ -3226,6 +3228,7 @@ mod tests {
 
     fn sonda_of(count: usize) -> Model {
         let mut model = opened("a");
+        model.apply(every_service_up(0));
         model.apply(Update::Sonda(data::Update {
             at: Instant::now(),
             list: Ok(scenarios(count)),
@@ -4006,6 +4009,7 @@ mod tests {
             }),
             ("sonda", || {
                 let mut model = opened("a");
+                model.apply(every_service_up(0));
                 sonda_rows(&mut model);
                 open_tab(&mut model, Tab::Sonda);
                 model
