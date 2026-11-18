@@ -318,8 +318,8 @@ An action is a nobs command that the screen runs for you. There are sixteen:
 | `p` | the same as `u` | `nobs --dir <workshop folder> <workshop> preflight` | asks `y/n` and says `It flaps srl1, leaves it in maintenance and can take 13 minutes.` |
 | `s` | the same as `u` | `nobs --dir <workshop folder> <workshop> status` | runs at once |
 | `m` | the devices workbench of a workshop, with a device selected | `nobs --dir <workshop folder> <workshop> maintenance -d <device> --state`, or `--clear` when the device is in maintenance | asks `y/n` |
-| `g` | the devices workbench, in a lab with containerlab nodes, with a device selected | `nobs --dir <lab folder> device fetch <device>` | runs at once; a good answer goes to the Config tab |
-| `s` | the same as `g` | `nobs --dir <lab folder> device run <device> "<command>"` | asks for the command on the key line, `Enter` runs it, `Esc` cancels |
+| `g` | the devices workbench, in a lab with containerlab nodes, with a device selected | `nobs --dir <lab folder> device fetch <device>` | runs at once, after asking for a missing login; a good answer goes to the Config tab |
+| `s` | the same as `g` | `nobs --dir <lab folder> device run <device> "<command>"` | asks for a missing login, then for the command on the key line, `Enter` runs it, `Esc` cancels |
 | `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes, every node and the other chapters' services.` |
 | `P` | the lab workbench; it acts on the whole lab, so it needs no chapter | `nobs --dir <lab folder> lab purge --sudo-no-prompt` | asks `y/n` and says `It takes every scenario down and removes their volumes.` |
@@ -2705,7 +2705,9 @@ $ echo $?
 
 The commands work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). They do not work in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file and connects to the container name that containerlab gives the node.
 
-nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing or empty, nobs names the two variables and opens no connection. nobs never prints the password.
+nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing, empty or only spaces, nobs names the two variables and opens no connection. nobs never prints the password.
+
+In the screen, `g` and `s` ask on the key line for what is missing: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g` or `s`. A login from the shell or the `.env` file is never asked for again: fix it there.
 
 Each command opens one connection: nobs connects, logs in, runs one command and closes the connection. When the device sends nothing for 10 seconds, nobs stops with an error.
 
@@ -2722,7 +2724,7 @@ What the device says passes through. Its output goes to the standard output of n
 | `nobs: cannot read topology file: <path>: <error>` | nobs cannot read the topology file, or it is not a topology |
 | `nobs: ssh <name>: not a node of <topology path>` | the topology file has no node with this name |
 | `nobs: ssh <name>: no driver for the kind <kind> yet` | the node's kind has no driver |
-| `nobs: ssh <name>: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell` | the user or the password is missing or empty |
+| `nobs: ssh <name>: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell` | the user or the password is missing, empty or only spaces |
 | `nobs: ssh <name>: cannot reach <container>: <reason>` | the connection fails, for example because the lab does not run; the reason is the system's text |
 | `nobs: ssh <name>: no answer in 10 seconds` | the device sent nothing for 10 seconds |
 | `nobs: ssh <name>: authentication failed` | the device refused the user or the password |
