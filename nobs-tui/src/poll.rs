@@ -22,7 +22,7 @@ use crate::book;
 use crate::data;
 use crate::shell::{
     env_value, sonda_url, watched, Command, Health, SondaTarget, Stack, StackKind, Tab, Update,
-    WINDOW_MINUTES,
+    DOCKER_LOGS, WINDOW_MINUTES,
 };
 
 const PS_PERIOD: Duration = Duration::from_secs(2);
@@ -126,53 +126,71 @@ impl Pollers {
         };
         let logs = {
             let stacks = Arc::clone(&stacks);
-            spawn("logs", &updates, move |inbox, out| {
+            spawn(DOCKER_LOGS, &updates, move |inbox, out| {
                 logs(runner.as_ref(), &stacks, inbox, out)
             })
         };
-        let sonda = spawn("sonda", &updates, move |inbox, out| {
-            forward_sonda(&stacks, selected, &sonda, inbox, out)
-        });
+        let sonda = spawn(
+            status::row(Service::Sonda).word,
+            &updates,
+            move |inbox, out| forward_sonda(&stacks, selected, &sonda, inbox, out),
+        );
         let alertmanager = urls.as_ref().map(|urls| {
             let client = Alertmanager::new(&urls.alertmanager);
-            spawn("alertmanager", &updates, move |inbox, out| {
-                every(ALERTS_PERIOD, true, inbox, out, || {
-                    Update::Alerts(client.alerts(true, true).map_err(|error| error.to_string()))
-                })
-            })
+            spawn(
+                status::row(Service::Alerts).word,
+                &updates,
+                move |inbox, out| {
+                    every(ALERTS_PERIOD, true, inbox, out, || {
+                        Update::Alerts(client.alerts(true, true).map_err(|error| error.to_string()))
+                    })
+                },
+            )
         });
         let with_source = urls.as_ref().zip(source);
         let sot = with_source.as_ref().map(|(_, (source, source_service))| {
             let (source, source_service) = (Arc::clone(source), *source_service);
-            spawn("sot", &updates, move |inbox, out| {
-                every(SOT_PERIOD, source_service.is_some(), inbox, out, || {
-                    Update::Devices(source.devices().map_err(|error| error.to_string()))
-                })
-            })
+            spawn(
+                status::row(Service::Sot).word,
+                &updates,
+                move |inbox, out| {
+                    every(SOT_PERIOD, source_service.is_some(), inbox, out, || {
+                        Update::Devices(source.devices().map_err(|error| error.to_string()))
+                    })
+                },
+            )
         });
         let prometheus = with_source.as_ref().map(|(urls, _)| {
             let client = Prometheus::new(&urls.prometheus);
-            spawn("prometheus", &updates, move |inbox, out| {
-                every(METRICS_PERIOD, true, inbox, out, || {
-                    Update::Metrics(
-                        client
-                            .samples(METRICS_QUERY)
-                            .map_err(|error| error.to_string()),
-                    )
-                })
-            })
+            spawn(
+                status::row(Service::Metrics).word,
+                &updates,
+                move |inbox, out| {
+                    every(METRICS_PERIOD, true, inbox, out, || {
+                        Update::Metrics(
+                            client
+                                .samples(METRICS_QUERY)
+                                .map_err(|error| error.to_string()),
+                        )
+                    })
+                },
+            )
         });
         let loki = with_source.as_ref().map(|(urls, _)| {
             let client = Loki::new(&urls.loki);
-            spawn("loki", &updates, move |inbox, out| {
-                device_logs(&client, inbox, out)
-            })
+            spawn(
+                status::row(Service::Logs).word,
+                &updates,
+                move |inbox, out| device_logs(&client, inbox, out),
+            )
         });
         let prefect = with_source.as_ref().map(|(urls, _)| {
             let client = Prefect::new(&urls.prefect);
-            spawn("prefect", &updates, move |inbox, out| {
-                flows(&client, inbox, out)
-            })
+            spawn(
+                status::row(Service::Flows).word,
+                &updates,
+                move |inbox, out| flows(&client, inbox, out),
+            )
         });
         (
             Pollers {

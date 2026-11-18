@@ -19,7 +19,7 @@ use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
 use nobs_core::sonda::Sonda;
 use nobs_core::sot::{Device, Session, SourceOfTruth};
-use nobs_core::status::{self, Row as ServiceRow, Urls, SERVICES};
+use nobs_core::status::{self, Urls, SERVICES};
 use nobs_core::time;
 
 use crate::actions::{flat, pieces, Action, Ask, Row, Target, ACTIONS};
@@ -45,6 +45,7 @@ const MIN_SIZE: (u16, u16) = (60, 15);
 const SONDA_ENV: &str = "SONDA_SERVER_URL";
 const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
 const RUNNING: &str = "running";
+pub(crate) const DOCKER_LOGS: &str = "docker logs";
 
 pub type ShownDeviceLogs<'a> = (&'a str, Vec<(i64, &'a str)>, bool, usize);
 pub(crate) type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -699,26 +700,23 @@ impl Model {
     }
 
     pub fn reach(&self, service: status::Service) -> Reach {
-        let compose = row(service).compose;
-        let holders: Vec<&StackState> = self
-            .defined
-            .iter()
-            .zip(&self.states)
-            .filter(|(defined, _)| {
-                defined
+        let compose = status::row(service).compose;
+        let of_the_lab = |index: &usize| self.lab.is_some() || *index == self.selected;
+        let holders: Vec<&StackState> = (0..self.stacks.len())
+            .filter(of_the_lab)
+            .filter(|index| {
+                self.defined[*index]
                     .as_ref()
                     .is_some_and(|names| names.iter().any(|name| name == compose))
             })
-            .map(|(_, state)| state)
+            .map(|index| &self.states[index])
             .collect();
         let up = holders
             .iter()
             .any(|state| matches!(state, StackState::Up { .. }));
-        let unknown = self
-            .stacks
-            .iter()
-            .zip(&self.defined)
-            .any(|(stack, defined)| watched(stack) && defined.is_none())
+        let unknown = (0..self.stacks.len())
+            .filter(of_the_lab)
+            .any(|index| watched(&self.stacks[index]) && self.defined[index].is_none())
             || holders
                 .iter()
                 .any(|state| !matches!(state, StackState::Up { .. } | StackState::Down { .. }));
@@ -783,7 +781,7 @@ impl Model {
     }
 
     fn forget(&mut self, service: status::Service) {
-        let compose = row(service).compose;
+        let compose = status::row(service).compose;
         self.health.retain(|entry| entry.service != compose);
         self.rate_services();
         match service {
@@ -833,7 +831,7 @@ impl Model {
                 self.rate_services();
             }
             Update::Logs(index, service, Ok(lines)) => {
-                self.clear_error(&format!("logs {service}"));
+                self.clear_error(DOCKER_LOGS);
                 if index != self.selected {
                     return Vec::new();
                 }
@@ -845,23 +843,23 @@ impl Model {
                 keep_last(&mut logs.lines);
             }
             Update::Logs(_, service, Err(text)) => {
-                self.fail(&format!("logs {service}"), text);
+                self.fail(DOCKER_LOGS, format!("{service}: {text}"));
             }
             Update::Sonda(update) => self.sonda.apply(update),
             Update::Note(note) => self.sonda.note(note.text, note.at),
             Update::Stopped(source) => {
-                match source.as_str() {
-                    "prometheus" => self.metrics = None,
-                    "alertmanager" => self.alerts_ok = false,
-                    "loki" => self.logs_following = false,
-                    "nodes" => self.nodes_ok = false,
+                let service = SERVICES
+                    .iter()
+                    .find(|row| row.word == source)
+                    .map(|row| row.service);
+                match service {
+                    Some(status::Service::Metrics) => self.metrics = None,
+                    Some(status::Service::Alerts) => self.alerts_ok = false,
+                    Some(status::Service::Logs) => self.logs_following = false,
+                    _ if source == "nodes" => self.nodes_ok = false,
                     _ => {}
                 }
-                let part = SERVICES
-                    .iter()
-                    .find(|row| row.tool.eq_ignore_ascii_case(&source))
-                    .map_or(source.as_str(), |row| row.word);
-                self.fail(part, "polling stopped".to_string());
+                self.fail(&source, "polling stopped".to_string());
             }
             Update::Devices(Ok(list)) => {
                 self.devices = list;
@@ -2617,7 +2615,7 @@ pub(crate) fn sonda_url(flag: Option<&str>, stack: Option<&Stack>) -> String {
     match stack.and_then(|stack| env_value(&stack.env, SONDA_ENV)) {
         Some(url) => url.to_string(),
         None if stack.is_some_and(|stack| stack.kind != StackKind::Sonda) => {
-            row(status::Service::Sonda).default.to_string()
+            status::row(status::Service::Sonda).default.to_string()
         }
         None => Sonda::DEFAULT_URL.to_string(),
     }
@@ -2627,15 +2625,8 @@ pub(crate) fn watched(stack: &Stack) -> bool {
     stack.kind != StackKind::Sonda
 }
 
-pub(crate) fn row(service: status::Service) -> &'static ServiceRow {
-    SERVICES
-        .iter()
-        .find(|row| row.service == service)
-        .expect("SERVICES lists every service")
-}
-
 fn error_source(service: status::Service) -> &'static str {
-    row(service).word
+    status::row(service).word
 }
 
 fn health_of(health: &[Health], name: &str, state: &str) -> Option<String> {
@@ -3940,7 +3931,7 @@ pub(crate) mod tests {
         ));
 
         let (source, text, _) = model.error().unwrap();
-        assert_eq!((source, text), ("logs grafana", "gone"));
+        assert_eq!((source, text), ("docker logs", "grafana: gone"));
     }
 
     #[test]
@@ -3968,7 +3959,7 @@ pub(crate) mod tests {
             Err("gone".to_string()),
         ));
         assert_eq!(model.selected_stack(), 0);
-        assert_eq!(model.error().unwrap().0, "logs grafana");
+        assert_eq!(model.error().unwrap().0, "docker logs");
 
         model.apply(Update::Logs(
             1,
@@ -4377,7 +4368,7 @@ pub(crate) mod tests {
         model.apply(Update::Metrics(Ok(peer_samples(1.0))));
         assert_eq!(model.device_rows()[0].health, devices::Health::Ok);
 
-        model.apply(Update::Stopped("prometheus".to_string()));
+        model.apply(Update::Stopped("metrics".to_string()));
 
         assert_eq!(model.device_rows()[0].health, devices::Health::Unknown);
         assert!(model.session_states().iter().all(|(_, state)| state == "?"));
@@ -4390,7 +4381,7 @@ pub(crate) mod tests {
         )])));
         assert_eq!(model.device_rows()[0].alerts, Some((1, false)));
 
-        model.apply(Update::Stopped("alertmanager".to_string()));
+        model.apply(Update::Stopped("alerts".to_string()));
 
         assert_eq!(model.device_rows()[0].alerts, None);
         assert_eq!(model.alerts().len(), 1);
@@ -4398,7 +4389,7 @@ pub(crate) mod tests {
 
         assert!(model.device_logs().unwrap().2);
 
-        model.apply(Update::Stopped("loki".to_string()));
+        model.apply(Update::Stopped("logs".to_string()));
 
         assert!(!model.device_logs().unwrap().2);
         assert_eq!(model.error().unwrap().0, "metrics");
@@ -4842,13 +4833,85 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn outside_a_lab_the_state_of_every_service_is_read_from_the_selected_stack_only() {
+        let mut model = Model::new(Start {
+            urls: Urls {
+                set: vec![status::Service::Sonda],
+                ..Urls::defaults()
+            },
+            ..start(vec![stack("a", &[]), stack("b", &[]), sonda_stack()])
+        });
+        let reach = |model: &Model| {
+            [status::Service::Metrics, status::Service::Sonda].map(|service| model.reach(service))
+        };
+        let asks = |commands: &[Command], on: bool| {
+            commands
+                .iter()
+                .any(|command| matches!(command, Command::Ask(status::Service::Metrics, asked) if *asked == on))
+        };
+
+        model.apply(Update::Services(
+            1,
+            defined(&["prometheus"]),
+            Ok(vec![row("prometheus", RUNNING)]),
+        ));
+        let before_a_answers = reach(&model);
+        model.apply(Update::Services(
+            0,
+            defined(&["prometheus", "sonda-server"]),
+            Ok(Vec::new()),
+        ));
+        let at_a = reach(&model);
+        model.ask_changes();
+        ch(&mut model, 'j');
+        let to_b = model.ask_changes();
+        let at_b = reach(&model);
+        ch(&mut model, 'j');
+        let to_sonda = model.ask_changes();
+        let at_sonda = reach(&model);
+
+        assert_eq!(before_a_answers, [Reach::Unknown, Reach::Unknown]);
+        assert_eq!(at_a, [Reach::StackDown, Reach::StackDown]);
+        assert_eq!(at_b, [Reach::Answers, Reach::Answers]);
+        assert_eq!(at_sonda, [Reach::NotInLab, Reach::Answers]);
+        assert!(asks(&to_b, true), "{to_b:?}");
+        assert!(asks(&to_sonda, false), "{to_sonda:?}");
+    }
+
+    #[test]
+    fn a_stopped_tail_of_the_container_logs_says_docker_logs_and_leaves_the_logs_service_as_it_was()
+    {
+        let mut model = Model::new(start(vec![stack("a", &[])]));
+        model.apply(every_service_up(0));
+        let before = model.reach(status::Service::Logs);
+
+        model.apply(Update::Stopped(DOCKER_LOGS.to_string()));
+        let stopped = model
+            .error()
+            .map(|(source, text, _)| (source.to_string(), text.to_string()));
+        model.apply(Update::Logs(
+            0,
+            "grafana".to_string(),
+            Err("gone".to_string()),
+        ));
+
+        assert_eq!(before, Reach::Answers);
+        assert_eq!(model.reach(status::Service::Logs), Reach::Answers);
+        assert_eq!(
+            stopped,
+            Some(("docker logs".to_string(), "polling stopped".to_string()))
+        );
+        assert_eq!(model.error().unwrap().0, "docker logs");
+    }
+
+    #[test]
     fn a_poller_that_stops_behind_another_error_shows_once_the_errors_before_it_are_gone() {
         let mut model = devices_model(workshop_located("infrahub"));
         let at = Instant::now();
         model.tick(at, UNIX_EPOCH, (80, 24));
 
         model.apply(Update::Alerts(Err("refused".to_string())));
-        model.apply(Update::Stopped("prometheus".to_string()));
+        model.apply(Update::Stopped("metrics".to_string()));
         model.apply(Update::Devices(Err("sot down".to_string())));
         model.apply(Update::Alerts(Err("refused again".to_string())));
 

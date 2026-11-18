@@ -11,14 +11,14 @@ use ratatui::Frame;
 
 use nobs_core::count::counted;
 use nobs_core::locate::Located;
-use nobs_core::status::Service;
+use nobs_core::status::{row, Service};
 use nobs_core::time;
 
 use crate::actions::{self, arguments, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    kind_text, row, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState, StackKind,
+    kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState, StackKind,
     StackState, Tab, Workbench, NO_BREAK, SERVICES_TABS,
 };
 use crate::view;
@@ -617,7 +617,7 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             );
             if let Some(sentence) = absent_of(model, Service::Sonda) {
                 let top_row = Rect {
-                    height: 1,
+                    height: content.height.min(1),
                     ..content
                 };
                 frame.render_widget(Clear, top_row);
@@ -2310,7 +2310,13 @@ mod tests {
                 ..stack(&format!("stack-{index:02}"), &[])
             })
             .collect();
-        let mut model = Model::new(start(stacks));
+        let mut model = Model::new(Start {
+            urls: nobs_core::status::Urls {
+                set: vec![Service::Sonda],
+                ..nobs_core::status::Urls::defaults()
+            },
+            ..start(stacks)
+        });
         handle(
             &mut model,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -2319,7 +2325,6 @@ mod tests {
             press(&mut model, 'j');
         }
         model.apply(listing(11, Ok(vec![row("grafana", "running")])));
-        model.apply(every_service_up(0));
         sonda_rows(&mut model);
         model
     }

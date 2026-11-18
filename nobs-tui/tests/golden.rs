@@ -1232,6 +1232,13 @@ fn lab_where(row: &status::Row, reach: Reach) -> Shell {
             ));
         }
     }
+    model.apply(Update::Health(
+        0,
+        vec![Health {
+            service: row.compose.to_string(),
+            state: "ok".to_string(),
+        }],
+    ));
     if !sot {
         model.apply(Update::Devices(Ok(devices.clone())));
     }
@@ -1316,6 +1323,17 @@ fn one_state_drives_every_place_that_shows_the_data_of_a_service() {
             let red_line = all.lines().any(|line| line.starts_with(&red));
             let failed = reach == Reach::NoAnswer && row.service != status::Service::Sonda;
             assert_eq!(red_line, failed, "{label}");
+            let services = screens[screens.len() - 3..]
+                .iter()
+                .find(|screen| screen.contains(" SERVICE "))
+                .unwrap();
+            let checked = match reach {
+                Reach::Answers | Reach::NoAnswer => Some("ok"),
+                Reach::StackDown => Some("—"),
+                Reach::Unknown | Reach::NotInLab => None,
+            };
+            let health_cell = cells_after(services, 3, row.compose).get(2).copied();
+            assert_eq!(health_cell, checked, "{} {reach:?}\n{services}", row.word);
             let answered = reach == Reach::Answers;
             let list = &screens[0];
             match row.service {

@@ -201,6 +201,7 @@ fn turns<B: Backend>(
         model.set_details_overflow(screen::sonda_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
             send(handle(model, key), actions, pollers);
+            send(model.ask_changes(), actions, pollers);
         }
         if model.quit() {
             return Ok(model.exit_code());
@@ -2127,7 +2128,7 @@ mod tests {
             urls: at(&counter.url, Vec::new()),
             ..start(vec![stack(&env)], false)
         };
-        let (mut model, pollers, updates) = polled(begin, runner.clone(), Some(&counter.url));
+        let (mut model, pollers, updates) = polled(begin, runner.clone(), None);
 
         turn_until(
             &mut model,

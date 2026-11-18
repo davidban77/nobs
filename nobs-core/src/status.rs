@@ -94,7 +94,7 @@ pub const SERVICES: [Row; 7] = [
     },
 ];
 
-pub(crate) const fn row(service: Service) -> Row {
+pub const fn row(service: Service) -> Row {
     let mut index = 0;
     while index < SERVICES.len() {
         if SERVICES[index].service as u8 == service as u8 {

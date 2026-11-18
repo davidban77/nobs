@@ -5066,8 +5066,10 @@ fn screen_start_with(
 ) -> Result<nobs_tui::Start, String> {
     let program = std::env::current_exe()
         .map_err(|error| format!("cannot find the running program: {error}"))?;
+    let flagged = given(flags.server);
+    let sonda_flag = flagged.is_some();
     let sonda = nobs_tui::SondaTarget {
-        server: given(flags.server).or_else(|| given(process("SONDA_SERVER_URL"))),
+        server: flagged.or_else(|| given(process("SONDA_SERVER_URL"))),
         api_key: given(flags.api_key).or_else(|| given(process("SONDA_API_KEY"))),
     };
     let home = nobs_tui::Workbench::Services;
@@ -5094,6 +5096,11 @@ fn screen_start_with(
                 })
             };
             let urls = Urls::from_lookup(lookup);
+            let urls = if sonda_flag {
+                with_sonda_set(urls)
+            } else {
+                urls
+            };
             let path = located.dir.join("containerlab").join("lab_vars.yml");
             let ((source, source_error), source_service): (
                 (Option<std::sync::Arc<dyn SourceOfTruth>>, _),
@@ -5178,7 +5185,10 @@ fn screen_start_with(
 }
 
 fn sonda_only_urls(lookup: impl Fn(&str) -> Option<String>) -> Urls {
-    let mut urls = Urls::from_lookup(lookup);
+    with_sonda_set(Urls::from_lookup(lookup))
+}
+
+fn with_sonda_set(mut urls: Urls) -> Urls {
     if !urls.is_set(Service::Sonda) {
         urls.set.push(Service::Sonda);
     }
@@ -6163,6 +6173,21 @@ mod tests {
         assert_eq!(names, ["nobs-t-srl1", "nobs-t-srl2"]);
         let header = nobs_tui::Shell::new(start).header();
         assert!(header.ends_with("sot lab_vars"), "{header}");
+    }
+
+    #[test]
+    fn a_server_given_with_the_flag_counts_as_set_for_sonda_in_a_lab() {
+        let lab = project_lab(
+            "screen-project-server",
+            &[("expected/lab.clab.yml", "lab.clab.yml")],
+        );
+        let set = |server| {
+            let start = screen_start_with(&lab.0, None, flags(server), false, &|_| None).unwrap();
+            start.urls.set
+        };
+
+        assert_eq!(set(Some("http://s:9")), [Service::Sonda]);
+        assert_eq!(set(None), []);
     }
 
     #[test]

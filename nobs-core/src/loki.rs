@@ -52,16 +52,17 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let word = row(Service::Logs).word;
         match self {
             Error::Reach { url, reason } => write!(f, "cannot reach {url}: {reason}"),
             Error::Status { status, path, body } => {
                 let body: String = body.chars().take(BODY_CUT).collect();
-                write!(f, "the logs service answered {status} on {path}: {body}")
+                write!(f, "the {word} service answered {status} on {path}: {body}")
             }
             Error::Body(reason) => {
                 write!(
                     f,
-                    "the logs service answered with text nobs cannot read: {reason}"
+                    "the {word} service answered with text nobs cannot read: {reason}"
                 )
             }
         }
