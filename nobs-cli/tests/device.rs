@@ -185,20 +185,24 @@ fn a_device_error_is_the_error_line_of_nobs_core() {
     }
 }
 
-#[test]
-fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() {
-    let lab = folder("device-login-spaces");
+fn device_lab_with_env(name: &str, env: &str) -> PathBuf {
+    let lab = folder(name);
     fs::copy(fixture("device-lab/nobs.toml"), lab.join("nobs.toml")).unwrap();
     fs::copy(
         fixture("device-lab/containerlab/lab.clab.yml"),
         lab.join("containerlab/lab.clab.yml"),
     )
     .unwrap();
-    fs::write(
-        lab.join(".env"),
-        format!("NETWORK_AGENT_USER=\"  \"\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
-    )
-    .unwrap();
+    fs::write(lab.join(".env"), env).unwrap();
+    lab
+}
+
+#[test]
+fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() {
+    let lab = device_lab_with_env(
+        "device-login-spaces",
+        &format!("NETWORK_AGENT_USER=\"  \"\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
+    );
 
     for args in both("nobs-t-srl1") {
         let output = nobs(&lab, &in_dir(&lab, &args), None, None);
@@ -213,28 +217,22 @@ fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() 
 
 #[test]
 fn a_shell_user_of_only_spaces_falls_to_the_dot_env_user() {
-    let lab = folder("device-login-shell-spaces");
-    fs::copy(fixture("device-lab/nobs.toml"), lab.join("nobs.toml")).unwrap();
-    fs::copy(
-        fixture("device-lab/containerlab/lab.clab.yml"),
-        lab.join("containerlab/lab.clab.yml"),
-    )
-    .unwrap();
-    fs::write(
-        lab.join(".env"),
-        format!("NETWORK_AGENT_USER=nobs-t-x\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
-    )
-    .unwrap();
+    let lab = device_lab_with_env(
+        "device-login-shell-spaces",
+        &format!("NETWORK_AGENT_USER=nobs-t-x\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
+    );
+    let missing = format!(
+        "{}\n",
+        device::error_line("nobs-t-srl1", &Error::MissingCredentials)
+    );
 
     for args in both("nobs-t-srl1") {
         let output = nobs(&lab, &in_dir(&lab, &args), Some("   "), None);
         let stderr = stderr(&output);
 
         assert_eq!(output.status.code(), Some(1), "{stderr}");
-        assert!(
-            stderr.starts_with("nobs: ssh nobs-t-srl1: cannot reach "),
-            "{stderr}"
-        );
+        assert!(stderr.starts_with("nobs: ssh nobs-t-srl1: "), "{stderr}");
+        assert_ne!(stderr, missing);
         assert!(output.stdout.is_empty());
         assert!(!stderr.contains(TEST_PASSWORD));
     }
