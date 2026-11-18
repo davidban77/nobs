@@ -346,7 +346,7 @@ run nobs --dir /home/me/ws/packt packt destroy? It removes the stack's volumes. 
 
 Only `y` runs it. Any other key runs nothing, and the line says `not run:` and the command without its `--dir` folder, for example `not run: packt up`.
 
-`s` of the services workbench, `g` and `S` only read, so they ask nothing. They start at once, and their output shows in the run pane. `s` of the devices workbench asks for a command on the key line.
+`s` of the services workbench, `g` and `S` only read, so they ask nothing. They start at once, and their output shows in the run pane. `g` first asks for a missing device login (see [Device](#device)). `s` of the devices workbench asks for a missing login and then for a command on the key line.
 
 Some keys refuse:
 
@@ -421,7 +421,7 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab uses the same window |
 | `u` `d` `X` `R` `p` `s` | in the services workbench, on the selected workshop stack: ask to run `nobs <workshop> up`, `down`, `destroy`, `reset` or `preflight`, or run `status` at once; `down` removes the containers and keeps the volumes (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
 | `m` | ask to set or clear the maintenance flag of the selected device |
-| `g` `s` | in the devices workbench, in a lab with containerlab nodes, on the selected device: run `nobs device fetch` at once and open the Config tab, or ask for a command on the key line and run `nobs device run` (see [Actions](#actions)) |
+| `g` `s` | in the devices workbench, in a lab with containerlab nodes, on the selected device: ask for a missing login first; then run `nobs device fetch` and open the Config tab, or ask for a command on the key line and run `nobs device run` (see [Actions](#actions)) |
 | `D` `X` `P` `R` `U` `B` `S` | in the lab workbench: ask to deploy, destroy, prepare, update or rebuild the selected chapter, or to purge the whole lab; `S` shows the chapter at once (see [Actions](#actions)) |
 | `y` | answer yes to the open question; any other key answers no |
 | `o` | open or fold the run pane; folding the pane while it has the focus gives the focus back to the list |
