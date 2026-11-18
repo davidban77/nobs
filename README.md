@@ -318,8 +318,8 @@ An action is a nobs command that the screen runs for you. There are sixteen:
 | `p` | the same as `u` | `nobs --dir <workshop folder> <workshop> preflight` | asks `y/n` and says `It flaps srl1, leaves it in maintenance and can take 13 minutes.` |
 | `s` | the same as `u` | `nobs --dir <workshop folder> <workshop> status` | runs at once |
 | `m` | the devices workbench of a workshop, with a device selected | `nobs --dir <workshop folder> <workshop> maintenance -d <device> --state`, or `--clear` when the device is in maintenance | asks `y/n` |
-| `g` | the devices workbench, in a lab with containerlab nodes, with a device selected | `nobs --dir <lab folder> device fetch <device>` | runs at once, after asking for a missing login; a good answer goes to the Config tab |
-| `s` | the same as `g` | `nobs --dir <lab folder> device run <device> "<command>"` | asks for a missing login, then for the command on the key line, `Enter` runs it, `Esc` cancels |
+| `g` | the devices workbench, in a lab with containerlab nodes, with a device selected | `nobs --dir <lab folder> device fetch <device>` | asks for a missing login, then runs; a good answer goes to the Config tab |
+| `s` | the same as `g` | `nobs --dir <lab folder> device run <device> "<command>"` | asks on the key line for a missing login, then for the command; `Enter` runs it, `Esc` cancels |
 | `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes, every node and the other chapters' services.` |
 | `P` | the lab workbench; it acts on the whole lab, so it needs no chapter | `nobs --dir <lab folder> lab purge --sudo-no-prompt` | asks `y/n` and says `It takes every scenario down and removes their volumes.` |
@@ -346,7 +346,7 @@ run nobs --dir /home/me/ws/packt packt destroy? It removes the stack's volumes. 
 
 Only `y` runs it. Any other key runs nothing, and the line says `not run:` and the command without its `--dir` folder, for example `not run: packt up`.
 
-`s` of the services workbench, `g` and `S` only read, so they ask nothing. They start at once, and their output shows in the run pane. `g` first asks for a missing device login (see [Device](#device)). `s` of the devices workbench asks for a missing login and then for a command on the key line.
+`s` of the services workbench, `g` and `S` only read, so they ask no `y/n` question. They start at once, and their output shows in the run pane. `g` first asks for a missing device login (see [Device](#device)). `s` of the devices workbench asks for a missing login and then for a command on the key line.
 
 Some keys refuse:
 
