@@ -5,6 +5,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::vec::Drain;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::alertmanager::Alert;
@@ -94,6 +95,7 @@ pub enum Focus {
     List,
     Tabs,
     Lines,
+    Run,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +282,31 @@ pub struct Run {
     pub state: RunState,
 }
 
+struct RunView {
+    scroll: usize,
+    following: bool,
+    overflow: usize,
+    drawn: bool,
+    cut: Vec<String>,
+}
+
+impl Default for RunView {
+    fn default() -> RunView {
+        RunView {
+            scroll: 0,
+            following: true,
+            overflow: 0,
+            drawn: false,
+            cut: Vec::new(),
+        }
+    }
+}
+
+pub(crate) struct RunMeasure {
+    pub overflow: usize,
+    pub cut_rows: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub lines: Vec<String>,
@@ -462,6 +489,7 @@ pub struct Model {
     lab_overflow: usize,
     program: PathBuf,
     run: Option<Run>,
+    run_view: RunView,
     question: Option<Question>,
     asked: Option<Asked>,
     notice: Option<String>,
@@ -573,6 +601,7 @@ impl Model {
             lab_overflow: 0,
             program,
             run: None,
+            run_view: RunView::default(),
             question: None,
             asked: None,
             notice: None,
@@ -712,12 +741,12 @@ impl Model {
                     if let Some(output) = run.output.as_mut() {
                         output.push(line.clone());
                     }
-                    push_line(run, line);
+                    push_line(run, &mut self.run_view, line);
                 }
             }
             Update::ActionError(line) => {
                 if let Some(run) = self.run.as_mut() {
-                    push_line(run, line);
+                    push_line(run, &mut self.run_view, line);
                 }
             }
             Update::ActionEnded(end) => self.end_run(end),
@@ -743,7 +772,11 @@ impl Model {
         run.state = RunState::Ended(end);
         run.ended = Some(self.now);
         if let End::NotStopped { group } = end {
-            push_line(run, format!("nobs: {}", not_stopped(group)));
+            push_line(
+                run,
+                &mut self.run_view,
+                format!("nobs: {}", not_stopped(group)),
+            );
         }
         let output = run.output.take();
         if let (End::Exited(0), Some(lines), Target::Device(device)) = (end, output, &run.target) {
@@ -809,6 +842,10 @@ impl Model {
             ended: None,
             state: RunState::Running,
         });
+        self.run_view = RunView {
+            drawn: self.run_view.drawn,
+            ..RunView::default()
+        };
         self.run_pane = true;
         vec![Command::Run {
             program: self.program.clone(),
@@ -1114,6 +1151,46 @@ impl Model {
     pub(crate) fn set_lab_overflow(&mut self, lines: usize) {
         self.lab_overflow = lines;
         self.lab_scroll = self.lab_scroll.min(lines);
+    }
+
+    pub(crate) fn run_scroll(&self) -> usize {
+        self.run_view.scroll
+    }
+
+    pub(crate) fn run_cut(&self) -> &[String] {
+        &self.run_view.cut
+    }
+
+    pub(crate) fn run_drawn(&self) -> bool {
+        self.run_view.drawn
+    }
+
+    pub(crate) fn run_overflow(&self) -> usize {
+        self.run_view.overflow
+    }
+
+    pub(crate) fn set_run_view(&mut self, measure: Option<RunMeasure>) {
+        let Some(measure) = measure else {
+            self.run_view = RunView::default();
+            if self.focus == Focus::Run {
+                self.focus = Focus::List;
+            }
+            return;
+        };
+        let view = &mut self.run_view;
+        view.cut.clear();
+        view.drawn = true;
+        view.overflow = measure.overflow;
+        let scroll = view
+            .scroll
+            .saturating_sub(measure.cut_rows)
+            .min(measure.overflow);
+        view.following = view.following || scroll == measure.overflow;
+        view.scroll = if view.following {
+            measure.overflow
+        } else {
+            scroll
+        };
     }
 
     pub(crate) fn set_details_overflow(&mut self, lines: usize) {
@@ -1562,13 +1639,15 @@ impl Model {
             return Vec::new();
         }
         let sonda_keys = self.workbench == Workbench::Services
-            && self.focus != Focus::List
+            && matches!(self.focus, Focus::Tabs | Focus::Lines)
             && self.tab == Tab::Sonda;
         if self.asking() && key.code != KeyCode::Esc {
             return self.sonda_key(key);
         }
-        if let Some(commands) = self.action_key(key.code) {
-            return commands;
+        if self.focus != Focus::Run {
+            if let Some(commands) = self.action_key(key.code) {
+                return commands;
+            }
         }
         match key.code {
             KeyCode::Char('1') => return self.switch(Workbench::Devices),
@@ -1580,16 +1659,24 @@ impl Model {
                 self.help_scroll = 0;
             }
             KeyCode::Char('x') => self.dismiss_error(),
-            KeyCode::Char('o') => self.run_pane = !self.run_pane,
+            KeyCode::Char('o') if self.run_pane => self.fold_pane(),
+            KeyCode::Char('o') => self.run_pane = true,
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::List => Focus::Tabs,
                     Focus::Tabs if self.has_lines() => Focus::Lines,
-                    Focus::Tabs | Focus::Lines => Focus::List,
+                    Focus::Tabs | Focus::Lines if self.run_view.drawn => Focus::Run,
+                    Focus::Tabs | Focus::Lines | Focus::Run => Focus::List,
                 };
             }
             KeyCode::Esc => return self.escape(key),
             KeyCode::Char('r') if !sonda_keys => return vec![Command::Refresh],
+            KeyCode::Char('j' | 'k' | 'f') | KeyCode::Up | KeyCode::Down
+                if self.focus == Focus::Run =>
+            {
+                return self.run_key(key.code)
+            }
+            _ if self.focus == Focus::Run => {}
             _ if self.workbench == Workbench::Services => return self.services_key(key),
             _ if self.workbench == Workbench::Devices => return self.devices_key(key),
             _ if self.workbench == Workbench::Lab => return self.lab_key(key.code),
@@ -1627,7 +1714,7 @@ impl Model {
 
     fn escape(&mut self, key: KeyEvent) -> Vec<Command> {
         if self.run_pane {
-            self.run_pane = false;
+            self.fold_pane();
             return Vec::new();
         }
         if self.workbench == Workbench::Services {
@@ -1646,6 +1733,25 @@ impl Model {
             return Vec::new();
         }
         self.focus = Focus::List;
+        Vec::new()
+    }
+
+    fn fold_pane(&mut self) {
+        self.run_pane = false;
+        self.run_view.drawn = false;
+        if self.focus == Focus::Run {
+            self.focus = Focus::List;
+        }
+    }
+
+    fn run_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let view = &mut self.run_view;
+        if code == KeyCode::Char('f') {
+            view.scroll = view.overflow;
+        } else {
+            scroll_step(code, &mut view.scroll, view.overflow + 1);
+        }
+        view.following = view.scroll == view.overflow;
         Vec::new()
     }
 
@@ -1673,6 +1779,7 @@ impl Model {
             }
             (Focus::Tabs, Tab::Logs) => self.logs_key(key.code),
             (Focus::Tabs, Tab::Sonda) => self.sonda_key(key),
+            (Focus::Run, _) => Vec::new(),
         }
     }
 
@@ -2203,14 +2310,17 @@ fn scroll_step(code: KeyCode, scroll: &mut usize, shown: usize) {
     }
 }
 
-fn keep_last(lines: &mut Vec<String>) {
+fn keep_last(lines: &mut Vec<String>) -> Drain<'_, String> {
     let extra = lines.len().saturating_sub(LOG_LINES);
-    lines.drain(..extra);
+    lines.drain(..extra)
 }
 
-fn push_line(run: &mut Run, line: String) {
+fn push_line(run: &mut Run, view: &mut RunView, line: String) {
     run.lines.push(line);
-    keep_last(&mut run.lines);
+    let left = keep_last(&mut run.lines);
+    if !view.following {
+        view.cut.extend(left);
+    }
 }
 
 fn untimed(line: &str) -> &str {
@@ -5780,5 +5890,239 @@ pub(crate) mod tests {
             assert!(!model.typing(), "{keys:?}");
             assert_eq!(model.question(), None, "{keys:?}");
         }
+    }
+
+    fn measured(overflow: usize, cut_rows: usize) -> Option<RunMeasure> {
+        Some(RunMeasure { overflow, cut_rows })
+    }
+
+    fn walk(model: &mut Model, steps: usize) -> Vec<Focus> {
+        (0..steps).map(|_| tabbed(model)).collect()
+    }
+
+    fn to_run_pane(model: &mut Model) {
+        while model.focus() != Focus::Run {
+            tabbed(model);
+        }
+    }
+
+    fn pushed(model: &mut Model, lines: std::ops::Range<usize>) {
+        for index in lines {
+            model.apply(Update::ActionLine(format!("line {index}")));
+        }
+    }
+
+    #[test]
+    fn a_moved_up_view_clamped_by_a_smaller_overflow_is_at_the_end_and_follows_again() {
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+        pushed(&mut model, 0..20);
+        model.set_run_view(measured(10, 0));
+        to_run_pane(&mut model);
+        for _ in 0..3 {
+            ch(&mut model, 'k');
+        }
+        assert_eq!((model.run_scroll(), model.run_view.following), (7, false));
+
+        model.set_run_view(measured(4, 0));
+        assert_eq!(model.run_scroll(), 4);
+        model.set_run_view(measured(12, 0));
+
+        assert_eq!((model.run_scroll(), model.run_view.following), (12, true));
+    }
+
+    fn shown_line(model: &Model) -> &str {
+        &model.run().unwrap().lines[model.run_scroll()]
+    }
+
+    #[test]
+    fn tab_stops_on_the_run_pane_only_while_it_is_drawn_after_the_stops_of_each_workbench() {
+        let mut sonda = sonda_tab();
+        code(&mut sonda, KeyCode::Esc);
+        let cases: [(Model, &[Focus]); 4] = [
+            (opened(&["a"]), &[Focus::Tabs, Focus::Run, Focus::List]),
+            (sonda, &[Focus::Tabs, Focus::Lines, Focus::Run, Focus::List]),
+            (
+                devices_model(workshop_located("infrahub")),
+                &[Focus::Tabs, Focus::Run, Focus::List],
+            ),
+            (
+                book_model(),
+                &[Focus::Tabs, Focus::Lines, Focus::Run, Focus::List],
+            ),
+        ];
+        for (mut model, stops) in cases {
+            let workbench = model.workbench();
+            let folded: Vec<Focus> = stops
+                .iter()
+                .copied()
+                .filter(|stop| *stop != Focus::Run)
+                .collect();
+            assert_eq!(walk(&mut model, folded.len()), folded, "{workbench:?}");
+
+            ch(&mut model, 'o');
+            model.set_run_view(measured(0, 0));
+            assert_eq!(walk(&mut model, stops.len()), stops, "{workbench:?}");
+
+            model.set_run_view(None);
+            assert!(model.run_pane());
+            assert_eq!(walk(&mut model, folded.len()), folded, "{workbench:?}");
+        }
+    }
+
+    #[test]
+    fn esc_and_o_fold_the_pane_and_a_pane_no_longer_drawn_gives_the_focus_to_the_list() {
+        for fold in [KeyCode::Esc, KeyCode::Char('o')] {
+            let mut model = opened(&["a"]);
+            ch(&mut model, 'o');
+            model.set_run_view(measured(0, 0));
+            to_run_pane(&mut model);
+
+            assert_eq!(code(&mut model, fold), []);
+
+            assert_eq!(
+                (model.run_pane(), model.run_drawn(), model.focus()),
+                (false, false, Focus::List),
+                "{fold:?}"
+            );
+        }
+        let mut model = book_model();
+        ch(&mut model, 'o');
+        model.set_run_view(measured(0, 0));
+        to_run_pane(&mut model);
+
+        model.set_run_view(None);
+
+        assert_eq!(
+            (model.run_pane(), model.run_drawn(), model.focus()),
+            (true, false, Focus::List)
+        );
+    }
+
+    #[test]
+    fn j_and_k_reach_every_row_of_the_pane_down_to_the_oldest_kept_line() {
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+        pushed(&mut model, 0..2100);
+        model.set_run_view(measured(1990, 0));
+        to_run_pane(&mut model);
+        assert_eq!(model.run_scroll(), 1990);
+
+        for _ in 0..1991 {
+            ch(&mut model, 'k');
+        }
+        assert_eq!((model.run_scroll(), shown_line(&model)), (0, "line 100"));
+        assert!(!model.run_view.following);
+
+        for _ in 0..1991 {
+            code(&mut model, KeyCode::Down);
+        }
+        assert_eq!((model.run_scroll(), model.run_view.following), (1990, true));
+    }
+
+    #[test]
+    fn a_moved_up_view_keeps_its_rows_and_f_the_last_row_or_a_new_action_follow_again() {
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+        pushed(&mut model, 0..5);
+        model.set_run_view(measured(5, 0));
+        to_run_pane(&mut model);
+        for _ in 0..3 {
+            ch(&mut model, 'k');
+        }
+        assert_eq!((model.run_scroll(), model.run_view.following), (2, false));
+
+        pushed(&mut model, 5..8);
+        model.set_run_view(measured(8, 0));
+        assert_eq!((model.run_scroll(), model.run_view.following), (2, false));
+
+        ch(&mut model, 'f');
+        assert_eq!((model.run_scroll(), model.run_view.following), (8, true));
+        pushed(&mut model, 8..9);
+        model.set_run_view(measured(9, 0));
+        assert_eq!(model.run_scroll(), 9);
+        ch(&mut model, 'k');
+        assert!(!model.run_view.following);
+        ch(&mut model, 'j');
+        assert_eq!((model.run_scroll(), model.run_view.following), (9, true));
+
+        pushed(&mut model, 9..2100);
+        assert!(model.run_view.cut.is_empty());
+        model.set_run_view(measured(1990, 0));
+        for _ in 0..10 {
+            ch(&mut model, 'k');
+        }
+        let before = shown_line(&model).to_string();
+
+        pushed(&mut model, 2100..2103);
+        assert_eq!(model.run_view.cut, ["line 100", "line 101", "line 102"]);
+        model.set_run_view(measured(1990, 3));
+
+        assert_eq!(
+            (model.run_scroll(), shown_line(&model)),
+            (1977, before.as_str())
+        );
+        assert!(model.run_view.cut.is_empty());
+
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        tabbed(&mut model);
+        running(&mut model);
+        assert_eq!(
+            (
+                model.run_scroll(),
+                model.run_view.following,
+                model.run_drawn()
+            ),
+            (0, true, true)
+        );
+    }
+
+    #[test]
+    fn no_action_key_and_no_key_of_a_list_acts_while_the_run_pane_has_the_focus() {
+        for mut model in [
+            opened(&["nobs-t-packt"]),
+            devices_model(workshop_located("infrahub")),
+            book_model(),
+        ] {
+            let workbench = model.workbench();
+            ch(&mut model, 'o');
+            model.set_run_view(measured(0, 0));
+            to_run_pane(&mut model);
+            let keys = ACTIONS
+                .iter()
+                .filter(|action| action.workbench == workbench)
+                .map(|action| KeyCode::Char(action.key))
+                .chain("/[]l-+".chars().map(KeyCode::Char).chain([KeyCode::Enter]));
+            for typed in keys {
+                let before = snapshot(&model);
+
+                assert_eq!(code(&mut model, typed), [], "{workbench:?} {typed:?}");
+
+                assert_eq!(snapshot(&model), before, "{workbench:?} {typed:?}");
+                assert!(model.run().is_none(), "{workbench:?} {typed:?}");
+                assert_eq!(model.question(), None, "{workbench:?} {typed:?}");
+                assert_eq!(model.entry(), None, "{workbench:?} {typed:?}");
+                assert_eq!(model.notice(), None, "{workbench:?} {typed:?}");
+            }
+        }
+        let mut model = opened(&["nobs-t-packt"]);
+        running(&mut model);
+        model.set_run_view(measured(0, 0));
+        to_run_pane(&mut model);
+        let ctrl_c = with(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        assert_eq!(handle(&mut model, ctrl_c), [Command::Stop]);
+        assert_eq!(state(&model), RunState::Stopping);
+    }
+
+    #[test]
+    fn r_refreshes_from_the_run_pane_over_the_sonda_tab() {
+        let mut model = sonda_tab();
+        ch(&mut model, 'o');
+        model.set_run_view(measured(0, 0));
+        to_run_pane(&mut model);
+
+        assert_eq!(ch(&mut model, 'r'), [Command::Refresh]);
+        assert_eq!((model.focus(), model.tab()), (Focus::Run, Tab::Sonda));
     }
 }

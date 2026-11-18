@@ -338,6 +338,7 @@ mod tests {
                 KeyCode::Char('k'),
                 KeyCode::Up,
                 KeyCode::Down,
+                KeyCode::Char('f'),
             ],
         };
         GLOBAL_KEYS.iter().chain(own).copied().collect()

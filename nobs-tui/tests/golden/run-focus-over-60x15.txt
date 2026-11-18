@@ -1,0 +1,15 @@
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ 1 devices  [2 services]                     ? keys  q quit
+╔ run  autocon5 up  exit 0  41s ═════════════════ Esc fold ╗
+║ Step 29  done                                            ║
+║ Step 30  done                                            ║
+║ Step 31  done                                            ║
+║ Step 32  done                                            ║
+║ Step 33  done                                            ║
+║ Step 34  done                                            ║
+║ Step 35  done                                            ║
+║ Step 36  done                                            ║
+║ Step 37  done                                            ║
+║ Step 38  done                                            ║
+╚════════════════════════════════════════════════════ ↑31 ═╝
+ j/k scroll  Tab focus  Esc fold

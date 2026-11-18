@@ -17,8 +17,8 @@ use crate::actions::{self, arguments, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    kind_text, Cursor, Focus, Model, Run, RunState, StackKind, StackState, Tab, Workbench,
-    NO_BREAK, SERVICES_TABS,
+    kind_text, Cursor, Focus, Model, Run, RunMeasure, RunState, StackKind, StackState, Tab,
+    Workbench, NO_BREAK, SERVICES_TABS,
 };
 use crate::view;
 
@@ -31,6 +31,7 @@ const CONFIG_HINT: &str = "press g to get the running config";
 const PANE_HINTS: [&str; 4] = ["/ filter", "j/k scroll", "[ ] tab", "Esc back to list"];
 const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
 const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
+const HELP_RUN: &str = "run pane, after Tab: j/k scroll  f follow  Esc fold";
 const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
 const HELP_QUIT: [(&str, &str); 2] = [
     ("q", "quit; asks in a run"),
@@ -99,6 +100,7 @@ enum Holder {
     Pane,
     Devices,
     Sonda(view::Part),
+    Run,
 }
 
 fn holder(model: &Model) -> Holder {
@@ -109,6 +111,7 @@ fn holder(model: &Model) -> Holder {
         return Holder::Keys;
     }
     match (model.workbench(), model.focus()) {
+        (_, Focus::Run) => Holder::Run,
         (Workbench::Services, Focus::List) => Holder::Stacks,
         (Workbench::Services, Focus::Tabs) if model.tab() == Tab::Sonda => {
             Holder::Sonda(view::Part::Scenarios)
@@ -197,7 +200,8 @@ fn regions(model: &Model, area: Rect) -> (Vec<String>, [Rect; 6]) {
         0
     } else if model.run_pane() {
         let width = usize::from(middle.width.saturating_sub(2));
-        let pane = pane_height(model.run(), width, middle.height, least);
+        let grown = model.focus() == Focus::Run;
+        let pane = pane_height(model.run(), width, middle.height, least, grown);
         if pane < PANE_LEAST {
             run_line
         } else {
@@ -214,7 +218,7 @@ fn regions(model: &Model, area: Rect) -> (Vec<String>, [Rect; 6]) {
     )
 }
 
-fn pane_height(run: Option<&Run>, width: usize, middle: u16, least: u16) -> u16 {
+fn pane_height(run: Option<&Run>, width: usize, middle: u16, least: u16, grown: bool) -> u16 {
     let rows = |count: usize| u16::try_from(count + 2).unwrap_or(u16::MAX);
     let command = run.map_or(0, |run| command_rows(run, width).len());
     let last = run
@@ -223,10 +227,41 @@ fn pane_height(run: Option<&Run>, width: usize, middle: u16, least: u16) -> u16 
     let needed = rows(command + last);
     let essential = rows(last);
     let third = middle.saturating_sub(1) / 3 + 1;
-    third
+    let ungrown = third
         .max(needed.min(middle / 2))
         .max(essential)
-        .min(middle.saturating_sub(least))
+        .min(middle.saturating_sub(least));
+    if !grown {
+        return ungrown;
+    }
+    let want = rows(run.map_or(0, |run| run_all_rows(run, width).len()));
+    let height = ungrown.max(want.min(middle));
+    if middle - height < least {
+        middle
+    } else {
+        height
+    }
+}
+
+pub(crate) fn run_view(model: &Model, area: Rect) -> Option<RunMeasure> {
+    if model.too_small() {
+        return None;
+    }
+    let (_, [_, _, _, _, bottom, _]) = regions(model, area);
+    if bottom.height < 2 {
+        return None;
+    }
+    let inner = Block::bordered().inner(bottom);
+    let width = usize::from(inner.width);
+    let total = model.run().map_or(0, |run| run_all_rows(run, width).len());
+    Some(RunMeasure {
+        overflow: total.saturating_sub(usize::from(inner.height)),
+        cut_rows: model
+            .run_cut()
+            .iter()
+            .map(|line| wrapped(line, width).len())
+            .sum(),
+    })
 }
 
 fn workbench_least(model: &Model) -> u16 {
@@ -1492,6 +1527,7 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
     let mut title = run_title(model, before_hint);
     title.push(Span::raw(" "));
     let block = Block::bordered()
+        .border_type(border_of(model, Holder::Run))
         .title_top(Line::from(title))
         .title_top(hint);
     let inner = block.inner(area);
@@ -1499,38 +1535,64 @@ fn run_pane(frame: &mut Frame, area: Rect, model: &Model) {
     let Some(run) = model.run() else {
         return;
     };
+    if model.focus() == Focus::Run {
+        let rows = run_all_rows(run, usize::from(inner.width));
+        let total = rows.len();
+        pane_rows(frame, inner, rows.into_iter(), model.run_scroll(), total);
+        return;
+    }
     let lines = run_rows(run, usize::from(inner.width), usize::from(inner.height));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn run_all_rows(run: &Run, width: usize) -> Vec<Line<'static>> {
+    let output = run.lines.iter().flat_map(|line| line_rows(line, width));
+    command_lines(run, width)
+        .into_iter()
+        .chain(output)
+        .collect()
+}
+
+fn command_lines(run: &Run, width: usize) -> Vec<Line<'static>> {
+    command_rows(run, width)
+        .into_iter()
+        .map(|row| Line::styled(row, DIM))
+        .collect()
+}
+
+fn line_rows(line: &str, width: usize) -> impl DoubleEndedIterator<Item = Line<'static>> {
+    let style = line_style(line);
+    wrapped(line, width)
+        .into_iter()
+        .map(move |row| Line::styled(row, style))
+}
+
+fn line_style(line: &str) -> Style {
+    if line.starts_with("nobs:") {
+        Style::new().fg(Color::Red)
+    } else {
+        Style::new()
+    }
+}
+
 fn run_rows(run: &Run, width: usize, height: usize) -> Vec<Line<'static>> {
-    let command = command_rows(run, width);
+    let command = command_lines(run, width);
     let last = run
         .lines
         .last()
         .map_or(0, |line| wrapped(line, width).len());
-    let shown = if command.len() + last <= height {
+    let mut lines = if command.len() + last <= height {
         command
     } else {
         Vec::new()
     };
-    let mut lines: Vec<Line> = shown
-        .into_iter()
-        .map(|row| Line::styled(row, DIM))
-        .collect();
     let room = height.saturating_sub(lines.len());
     let mut tail: Vec<Line> = Vec::new();
     for line in run.lines.iter().rev() {
         if tail.len() >= room {
             break;
         }
-        let style = if line.starts_with("nobs:") {
-            Style::new().fg(Color::Red)
-        } else {
-            Style::new()
-        };
-        let rows = wrapped(line, width);
-        tail.extend(rows.into_iter().rev().map(|row| Line::styled(row, style)));
+        tail.extend(line_rows(line, width).rev());
     }
     tail.truncate(room);
     tail.reverse();
@@ -1750,6 +1812,13 @@ fn key_hints(model: &Model) -> Vec<String> {
     }
     let actions = action_hints(model);
     let fixed = match (model.workbench(), model.focus(), model.tab()) {
+        (_, Focus::Run, _) => {
+            let moved = model.run_scroll() < model.run_overflow();
+            return listed(vec!["j/k scroll"])
+                .chain(moved.then(|| "f follow".to_string()))
+                .chain(listed(vec!["Tab focus", FOLD]))
+                .collect();
+        }
         (Workbench::Lab, ..) => {
             return listed(vec!["Tab focus", "j/k move"])
                 .chain(actions)
@@ -1876,11 +1945,15 @@ struct HelpLayout {
 
 fn help_layout(model: &Model, body: Rect) -> HelpLayout {
     let entries = help_entries(model);
-    let notes = match model.workbench() {
-        Workbench::Devices => vec![HELP_DEVICES_NOTE, HELP_MARK],
-        Workbench::Services => vec![HELP_SONDA, HELP_MARK],
-        Workbench::Lab => vec![HELP_MARK],
+    let mut notes = match model.workbench() {
+        Workbench::Devices => vec![HELP_DEVICES_NOTE],
+        Workbench::Services => vec![HELP_SONDA],
+        Workbench::Lab => vec![],
     };
+    if model.run_drawn() {
+        notes.push(HELP_RUN);
+    }
+    notes.push(HELP_MARK);
     let width = body.width.saturating_sub(4);
     let note_rows = notes
         .iter()
@@ -2989,19 +3062,19 @@ mod tests {
         };
 
         assert_eq!(command_rows(&refused, 58).len(), 2);
-        assert_eq!(pane_height(Some(&refused), 58, 11, 3), 5);
-        assert_eq!(pane_height(Some(&refused), 58, 12, 3), 6);
-        assert_eq!(pane_height(Some(&running), 58, 11, 3), 5);
-        assert_eq!(pane_height(Some(&refused), 98, 26, 3), 9);
-        assert_eq!(pane_height(Some(&refused), 98, 27, 3), 9);
-        assert_eq!(pane_height(Some(&last_line(5)), 58, 11, 3), 7);
-        assert_eq!(pane_height(Some(&last_line(6)), 58, 11, 3), 8);
-        assert_eq!(pane_height(Some(&last_line(6)), 58, 12, 3), 8);
-        assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 3), 9);
-        assert_eq!(pane_height(Some(&refused), 58, 11, 7), 4);
-        assert_eq!(pane_height(Some(&running), 98, 26, 7), 9);
-        assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 7), 5);
-        assert_eq!(pane_height(None, 58, 11, 9), 2);
+        assert_eq!(pane_height(Some(&refused), 58, 11, 3, false), 5);
+        assert_eq!(pane_height(Some(&refused), 58, 12, 3, false), 6);
+        assert_eq!(pane_height(Some(&running), 58, 11, 3, false), 5);
+        assert_eq!(pane_height(Some(&refused), 98, 26, 3, false), 9);
+        assert_eq!(pane_height(Some(&refused), 98, 27, 3, false), 9);
+        assert_eq!(pane_height(Some(&last_line(5)), 58, 11, 3, false), 7);
+        assert_eq!(pane_height(Some(&last_line(6)), 58, 11, 3, false), 8);
+        assert_eq!(pane_height(Some(&last_line(6)), 58, 12, 3, false), 8);
+        assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 3, false), 9);
+        assert_eq!(pane_height(Some(&refused), 58, 11, 7, false), 4);
+        assert_eq!(pane_height(Some(&running), 98, 26, 7, false), 9);
+        assert_eq!(pane_height(Some(&last_line(7)), 58, 12, 7, false), 5);
+        assert_eq!(pane_height(None, 58, 11, 9, false), 2);
         let newest: Vec<String> = run_rows(&last_line(7), 58, 7)
             .iter()
             .map(ToString::to_string)
@@ -3978,6 +4051,376 @@ mod tests {
                 alerts_separator(frame, frame.area(), "999", Some((100, 1, 200)), border);
             });
             assert_eq!(rows[0], whole);
+        }
+    }
+
+    fn settled(model: &mut Model, width: u16, height: u16) -> Vec<String> {
+        model.tick(model.now(), UNIX_EPOCH, (width, height));
+        crate::settle(model, Rect::new(0, 0, width, height));
+        painted(width, height, |frame| draw(frame, model))
+    }
+
+    fn tab_to_run(model: &mut Model, width: u16, height: u16) {
+        settled(model, width, height);
+        for _ in 0..4 {
+            if model.focus() == Focus::Run {
+                break;
+            }
+            handle(model, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        assert_eq!(model.focus(), Focus::Run, "{width}x{height}");
+    }
+
+    fn answered(lines: &[String]) -> Model {
+        let mut model = running_with(lines);
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        model
+    }
+
+    fn running_with(lines: &[String]) -> Model {
+        let mut model = lab_devices_model();
+        press(&mut model, 's');
+        "show version"
+            .chars()
+            .for_each(|typed| press(&mut model, typed));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        for line in lines {
+            model.apply(Update::ActionLine(line.clone()));
+        }
+        model
+    }
+
+    fn numbered(count: usize) -> Vec<String> {
+        (1..=count)
+            .map(|index| format!("line {index:02}"))
+            .collect()
+    }
+
+    fn heights(model: &Model, width: u16, height: u16) -> (u16, u16) {
+        let (_, [_, _, _, body, bottom, _]) = regions(model, Rect::new(0, 0, width, height));
+        (bottom.height, body.height)
+    }
+
+    fn pane_text(rows: &[String]) -> Vec<String> {
+        details_rows(rows)
+            .into_iter()
+            .map(|row| row.replace(NO_BREAK, " "))
+            .collect()
+    }
+
+    #[test]
+    fn the_run_pane_with_the_focus_draws_the_only_double_border() {
+        for bench in benches() {
+            for (width, height) in [(60, 15), (100, 30)] {
+                let mut model = staged(&bench, bench.tabs[0].0, false, Keys::Hints, true);
+                let before = settled(&mut model, width, height);
+                tab_to_run(&mut model, width, height);
+                let rows = settled(&mut model, width, height);
+
+                assert!(
+                    !doubles(&before)
+                        .iter()
+                        .any(|shown| shown.starts_with("run")),
+                    "{}",
+                    before.join("\n")
+                );
+                assert!(one_double(&rows, "run"), "{}", rows.join("\n"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_workbench_without_body_rows_leaves_every_cell_of_the_run_pane_to_the_pane() {
+        let sizes = [(60, 15), (100, 30)];
+        let mut cases = 0;
+        let mut check = |label: String, tab: Tab, width: u16, height: u16, mut model: Model| {
+            for line in numbered(60) {
+                model.apply(Update::ActionLine(line));
+            }
+            tab_to_run(&mut model, width, height);
+            settled(&mut model, width, height);
+            let (_, [_, _, _, body, pane, _]) = regions(&model, Rect::new(0, 0, width, height));
+            let cells = |paint: &dyn Fn(&mut Frame)| {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| paint(frame)).unwrap();
+                let buffer = terminal.backend().buffer();
+                pane.positions()
+                    .map(|at| (buffer[at].symbol().to_string(), buffer[at].style()))
+                    .collect::<Vec<_>>()
+            };
+            let screen = cells(&|frame| draw(frame, &model));
+            let alone = cells(&|frame| run_pane(frame, pane, &model));
+
+            assert_eq!(model.tab(), tab, "{label}");
+            assert_eq!(model.focus(), Focus::Run, "{label}");
+            assert_eq!(body.height, 0, "{label}");
+            assert!(pane.height > 2, "{label}");
+            assert_eq!(screen, alone, "{label}");
+            cases += 1;
+        };
+        for (workbench, _, _) in WORKBENCHES {
+            let mut set_up = lab_devices_model().workbench() == workbench;
+            for bench in benches() {
+                if (bench.build)().workbench() != workbench {
+                    continue;
+                }
+                set_up = true;
+                let tabs: &[Tab] = match workbench {
+                    Workbench::Devices => (bench.build)().device_tabs(),
+                    Workbench::Services => &SERVICES_TABS,
+                    Workbench::Lab => &[Tab::Overview],
+                };
+                for &tab in tabs {
+                    for (width, height) in sizes {
+                        let label = format!("{} {tab:?} {width}x{height}", bench.selected);
+                        let model = staged(&bench, tab, false, Keys::Hints, true);
+                        check(label, tab, width, height, model);
+                    }
+                }
+            }
+            assert!(set_up, "no setup for {workbench:?}");
+        }
+        for &tab in lab_devices_model().device_tabs() {
+            for (width, height) in sizes {
+                let label = format!("lab devices {tab:?} {width}x{height}");
+                let mut model = lab_devices_model();
+                press(&mut model, 'g');
+                for line in numbered(60) {
+                    model.apply(Update::ActionLine(line));
+                }
+                model.apply(Update::ActionEnded(End::Exited(0)));
+                open_tab(&mut model, tab);
+                assert!(
+                    matches!(model.config(), Some((_, Some(kept), _, _)) if kept.lines.len() == 60),
+                    "{label}"
+                );
+                check(label, tab, width, height, model);
+            }
+        }
+        assert_eq!(cases, 28);
+    }
+
+    #[test]
+    fn the_marks_of_the_run_pane_count_the_rows_hidden_above_and_below() {
+        let mut model = answered(&numbered(40));
+        tab_to_run(&mut model, 60, 15);
+        let following = settled(&mut model, 60, 15);
+        let run = model.run().unwrap();
+        let total = command_rows(run, 58).len() + 40;
+        let room = usize::from(heights(&model, 60, 15).0 - 2);
+        let hidden = total - room;
+        for _ in 0..3 {
+            press(&mut model, 'k');
+        }
+        let moved = settled(&mut model, 60, 15);
+        for _ in 0..hidden {
+            press(&mut model, 'k');
+        }
+        let top = settled(&mut model, 60, 15);
+
+        assert!(
+            bottom(&following).ends_with(&format!("═ ↑{hidden} ═╝")),
+            "{}",
+            following.join("\n")
+        );
+        assert!(
+            bottom(&moved).ends_with(&format!("═ ↑{} ↓3 ═╝", hidden - 3)),
+            "{}",
+            moved.join("\n")
+        );
+        assert!(
+            bottom(&top).ends_with(&format!("═ ↓{hidden} ═╝")),
+            "{}",
+            top.join("\n")
+        );
+        assert!(!bottom(&top).contains('↑'), "{}", top.join("\n"));
+    }
+
+    #[test]
+    fn with_the_focus_the_run_pane_grows_to_its_rows_up_to_the_whole_middle() {
+        for (width, height) in [(100, 30), (60, 15)] {
+            for count in [1, 10, 40] {
+                let label = format!("{width}x{height} {count} lines");
+                let mut model = answered(&numbered(count));
+                settled(&mut model, width, height);
+                let (main, main_body) = heights(&model, width, height);
+                let least = workbench_least(&model);
+                let middle = main + main_body;
+                let want =
+                    command_rows(model.run().unwrap(), usize::from(width - 2)).len() + count + 2;
+                tab_to_run(&mut model, width, height);
+                let rows = settled(&mut model, width, height);
+                let (pane, body) = heights(&model, width, height);
+                handle(&mut model, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                settled(&mut model, width, height);
+                let tabbed = heights(&model, width, height);
+                tab_to_run(&mut model, width, height);
+                handle(&mut model, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                settled(&mut model, width, height);
+                let folded = heights(&model, width, height).0;
+                press(&mut model, 'o');
+                settled(&mut model, width, height);
+                let opened = heights(&model, width, height);
+
+                assert!(main_body >= least, "{label}");
+                assert_eq!(pane + body, middle, "{label}");
+                assert!(body == 0 || body >= least, "{label}");
+                match (count, width) {
+                    (1, _) => {
+                        assert!(want <= usize::from(main), "{label}");
+                        assert_eq!(pane, main, "{label}");
+                    }
+                    (10, 100) => assert_eq!(usize::from(pane), want, "{label}"),
+                    _ => assert_eq!((pane, body), (middle, 0), "{label}"),
+                }
+                if body == 0 {
+                    assert!(rows[2].starts_with('╔'), "{label}\n{}", rows.join("\n"));
+                }
+                assert_eq!(tabbed, (main, main_body), "{label}");
+                assert_eq!((folded, model.focus()), (1, Focus::List), "{label}");
+                assert_eq!(opened, (main, main_body), "{label}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_pane_that_is_not_drawn_gives_the_focus_to_the_list_through_settle() {
+        let mut model = answered(&numbered(2));
+        tab_to_run(&mut model, 100, 30);
+        settled(&mut model, 59, 15);
+        let small = model.focus();
+        settled(&mut model, 100, 30);
+        assert_eq!((small, model.focus()), (Focus::List, Focus::List));
+
+        let chooser = Model::new(start(vec![stack("a", &[]), stack("b", &[])]));
+        assert!(chooser.chooser());
+        assert!(run_view(&chooser, Rect::new(0, 0, 100, 30)).is_none());
+
+        let services = benches()
+            .into_iter()
+            .find(|bench| bench.tabs.iter().any(|(tab, _)| *tab == Tab::Sonda))
+            .unwrap();
+        let mut line = staged(&services, Tab::Sonda, true, Keys::Hints, true);
+        settled(&mut line, 60, 15);
+        assert_eq!(heights(&line, 60, 15).0, 1);
+        assert!(run_view(&line, Rect::new(0, 0, 60, 15)).is_none());
+        let mut stops = Vec::new();
+        for _ in 0..4 {
+            handle(&mut line, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            settled(&mut line, 60, 15);
+            stops.push(line.focus());
+        }
+        assert!(!stops.contains(&Focus::Run), "{stops:?}");
+    }
+
+    #[test]
+    fn with_the_focus_every_row_of_the_run_pane_and_of_a_wrapped_line_comes_into_view() {
+        let long = (1..=30)
+            .map(|index| format!("word{index:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut lines = numbered(20);
+        lines.insert(10, long.clone());
+        let mut model = answered(&lines);
+        tab_to_run(&mut model, 60, 15);
+        settled(&mut model, 60, 15);
+        let run = model.run().unwrap();
+        let mut expected: Vec<String> = command_rows(run, 58);
+        for line in &lines {
+            expected.extend(wrapped(line, 58));
+        }
+        let expected: Vec<String> = expected
+            .iter()
+            .map(|row| row.replace(NO_BREAK, " ").trim_end().to_string())
+            .collect();
+        for _ in 0..expected.len() {
+            press(&mut model, 'k');
+        }
+
+        let mut seen = Vec::new();
+        for _ in 0..expected.len() {
+            let rows = pane_text(&settled(&mut model, 60, 15));
+            let scroll = model.run_scroll();
+            press(&mut model, 'j');
+            if model.run_scroll() == scroll {
+                seen.extend(rows);
+                break;
+            }
+            seen.push(rows[0].clone());
+        }
+
+        assert!(wrapped(&long, 58).len() > 1);
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn a_moved_up_run_pane_keeps_its_rows_when_wrapped_lines_leave_at_the_limit() {
+        let long = "gone ".repeat(40);
+        let mut lines = vec![long.clone(); 3];
+        lines.extend(numbered(1997));
+        let mut model = running_with(&lines);
+        tab_to_run(&mut model, 60, 15);
+        settled(&mut model, 60, 15);
+        for _ in 0..30 {
+            press(&mut model, 'k');
+        }
+        let before = pane_text(&settled(&mut model, 60, 15));
+        for index in 0..3 {
+            model.apply(Update::ActionLine(format!("new {index}")));
+        }
+        let after = pane_text(&settled(&mut model, 60, 15));
+
+        assert!(wrapped(&long, 58).len() > 1);
+        assert_eq!(model.run().unwrap().lines[0], "line 01");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn with_the_focus_in_the_run_pane_the_key_line_holds_its_keys_and_f_only_while_moved_up() {
+        let at_end = " j/k scroll  Tab focus  Esc fold";
+        let moved_up = " j/k scroll  f follow  Tab focus  Esc fold";
+        for bench in benches() {
+            for (width, height) in [(60, 15), (100, 30)] {
+                let mut model = staged(&bench, bench.tabs[0].0, false, Keys::Hints, true);
+                tab_to_run(&mut model, width, height);
+                let rows = settled(&mut model, width, height);
+                assert_eq!(rows[rows.len() - 1], at_end, "{}", rows.join("\n"));
+            }
+        }
+        let mut model = answered(&numbered(40));
+        tab_to_run(&mut model, 60, 15);
+        let following = settled(&mut model, 60, 15);
+        press(&mut model, 'k');
+        let moved = settled(&mut model, 60, 15);
+        press(&mut model, 'j');
+        let back = settled(&mut model, 60, 15);
+
+        assert_eq!(following[14], at_end);
+        assert_eq!(moved[14], moved_up);
+        assert_eq!(back[14], at_end);
+    }
+
+    #[test]
+    fn the_keys_overlay_names_the_run_panes_keys_only_while_the_pane_is_drawn() {
+        let named = |rows: &[String]| rows.iter().any(|row| row.contains(HELP_RUN));
+        for bench in benches() {
+            for (width, height) in [(60, 15), (100, 30)] {
+                let mut model = staged(&bench, bench.tabs[0].0, false, Keys::Hints, true);
+                settled(&mut model, width, height);
+                press(&mut model, '?');
+                let open = settled(&mut model, width, height);
+                press(&mut model, '?');
+                press(&mut model, 'o');
+                settled(&mut model, width, height);
+                press(&mut model, '?');
+                let folded = settled(&mut model, width, height);
+
+                assert!(named(&open), "{}", open.join("\n"));
+                assert!(!named(&folded), "{}", folded.join("\n"));
+            }
         }
     }
 }

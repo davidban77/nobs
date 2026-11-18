@@ -184,8 +184,9 @@ fn turns<B: Backend>(
         }
         let size = terminal.size().map_err(failed)?;
         model.tick(Instant::now(), SystemTime::now(), (size.width, size.height));
-        terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         let area = Rect::new(0, 0, size.width, size.height);
+        settle(model, area);
+        terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         model.set_help_overflow(screen::help_overflow(model, area));
         model.set_overview_overflow(screen::overview_overflow(model, area));
         model.set_popup_overflow(screen::popup_overflow(model, area));
@@ -198,6 +199,11 @@ fn turns<B: Backend>(
             return Ok(model.exit_code());
         }
     }
+}
+
+pub fn settle(model: &mut Model, area: Rect) {
+    let measure = screen::run_view(model, area);
+    model.set_run_view(measure);
 }
 
 fn send(commands: Vec<Command>, actions: &mut Actions, pollers: &Pollers) {
@@ -1770,6 +1776,41 @@ mod tests {
     }
 
     #[test]
+    fn tab_in_the_loop_reaches_the_run_pane_the_loop_measured() {
+        let mut model = lab_model();
+        handle(&mut model, ch('D'));
+        handle(&mut model, ch('y'));
+        model.apply(Update::ActionLine("nobs: lab deploy: refused".to_string()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+
+        let rows = quiet_turn(&mut model, (60, 15), &[key(KeyCode::Tab); 3]).join("\n");
+
+        assert_eq!(model.focus(), Focus::Run);
+        assert!(rows.contains("╔ run  lab deploy"), "{rows}");
+    }
+
+    #[test]
+    fn a_line_drained_in_a_turn_shows_in_that_turns_frame_of_a_following_run_pane() {
+        let mut model = lab_model();
+        handle(&mut model, ch('D'));
+        handle(&mut model, ch('y'));
+        for index in 1..=30 {
+            model.apply(Update::ActionLine(format!("step {index:02}")));
+        }
+        quiet_turn(&mut model, (60, 15), &[key(KeyCode::Tab); 3]);
+        let (pollers, _polled) = launch(&scripted(Vec::new()), &model);
+        let (sender, updates) = mpsc::channel();
+        sender
+            .send(Update::ActionLine("step 31".to_string()))
+            .unwrap();
+
+        let rows = drawn_turn(&mut model, (60, 15), &[], &pollers, &updates).join("\n");
+
+        assert_eq!(model.focus(), Focus::Run);
+        assert!(rows.contains("step 31"), "{rows}");
+    }
+
+    #[test]
     fn j_on_the_sonda_details_in_the_loop_moves_the_text_the_box_hid() {
         let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
         handle(&mut model, key(KeyCode::Tab));
@@ -1795,20 +1836,32 @@ mod tests {
     }
 
     #[test]
-    fn the_lab_help_covers_the_open_pane_and_shows_all_seventeen_entries_at_60_by_15() {
+    fn the_lab_help_covers_the_open_pane_and_j_brings_all_seventeen_entries_into_view_at_60_by_15()
+    {
         let mut model = lab_model();
 
         let rows = help_turn(&mut model, (60, 15), &[ch('o'), ch('?')]);
+        let scrolled = help_turn(
+            &mut lab_model(),
+            (60, 15),
+            &[ch('o'), ch('?'), ch('j'), ch('j')],
+        );
 
         let entries = screen::help_entries(&model);
-        let screen = rows.join("\n");
+        let screen = format!("{}\n\n{}", rows.join("\n"), scrolled.join("\n"));
         assert_eq!(model.workbench(), Workbench::Lab);
         assert!(model.run_pane());
+        assert!(rows[2].contains("╔ keys"), "{screen}");
+        assert!(rows[13].contains('╚'), "{screen}");
         assert_eq!(entries.len(), 17);
         for entry in &entries {
-            assert!(shows_entry(&rows, entry), "{entry:?}\n{screen}");
+            assert!(
+                shows_entry(&rows, entry) || shows_entry(&scrolled, entry),
+                "{entry:?}\n{screen}"
+            );
         }
-        assert!(!screen.contains("j/k more"), "{screen}");
+        assert!(rows.iter().any(|row| row.contains("j/k more")), "{screen}");
+        assert!(rows[13].contains("═ ↓2 ═╝"), "{screen}");
     }
 
     #[test]

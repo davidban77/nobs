@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab              ? keys  q quit
+╔ run  device run nobs-t-srl1 …  exit 0  41s ════ Esc fold ╗
+║$ nobs --dir /home/me/book-lab device run nobs-t-srl1     ║
+║show version                                              ║
+║ Step 01  done                                            ║
+║ Step 02  done                                            ║
+║ Step 03  done                                            ║
+║ Step 04  done                                            ║
+║ Step 05  done                                            ║
+║ Step 06  done                                            ║
+║                                                          ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+ j/k scroll  Tab focus  Esc fold

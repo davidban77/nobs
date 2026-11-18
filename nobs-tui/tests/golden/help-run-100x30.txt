@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub                                                     13:42:07
+ 1 devices  [2 services]                                                             ? keys  q quit
+
+
+
+
+
+  ╔ keys  services workbench ════════════════════════════════════════════════════════════════════╗
+  ║1 2      switch workbench                      ?       close                                  ║
+  ║Tab      focus list/tabs                       Esc     close/clear/back                       ║
+  ║j k ↑ ↓  move                                  u       up                                     ║
+  ║[ ]      other tab                             d       down                                   ║
+  ║Enter    open the row                          X       destroy                                ║
+  ║/        filter                                R       reset                                  ║
+  ║r        refresh now                           p       preflight                              ║
+  ║l        service logs                          s       status                                 ║
+  ║f        follow/pause logs                     q       quit; asks in a run                    ║
+  ║o        run pane                              Ctrl-C  stop a run, or quit                    ║
+  ║x        dismiss the error                                                                    ║
+  ║                                                                                              ║
+  ║sonda tab: Tab details  l load  d delete  r refresh                                           ║
+  ║run pane, after Tab: j/k scroll  f follow  Esc fold                                           ║
+  ║↑3 ↓13   3 rows hidden above, 13 below                                                        ║
+  ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
+
+
+
+
+
+ Tab focus  j/k move  / filter  l logs  r refresh  u up  d down  X destroy  R reset  p preflight
