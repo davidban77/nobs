@@ -2418,6 +2418,53 @@ mod tests {
     }
 
     #[test]
+    fn in_a_lab_the_sonda_address_counts_as_set_only_from_the_env_of_the_selected_stack() {
+        let counter = Counter::start();
+        let sonda = nobs_core::status::row(Service::Sonda).setting.unwrap();
+        let other = Stack {
+            name: "other".to_string(),
+            path: PathBuf::from("/other"),
+            ..composed(&[(sonda, counter.url.as_str())])
+        };
+        let begin = start(vec![composed(&[]), other], false);
+        let (mut model, pollers, updates) = polled(begin, Docker::new(&["prometheus"], true), None);
+
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(1500),
+            |_| false,
+        );
+        let at_the_first = (model.reach(Service::Sonda), counter.count());
+        let moved = handle(&mut model, key(KeyCode::Char('j')));
+        for command in &moved {
+            pollers.send(command.clone());
+        }
+        let asked = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| counter.count() > 0,
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(at_the_first, (shell::Reach::NotInLab, 0));
+        assert_eq!(moved, [Command::SelectStack(1)]);
+        assert!(asked);
+        assert_eq!(model.sonda().server(), counter.url);
+        assert!(
+            matches!(
+                model.reach(Service::Sonda),
+                shell::Reach::Answers | shell::Reach::NoAnswer
+            ),
+            "{:?}",
+            model.reach(Service::Sonda)
+        );
+    }
+
+    #[test]
     fn the_sonda_only_stack_is_asked_with_nothing_set() {
         let sonda_only = Stack {
             kind: StackKind::Sonda,

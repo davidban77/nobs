@@ -36,7 +36,7 @@ The screen needs a terminal. When the input or the output of plain `nobs` is not
 
 When nobs cannot read a `nobs.toml` file, or `--dir` or `NOBS_DIR` names a folder that is not a lab or workshop, plain `nobs` and `nobs tui` print `nobs: <reason>` as every command does, and exit with 1, before the screen opens.
 
-The screen reads the `.env` file of each stack itself, and asks each stack's Sonda at the address of that stack. In a lab, when the `.env` file of one stack sets `SONDA_SERVER_URL`, the whole lab counts as having Sonda.
+The screen reads the `.env` file of each stack itself, and asks each stack's Sonda at the address of that stack. The Sonda address of a stack counts as set only when `--server`, the shell or that stack's own `.env` file sets it.
 
 ### The five parts of the screen
 

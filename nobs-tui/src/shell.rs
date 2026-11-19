@@ -727,21 +727,20 @@ impl Model {
             return Reach::StackDown;
         }
         let set = match service {
-            status::Service::Sonda => (0..self.stacks.len())
-                .filter(of_the_lab)
-                .any(|index| sonda_set(self.server.as_deref(), &self.stacks[index])),
+            status::Service::Sonda => self
+                .stacks
+                .get(self.selected)
+                .is_some_and(|stack| sonda_set(self.server.as_deref(), stack)),
             _ => self.urls.is_set(service),
         };
         if !up && !set {
             return Reach::NotInLab;
         }
-        let failed = match service {
-            status::Service::Sonda => self.sonda.error().is_some(),
-            _ => self
-                .errors
-                .iter()
-                .any(|(source, ..)| source == error_source(service)),
-        };
+        let failed = self
+            .errors
+            .iter()
+            .any(|(source, ..)| source == error_source(service))
+            || (service == status::Service::Sonda && self.sonda.error().is_some());
         if failed {
             Reach::NoAnswer
         } else {
@@ -4889,6 +4888,19 @@ pub(crate) mod tests {
         assert_eq!(at_sonda, [Reach::NotInLab, Reach::Answers]);
         assert!(asks(&to_b, true), "{to_b:?}");
         assert!(asks(&to_sonda, false), "{to_sonda:?}");
+    }
+
+    #[test]
+    fn a_stopped_sonda_poller_gives_no_answer() {
+        let mut model = sonda_tab();
+        let before = model.reach(status::Service::Sonda);
+
+        model.apply(Update::Stopped(
+            error_source(status::Service::Sonda).to_string(),
+        ));
+
+        assert_eq!(before, Reach::Answers);
+        assert_eq!(model.reach(status::Service::Sonda), Reach::NoAnswer);
     }
 
     #[test]
