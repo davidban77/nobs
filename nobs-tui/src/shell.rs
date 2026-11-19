@@ -3644,6 +3644,7 @@ pub(crate) mod tests {
     #[test]
     fn an_alert_that_ended_while_another_workbench_was_open_gives_the_top_on_the_way_back() {
         let mut model = observability_model(three_alerts());
+        ch(&mut model, 'k');
         ch(&mut model, 'j');
         assert_eq!(
             selected_words(&model),
@@ -3653,6 +3654,7 @@ pub(crate) mod tests {
 
         let mut list = three_alerts();
         list.remove(1);
+        model.apply(Update::Alerts(Ok(list.clone())));
         list.push(alert("srl3", "LinkFlap", "2026-11-09T13:54:32Z"));
         model.apply(Update::Alerts(Ok(list)));
         ch(&mut model, '3');
