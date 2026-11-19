@@ -1658,6 +1658,9 @@ impl Model {
     }
 
     fn keep_alert(&mut self) {
+        if self.workbench != Workbench::Observability {
+            return;
+        }
         if let Some(alert) = self.selected_alert() {
             self.kept_alert = Some(alert.labels.clone());
         }
@@ -3519,6 +3522,7 @@ pub(crate) mod tests {
     fn when_the_selected_alert_leaves_the_list_the_first_shown_alert_is_selected() {
         let mut model = observability_model(three_alerts());
         ch(&mut model, 'j');
+        ch(&mut model, 'j');
         assert_eq!(selected_words(&model), alert_words("srl2", "InterfaceDown"));
 
         let mut list = three_alerts();
@@ -3556,6 +3560,7 @@ pub(crate) mod tests {
     fn when_the_stack_comes_back_with_the_same_alerts_the_same_alert_is_selected_again() {
         let mut model = observability_model(three_alerts());
         ch(&mut model, 'j');
+        ch(&mut model, 'j');
         assert_eq!(selected_words(&model), alert_words("srl2", "InterfaceDown"));
         let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
 
@@ -3571,6 +3576,7 @@ pub(crate) mod tests {
     #[test]
     fn an_alert_nobody_chose_stays_marked_when_a_newer_alert_arrives_at_the_top() {
         let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, '3');
         assert_eq!(model.selected_alert_row(), Some(0));
 
         model.apply(Update::Alerts(Ok(vec![
@@ -3583,6 +3589,76 @@ pub(crate) mod tests {
             selected_words(&model),
             alert_words("srl2", "BgpSessionNotUp")
         );
+    }
+
+    fn opened_after_a_newer_alert_arrived_on_the_devices_workbench() -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(vec![
+            alert("srl2", "BgpSessionNotUp", "2026-11-09T13:53:32Z"),
+            alert("srl1", "LinkFlap", "2026-11-09T13:54:32Z"),
+        ])));
+        ch(&mut model, '3');
+        model
+    }
+
+    #[test]
+    fn the_first_opening_marks_the_newest_alert_of_those_that_arrived_before() {
+        let model = opened_after_a_newer_alert_arrived_on_the_devices_workbench();
+
+        assert_eq!(model.selected_alert_row(), Some(0));
+        assert_eq!(selected_words(&model), alert_words("srl1", "LinkFlap"));
+    }
+
+    #[test]
+    fn after_the_first_opening_the_marker_stays_on_its_alert_when_a_newer_alert_arrives() {
+        let mut model = opened_after_a_newer_alert_arrived_on_the_devices_workbench();
+
+        model.apply(Update::Alerts(Ok(vec![
+            alert("srl2", "BgpSessionNotUp", "2026-11-09T13:53:32Z"),
+            alert("srl1", "LinkFlap", "2026-11-09T13:54:32Z"),
+            alert("srl3", "InterfaceDown", "2026-11-09T13:55:32Z"),
+        ])));
+
+        assert_eq!(model.selected_alert_row(), Some(1));
+        assert_eq!(selected_words(&model), alert_words("srl1", "LinkFlap"));
+    }
+
+    #[test]
+    fn the_alert_marked_before_enter_is_marked_on_the_way_back_after_a_newer_alert_arrived() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        let chosen = selected_words(&model);
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.workbench(), Workbench::Devices);
+
+        let mut list = three_alerts();
+        list.push(alert("srl3", "LinkFlap", "2026-11-09T13:54:32Z"));
+        model.apply(Update::Alerts(Ok(list)));
+        ch(&mut model, '3');
+
+        assert_eq!(chosen, alert_words("srl2", "BgpSessionNotUp"));
+        assert_eq!(model.selected_alert_row(), Some(2));
+        assert_eq!(selected_words(&model), chosen);
+    }
+
+    #[test]
+    fn an_alert_that_ended_while_another_workbench_was_open_gives_the_top_on_the_way_back() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        assert_eq!(
+            selected_words(&model),
+            alert_words("srl2", "BgpSessionNotUp")
+        );
+        ch(&mut model, '1');
+
+        let mut list = three_alerts();
+        list.remove(1);
+        list.push(alert("srl3", "LinkFlap", "2026-11-09T13:54:32Z"));
+        model.apply(Update::Alerts(Ok(list)));
+        ch(&mut model, '3');
+
+        assert_eq!(model.selected_alert_row(), Some(0));
+        assert_eq!(selected_words(&model), alert_words("srl3", "LinkFlap"));
     }
 
     #[test]

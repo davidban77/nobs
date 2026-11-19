@@ -343,7 +343,7 @@ The top border says `ALERTS` and how many alerts the table shows. The bottom bor
 | `STATE` | `firing`, `silenced` or `inhibited`; a silenced or inhibited row is grey, as in the alerts box |
 | `SINCE` | how long ago the alert started |
 
-`>` marks the selected alert. The lower box shows it. Its top line names the alert and its device. Under it come the `summary` text of the alert, else its `description`, and then the line `started <time>   severity <severity>`. When a new list of alerts comes, the selection stays on the same alert while it exists.
+`>` marks the selected alert. The lower box shows it. Its top line names the alert and its device. Under it come the `summary` text of the alert, else its `description`, and then the line `started <time>   severity <severity>`. The first time you open the workbench, the newest alert is selected. From then on, when a new list of alerts comes, the selection stays on the same alert while it exists, also when you leave the workbench and come back.
 
 The view follows the state of the alerts service:
 
