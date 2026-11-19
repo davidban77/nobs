@@ -556,7 +556,7 @@ fn evidence_prints_the_four_blocks() {
         "active_routes         10  —",
         "suppressed_routes      0  —",
         "",
-        "Loki - last 2 relevant line(s)",
+        "logs (Loki) - last 2 relevant line(s)",
         LOG_NEWER,
         LOG_OLDER,
         "",
@@ -742,10 +742,13 @@ fn evidence_says_so_when_infrahub_has_no_such_device_and_stops() {
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let blocks = blocks(&output);
-    assert_eq!(blocks[0], "Source of truth\ndevice not found in Infrahub.");
+    assert_eq!(
+        blocks[0],
+        "Source of truth\ndevice not found in the sot (Infrahub)."
+    );
     assert_eq!(
         blocks[3],
-        "Policy hint\ndecision: stop\nreason  : device not found in Infrahub"
+        "Policy hint\ndecision: stop\nreason  : device not found in the sot (Infrahub)"
     );
 }
 
@@ -760,7 +763,7 @@ fn evidence_shows_the_error_and_exits_0_when_the_infrahub_query_fails() {
 
     let output = stack.run(&["evidence", "srl1", "10.1.99.2"]);
 
-    let failed = "sot query failed: Infrahub answered 500 on /graphql/main: boom";
+    let failed = "sot query failed: the source of truth answered 500 on /graphql/main: boom";
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let blocks = blocks(&output);
     assert_eq!(blocks[0], format!("Source of truth\n{failed}"));
@@ -883,7 +886,7 @@ fn evidence_says_there_are_no_log_lines_and_still_exits_0_when_loki_fails() {
     assert_eq!(stderr(&output), "");
     assert_eq!(
         blocks(&output)[2],
-        "Loki\nNo relevant log lines in the window."
+        "logs (Loki)\nNo relevant log lines in the window."
     );
 }
 
@@ -1169,7 +1172,7 @@ fn packt_output(t: i64, age: &str, remaining: &str) -> String {
             at(960)
         ),
         String::new(),
-        "Prefect flow runs (last 30m)".to_string(),
+        "flows (Prefect) - runs of the last 30m".to_string(),
         FLOW_RUNS_HEADER.to_string(),
         format!("{}  COMPLETED  {QUARANTINE}", at(-260)),
         format!("{}  COMPLETED    ├─ evidence", at(-259)),
@@ -1241,7 +1244,7 @@ fn cycle_shows_each_error_under_its_title_and_still_exits_0() {
         "Silences (this peer)".to_string(),
         format!("silences query failed: the alerts service at {url} answered 500"),
         String::new(),
-        "Prefect flow runs (last 30m)".to_string(),
+        "flows (Prefect) - runs of the last 30m".to_string(),
         format!("flows query failed: the flows service answered 500 on {FLOW_RUNS_ROUTE}: boom"),
         String::new(),
         "Most recent decision".to_string(),
@@ -1269,7 +1272,7 @@ fn cycle_says_in_each_panel_that_there_is_nothing_to_show() {
         "Silences (this peer)".to_string(),
         "No silences scoped to srl1 → 10.1.99.2.".to_string(),
         String::new(),
-        "Prefect flow runs (last 30m)".to_string(),
+        "flows (Prefect) - runs of the last 30m".to_string(),
         "No quarantine_bgp / resolved_bgp runs for srl1:10.1.99.2 in the last 30m.".to_string(),
         String::new(),
         "Most recent decision".to_string(),
@@ -1309,9 +1312,9 @@ fn cycle_with_trigger_posts_the_payload_waits_for_a_newer_run_and_prints_no_hint
     assert!(!out.contains("To drive a fresh cycle"), "{out}");
     let at = |offset: i64| clock_of(t + offset);
     assert_eq!(
-        panel(&output, "Prefect flow runs (last 30m)"),
+        panel(&output, "flows (Prefect) - runs of the last 30m"),
         [
-            "Prefect flow runs (last 30m)".to_string(),
+            "flows (Prefect) - runs of the last 30m".to_string(),
             FLOW_RUNS_HEADER.to_string(),
             format!("{started}  COMPLETED  {QUARANTINE}"),
             format!("{}  COMPLETED  {QUARANTINE}", at(-260)),
@@ -1486,7 +1489,7 @@ fn cycle_shows_at_most_five_runs_each_on_its_own_row_and_asks_for_no_task_runs_w
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let mut rows = vec![
-        "Prefect flow runs (last 30m)".to_string(),
+        "flows (Prefect) - runs of the last 30m".to_string(),
         "Started   State      Flow".to_string(),
     ];
     rows.extend(offsets.iter().enumerate().take(5).map(|(index, offset)| {
@@ -1496,7 +1499,7 @@ fn cycle_shows_at_most_five_runs_each_on_its_own_row_and_asks_for_no_task_runs_w
         )
     }));
     assert_eq!(
-        panel(&output, "Prefect flow runs (last 30m)"),
+        panel(&output, "flows (Prefect) - runs of the last 30m"),
         rows.join("\n")
     );
     assert!(!order(&stub.requests()).contains(&format!("POST {TASK_RUNS_ROUTE}")));
@@ -1515,9 +1518,9 @@ fn cycle_shows_a_flat_list_when_the_task_runs_cannot_be_read() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let at = |offset: i64| clock_of(t + offset);
     assert_eq!(
-        panel(&output, "Prefect flow runs (last 30m)"),
+        panel(&output, "flows (Prefect) - runs of the last 30m"),
         [
-            "Prefect flow runs (last 30m)".to_string(),
+            "flows (Prefect) - runs of the last 30m".to_string(),
             FLOW_RUNS_HEADER.to_string(),
             format!("{}  COMPLETED  action | srl1:10.1.99.2", at(-255)),
             format!("{}  COMPLETED  policy | srl1:10.1.99.2", at(-256)),
@@ -1679,8 +1682,8 @@ fn cycle_minutes_sets_the_window_of_the_flow_runs_and_of_the_decision_and_their_
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(
-        panel(&output, "Prefect flow runs (last 4m)"),
-        "Prefect flow runs (last 4m)\nNo quarantine_bgp / resolved_bgp runs for srl1:10.1.99.2 in the last 4m."
+        panel(&output, "flows (Prefect) - runs of the last 4m"),
+        "flows (Prefect) - runs of the last 4m\nNo quarantine_bgp / resolved_bgp runs for srl1:10.1.99.2 in the last 4m."
     );
     let requests = stub.requests();
     assert_eq!(window_minutes(&parameters(&requests[3])), 4);
@@ -1810,7 +1813,7 @@ fn page_takes_the_address_from_its_flag_and_exits_1_when_alertmanager_answers_50
     assert_eq!(
         stderr(&output),
         format!(
-            "nobs: Alertmanager fetch failed: the alerts service at {} answered 500\n",
+            "nobs: alerts (Alertmanager) fetch failed: the alerts service at {} answered 500\n",
             stub.url()
         )
     );
@@ -1905,10 +1908,10 @@ const PREFLIGHT: [&str; 7] = [
     "",
     "Pre-flight",
     "Checking the stack is reachable...",
-    "Prometheus reachable",
-    "Loki reachable",
-    "Alertmanager reachable",
-    "Infrahub reachable",
+    "metrics (Prometheus) reachable",
+    "logs (Loki) reachable",
+    "alerts (Alertmanager) reachable",
+    "sot (Infrahub) reachable",
 ];
 const DONE: [&str; 6] = [
     "",
@@ -2145,7 +2148,7 @@ fn try_it_counts_a_loki_that_says_its_ingester_is_not_ready_as_reachable() {
 
     assert_eq!(stderr(&output), "");
     assert!(
-        stdout(&output).contains("\nLoki reachable\n"),
+        stdout(&output).contains("\nlogs (Loki) reachable\n"),
         "{}",
         stdout(&output)
     );
@@ -2163,7 +2166,7 @@ fn try_it_names_the_service_that_is_not_reachable_and_sends_nothing() {
     assert_eq!(
         stderr(&output),
         format!(
-            "nobs: Alertmanager NOT reachable at {closed}/-/ready - bring the stack up first (nobs nobs-t-one up)\n"
+            "nobs: alerts (Alertmanager) NOT reachable at {closed}/-/ready - bring the stack up first (nobs nobs-t-one up)\n"
         )
     );
     assert_eq!(stdout(&output), format!("{}\n", PREFLIGHT[..5].join("\n")));
@@ -2247,7 +2250,7 @@ fn try_it_warns_about_a_failed_post_and_a_missing_device_and_goes_on() {
     let output = try_it_run_with_input(&copy, &["try-it"], "\n\n\n\n");
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let missing = "nobs: could not find srl1 in Infrahub (maintenance toggle skipped)\n";
+    let missing = "nobs: could not find srl1 in the sot (Infrahub) (maintenance toggle skipped)\n";
     assert_eq!(
         stderr(&output),
         format!(
@@ -2279,7 +2282,7 @@ fn try_it_stops_with_exit_1_when_infrahub_fails_on_the_maintenance_lookup() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "nobs: Infrahub answered 500 on /graphql/main: boom\n"
+        "nobs: the source of truth answered 500 on /graphql/main: boom\n"
     );
     assert!(!stdout(&output).contains("\nDone\n"), "{}", stdout(&output));
     let posts = order(&stub.requests())
@@ -2329,7 +2332,7 @@ fn try_it_asks_infrahub_on_health_when_the_healthcheck_fails_and_names_it_when_b
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "nobs: Infrahub NOT reachable - bring the stack up first (nobs nobs-t-one up)\n"
+        "nobs: sot (Infrahub) NOT reachable - bring the stack up first (nobs nobs-t-one up)\n"
     );
     assert_eq!(stdout(&output), format!("{}\n", PREFLIGHT[..6].join("\n")));
 }

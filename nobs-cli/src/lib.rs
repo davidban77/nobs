@@ -1887,9 +1887,10 @@ fn guard(located: &Located, here: &Path, given: Option<&Path>, runner: &dyn Runn
 }
 
 fn print_urls() {
-    for row in SERVICES {
-        println!("{:<14}{}", row.tool, row.default);
-    }
+    println!(
+        "{}",
+        pad_lines(&SERVICES.map(|row| [row.label(), row.default.to_string()]))
+    );
 }
 
 fn run_workshop(words: &[OsString], given: Option<&Path>, runner: &dyn Runner) -> i32 {
@@ -3731,7 +3732,7 @@ fn source_found(intent: &Device, session: Option<&Session>) -> String {
     let unknown = |text: &Option<String>| text.clone().unwrap_or_else(|| "?".to_string());
     let row = |label: &str, value: &str| format!("{label:<16}{value}");
     let mut lines = vec![
-        "Source of truth (Infrahub)".to_string(),
+        format!("Source of truth ({})", status::row(Service::Sot).tool),
         format!(
             "{:<16}{}   site={}  role={}",
             "device",
@@ -3807,7 +3808,11 @@ fn metrics_block(metrics: &Metrics) -> String {
         rows.into_iter()
             .map(|(name, value, decoded)| [name.to_string(), format!("{value:>width$}"), decoded]),
     );
-    format!("BGP metrics snapshot (Prometheus)\n{}", pad_lines(&lines))
+    format!(
+        "BGP metrics snapshot ({})\n{}",
+        status::row(Service::Metrics).tool,
+        pad_lines(&lines)
+    )
 }
 
 fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
@@ -3845,7 +3850,10 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
     let session = found.and_then(|found| evidence::session(found, &flags.peer, &flags.afi_safi));
     let missing = match &intent {
         Ok(_) if workshop.sot == "none" => sot::Error::NoSource.to_string(),
-        Ok(_) => "device not found in Infrahub".to_string(),
+        Ok(_) => format!(
+            "device not found in the {}",
+            status::row(Service::Sot).label()
+        ),
         Err(error) => format!("sot query failed: {error}"),
     };
     let source = match (found, &intent) {
@@ -3853,12 +3861,13 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
         (None, Ok(_)) => format!("Source of truth\n{missing}."),
         (None, Err(_)) => format!("Source of truth\n{missing}"),
     };
+    let logs_label = status::row(Service::Logs).label();
     let logs = if lines.is_empty() {
-        "Loki\nNo relevant log lines in the window.".to_string()
+        format!("{logs_label}\nNo relevant log lines in the window.")
     } else {
         let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
         format!(
-            "Loki - last {} relevant line(s)\n{}",
+            "{logs_label} - last {} relevant line(s)\n{}",
             lines.len(),
             texts.join("\n")
         )
@@ -4093,7 +4102,10 @@ fn flow_runs_panel(prefect: &Prefect, device: &str, peer: &str, minutes: u64, no
             }
         }
     };
-    format!("\nPrefect flow runs (last {minutes}m)\n{body}")
+    format!(
+        "\n{} - runs of the last {minutes}m\n{body}",
+        status::row(Service::Flows).label()
+    )
 }
 
 fn decision_panel(
@@ -4208,7 +4220,10 @@ fn run_page(flags: PageFlags, located: &Located) -> i32 {
     let alerts = match alertmanager.alerts(true, true) {
         Ok(alerts) => alerts,
         Err(error) => {
-            eprintln!("nobs: Alertmanager fetch failed: {error}");
+            eprintln!(
+                "nobs: {} fetch failed: {error}",
+                status::row(Service::Alerts).label()
+            );
             return 1;
         }
     };
@@ -4280,34 +4295,37 @@ fn stack_ready(
     infrahub: &str,
 ) -> bool {
     print_panel("Pre-flight", "Checking the stack is reachable...");
-    for (name, base, path) in [
-        ("Prometheus", prometheus, "/-/ready"),
-        ("Loki", loki, "/ready"),
-        ("Alertmanager", alertmanager, "/-/ready"),
+    for (service, base) in [
+        (Service::Metrics, prometheus),
+        (Service::Logs, loki),
+        (Service::Alerts, alertmanager),
     ] {
-        let url = format!("{}{path}", base.trim_end_matches('/'));
+        let row = status::row(service);
+        let url = format!("{}{}", base.trim_end_matches('/'), row.health);
         let ready = http::get(&url, status::TIMEOUT).is_ok_and(|reply| {
             reply.status < 400
-                || (name == "Loki"
+                || (service == Service::Logs
                     && reply.status == 503
                     && reply.body.contains("Ingester not ready"))
         });
         if !ready {
             eprintln!(
-                "nobs: {name} NOT reachable at {url} - bring the stack up first (nobs {workshop} up)"
+                "nobs: {} NOT reachable at {url} - bring the stack up first (nobs {workshop} up)",
+                row.label()
             );
             return false;
         }
-        println!("{name} reachable");
+        println!("{} reachable", row.label());
     }
+    let sot = status::row(Service::Sot).label();
     let healthy = ["/api/healthcheck", "/health"].iter().any(|path| {
         http::get(&format!("{infrahub}{path}"), status::TIMEOUT)
             .is_ok_and(|reply| reply.status < 400)
     });
     if healthy {
-        println!("Infrahub reachable");
+        println!("{sot} reachable");
     } else {
-        eprintln!("nobs: Infrahub NOT reachable - bring the stack up first (nobs {workshop} up)");
+        eprintln!("nobs: {sot} NOT reachable - bring the stack up first (nobs {workshop} up)");
     }
     healthy
 }
@@ -4316,7 +4334,10 @@ fn set_maintenance(source: &dyn SourceOfTruth, device: &str, state: bool) -> Opt
     match source.set_maintenance(device, state) {
         Ok(_) => println!("{device}.maintenance = {state}"),
         Err(sot::Error::NotFound { .. }) => {
-            eprintln!("nobs: could not find {device} in Infrahub (maintenance toggle skipped)")
+            eprintln!(
+                "nobs: could not find {device} in the {} (maintenance toggle skipped)",
+                status::row(Service::Sot).label()
+            )
         }
         Err(error) => return Some(infrahub_failed(error)),
     }
@@ -4732,21 +4753,20 @@ fn reset_infrahub_data(
     lab_file: &Path,
     warnings: &mut Warnings,
 ) {
+    let sot = status::row(Service::Sot).label();
     let names = match infrahub.device_names() {
         Ok(names) => names,
         Err(error) => {
-            warnings.add(format!(
-                "Infrahub probe failed: {error} — skipping load check"
-            ));
+            warnings.add(format!("{sot} probe failed: {error} — skipping load check"));
             return;
         }
     };
     if names.len() >= cascade::DEVICES.len() {
-        println!("  Infrahub already loaded ({} devices)", names.len());
+        println!("  {sot} already loaded ({} devices)", names.len());
         return;
     }
     println!(
-        "Infrahub has {} {} record(s); re-loading schema + data",
+        "{sot} has {} {} record(s); re-loading schema + data",
         names.len(),
         KINDS[0]
     );
@@ -4949,7 +4969,8 @@ fn expire_workshop_silences(
         Ok(silences) => silences,
         Err(error) => {
             warnings.add(format!(
-                "Alertmanager fetch failed: {error} — skipping silence cleanup"
+                "{} fetch failed: {error} — skipping silence cleanup",
+                status::row(Service::Alerts).label()
             ));
             return;
         }
@@ -5034,17 +5055,18 @@ fn restart_sonda_logs_if_wedged(
     runner: &dyn Runner,
     warnings: &mut Warnings,
 ) {
+    let logs = status::row(Service::Logs).label();
     match loki.query_range(SRL1_DIRECT, 1, 1, SystemTime::now()) {
         Ok(lines) if !lines.is_empty() => return,
         Ok(_) => {}
         Err(error) => {
             warnings.add(format!(
-                "Loki probe failed: {error} — skipping sonda-logs check"
+                "{logs} probe failed: {error} — skipping sonda-logs check"
             ));
             return;
         }
     }
-    println!("sonda-logs srl1 streams look wedged (no Loki activity in last 60s); restarting");
+    println!("sonda-logs srl1 streams look wedged (no {logs} activity in last 60s); restarting");
     match restart_service(compose, runner, "sonda-logs") {
         Ok(()) => println!("  restarted sonda-logs (loki sink reset)"),
         Err(error) => warnings.add(error),
@@ -5337,7 +5359,7 @@ fn status_table(probes: &[Probe]) -> String {
     let mut lines = vec![header];
     lines.extend(probes.iter().map(|probe| {
         [
-            probe.target.name.to_string(),
+            status::row(probe.target.service).label(),
             probe.target.base.clone(),
             state_text(&probe.state),
         ]

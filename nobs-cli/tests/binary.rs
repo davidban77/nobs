@@ -8,6 +8,16 @@ mod stub;
 
 use stub::Stub;
 
+const ADDRESSES: &str = "\
+grafana                http://localhost:3000
+metrics (Prometheus)   http://localhost:9090
+logs (Loki)            http://localhost:3001
+alerts (Alertmanager)  http://localhost:9093
+sot (Infrahub)         http://localhost:8000
+flows (Prefect)        http://localhost:4200
+sonda                  http://localhost:8085
+";
+
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../tests/fixtures/one-service/docker-compose.yml")
@@ -543,16 +553,25 @@ fn a_bare_up_from_below_a_workshop_runs_compose_up_and_prints_the_seven_addresse
             folder.display()
         )
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "Grafana       http://localhost:3000\n\
-         Prometheus    http://localhost:9090\n\
-         Loki          http://localhost:3001\n\
-         Alertmanager  http://localhost:9093\n\
-         Infrahub      http://localhost:8000\n\
-         Prefect       http://localhost:4200\n\
-         Sonda         http://localhost:8085\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), ADDRESSES);
+}
+
+#[test]
+fn restart_with_no_service_prints_the_seven_labelled_addresses() {
+    let copy = workshop_copy("workshop-restart");
+    let bin = probe_docker("probe-docker-restart");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
+        .args(["nobs-t-one", "restart"])
+        .current_dir(&copy)
+        .env("PATH", path_with(&bin))
+        .env_remove("NOBS_T_PROBE")
+        .env_remove("NOBS_DIR")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), ADDRESSES);
 }
 
 #[test]

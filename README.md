@@ -376,12 +376,12 @@ An action that worked, at 100 columns:
 ```
 ┌ run  packt up  exit 0  39s ──────────────────────────────────────────────────────────── Esc fold ┐
 │$ nobs --dir /home/me/ws/packt packt up                                                           │
-│Prometheus    http://localhost:9090                                                               │
-│Loki          http://localhost:3001                                                               │
-│Alertmanager  http://localhost:9093                                                               │
-│Infrahub      http://localhost:8000                                                               │
-│Prefect       http://localhost:4200                                                               │
-│Sonda         http://localhost:8085                                                               │
+│metrics (Prometheus)   http://localhost:9090                                                      │
+│logs (Loki)            http://localhost:3001                                                      │
+│alerts (Alertmanager)  http://localhost:9093                                                      │
+│sot (Infrahub)         http://localhost:8000                                                      │
+│flows (Prefect)        http://localhost:4200                                                      │
+│sonda                  http://localhost:8085                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -640,24 +640,24 @@ After `up`, and after a `restart` with no services, nobs prints the addresses of
 
 | Service | Address |
 |---|---|
-| Grafana | `http://localhost:3000` |
-| Prometheus | `http://localhost:9090` |
-| Loki | `http://localhost:3001` |
-| Alertmanager | `http://localhost:9093` |
-| Infrahub | `http://localhost:8000` |
-| Prefect | `http://localhost:4200` |
-| Sonda | `http://localhost:8085` |
+| grafana | `http://localhost:3000` |
+| metrics (Prometheus) | `http://localhost:9090` |
+| logs (Loki) | `http://localhost:3001` |
+| alerts (Alertmanager) | `http://localhost:9093` |
+| sot (Infrahub) | `http://localhost:8000` |
+| flows (Prefect) | `http://localhost:4200` |
+| sonda | `http://localhost:8085` |
 
-Each line is the service name, padded to 14 characters, and then the address:
+Each line is the label of the service and then its address. The label is the kind first and the tool in brackets, or one word for `grafana` and `sonda`. The addresses start in one column, two spaces after the longest label:
 
 ```
-Grafana       http://localhost:3000
-Prometheus    http://localhost:9090
-Loki          http://localhost:3001
-Alertmanager  http://localhost:9093
-Infrahub      http://localhost:8000
-Prefect       http://localhost:4200
-Sonda         http://localhost:8085
+grafana                http://localhost:3000
+metrics (Prometheus)   http://localhost:9090
+logs (Loki)            http://localhost:3001
+alerts (Alertmanager)  http://localhost:9093
+sot (Infrahub)         http://localhost:8000
+flows (Prefect)        http://localhost:4200
+sonda                  http://localhost:8085
 ```
 
 A workshop's `nobs.toml` holds `kind = "workshop"` and 12 settings. The example leaves out `sot`, because it is optional:
@@ -739,14 +739,14 @@ When every service is `ok`, nobs prints nothing more and exits with 0. Otherwise
 
 ```
 $ nobs nobs-t-one status
-Service       URL                    State
-Grafana       http://localhost:3000  ok
-Prometheus    http://localhost:9090  ok
-Loki          http://localhost:3001  http 503
-Alertmanager  http://localhost:9093  ok
-Infrahub      http://localhost:8000  ok
-Prefect       http://localhost:4200  ok
-Sonda         http://localhost:8085  ok
+Service                URL                    State
+grafana                http://localhost:3000  ok
+metrics (Prometheus)   http://localhost:9090  ok
+logs (Loki)            http://localhost:3001  http 503
+alerts (Alertmanager)  http://localhost:9093  ok
+sot (Infrahub)         http://localhost:8000  ok
+flows (Prefect)        http://localhost:4200  ok
+sonda                  http://localhost:8085  ok
 Some services are not ready yet: give them a minute, or check nobs nobs-t-one logs.
 ```
 
@@ -887,7 +887,7 @@ The table has one line for each kind of node, and `Total` is `Created` plus `Upd
 
 `schema load` prints the rewrite line when there is one, then `Applying schema <path>` and `Schema applied`.
 
-The `maintenance` flag is a field of each device in Infrahub, `true` or `false`. The `maintenance` command prints the rewrite line when there is one. When Infrahub has no node of that kind with that name, nobs then prints `nobs: <kind> <device> not found in Infrahub.`, exits with 1 and tells Sonda nothing. Otherwise nobs saves the flag and prints `<device>.maintenance: <before> → <after>`, where each value is `false` or `true`. Then it posts one event to Sonda, and Sonda sends it on to Loki. Grafana shows the event on its annotation panel; an annotation is a mark on a graph at the time of an event. The event is a log line with these parts:
+The `maintenance` flag is a field of each device in Infrahub, `true` or `false`. The `maintenance` command prints the rewrite line when there is one. When Infrahub has no node of that kind with that name, nobs then prints `nobs: <kind> <device> not found in the source of truth.`, exits with 1 and tells Sonda nothing. Otherwise nobs saves the flag and prints `<device>.maintenance: <before> → <after>`, where each value is `false` or `true`. Then it posts one event to Sonda, and Sonda sends it on to Loki. Grafana shows the event on its annotation panel; an annotation is a mark on a graph at the time of an event. The event is a log line with these parts:
 
 | Part | Value |
 |---|---|
@@ -927,10 +927,10 @@ These three variables follow the same rule as the Infrahub variables: the shell 
 | 1 | a file is missing: `nobs: schema file not found: <path>` or `nobs: lab_vars file not found: <path>` |
 | 1 | a file cannot be read: `nobs: cannot read <path>: <reason>` |
 | 1 | Infrahub did not answer: `nobs: cannot reach <address>: <reason>` |
-| 1 | Infrahub answered with a status code other than 200: `nobs: Infrahub answered <status> on <path>: <answer>`, where `<answer>` is the first 200 characters of the answer |
-| 1 | Infrahub answered 200 with an error message: `nobs: Infrahub: <message>` |
-| 1 | Infrahub did not show all three kinds of node in 30 seconds: `nobs: workshop schema kinds <kinds> not visible to Infrahub after 30 s`, where `<kinds>` are the ones still missing |
-| 1 | `maintenance` found no such node: `nobs: <kind> <device> not found in Infrahub.` |
+| 1 | Infrahub answered with a status code other than 200: `nobs: the source of truth answered <status> on <path>: <answer>`, where `<answer>` is the first 200 characters of the answer |
+| 1 | Infrahub answered 200 with an error message: `nobs: the source of truth: <message>` |
+| 1 | Infrahub did not show all three kinds of node in 30 seconds: `nobs: workshop schema kinds <kinds> not visible to the source of truth after 30 s`, where `<kinds>` are the ones still missing |
+| 1 | `maintenance` found no such node: `nobs: <kind> <device> not found in the source of truth.` |
 | 1 | the post to Sonda failed: `nobs: sonda /events post failed: <error>`; the flag stays saved in Infrahub |
 | 2 | a flag nobs does not know, a missing `-d`, or a missing `PATH` after `schema load` |
 
@@ -985,7 +985,7 @@ When the lab has `sot = "none"`, nobs prints the header line alone, asks for no 
 | 0 | nobs printed the table, or the header line alone |
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 1 | Infrahub did not answer: `nobs: cannot reach <address>: <reason>` |
-| 1 | Infrahub answered with an error: `nobs: <error>`, where `<error>` is `Infrahub answered <status> on <path>: <answer>` or `Infrahub: <message>` |
+| 1 | Infrahub answered with an error: `nobs: <error>`, where `<error>` is `the source of truth answered <status> on <path>: <answer>` or `the source of truth: <message>` |
 | 2 | a flag nobs does not know |
 
 ### rca and evidence
@@ -1065,7 +1065,7 @@ sent_routes           10  —
 active_routes         10  —
 suppressed_routes      0  —
 
-Loki - last 2 relevant line(s)
+logs (Loki) - last 2 relevant line(s)
 2026-11-06T10:20:00Z srl1 bgp neighbor 10.1.99.2 session state changed to active
 2026-11-06T10:15:48Z srl1 bgp neighbor 10.1.99.2 session state changed to idle
 
@@ -1079,19 +1079,19 @@ The first block depends on what Infrahub answered. A peer is intended when the d
 | Infrahub | First block |
 |---|---|
 | has the device | `Source of truth (Infrahub)` and the lines of the example |
-| has no such device | `Source of truth`, then `device not found in Infrahub.` |
-| did not answer, or answered with an error | `Source of truth`, then `sot query failed: <error>`, where `<error>` is `cannot reach <address>: <reason>`, `Infrahub answered <status> on <path>: <answer>` or `Infrahub: <message>` |
+| has no such device | `Source of truth`, then `device not found in the sot (Infrahub).` |
+| did not answer, or answered with an error | `Source of truth`, then `sot query failed: <error>`, where `<error>` is `cannot reach <address>: <reason>`, `the source of truth answered <status> on <path>: <answer>` or `the source of truth: <message>` |
 | is not asked, because the lab has `sot = "none"` | `Source of truth`, then `this lab has no source of truth.` |
 
 In the second block, the `Value` column is right-aligned. A whole number shows without a fraction (`1`, `10`) and any other number as it is (`0.5`). A missing `admin_state` or `oper_state` shows as `-1`, a missing counter as `0`, and a number that is not finite as `?`. `Decoded` is `enable` for an `admin_state` of 1 and `disable` for 2, and `up`, `down`, `idle`, `connect` or `active` for an `oper_state` of 1 to 5. Any other number is `unknown`, a missing state is `—`, and the four counters always show `—`.
 
-The third block is `Loki - last <n> relevant line(s)` with the lines as Loki holds them, newest first. When there is none, the block is `Loki` and `No relevant log lines in the window.`
+The third block is `logs (Loki) - last <n> relevant line(s)` with the lines as Loki holds them, newest first. When there is none, the block is `logs (Loki)` and `No relevant log lines in the window.`
 
 The last block shows the first row of this table that fits:
 
 | decision | reason | When |
 |---|---|---|
-| `stop` | `device not found in Infrahub`, `this lab has no source of truth`, or the `sot query failed` text | the first block is not `Source of truth (Infrahub)` |
+| `stop` | `device not found in the sot (Infrahub)`, `this lab has no source of truth`, or the `sot query failed` text | the first block is not `Source of truth (Infrahub)` |
 | `skip` | `device under maintenance` | the device has `maintenance` set to true |
 | `skip` | `peer not intended in SoT` | the peer is not intended |
 | `skip` | `SoT expects this peer to be down/disabled` | the expected state, in lower case, is `down` or `disabled`; with no expected state, nobs reads `established` |
@@ -1151,7 +1151,7 @@ Silences (this peer)
 ID             State   Starts    Ends      Remaining
 3f2a9c1e-7b4…  active  10:16:00  10:36:00  16m0s
 
-Prefect flow runs (last 30m)
+flows (Prefect) - runs of the last 30m
 Started   State      Flow
 10:15:40  COMPLETED  quarantine_bgp | srl1:10.1.99.2
 10:15:41  COMPLETED    ├─ evidence
@@ -1170,7 +1170,7 @@ reason: SoT expects peer up, but metrics show mismatch
 |---|---|---|---|
 | `Alert` | the alerts named `BgpSessionNotUp` whose `device` and `peer_address` labels are `DEVICE` and `PEER`, from one call to Alertmanager that includes silenced and inhibited alerts | `No BgpSessionNotUp alert active for <device> → <peer>.` | `alerts query failed: <error>` |
 | `Silences (this peer)` | the silences that match `device` equal to `DEVICE` and `peer_address` equal to `PEER`, in every state, the newest start first, at most 5 | `No silences scoped to <device> → <peer>.` | `silences query failed: <error>` |
-| `Prefect flow runs (last <minutes>m)` | the flow runs of this device and peer that started within `--minutes`, the newest first, at most 5 runs, each with its child runs | `No quarantine_bgp / resolved_bgp runs for <device>:<peer> in the last <minutes>m.` | `flows query failed: <error>` |
+| `flows (Prefect) - runs of the last <minutes>m` | the flow runs of this device and peer that started within `--minutes`, the newest first, at most 5 runs, each with its child runs | `No quarantine_bgp / resolved_bgp runs for <device>:<peer> in the last <minutes>m.` | `flows query failed: <error>` |
 | `Most recent decision` | the newest decision record in Loki for this device and peer within `--minutes` | `No decision audit records for <device> → <peer> in the last <minutes>m.` | `logs query failed: <error>` |
 
 In the last column, `<error>` is the text of the failed call, and `<address>` is the address nobs used, without a trailing `/` (and, for Prefect, without a trailing `/api`). For Alertmanager it is `cannot reach the alerts service at <address>: <reason>`, `the alerts service at <address> answered <status>` or `the alerts service at <address> answered with a body nobs cannot read: <problem>`. For Prefect it is `cannot reach <address>: <reason>`, `the flows service answered <status> on /api/flow_runs/filter: <answer>` or `the flows service answered with text nobs cannot read: <problem>`. For Loki it is `cannot reach <address>: <reason>`, `the logs service answered <status> on /loki/api/v1/query_range: <answer>` or `the logs service answered with text nobs cannot read: <problem>`. `<reason>` is why nobs could not connect, `<answer>` is the first 200 characters of the answer, and `<problem>` says what was wrong with the answer. The `page` fetch error uses the texts of the alerts service.
@@ -1231,7 +1231,7 @@ You're awake. The dashboard is your only friend.
 |---|---|
 | 0 | `cycle` printed its panels, whatever they found; `page` printed the page |
 | 1 | `cycle --trigger` could not post to the webhook: `nobs: could not POST to webhook: <error>`, where `<error>` is `cannot reach <address>: <reason>` or `the webhook answered <status>: <answer>`, and `<answer>` is the first 200 characters of the answer |
-| 1 | `page` could not get the alerts: `nobs: Alertmanager fetch failed: <error>` |
+| 1 | `page` could not get the alerts: `nobs: alerts (Alertmanager) fetch failed: <error>` |
 | 1 | `page` found no active alert that fits the filters: ``nobs: no firing alert matched the filters. Run `nobs <name> alerts` to see what's currently firing.`` |
 | 2 | a flag nobs does not know, a missing `DEVICE` or `PEER` for `cycle`, a `--status` other than `firing` or `resolved`, or a value that is not a whole number of 0 or more for `--minutes` |
 
@@ -1255,7 +1255,7 @@ One run goes through these steps in order. Steps 4 to 9 repeat for each path.
 | Step | What nobs does |
 |---|---|
 | 1 | reads the addresses and the token (see the table below), and stops when there is no token |
-| 2 | the pre-flight: prints the panel `Pre-flight`, then asks Prometheus on `/-/ready`, Loki on `/ready`, Alertmanager on `/-/ready` and Infrahub on `/api/healthcheck` (or, when that fails, on `/health`), in this order; each call waits at most 3 seconds; an answer with a status below 400 counts as ready, and so does an answer from Loki with the status 503 whose text holds `Ingester not ready`; it prints `<service> reachable` for each one and stops at the first that is not ready |
+| 2 | the pre-flight: prints the panel `Pre-flight`, then asks Prometheus on `/-/ready`, Loki on `/ready`, Alertmanager on `/-/ready` and Infrahub on `/api/healthcheck` (or, when that fails, on `/health`), in this order; each call waits at most 3 seconds; an answer with a status below 400 counts as ready, and so does an answer from Loki with the status 503 whose text holds `Ingester not ready`; it prints `<service> reachable` for each one, where `<service>` is `metrics (Prometheus)`, `logs (Loki)`, `alerts (Alertmanager)` or `sot (Infrahub)`, and stops at the first that is not ready |
 | 3 | a pause |
 | 4 | prints the panel of the path: a blank line, the title and one or two lines about the path |
 | 5 | path 2 only: sets the maintenance flag of `srl1` to true and prints `srl1.maintenance = true` |
@@ -1306,13 +1306,13 @@ The lines that start with `nobs:` go to standard error (the channel for error me
 | Line | When |
 |---|---|
 | `nobs: could not POST to webhook: <error>` | the webhook could not be reached or answered with a status of 400 or more; `<error>` is `cannot reach <address>: <reason>` or `the webhook answered <status>: <answer>`, where `<reason>` is why nobs could not connect and `<answer>` is the first 200 characters of the answer; the run goes on and waits for the Loki match, which most likely times out |
-| `nobs: could not find srl1 in Infrahub (maintenance toggle skipped)` | Infrahub has no device `srl1`, when nobs sets or clears the flag on path 2; the run goes on |
+| `nobs: could not find srl1 in the sot (Infrahub) (maintenance toggle skipped)` | Infrahub has no device `srl1`, when nobs sets or clears the flag on path 2; the run goes on |
 
 | Exit code | When |
 |---|---|
 | 0 | every path found its Loki match |
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
-| 1 | a service is not ready in the pre-flight: `nobs: <service> NOT reachable at <url> - bring the stack up first (nobs <name> up)` for Prometheus, Loki or Alertmanager, where `<url>` is the address with `/-/ready` or `/ready`, or `nobs: Infrahub NOT reachable - bring the stack up first (nobs <name> up)`; `<name>` is the `name` setting of the workshop; nobs posts nothing to the webhook |
+| 1 | a service is not ready in the pre-flight: `nobs: <service> NOT reachable at <url> - bring the stack up first (nobs <name> up)` for `metrics (Prometheus)`, `logs (Loki)` or `alerts (Alertmanager)`, where `<url>` is the address with `/-/ready` or `/ready`, or `nobs: sot (Infrahub) NOT reachable - bring the stack up first (nobs <name> up)`; `<name>` is the `name` setting of the workshop; nobs posts nothing to the webhook |
 | 1 | without `--auto`, there is no more input to read at a pause, for example with `< /dev/null`; no message |
 | 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel; when the clear failed, `srl1` can stay in maintenance, and you clear it as described in the Ctrl-C paragraph |
 | 1 | a wait timed out: `nobs: <n> of 4 waits timed out`, printed after the `Done` panel |
@@ -1476,7 +1476,7 @@ This is the output for a lab that needed every step. Your lab prints the lines o
 ```
 $ nobs nobs-t-one reset
 Resetting lab to known-good state.
-Infrahub has 0 WorkshopDevice record(s); re-loading schema + data
+sot (Infrahub) has 0 WorkshopDevice record(s); re-loading schema + data
   re-loaded Infrahub schema + data (2 device(s) seeded)
   cleared maintenance on: srl1, srl2
   re-applied sonda-server baseline scenarios (idempotent)
@@ -1484,18 +1484,18 @@ Infrahub has 0 WorkshopDevice record(s); re-loading schema + data
   deleted 4 lingering cascade scenario(s)
 detected 1 wedged baseline(s) after cascade delete; restarting sonda-server
   restarted sonda-server and re-applied baselines
-sonda-logs srl1 streams look wedged (no Loki activity in last 60s); restarting
+sonda-logs srl1 streams look wedged (no logs (Loki) activity in last 60s); restarting
   restarted sonda-logs (loki sink reset)
 lab reset complete — both broken peers should be firing within ~60s
 ```
 
-Between these lines you also see what `docker compose` writes to standard error during the `docker` calls of steps 3, 6 and 7, for example ` Container sonda-setup Started` and lines that start with `sonda-setup  |`. The example leaves them out. When the address of Infrahub names `infrahub-server`, the rewrite line comes second. On a lab that is already clean, the lines of nobs are the first line, `  Infrahub already loaded (2 devices)`, the `cleared` line, the `re-applied` line and the last line. In these lines, "wedged" means stuck, "lingering" means left over, "idempotent" means that running it again changes nothing, and `~60s` means about 60 seconds. The lines have these meanings. Everything in the table goes to standard output.
+Between these lines you also see what `docker compose` writes to standard error during the `docker` calls of steps 3, 6 and 7, for example ` Container sonda-setup Started` and lines that start with `sonda-setup  |`. The example leaves them out. When the address of Infrahub names `infrahub-server`, the rewrite line comes second. On a lab that is already clean, the lines of nobs are the first line, `  sot (Infrahub) already loaded (2 devices)`, the `cleared` line, the `re-applied` line and the last line. In these lines, "wedged" means stuck, "lingering" means left over, "idempotent" means that running it again changes nothing, and `~60s` means about 60 seconds. The lines have these meanings. Everything in the table goes to standard output.
 
 | Line | When |
 |---|---|
 | `Resetting lab to known-good state.` | always the first line |
-| `  Infrahub already loaded (<n> devices)` | step 1 found two or more devices |
-| `Infrahub has <n> WorkshopDevice record(s); re-loading schema + data` | step 1 found fewer than two; nothing of the load itself is printed |
+| `  sot (Infrahub) already loaded (<n> devices)` | step 1 found two or more devices |
+| `sot (Infrahub) has <n> WorkshopDevice record(s); re-loading schema + data` | step 1 found fewer than two; nothing of the load itself is printed |
 | `  re-loaded Infrahub schema + data (<n> device(s) seeded)` | the load worked; `<n>` is the number of devices nobs created or updated |
 | `  cleared maintenance on: <devices>` | step 2 set the flag to false on at least one device, also when it was already false; `<devices>` are the names, separated by `, ` |
 | `  re-applied sonda-server baseline scenarios (idempotent)` | step 3 worked |
@@ -1503,7 +1503,7 @@ Between these lines you also see what `docker compose` writes to standard error 
 | `  deleted <n> lingering cascade scenario(s)` | step 5 deleted at least one scenario |
 | `detected <n> wedged baseline(s) after cascade delete; restarting sonda-server` | step 6 found at least one stuck baseline |
 | `  restarted sonda-server and re-applied baselines` | the restart and the second `sonda-setup` of step 6 worked |
-| `sonda-logs srl1 streams look wedged (no Loki activity in last 60s); restarting` | step 7 found no log line |
+| `sonda-logs srl1 streams look wedged (no logs (Loki) activity in last 60s); restarting` | step 7 found no log line |
 | `  restarted sonda-logs (loki sink reset)` | the restart of step 7 worked |
 | `lab reset complete — both broken peers should be firing within ~60s` | the last line, printed only when no warning was printed |
 
@@ -1511,18 +1511,18 @@ When nobs cannot expire a silence or delete a scenario, it prints nothing and do
 
 | Line | When |
 |---|---|
-| `nobs: Infrahub probe failed: <error> — skipping load check` | step 1 could not ask Infrahub, and ends |
+| `nobs: sot (Infrahub) probe failed: <error> — skipping load check` | step 1 could not ask Infrahub, and ends |
 | `nobs: load-infrahub failed: <error>` | the load of step 1 failed; `<error>` is the text `load-infrahub` prints after `nobs: `, for example `lab_vars file not found: <path>` |
-| `nobs: maintenance --clear failed for <device>: <error>` | step 2 failed for that device; `<error>` is the text `maintenance` prints after `nobs: `, for example `<kind> <device> not found in Infrahub.` or `sonda /events post failed: <error>` |
+| `nobs: maintenance --clear failed for <device>: <error>` | step 2 failed for that device; `<error>` is the text `maintenance` prints after `nobs: `, for example `<kind> <device> not found in the source of truth.` or `sonda /events post failed: <error>` |
 | `nobs: <call> failed: exited with code <n>` | `docker` ended with a code other than 0; `<call>` is `sonda-setup up`, `sonda-server restart` or `sonda-logs restart`; after a failed `sonda-server restart`, nobs does not run `sonda-setup` again |
 | `nobs: <call> failed: cannot run docker: <error>` | `docker` could not start |
 | `nobs: compose file not found: <path>` | the compose file is missing; nobs prints this line for each `docker` call it would make |
-| `nobs: Alertmanager fetch failed: <error> — skipping silence cleanup` | step 4 could not read the silences, and ends |
+| `nobs: alerts (Alertmanager) fetch failed: <error> — skipping silence cleanup` | step 4 could not read the silences, and ends |
 | `nobs: Sonda /scenarios fetch failed: <error> — skipping cascade cleanup` | step 5 could not read the list of scenarios, and ends |
 | `nobs: Sonda /scenarios fetch failed: <error> — skipping wedge check` | step 6 could not read the list of scenarios, and ends |
-| `nobs: Loki probe failed: <error> — skipping sonda-logs check` | step 7 could not ask Loki, and ends |
+| `nobs: logs (Loki) probe failed: <error> — skipping sonda-logs check` | step 7 could not ask Loki, and ends |
 
-In these lines, `<error>` is the text of the failed call. For Infrahub it is `cannot reach <url>: <reason>` or `Infrahub answered <status> on <path>: <body>`. For Alertmanager it is `cannot reach the alerts service at <url>: <reason>` or `the alerts service at <url> answered <status>`. For Sonda it is `cannot reach <url>: <reason>`, `sonda answered <status>: <body>` or `sonda answered a list nobs cannot read: <reason>`. For Loki it is `cannot reach <url>: <reason>` or `the logs service answered <status> on <path>: <body>`. `<reason>` is why nobs could not connect, and `<body>` is the answer as the server sent it.
+In these lines, `<error>` is the text of the failed call. For Infrahub it is `cannot reach <url>: <reason>` or `the source of truth answered <status> on <path>: <body>`. For Alertmanager it is `cannot reach the alerts service at <url>: <reason>` or `the alerts service at <url> answered <status>`. For Sonda it is `cannot reach <url>: <reason>`, `sonda answered <status>: <body>` or `sonda answered a list nobs cannot read: <reason>`. For Loki it is `cannot reach <url>: <reason>` or `the logs service answered <status> on <path>: <body>`. `<reason>` is why nobs could not connect, and `<body>` is the answer as the server sent it.
 
 | Exit code | When |
 |---|---|
@@ -1632,7 +1632,7 @@ Layer A — sleeping 130s for [2m] windows to fill
   ... 50s left
   ... 30s left
   ... 10s left
-  [  0.1s] OK   Loki has UPDOWN events from both producers — events last 5m = 12
+  [  0.1s] OK   logs (Loki) has UPDOWN events from both producers — events last 5m = 12
   [  0.1s] OK   Interface Flap annotation source has lines — flap lines = 8
   [  0.1s] OK   Device Config Push annotation source has lines — config-push lines = 1
 
