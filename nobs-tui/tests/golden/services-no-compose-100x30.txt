@@ -1,5 +1,5 @@
  nobs  nobs-t-project lab  sot none                                                        13:42:07
- 1 devices  [2 services]                                                             ? keys  q quit
+ 1 devices  [2 services]  3 observability                                            ? keys  q quit
 ╔ stacks 1 ════════════════════╗┌ project-two-node  0 services  refreshed 2s ago ──────────────────┐
 ║no services in this lab       ║│OVERVIEW  logs  sonda                                             │
 ║                              ║│ SERVICE  STATE  HEALTH  PORT  AGE                                │

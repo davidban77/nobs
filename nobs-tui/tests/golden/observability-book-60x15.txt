@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ 1 devices  2 services  3 lab  [4 obs]       ? keys  q quit
+╔ ALERTS 2 ════════════════════════════════════════════════╗
+║  NAME             DEVICE       SEVERITY  STATE      SINCE║
+║> BgpSessionNotUp  nobs-t-srl1  warning   firing     21s  ║
+║  BgpSessionNotUp  nobs-t-srl1  warning   silenced   1m32s║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╠ BgpSessionNotUp  nobs-t-srl1 ════════════════════════════╣
+║peer 10.1.99.2 is active, expected established            ║
+║started 13:41:46   severity warning                       ║
+╚ alerts ok ═══════════════════════════════════════════════╝
+ run  none                                           o open
+ j/k move  / filter  Enter open the device  r refresh

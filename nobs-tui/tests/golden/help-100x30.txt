@@ -1,12 +1,12 @@
  nobs  autocon5 workshop  sot infrahub                                                     13:42:07
- 1 devices  [2 services]                                                             ? keys  q quit
+ 1 devices  [2 services]  3 observability                                            ? keys  q quit
 
 
 
 
 
   ╔ keys  services workbench ════════════════════════════════════════════════════════════════════╗
-  ║1 2      switch workbench                      ?       close                                  ║
+  ║1 2 3    switch workbench                      ?       close                                  ║
   ║Tab      focus list/tabs                       Esc     close/clear/back                       ║
   ║j k ↑ ↓  move                                  u       up                                     ║
   ║[ ]      other tab                             d       down                                   ║

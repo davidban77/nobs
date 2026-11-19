@@ -1,5 +1,5 @@
  nobs  book-lab book lab  sot lab_vars                                                     13:42:07
- [1 devices]  2 services  3 lab                                                      ? keys  q quit
+ [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
 
 
 
@@ -7,7 +7,7 @@
 
 
   ╔ keys  devices workbench ═════════════════════════════════════════════════════════════════════╗
-  ║1 2 3    switch workbench                      r       refresh now                            ║
+  ║1 2 3 4  switch workbench                      r       refresh now                            ║
   ║Tab      focus list/tabs                       f       follow/pause logs                      ║
   ║j k ↑ ↓  move                                  o       run pane                               ║
   ║[ ]      other tab                             ?       close                                  ║

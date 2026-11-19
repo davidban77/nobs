@@ -2157,6 +2157,40 @@ mod tests {
     }
 
     #[test]
+    fn the_observability_workbench_of_a_lab_without_the_alerts_service_sends_no_request() {
+        let counter = Counter::start();
+        let alerts = nobs_core::status::row(Service::Alerts).setting.unwrap();
+        let begin = Start {
+            lab: Some(Located {
+                dir: PathBuf::from("/ws"),
+                kind: Kind::LabcliLab(None),
+            }),
+            urls: at(&counter.url, Vec::new()),
+            ..start(vec![stack(&[(alerts, counter.url.as_str())])], false)
+        };
+        let (mut model, pollers, updates) = polled(begin, scripted(Vec::new()), None);
+
+        let switched = handle(&mut model, ch('3'));
+        for command in &switched {
+            pollers.send(command.clone());
+        }
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| false,
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(counter.count(), 0);
+        assert_eq!(switched, []);
+        assert_eq!(model.workbench(), Workbench::Observability);
+        assert_eq!(model.reach(Service::Alerts), shell::Reach::NotInLab);
+        assert_eq!(model.error(), None);
+    }
+
+    #[test]
     fn a_set_address_without_a_compose_file_is_asked_and_a_refused_one_gives_no_answer_and_the_red_line(
     ) {
         let counter = Counter::start();

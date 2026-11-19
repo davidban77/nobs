@@ -355,6 +355,14 @@ mod tests {
                 KeyCode::Down,
                 KeyCode::Char('f'),
             ],
+            Workbench::Observability => &[
+                KeyCode::Char('j'),
+                KeyCode::Char('k'),
+                KeyCode::Up,
+                KeyCode::Down,
+                KeyCode::Char('/'),
+                KeyCode::Enter,
+            ],
         };
         let switch = ('1'..='9').take(WORKBENCHES.len()).map(KeyCode::Char);
         GLOBAL_KEYS

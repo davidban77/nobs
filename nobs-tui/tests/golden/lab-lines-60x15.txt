@@ -1,5 +1,5 @@
  nobs  book-lab book lab  sot lab_vars             13:42:07
- 1 devices  2 services  [3 lab]              ? keys  q quit
+ 1 devices  2 services  [3 lab]  4 obs       ? keys  q quit
 ┌ nodes 2 ────────────┐╔ ch1 ══════════════════════════════╗
 │ NAME         STATE  │║OVERVIEW                           ║
 │ nobs-t-srl1  running│║ topology  containerlab/lab.yml    ║

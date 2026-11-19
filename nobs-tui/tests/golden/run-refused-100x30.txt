@@ -1,5 +1,5 @@
  nobs  book-lab book lab  sot lab_vars                                                     13:42:07
- 1 devices  2 services  [3 lab]                                                      ? keys  q quit
+ 1 devices  2 services  [3 lab]  4 observability                                     ? keys  q quit
 ┌ nodes 2 ───────────────────────────────┐┌ ch1 ───────────────────────────────────────────────────┐
 │ NAME         KIND           STATE      ││OVERVIEW                                                │
 │ nobs-t-srl1  nokia_srlinux  running    ││ topology  containerlab/lab.yml                         │

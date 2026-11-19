@@ -1,0 +1,15 @@
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ 1 devices  2 services  [3 observability]    ? keys  q quit
+╔ ALERTS 2 ════════════════════════════════════════════════╗
+║  NAME             DEVICE  SEVERITY  STATE      SINCE     ║
+║> BgpSessionNotUp  srl1    warning   firing     21s       ║
+║  BgpSessionNotUp  srl1    warning   silenced   1m32s     ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╠ BgpSessionNotUp  srl1 ═══════════════════════════════════╣
+║peer 10.1.99.2 is active, expected established            ║
+║started 13:41:46   severity warning                       ║
+╚ alerts ok ═══════════════════════════════════════════════╝
+ run  none                                           o open
+ j/k move  / filter  Enter open the device  r refresh

@@ -41,6 +41,7 @@ const LAB_DEVICE_TABS: [Tab; 5] = [
     Tab::Timeline,
     Tab::Logs,
 ];
+pub(crate) const OBSERVABILITY_TABS: [Tab; 1] = [Tab::Alerts];
 const MIN_SIZE: (u16, u16) = (60, 15);
 const RUNNING: &str = "running";
 pub(crate) const DOCKER_LOGS: &str = "docker logs";
@@ -98,17 +99,24 @@ pub enum Workbench {
     Devices,
     Services,
     Lab,
+    Observability,
 }
 
-pub(crate) const WORKBENCHES: [Workbench; 3] =
-    [Workbench::Devices, Workbench::Services, Workbench::Lab];
+pub(crate) const WORKBENCHES: [Workbench; 4] = [
+    Workbench::Devices,
+    Workbench::Services,
+    Workbench::Lab,
+    Workbench::Observability,
+];
 
 impl Workbench {
-    pub fn title(self, _wide: bool) -> &'static str {
+    pub fn title(self, wide: bool) -> &'static str {
         match self {
             Workbench::Devices => "devices",
             Workbench::Services => "services",
             Workbench::Lab => "lab",
+            Workbench::Observability if wide => "observability",
+            Workbench::Observability => "obs",
         }
     }
 }
@@ -137,6 +145,7 @@ pub enum Tab {
     Timeline,
     Logs,
     Sonda,
+    Alerts,
 }
 
 impl Tab {
@@ -149,6 +158,7 @@ impl Tab {
             Tab::Timeline => "timeline",
             Tab::Logs => "logs",
             Tab::Sonda => "sonda",
+            Tab::Alerts => "alerts",
         }
     }
 }
@@ -540,6 +550,8 @@ pub struct Model {
     metrics: Option<Vec<Sample>>,
     alerts: Vec<Alert>,
     alerts_ok: bool,
+    alert: usize,
+    alert_filter: Filter,
     runs: Vec<FlowRun>,
     rcas: Vec<Line>,
     device_lines: Vec<DeviceLine>,
@@ -660,6 +672,8 @@ impl Model {
             metrics: None,
             alerts: Vec::new(),
             alerts_ok: false,
+            alert: 0,
+            alert_filter: Filter::default(),
             runs: Vec::new(),
             rcas: Vec::new(),
             device_lines: Vec::new(),
@@ -818,6 +832,7 @@ impl Model {
             status::Service::Alerts => {
                 self.alerts.clear();
                 self.alerts_ok = false;
+                self.alert = 0;
                 if let Cursor::Alert(_) = self.cursor {
                     self.cursor = Cursor::Device(self.device);
                 }
@@ -908,6 +923,10 @@ impl Model {
             }
             Update::Alerts(Ok(mut list)) => {
                 list.sort_by_key(|alert| Reverse(time::parse_rfc3339(&alert.starts_at)));
+                let selected = self.selected_alert().map(|alert| alert.labels.clone());
+                self.alert = selected
+                    .and_then(|labels| list.iter().position(|alert| alert.labels == labels))
+                    .unwrap_or(0);
                 self.alerts = list;
                 self.alerts_ok = true;
                 self.clear_error(error_source(status::Service::Alerts));
@@ -1342,6 +1361,7 @@ impl Model {
             || self.device_filter.typing
             || self.logs_filter.typing
             || self.config_filter.typing
+            || self.alert_filter.typing
             || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
     }
 
@@ -1387,6 +1407,9 @@ impl Model {
         }
         if self.config_filter.typing {
             return self.config_filter.text.as_deref();
+        }
+        if self.alert_filter.typing {
+            return self.alert_filter.text.as_deref();
         }
         self.logs
             .as_ref()
@@ -1593,6 +1616,55 @@ impl Model {
 
     pub fn alerts_ok(&self) -> bool {
         self.alerts_ok
+    }
+
+    pub fn shown_alerts(&self) -> &[Alert] {
+        match self.reach(status::Service::Alerts) {
+            Reach::Answers => &self.alerts,
+            Reach::Unknown | Reach::NotInLab | Reach::StackDown | Reach::NoAnswer => &[],
+        }
+    }
+
+    pub fn visible_alerts(&self) -> Vec<usize> {
+        let needle = self.alert_filter.text.as_deref().map(str::to_lowercase);
+        let matches = |alert: &Alert, needle: &str| {
+            let label = |name: &str| alert.labels.get(name).cloned().unwrap_or_default();
+            [
+                label("alertname"),
+                label("device"),
+                label("severity"),
+                alert.state_word(),
+            ]
+            .iter()
+            .any(|text| text.to_lowercase().contains(needle))
+        };
+        self.shown_alerts()
+            .iter()
+            .enumerate()
+            .filter(|(_, alert)| {
+                needle
+                    .as_deref()
+                    .is_none_or(|needle| matches(alert, needle))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn selected_alert_index(&self) -> Option<usize> {
+        let visible = self.visible_alerts();
+        visible
+            .contains(&self.alert)
+            .then_some(self.alert)
+            .or(visible.first().copied())
+    }
+
+    pub fn selected_alert(&self) -> Option<&Alert> {
+        self.selected_alert_index().map(|index| &self.alerts[index])
+    }
+
+    pub fn alert_device(&self, alert: &Alert) -> Option<usize> {
+        let name = alert.labels.get("device")?;
+        self.devices.iter().position(|device| device.name == *name)
     }
 
     pub fn interfaces(&self) -> Vec<devices::Row> {
@@ -1997,6 +2069,10 @@ impl Model {
             self.config_filter.type_key(key.code);
             return Vec::new();
         }
+        if self.alert_filter.typing {
+            self.alert_filter.type_key(key.code);
+            return Vec::new();
+        }
         if let Some(logs) = self.logs.as_mut().filter(|logs| logs.filter.typing) {
             logs.filter.type_key(key.code);
             return Vec::new();
@@ -2028,10 +2104,10 @@ impl Model {
             KeyCode::Char('o') => self.run_pane = true,
             KeyCode::Tab => {
                 self.focus = match self.focus {
-                    Focus::List => Focus::Tabs,
+                    Focus::List if self.workbench != Workbench::Observability => Focus::Tabs,
                     Focus::Tabs if self.has_lines() => Focus::Lines,
-                    Focus::Tabs | Focus::Lines if self.run_view.drawn => Focus::Run,
-                    Focus::Tabs | Focus::Lines | Focus::Run => Focus::List,
+                    Focus::List | Focus::Tabs | Focus::Lines if self.run_view.drawn => Focus::Run,
+                    Focus::List | Focus::Tabs | Focus::Lines | Focus::Run => Focus::List,
                 };
             }
             KeyCode::Esc => return self.escape(key),
@@ -2045,6 +2121,9 @@ impl Model {
             _ if self.workbench == Workbench::Services => return self.services_key(key),
             _ if self.workbench == Workbench::Devices => return self.devices_key(key),
             _ if self.workbench == Workbench::Lab => return self.lab_key(key.code),
+            _ if self.workbench == Workbench::Observability => {
+                return self.observability_key(key.code)
+            }
             _ => {}
         }
         Vec::new()
@@ -2053,13 +2132,14 @@ impl Model {
     fn switch(&mut self, workbench: Workbench) -> Vec<Command> {
         let left_devices = self.workbench == Workbench::Devices && workbench != Workbench::Devices;
         self.workbench = workbench;
-        if workbench == Workbench::Lab {
+        if matches!(workbench, Workbench::Lab | Workbench::Observability) {
             self.focus = Focus::List;
         }
         let tabs: &[Tab] = match workbench {
             Workbench::Devices => self.device_tabs(),
             Workbench::Services => &SERVICES_TABS,
             Workbench::Lab => &[],
+            Workbench::Observability => &OBSERVABILITY_TABS,
         };
         if !tabs.is_empty() && !tabs.contains(&self.tab) {
             self.tab = tabs[0];
@@ -2139,9 +2219,10 @@ impl Model {
         match (self.focus, self.tab) {
             (Focus::List, _) => self.list_key(key.code),
             (Focus::Lines, _) => self.details_key(key),
-            (Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline) => {
-                self.overview_key(key.code)
-            }
+            (
+                Focus::Tabs,
+                Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline | Tab::Alerts,
+            ) => self.overview_key(key.code),
             (Focus::Tabs, Tab::Logs) => self.logs_key(key.code),
             (Focus::Tabs, Tab::Sonda) => self.sonda_key(key),
             (Focus::Run, _) => Vec::new(),
@@ -2258,21 +2339,65 @@ impl Model {
             }
             Cursor::Device(_) => Vec::new(),
             Cursor::Alert(at) => {
-                let Some(index) = self
+                match self
                     .alerts
                     .get(at)
-                    .and_then(|alert| alert.labels.get("device"))
-                    .and_then(|name| self.devices.iter().position(|device| device.name == *name))
-                else {
-                    return Vec::new();
-                };
-                let mut commands = self.select_device(index);
-                self.focus = Focus::Tabs;
-                self.tab = Tab::Timeline;
-                commands.push(Command::OpenTab(Tab::Timeline));
-                commands
+                    .and_then(|alert| self.alert_device(alert))
+                {
+                    Some(index) => self.open_timeline(index),
+                    None => Vec::new(),
+                }
             }
         }
+    }
+
+    fn open_timeline(&mut self, index: usize) -> Vec<Command> {
+        let mut commands = self.select_device(index);
+        self.focus = Focus::Tabs;
+        self.tab = Tab::Timeline;
+        commands.push(Command::OpenTab(Tab::Timeline));
+        commands
+    }
+
+    fn observability_key(&mut self, code: KeyCode) -> Vec<Command> {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.step_alert(true),
+            KeyCode::Char('k') | KeyCode::Up => self.step_alert(false),
+            KeyCode::Char('/') if !self.shown_alerts().is_empty() => self.alert_filter.start(),
+            KeyCode::Enter => return self.open_alert_device(),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn step_alert(&mut self, down: bool) {
+        let visible = self.visible_alerts();
+        let Some(at) = self
+            .selected_alert_index()
+            .and_then(|index| visible.iter().position(|shown| *shown == index))
+        else {
+            return;
+        };
+        let next = if down {
+            visible.get(at + 1)
+        } else {
+            at.checked_sub(1).and_then(|before| visible.get(before))
+        };
+        if let Some(&index) = next {
+            self.alert = index;
+        }
+    }
+
+    fn open_alert_device(&mut self) -> Vec<Command> {
+        let Some(index) = self
+            .selected_alert()
+            .and_then(|alert| self.alert_device(alert))
+        else {
+            return Vec::new();
+        };
+        self.workbench = Workbench::Devices;
+        self.cursor = Cursor::Device(index);
+        self.open_timeline(index)
     }
 
     fn select_device(&mut self, index: usize) -> Vec<Command> {
@@ -3217,13 +3342,12 @@ pub(crate) mod tests {
     #[test]
     fn three_opens_the_lab_workbench_only_in_a_book_lab() {
         let mut model = opened(&["a"]);
-        let before = snapshot(&model);
         assert_eq!(ch(&mut model, '3'), []);
-        assert_eq!(snapshot(&model), before);
+        assert_eq!(model.workbench(), Workbench::Observability);
 
         let mut model = devices_model(workshop_located("infrahub"));
-        assert_eq!(ch(&mut model, '3'), []);
-        assert_eq!(model.workbench(), Workbench::Devices);
+        assert_eq!(ch(&mut model, '3'), [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(model.workbench(), Workbench::Observability);
 
         let mut model = book_model();
         ch(&mut model, '2');
@@ -3241,28 +3365,32 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn in_a_workshop_one_and_two_open_devices_and_services_and_three_does_nothing() {
+    fn in_a_workshop_one_two_and_three_open_devices_services_and_observability_and_four_does_nothing(
+    ) {
         let model = devices_model(workshop_located("infrahub"));
         assert_eq!(
-            workbenches_after(model, "2313"),
+            workbenches_after(model, "23143"),
             [
                 Workbench::Services,
-                Workbench::Services,
+                Workbench::Observability,
                 Workbench::Devices,
-                Workbench::Devices
+                Workbench::Devices,
+                Workbench::Observability
             ]
         );
     }
 
     #[test]
-    fn in_a_book_lab_one_two_and_three_open_devices_services_and_lab() {
+    fn in_a_book_lab_one_to_four_open_devices_services_lab_and_observability() {
         assert_eq!(
-            workbenches_after(book_model(), "1234"),
+            workbenches_after(book_model(), "123454"),
             [
                 Workbench::Devices,
                 Workbench::Services,
                 Workbench::Lab,
-                Workbench::Lab
+                Workbench::Observability,
+                Workbench::Observability,
+                Workbench::Observability
             ]
         );
     }
@@ -3272,14 +3400,98 @@ pub(crate) mod tests {
         let model = lab_model("project-two-node", "project-two-node/expected/lab_vars.yml");
         assert!(matches!(model.located().unwrap().kind, Kind::LabcliLab(_)));
         assert_eq!(
-            workbenches_after(model, "2313"),
+            workbenches_after(model, "23143"),
             [
                 Workbench::Services,
-                Workbench::Services,
+                Workbench::Observability,
                 Workbench::Devices,
-                Workbench::Devices
+                Workbench::Devices,
+                Workbench::Observability
             ]
         );
+    }
+
+    fn observability_model(alerts: Vec<Alert>) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(alerts)));
+        ch(&mut model, '3');
+        model
+    }
+
+    fn three_alerts() -> Vec<Alert> {
+        vec![
+            alert("srl1", "BgpSessionNotUp", "2026-11-09T13:53:32Z"),
+            alert("srl2", "BgpSessionNotUp", "2026-11-09T13:52:32Z"),
+            alert("srl2", "InterfaceDown", "2026-11-09T13:51:32Z"),
+        ]
+    }
+
+    #[test]
+    fn the_alert_filter_keeps_the_alerts_whose_words_hold_the_typed_text_and_reads_q_as_a_letter() {
+        let mut model = observability_model(three_alerts());
+
+        ch(&mut model, '/');
+        assert!(model.typing());
+        assert_eq!(ch(&mut model, 'q'), []);
+        code(&mut model, KeyCode::Backspace);
+        typed(&mut model, "SRL2");
+        assert_eq!(model.typed_filter(), Some("SRL2"));
+        code(&mut model, KeyCode::Enter);
+
+        assert!(!model.quit());
+        assert!(!model.typing());
+        assert_eq!(model.workbench(), Workbench::Observability);
+        assert_eq!(model.visible_alerts(), [1, 2]);
+    }
+
+    #[test]
+    fn tab_in_the_observability_workbench_reaches_the_run_pane_only_while_it_is_drawn() {
+        let mut model = observability_model(three_alerts());
+
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::List);
+        ch(&mut model, 'o');
+        model.set_run_view(measured(0, 0));
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::Run);
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::List);
+    }
+
+    #[test]
+    fn enter_on_an_alert_of_a_device_of_the_lab_opens_that_device_on_its_timeline_and_on_another_does_nothing(
+    ) {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+
+        assert_eq!(
+            code(&mut model, KeyCode::Enter),
+            [
+                Command::SelectDevice("srl2".to_string()),
+                Command::OpenTab(Tab::Timeline)
+            ]
+        );
+        assert_eq!(model.workbench(), Workbench::Devices);
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!(model.cursor(), Cursor::Device(1));
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Timeline));
+
+        let mut without_device = alert("srl1", "BgpSessionNotUp", "2026-11-09T13:53:32Z");
+        without_device.labels.remove("device");
+        let elsewhere = alert(
+            "nobs-t-elsewhere",
+            "BgpSessionNotUp",
+            "2026-11-09T13:53:32Z",
+        );
+        for lone in [without_device, elsewhere] {
+            let mut model = observability_model(vec![lone]);
+            let before = snapshot(&model);
+
+            assert_eq!(code(&mut model, KeyCode::Enter), []);
+
+            assert_eq!(snapshot(&model), before);
+            assert_eq!(model.selected_device().unwrap().name, "srl1");
+        }
     }
 
     #[test]

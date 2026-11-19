@@ -1095,6 +1095,13 @@ fn the_devices_without_a_source_frame_is_pinned() {
 }
 
 fn workshop_down() -> Shell {
+    let mut model = workshop_unpolled();
+    let names: Vec<&str> = status::SERVICES.iter().map(|row| row.compose).collect();
+    model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
+    model
+}
+
+fn workshop_unpolled() -> Shell {
     let dir = PathBuf::from(WORKSHOP_DIR);
     let mut lab = locate(&dir, Some(&dir)).unwrap();
     lab.dir = PathBuf::from("/home/me/ws/autocon5");
@@ -1110,8 +1117,6 @@ fn workshop_down() -> Shell {
         ..begin(Some(lab), vec![stack("autocon5", &[])], Workbench::Devices)
     });
     model.tick(Instant::now(), clock(), (80, 24));
-    let names: Vec<&str> = status::SERVICES.iter().map(|row| row.compose).collect();
-    model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
     model
 }
 
@@ -1921,11 +1926,11 @@ fn three_and_the_lab_switcher_entry_exist_only_in_a_book_lab() {
         model
     };
 
-    assert_eq!(workshop.workbench(), Workbench::Services);
+    assert_eq!(workshop.workbench(), Workbench::Observability);
     let screen = lines(&render(workshop, 100, 30));
     assert!(!screen[1].contains("3 lab"), "{}", screen[1]);
     assert!(
-        screen[1].starts_with(" 1 devices  [2 services]"),
+        screen[1].starts_with(" 1 devices  2 services  [3 observability]"),
         "{}",
         screen[1]
     );
@@ -1937,6 +1942,107 @@ fn three_and_the_lab_switcher_entry_exist_only_in_a_book_lab() {
         screen[29]
     );
     assert!(!screen[29].contains("m maintenance"), "{}", screen[29]);
+}
+
+fn summarised() -> Vec<Alert> {
+    let mut list = alerts();
+    list[0].annotations.insert(
+        "summary".to_string(),
+        "peer 10.1.99.2 is active, expected established".to_string(),
+    );
+    list
+}
+
+fn observed(mut model: Shell, update: Update, key: char) -> Shell {
+    model.apply(update);
+    press(&mut model, KeyCode::Char(key));
+    model
+}
+
+fn observability() -> Shell {
+    observed(devices_model(), Update::Alerts(Ok(summarised())), '3')
+}
+
+fn observability_none() -> Shell {
+    let model = devices_model_in(
+        PROJECT_LAB,
+        "expected/lab_vars.yml",
+        "/home/me/nobs-t-project",
+    );
+    after(model, &[KeyCode::Char('3')])
+}
+
+fn observability_down() -> Shell {
+    after(workshop_down(), &[KeyCode::Char('3')])
+}
+
+fn observability_unknown() -> Shell {
+    after(workshop_unpolled(), &[KeyCode::Char('3')])
+}
+
+fn observability_no_answer() -> Shell {
+    observed(
+        devices_model(),
+        Update::Alerts(Err("refused".to_string())),
+        '3',
+    )
+}
+
+fn observability_book() -> Shell {
+    let mut model = lab_devices_model();
+    model.apply(listing(
+        0,
+        ps(&[("alertmanager", "running", 9093, "40 seconds ago")]),
+    ));
+    let mut list = summarised();
+    for alert in &mut list {
+        alert
+            .labels
+            .insert("device".to_string(), "nobs-t-srl1".to_string());
+    }
+    observed(model, Update::Alerts(Ok(list)), '4')
+}
+
+fn observability_empty() -> Shell {
+    observed(devices_model(), Update::Alerts(Ok(Vec::new())), '3')
+}
+
+#[test]
+fn the_observability_frames_are_pinned() {
+    golden("observability", observability);
+    golden("observability-none", observability_none);
+    pinned(observability_down(), "observability-down", 60, 15);
+    pinned(observability_unknown(), "observability-unknown", 60, 15);
+    pinned(observability_no_answer(), "observability-no-answer", 60, 15);
+    pinned(observability_book(), "observability-book", 60, 15);
+    pinned(observability_empty(), "observability-empty", 60, 15);
+    pinned(
+        after(observability(), &[KeyCode::Char('?')]),
+        "help-observability",
+        60,
+        15,
+    );
+}
+
+#[test]
+fn the_observability_view_names_no_view_kind_or_key_that_is_not_built() {
+    let builds: [fn() -> Shell; 7] = [
+        observability,
+        observability_none,
+        observability_down,
+        observability_unknown,
+        observability_no_answer,
+        observability_book,
+        observability_empty,
+    ];
+    for build in builds {
+        for (width, height) in SIZES {
+            let screen = lines(&render(build(), width, height)).join("\n");
+            for word in ["logs", "metrics", "Tab view", "[ ]", "Tab focus"] {
+                assert!(!screen.contains(word), "{word}\n{screen}");
+            }
+        }
+    }
 }
 
 #[test]
