@@ -913,10 +913,15 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     alert_rows(frame, alerts, model, wide);
 }
 
+fn alerts_answer(model: &Model) -> bool {
+    model.reach(Service::Alerts) == Reach::Answers && model.alerts_ok()
+}
+
 fn alerts_cell(model: &Model, shown: &str) -> String {
-    match model.reach(Service::Alerts) {
-        Reach::Answers if model.alerts_ok() => shown.to_string(),
-        reach => cell(reach, "?").to_string(),
+    if alerts_answer(model) {
+        shown.to_string()
+    } else {
+        cell(model.reach(Service::Alerts), "?").to_string()
     }
 }
 
@@ -1146,7 +1151,7 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     }
     if model.shown_alerts().is_empty() {
-        if reach == Reach::Answers && model.alerts_ok() {
+        if alerts_answer(model) {
             dim_line(frame, inner, "none".to_string());
         }
         return;
@@ -1489,9 +1494,7 @@ fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
     let label = |name: &str| format!("alerts   {name}");
     let alerts = model.reach(Service::Alerts);
     lines.push(match latest {
-        _ if alerts != Reach::Answers || !model.alerts_ok() => {
-            facts(&[label(cell(alerts, "?"))], "")
-        }
+        _ if !alerts_answer(model) => facts(&[label(cell(alerts, "?"))], ""),
         Some(alert) => facts(
             &[
                 label(alert.labels.get("alertname").map_or("—", String::as_str)),

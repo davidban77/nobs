@@ -938,6 +938,7 @@ impl Model {
                     .unwrap_or(0);
                 self.alerts = list;
                 self.alerts_ok = true;
+                self.show_alert();
                 self.clear_error(error_source(status::Service::Alerts));
                 if let Cursor::Alert(at) = self.cursor {
                     return match self.alerts.len() {
@@ -2072,6 +2073,7 @@ impl Model {
         }
         if self.alert_filter.typing {
             self.alert_filter.type_key(key.code);
+            self.show_alert();
             return Vec::new();
         }
         if let Some(logs) = self.logs.as_mut().filter(|logs| logs.filter.typing) {
@@ -2369,6 +2371,12 @@ impl Model {
             _ => {}
         }
         Vec::new()
+    }
+
+    fn show_alert(&mut self) {
+        if let Some(index) = self.selected_alert_index() {
+            self.alert = index;
+        }
     }
 
     fn step_alert(&mut self, down: bool) {
@@ -3457,6 +3465,26 @@ pub(crate) mod tests {
         model.apply(Update::Alerts(Ok(list)));
 
         assert_eq!(model.selected_alert().unwrap().labels, chosen);
+    }
+
+    #[test]
+    fn the_selected_alert_stays_on_the_shown_row_when_the_filter_hid_the_old_one_and_a_newer_alert_arrives(
+    ) {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'k');
+        assert_eq!(model.selected_alert().unwrap().labels["device"], "srl1");
+        ch(&mut model, '/');
+        typed(&mut model, "srl2");
+        code(&mut model, KeyCode::Enter);
+        let shown = model.selected_alert().unwrap().labels.clone();
+        assert_eq!(shown["device"], "srl2");
+
+        let mut list = three_alerts();
+        list.push(alert("srl2", "LinkFlap", "2026-11-09T13:54:32Z"));
+        model.apply(Update::Alerts(Ok(list)));
+
+        assert_eq!(model.visible_alerts(), [0, 2, 3]);
+        assert_eq!(model.selected_alert().unwrap().labels, shown);
     }
 
     #[test]
