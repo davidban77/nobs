@@ -42,7 +42,6 @@ const LAB_DEVICE_TABS: [Tab; 5] = [
     Tab::Logs,
 ];
 const MIN_SIZE: (u16, u16) = (60, 15);
-const INFRAHUB_ENV: &str = "INFRAHUB_ADDRESS";
 const RUNNING: &str = "running";
 pub(crate) const DOCKER_LOGS: &str = "docker logs";
 
@@ -1693,7 +1692,9 @@ impl Model {
                 let infrahub = self
                     .stacks
                     .get(self.selected)
-                    .and_then(|stack| env_value(&stack.env, INFRAHUB_ENV))
+                    .and_then(|stack| {
+                        env_value(&stack.env, status::row(status::Service::Sot).setting?)
+                    })
                     .is_some();
                 if infrahub { "infrahub" } else { "none" }.to_string()
             }

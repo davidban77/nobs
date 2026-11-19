@@ -3196,7 +3196,7 @@ fn given(value: Option<String>) -> Option<String> {
 }
 
 fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
-    let from = Urls::from_lookup(lookup);
+    let from = Urls::from_lookup(&[&lookup]);
     Urls {
         grafana: given(flags.grafana_url).unwrap_or(from.grafana),
         prometheus: given(flags.prom_url).unwrap_or(from.prometheus),
@@ -5083,17 +5083,14 @@ fn screen_start_with(
                 .iter()
                 .find(|stack| stack.path == located.dir)
                 .map_or(&[][..], |stack| stack.env.as_slice());
-            let lookup = |name: &str| {
-                given(process(name)).or_else(|| {
-                    given(
-                        lab_env
-                            .iter()
-                            .find(|(key, _)| key == name)
-                            .map(|(_, value)| value.clone()),
-                    )
-                })
+            let lab_file = |name: &str| {
+                lab_env
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value.clone())
             };
-            let urls = Urls::from_lookup(lookup);
+            let lookup = |name: &str| given(process(name)).or_else(|| given(lab_file(name)));
+            let urls = Urls::from_lookup(&[process, &lab_file]);
             let path = located.dir.join("containerlab").join("lab_vars.yml");
             let ((source, source_error), source_service): (
                 (Option<std::sync::Arc<dyn SourceOfTruth>>, _),
@@ -5154,7 +5151,7 @@ fn screen_start_with(
                 source: None,
                 source_error: None,
                 source_service: None,
-                urls: Urls::from_lookup(process),
+                urls: Urls::from_lookup(&[process]),
                 chooser: true,
                 program,
                 login: std::sync::Arc::new(|_| None),
@@ -5168,7 +5165,7 @@ fn screen_start_with(
             source: None,
             source_error: None,
             source_service: None,
-            urls: Urls::from_lookup(process),
+            urls: Urls::from_lookup(&[process]),
             chooser: false,
             program,
             login: std::sync::Arc::new(|_| None),

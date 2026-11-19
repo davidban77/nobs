@@ -688,16 +688,16 @@ fn answer<T>(
         .map_or_else(|| format!("exit {}", output.code), str::to_string))
 }
 
-fn probe(stack: &Stack, server: Option<&str>, asked: &[Service]) -> Vec<Health> {
-    let urls = Urls {
+fn stack_urls(stack: &Stack, server: Option<&str>, shell: &dyn Fn(&str) -> Option<String>) -> Urls {
+    let file = |name: &str| env_value(&stack.env, name).map(str::to_string);
+    Urls {
         sonda: sonda_url(server, Some(stack)),
-        ..Urls::from_lookup(|name| {
-            std::env::var(name)
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| env_value(&stack.env, name).map(str::to_string))
-        })
-    };
+        ..Urls::from_lookup(&[shell, &file])
+    }
+}
+
+fn probe(stack: &Stack, server: Option<&str>, asked: &[Service]) -> Vec<Health> {
+    let urls = stack_urls(stack, server, &|name| std::env::var(name).ok());
     SERVICES
         .iter()
         .zip(status::targets(&urls))
@@ -711,4 +711,22 @@ fn probe(stack: &Stack, server: Option<&str>, asked: &[Service]) -> Vec<Health> 
             },
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::tests::stack;
+
+    #[test]
+    fn the_poller_takes_the_shells_old_name_over_the_new_name_in_the_stacks_file() {
+        let stack = stack("ws", &[("METRICS_URL", "http://127.0.0.1:19091")]);
+        let shell =
+            |name: &str| (name == "PROMETHEUS_URL").then(|| "http://127.0.0.1:19090".to_string());
+
+        let urls = stack_urls(&stack, None, &shell);
+
+        assert_eq!(urls.prometheus, "http://127.0.0.1:19090");
+        assert!(urls.is_set(Service::Metrics));
+    }
 }

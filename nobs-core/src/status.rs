@@ -6,6 +6,8 @@ use crate::sonda::Sonda;
 
 pub const TIMEOUT: Duration = Duration::from_secs(3);
 
+type Place<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Metrics,
@@ -24,6 +26,7 @@ pub struct Row {
     pub tool: &'static str,
     pub compose: &'static str,
     pub setting: Option<&'static str>,
+    pub old_setting: Option<&'static str>,
     pub default: &'static str,
     pub health: &'static str,
 }
@@ -35,6 +38,7 @@ pub const SERVICES: [Row; 7] = [
         tool: "Grafana",
         compose: "grafana",
         setting: None,
+        old_setting: None,
         default: "http://localhost:3000",
         health: "/api/health",
     },
@@ -43,7 +47,8 @@ pub const SERVICES: [Row; 7] = [
         word: "metrics",
         tool: "Prometheus",
         compose: "prometheus",
-        setting: Some("PROMETHEUS_URL"),
+        setting: Some("METRICS_URL"),
+        old_setting: Some("PROMETHEUS_URL"),
         default: "http://localhost:9090",
         health: "/-/ready",
     },
@@ -52,7 +57,8 @@ pub const SERVICES: [Row; 7] = [
         word: "logs",
         tool: "Loki",
         compose: "loki",
-        setting: Some("LOKI_URL"),
+        setting: Some("LOGS_URL"),
+        old_setting: Some("LOKI_URL"),
         default: "http://localhost:3001",
         health: "/ready",
     },
@@ -61,7 +67,8 @@ pub const SERVICES: [Row; 7] = [
         word: "alerts",
         tool: "Alertmanager",
         compose: "alertmanager",
-        setting: Some("ALERTMANAGER_URL"),
+        setting: Some("ALERTS_URL"),
+        old_setting: Some("ALERTMANAGER_URL"),
         default: "http://localhost:9093",
         health: "/-/ready",
     },
@@ -71,6 +78,7 @@ pub const SERVICES: [Row; 7] = [
         tool: "Infrahub",
         compose: "infrahub-server",
         setting: Some("INFRAHUB_ADDRESS"),
+        old_setting: None,
         default: "http://localhost:8000",
         health: "/health",
     },
@@ -80,6 +88,7 @@ pub const SERVICES: [Row; 7] = [
         tool: "Prefect",
         compose: "prefect-server",
         setting: Some("PREFECT_API_URL"),
+        old_setting: None,
         default: "http://localhost:4200",
         health: "/api/health",
     },
@@ -89,6 +98,7 @@ pub const SERVICES: [Row; 7] = [
         tool: "Sonda",
         compose: "sonda-server",
         setting: Some("SONDA_SERVER_URL"),
+        old_setting: None,
         default: "http://localhost:8085",
         health: "/health",
     },
@@ -103,6 +113,32 @@ pub const fn row(service: Service) -> Row {
         index += 1;
     }
     panic!("SERVICES lists every service")
+}
+
+pub(crate) fn service_named(name: &str) -> Option<Service> {
+    SERVICES
+        .iter()
+        .find(|row| row.setting == Some(name) || row.old_setting == Some(name))
+        .map(|row| row.service)
+}
+
+pub fn given(service: Service, flags: &[Option<&str>], places: &[Place<'_>]) -> Option<String> {
+    let row = row(service);
+    let names = [row.setting, row.old_setting];
+    flags
+        .iter()
+        .map(|flag| flag.map(str::to_string))
+        .chain(
+            places
+                .iter()
+                .flat_map(|place| names.iter().flatten().map(move |name| place(name))),
+        )
+        .flatten()
+        .find(|value| !value.trim().is_empty())
+}
+
+pub fn address(service: Service, flags: &[Option<&str>], places: &[Place<'_>]) -> String {
+    given(service, flags, places).unwrap_or_else(|| row(service).default.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,17 +175,13 @@ pub struct Probe {
 
 impl Urls {
     pub fn defaults() -> Self {
-        Self::from_lookup(|_| None)
+        Self::from_lookup(&[])
     }
 
-    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+    pub fn from_lookup(places: &[Place<'_>]) -> Self {
         let given: Vec<(Service, String)> = SERVICES
             .iter()
-            .filter_map(|row| {
-                lookup(row.setting?)
-                    .filter(|value| !value.trim().is_empty())
-                    .map(|value| (row.service, value))
-            })
+            .filter_map(|row| given(row.service, &[], places).map(|value| (row.service, value)))
             .collect();
         let address = |service: Service| {
             given
@@ -292,14 +324,105 @@ mod tests {
 
     #[test]
     fn a_value_of_only_spaces_is_not_a_set_address() {
-        let urls = Urls::from_lookup(|name| match name {
+        let urls = Urls::from_lookup(&[&|name: &str| match name {
             "LOKI_URL" => Some("http://loki:3100".to_string()),
             _ => Some(" \t ".to_string()),
-        });
+        }]);
         assert_eq!(urls.set, [Service::Logs]);
         assert!(urls.is_set(Service::Logs));
         assert!(!urls.is_set(Service::Alerts));
         assert_eq!(Urls::defaults().set, []);
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Position {
+        Flag(usize),
+        Place(usize, &'static str),
+    }
+
+    fn positions(service: Service, flags: usize) -> Vec<Position> {
+        let row = row(service);
+        let names: Vec<&'static str> = [row.setting, row.old_setting]
+            .into_iter()
+            .flatten()
+            .collect();
+        (0..flags)
+            .map(Position::Flag)
+            .chain(
+                (0..2).flat_map(|place| names.iter().map(move |name| Position::Place(place, name))),
+            )
+            .collect()
+    }
+
+    fn resolved(service: Service, flags: usize, set: &[(Position, &str)]) -> Option<String> {
+        let at = |position: Position| {
+            set.iter()
+                .find(|(held, _)| *held == position)
+                .map(|(_, value)| value.to_string())
+        };
+        let flag_values: Vec<Option<String>> =
+            (0..flags).map(|flag| at(Position::Flag(flag))).collect();
+        let flag_values: Vec<Option<&str>> = flag_values.iter().map(Option::as_deref).collect();
+        let place = |index: usize| {
+            move |name: &str| {
+                set.iter()
+                    .find(|(held, _)| matches!(held, Position::Place(p, n) if *p == index && *n == name))
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        given(service, &flag_values, &[&place(0), &place(1)])
+    }
+
+    const KINDS: [(Service, usize); 5] = [
+        (Service::Metrics, 2),
+        (Service::Logs, 2),
+        (Service::Alerts, 3),
+        (Service::Sot, 3),
+        (Service::Flows, 2),
+    ];
+
+    #[test]
+    fn given_takes_the_earlier_place_then_the_new_name() {
+        for (service, flags) in KINDS {
+            let all = positions(service, flags);
+            for (first, earlier) in all.iter().enumerate() {
+                for later in &all[first + 1..] {
+                    let set = [
+                        (*earlier, "http://127.0.0.1:19001"),
+                        (*later, "http://127.0.0.1:19002"),
+                    ];
+                    assert_eq!(
+                        resolved(service, flags, &set).as_deref(),
+                        Some("http://127.0.0.1:19001"),
+                        "{service:?} {earlier:?} before {later:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_blank_name_is_not_set_in_its_place() {
+        for (service, flags) in KINDS {
+            let all = positions(service, flags);
+            for pair in all.windows(2) {
+                for blank in ["", " \t "] {
+                    let set = [(pair[0], blank), (pair[1], "http://127.0.0.1:19002")];
+                    assert_eq!(
+                        resolved(service, flags, &set).as_deref(),
+                        Some("http://127.0.0.1:19002"),
+                        "{service:?} {:?} blank as {blank:?}",
+                        pair[0]
+                    );
+                }
+            }
+            let last = all[all.len() - 1];
+            assert_eq!(
+                resolved(service, flags, &[(last, " ")]),
+                None,
+                "{service:?}"
+            );
+        }
     }
 
     #[test]
@@ -318,27 +441,27 @@ mod tests {
 
     #[test]
     fn from_lookup_takes_a_set_address_and_falls_back_to_the_default_for_a_blank_one() {
-        let urls = Urls::from_lookup(|name| match name {
+        let urls = Urls::from_lookup(&[&|name: &str| match name {
             "LOKI_URL" => Some("http://loki:3100".to_string()),
             "INFRAHUB_ADDRESS" => Some("  ".to_string()),
             _ => None,
-        });
+        }]);
         assert_eq!(urls.loki, "http://loki:3100");
         assert_eq!(urls.infrahub, Urls::defaults().infrahub);
     }
 
     #[test]
     fn from_lookup_reads_the_prefect_address() {
-        let set = Urls::from_lookup(|name| match name {
+        let set = Urls::from_lookup(&[&|name: &str| match name {
             "PREFECT_API_URL" => Some("http://prefect.test:4200".to_string()),
             _ => None,
-        });
+        }]);
         assert_eq!(set.prefect, "http://prefect.test:4200");
 
-        let blank = Urls::from_lookup(|name| match name {
+        let blank = Urls::from_lookup(&[&|name: &str| match name {
             "PREFECT_API_URL" => Some(" ".to_string()),
             _ => None,
-        });
+        }]);
         assert_eq!(blank.prefect, Urls::defaults().prefect);
     }
 

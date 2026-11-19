@@ -7,6 +7,7 @@ use ureq::{Agent, Body, RequestBuilder};
 use crate::http::{self, Reply};
 use crate::lab_vars::{BgpSession, Device as LabDevice, Interface as LabInterface, LabVars};
 use crate::sot::{Device, Error, Interface, Maintenance, Session, SourceOfTruth};
+use crate::status::{self, Service};
 
 pub const DEFAULT_ADDRESS: &str = "http://localhost:8000";
 pub const KINDS: [&str; 3] = [DEVICE, INTERFACE, SESSION];
@@ -21,7 +22,6 @@ const RETRY: Duration = Duration::from_secs(1);
 const SCHEMA_LOAD_PATH: &str = "/api/schema/load?branch=main";
 const SCHEMA_PATH: &str = "/api/schema?branch=main";
 const GRAPHQL_PATH: &str = "/graphql/main";
-const ADDRESS_VARIABLE: &str = "INFRAHUB_ADDRESS";
 const TOKEN_VARIABLE: &str = "INFRAHUB_API_TOKEN";
 const TOKEN_REQUIRED: &str = "INFRAHUB_API_TOKEN is required (set it in .env or pass --token).";
 const DEVICE_NODES: &str = "edges { node { name { value } asn { value } maintenance { value } site_name { value } role { value } interfaces { edges { node { name { value } role { value } ip_address { value } expected_state { value } } } } bgp_sessions { edges { node { peer_address { value } afi_safi { value } expected_state { value } remote_as { value } expected_prefixes_received { value } reason { value } } } } } }";
@@ -41,17 +41,13 @@ pub fn connect(
     token: Option<&str>,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> (Option<String>, Result<Infrahub, String>) {
-    let address = given(address.map(str::to_string))
-        .or_else(|| given(lookup(ADDRESS_VARIABLE)))
-        .unwrap_or_else(|| DEFAULT_ADDRESS.to_string());
+    let address = status::address(Service::Sot, &[address], &[lookup]);
     let token = given(token.map(str::to_string)).or_else(|| given(lookup(TOKEN_VARIABLE)));
     let client = Infrahub::new(&address, token.as_deref().unwrap_or_default());
-    let line = (client.address != address.trim_end_matches('/')).then(|| {
-        format!(
-            "INFRAHUB_ADDRESS rewritten to host-reachable {}",
-            client.address
-        )
-    });
+    let line = status::row(Service::Sot)
+        .setting
+        .filter(|_| client.address != address.trim_end_matches('/'))
+        .map(|setting| format!("{setting} rewritten to host-reachable {}", client.address));
     match token {
         Some(_) => (line, Ok(client)),
         None => (line, Err(TOKEN_REQUIRED.to_string())),
