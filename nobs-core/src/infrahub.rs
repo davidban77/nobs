@@ -1075,15 +1075,15 @@ mod tests {
                 body: "no".to_string()
             }
             .to_string(),
-            "Infrahub answered 401 on /api/schema/load?branch=main: no"
+            "the source of truth answered 401 on /api/schema/load?branch=main: no"
         );
         assert_eq!(
             Error::Graphql("boom".to_string()).to_string(),
-            "Infrahub: boom"
+            "the source of truth: boom"
         );
         assert_eq!(
             Error::NotReady(vec!["A".to_string(), "B".to_string()]).to_string(),
-            "workshop schema kinds A, B not visible to Infrahub after 30 s"
+            "workshop schema kinds A, B not visible to the source of truth after 30 s"
         );
         assert_eq!(
             Error::NotFound {
@@ -1091,7 +1091,7 @@ mod tests {
                 device: "srl1".to_string()
             }
             .to_string(),
-            "WorkshopDevice srl1 not found in Infrahub."
+            "WorkshopDevice srl1 not found in the source of truth."
         );
     }
 
@@ -1106,7 +1106,10 @@ mod tests {
 
         assert_eq!(
             text,
-            format!("Infrahub answered 500 on /p: {}", "x".repeat(200))
+            format!(
+                "the source of truth answered 500 on /p: {}",
+                "x".repeat(200)
+            )
         );
     }
 

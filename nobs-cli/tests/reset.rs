@@ -22,13 +22,13 @@ const TOKEN_REQUIRED: &str =
 
 const FIRST: &str = "Resetting lab to known-good state.";
 const LAST: &str = "lab reset complete — both broken peers should be firing within ~60s";
-const LOADED: &str = "  Infrahub already loaded (2 devices)";
+const LOADED: &str = "  sot (Infrahub) already loaded (2 devices)";
 const CLEARED: &str = "  cleared maintenance on: srl1, srl2";
 const REAPPLIED: &str = "  re-applied sonda-server baseline scenarios (idempotent)";
 const DETECTED: &str =
     "detected 1 wedged baseline(s) after cascade delete; restarting sonda-server";
 const LOGS_WEDGED: &str =
-    "sonda-logs srl1 streams look wedged (no Loki activity in last 60s); restarting";
+    "sonda-logs srl1 streams look wedged (no logs (Loki) activity in last 60s); restarting";
 
 const SCHEMA_LOAD: &str = "/api/schema/load?branch=main";
 const SCHEMA: &str = "/api/schema?branch=main";
@@ -399,7 +399,7 @@ fn a_dirty_lab_is_loaded_cleared_expired_deleted_and_restarted_in_order() {
         stdout(&output),
         lines(&[
             FIRST,
-            "Infrahub has 0 WorkshopDevice record(s); re-loading schema + data",
+            "sot (Infrahub) has 0 WorkshopDevice record(s); re-loading schema + data",
             "  re-loaded Infrahub schema + data (2 device(s) seeded)",
             CLEARED,
             REAPPLIED,
@@ -545,7 +545,7 @@ fn an_infrahub_that_is_down_warns_three_times_and_the_other_steps_still_run() {
     let errors = stderr(&output);
     let errors: Vec<&str> = errors.lines().collect();
     assert_eq!(errors.len(), 3, "{errors:?}");
-    let probe = format!("nobs: Infrahub probe failed: cannot reach {closed}: ");
+    let probe = format!("nobs: sot (Infrahub) probe failed: cannot reach {closed}: ");
     assert!(errors[0].starts_with(&probe), "{}", errors[0]);
     assert!(
         errors[0].ends_with(" — skipping load check"),
@@ -716,7 +716,7 @@ fn the_seeded_count_is_the_number_of_devices_the_lab_file_holds() {
         stdout(&output),
         lines(&[
             FIRST,
-            "Infrahub has 0 WorkshopDevice record(s); re-loading schema + data",
+            "sot (Infrahub) has 0 WorkshopDevice record(s); re-loading schema + data",
             "  re-loaded Infrahub schema + data (1 device(s) seeded)",
             CLEARED,
             REAPPLIED,
@@ -754,7 +754,7 @@ fn a_failed_load_warns_with_the_load_error_and_prints_no_reloaded_line() {
         stdout(&output),
         lines(&[
             FIRST,
-            "Infrahub has 0 WorkshopDevice record(s); re-loading schema + data",
+            "sot (Infrahub) has 0 WorkshopDevice record(s); re-loading schema + data",
             CLEARED,
             REAPPLIED,
         ])
@@ -774,7 +774,7 @@ fn a_loki_that_fails_warns_and_sonda_logs_is_not_restarted() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "nobs: Loki probe failed: the logs service answered 500 on /loki/api/v1/query_range: boom — skipping sonda-logs check\n"
+        "nobs: logs (Loki) probe failed: the logs service answered 500 on /loki/api/v1/query_range: boom — skipping sonda-logs check\n"
     );
     assert_eq!(stdout(&output), lines(&[FIRST, LOADED, CLEARED, REAPPLIED]));
     assert_eq!(docker_calls(&copy), [compose_call(&copy, "up sonda-setup")]);
@@ -809,7 +809,7 @@ fn an_alertmanager_answering_500_warns_and_the_sonda_steps_still_run() {
     assert_eq!(
         stderr(&output),
         format!(
-            "nobs: Alertmanager fetch failed: the alerts service at {} answered 500 — skipping silence cleanup\n",
+            "nobs: alerts (Alertmanager) fetch failed: the alerts service at {} answered 500 — skipping silence cleanup\n",
             stubs.alertmanager.url()
         )
     );

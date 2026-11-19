@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use crate::http::Reply;
 use crate::loki::Loki;
 use crate::prometheus::Prometheus;
+use crate::status::{row, Service};
 use crate::time::rfc3339_utc;
 
 const POLL: Duration = Duration::from_secs(4);
@@ -256,7 +257,10 @@ where
         )
     };
     waits.push(event_wait(
-        "Loki has UPDOWN events from both producers",
+        &format!(
+            "{} has UPDOWN events from both producers",
+            row(Service::Logs).label()
+        ),
         ">= 8 events",
         UPDOWN_QUERY,
         8,
@@ -911,7 +915,7 @@ mod tests {
                 "bgp_oper_state pipeline convergence",
                 "interface_oper_state intf_role=peer convergence",
                 "logs pipeline convergence (UPDOWN)",
-                "Loki has UPDOWN events from both producers",
+                "logs (Loki) has UPDOWN events from both producers",
                 "Interface Flap annotation source has lines",
                 "Device Config Push annotation source has lines",
             ]
@@ -955,7 +959,7 @@ mod tests {
                 "  ... 50s left",
                 "  ... 30s left",
                 "  ... 10s left",
-                "  [  0.0s] OK   Loki has UPDOWN events from both producers — events last 5m = 8",
+                "  [  0.0s] OK   logs (Loki) has UPDOWN events from both producers — events last 5m = 8",
                 "  [  0.0s] OK   Interface Flap annotation source has lines — flap lines = 4",
                 "  [  0.0s] OK   Device Config Push annotation source has lines — config-push lines = 1",
             ]
@@ -1470,7 +1474,7 @@ mod tests {
                 expected: ">= 6 series".to_string(),
             },
             Wait {
-                label: "Loki has UPDOWN events from both producers".to_string(),
+                label: "logs (Loki) has UPDOWN events from both producers".to_string(),
                 ok: false,
                 elapsed_s: 30.0,
                 detail: "events last 5m = 3".to_string(),
@@ -1519,7 +1523,7 @@ mod tests {
              ## Layer A — data shape waits\n\
              \n\
              - **PASS** `bgp_oper_state pipeline convergence` — count = 6 (elapsed 8.0s)\n\
-             - **FAIL** `Loki has UPDOWN events from both producers` — events last 5m = 3 (elapsed 30.0s)\n\
+             - **FAIL** `logs (Loki) has UPDOWN events from both producers` — events last 5m = 3 (elapsed 30.0s)\n\
              \n\
              ## Layer B — per-panel /api/ds/query\n\
              \n\

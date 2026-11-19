@@ -608,7 +608,7 @@ fn an_answer_that_is_not_200_to_the_schema_exits_1_without_saying_it_was_applied
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert_eq!(
             stderr(&output),
-            "nobs: Infrahub answered 401 on /api/schema/load?branch=main: bad token\n",
+            "nobs: the source of truth answered 401 on /api/schema/load?branch=main: bad token\n",
             "{args:?}"
         );
         assert_eq!(
@@ -630,7 +630,7 @@ fn an_answer_that_is_not_200_to_the_kind_wait_exits_1_before_the_seed() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "nobs: Infrahub answered 401 on /api/schema?branch=main: no\n"
+        "nobs: the source of truth answered 401 on /api/schema?branch=main: no\n"
     );
     assert_eq!(
         stdout(&output),
@@ -651,7 +651,7 @@ fn a_graphql_error_exits_1_with_its_message_and_prints_no_table() {
     let output = nobs(&copy, &["load-infrahub", "--skip-schema"]);
 
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stderr(&output), "nobs: Infrahub: boom\n");
+    assert_eq!(stderr(&output), "nobs: the source of truth: boom\n");
     let out = stdout(&output);
     for later in ["device ", "Node type", "Done:"] {
         assert!(!out.contains(later), "{out}");
@@ -988,7 +988,7 @@ fn a_device_infrahub_does_not_have_exits_1_and_posts_nothing_to_sonda() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "nobs: WorkshopDevice srl1 not found in Infrahub.\n"
+        "nobs: WorkshopDevice srl1 not found in the source of truth.\n"
     );
     assert_eq!(stdout(&output), "");
     assert_eq!(queries(&stub).len(), 1);
@@ -1006,7 +1006,7 @@ fn an_infrahub_that_refuses_the_flag_exits_1_and_posts_nothing_to_sonda() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "nobs: Infrahub answered 401 on /graphql/main: bad token\n"
+        "nobs: the source of truth answered 401 on /graphql/main: bad token\n"
     );
     assert_eq!(stdout(&output), "");
     assert_eq!(events.requests().len(), 0);

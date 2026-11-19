@@ -9,13 +9,13 @@ mod stub;
 use stub::Stub;
 
 const SERVICES: [(&str, &str); 7] = [
-    ("Grafana", "--grafana-url"),
-    ("Prometheus", "--prom-url"),
-    ("Loki", "--loki-url"),
-    ("Alertmanager", "--am-url"),
-    ("Infrahub", "--infrahub-url"),
-    ("Prefect", "--prefect-url"),
-    ("Sonda", "--sonda-url"),
+    ("grafana", "--grafana-url"),
+    ("metrics (Prometheus)", "--prom-url"),
+    ("logs (Loki)", "--loki-url"),
+    ("alerts (Alertmanager)", "--am-url"),
+    ("sot (Infrahub)", "--infrahub-url"),
+    ("flows (Prefect)", "--prefect-url"),
+    ("sonda", "--sonda-url"),
 ];
 
 const CLOSING: &str =
@@ -141,14 +141,14 @@ fn status_prints_a_header_and_seven_ok_rows_and_exits_0() {
     assert_eq!(
         stdout(&output),
         format!(
-            "Service       URL{pad}  State\n\
-             Grafana       {url}  ok\n\
-             Prometheus    {url}  ok\n\
-             Loki          {url}  ok\n\
-             Alertmanager  {url}  ok\n\
-             Infrahub      {url}  ok\n\
-             Prefect       {url}  ok\n\
-             Sonda         {url}  ok\n"
+            "Service                URL{pad}  State\n\
+             grafana                {url}  ok\n\
+             metrics (Prometheus)   {url}  ok\n\
+             logs (Loki)            {url}  ok\n\
+             alerts (Alertmanager)  {url}  ok\n\
+             sot (Infrahub)         {url}  ok\n\
+             flows (Prefect)        {url}  ok\n\
+             sonda                  {url}  ok\n"
         )
     );
 }
@@ -168,10 +168,10 @@ fn a_503_row_reads_http_503_and_the_closing_line_names_the_workshop_and_the_exit
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let out = stdout(&output);
     assert_eq!(
-        row(&out, "Loki"),
+        row(&out, "logs (Loki)"),
         (stub.url().to_string(), "http 503".to_string())
     );
-    assert_eq!(row(&out, "Grafana").1, "ok");
+    assert_eq!(row(&out, "grafana").1, "ok");
     assert_eq!(out.lines().last(), Some(CLOSING));
     assert_eq!(out.lines().count(), 9);
 }
@@ -182,13 +182,13 @@ fn a_closed_port_row_reads_down_and_the_exit_is_1() {
     let stub = healthy_stub();
     let closed = closed_port_url();
 
-    let mut args = flags_at(stub.url(), &["Prometheus"]);
+    let mut args = flags_at(stub.url(), &["metrics (Prometheus)"]);
     args.extend(["--prom-url".to_string(), closed.clone()]);
     let output = nobs(&copy, &args, &[]);
 
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let out = stdout(&output);
-    let (url, state) = row(&out, "Prometheus");
+    let (url, state) = row(&out, "metrics (Prometheus)");
     assert_eq!(url, closed);
     assert!(state.starts_with("down ("), "{state}");
     assert_eq!(out.lines().last(), Some(CLOSING));
@@ -203,15 +203,15 @@ fn the_dot_env_file_gives_the_prometheus_address_and_the_infrahub_address_is_rew
         stub.url()
     ));
 
-    let args = flags_at(stub.url(), &["Prometheus", "Infrahub"]);
+    let args = flags_at(stub.url(), &["metrics (Prometheus)", "sot (Infrahub)"]);
     let output = nobs(&copy, &args, &[]);
 
     let out = stdout(&output);
     assert_eq!(
-        row(&out, "Prometheus"),
+        row(&out, "metrics (Prometheus)"),
         (stub.url().to_string(), "ok".to_string())
     );
-    assert_eq!(row(&out, "Infrahub").0, "http://localhost:8000");
+    assert_eq!(row(&out, "sot (Infrahub)").0, "http://localhost:8000");
 }
 
 #[test]
@@ -221,13 +221,13 @@ fn the_infrahub_flag_beats_the_dot_env_file() {
     let other = healthy_stub();
     copy.write_env("INFRAHUB_ADDRESS=http://infrahub-server:8000\n");
 
-    let mut args = flags_at(stub.url(), &["Infrahub"]);
+    let mut args = flags_at(stub.url(), &["sot (Infrahub)"]);
     args.extend(["--infrahub-url".to_string(), other.url().to_string()]);
     let output = nobs(&copy, &args, &[]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(
-        row(&stdout(&output), "Infrahub"),
+        row(&stdout(&output), "sot (Infrahub)"),
         (other.url().to_string(), "ok".to_string())
     );
 }
@@ -238,13 +238,13 @@ fn a_blank_flag_counts_as_not_given_and_the_dot_env_file_is_used() {
     let stub = healthy_stub();
     copy.write_env(&format!("PROMETHEUS_URL={}\n", stub.url()));
 
-    let mut args = flags_at(stub.url(), &["Prometheus"]);
+    let mut args = flags_at(stub.url(), &["metrics (Prometheus)"]);
     args.extend(["--prom-url".to_string(), String::new()]);
     let output = nobs(&copy, &args, &[]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(
-        row(&stdout(&output), "Prometheus"),
+        row(&stdout(&output), "metrics (Prometheus)"),
         (stub.url().to_string(), "ok".to_string())
     );
 }
@@ -255,12 +255,12 @@ fn status_asks_sonda_at_the_sonda_server_url_variable() {
     let stub = healthy_stub();
     let sonda = healthy_stub();
 
-    let args = flags_at(stub.url(), &["Sonda"]);
+    let args = flags_at(stub.url(), &["sonda"]);
     let output = nobs(&copy, &args, &[("SONDA_SERVER_URL", sonda.url())]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(
-        row(&stdout(&output), "Sonda"),
+        row(&stdout(&output), "sonda"),
         (sonda.url().to_string(), "ok".to_string())
     );
     assert_eq!(sonda.requests().len(), 1);
@@ -277,7 +277,12 @@ fn a_blank_shell_value_does_not_hide_the_dot_env_file() {
 
     let args = flags_at(
         stub.url(),
-        &["Prometheus", "Loki", "Alertmanager", "Infrahub"],
+        &[
+            "metrics (Prometheus)",
+            "logs (Loki)",
+            "alerts (Alertmanager)",
+            "sot (Infrahub)",
+        ],
     );
     let output = nobs(
         &copy,
@@ -292,7 +297,12 @@ fn a_blank_shell_value_does_not_hide_the_dot_env_file() {
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let out = stdout(&output);
-    for service in ["Prometheus", "Loki", "Alertmanager", "Infrahub"] {
+    for service in [
+        "metrics (Prometheus)",
+        "logs (Loki)",
+        "alerts (Alertmanager)",
+        "sot (Infrahub)",
+    ] {
         assert_eq!(
             row(&out, service),
             (stub.url().to_string(), "ok".to_string()),

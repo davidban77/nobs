@@ -31,6 +31,16 @@ pub struct Row {
     pub health: &'static str,
 }
 
+impl Row {
+    pub fn label(&self) -> String {
+        if self.word.eq_ignore_ascii_case(self.tool) {
+            self.word.to_string()
+        } else {
+            format!("{} ({})", self.word, self.tool)
+        }
+    }
+}
+
 pub const SERVICES: [Row; 7] = [
     Row {
         service: Service::Grafana,
@@ -155,7 +165,7 @@ pub struct Urls {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
-    pub name: &'static str,
+    pub service: Service,
     pub base: String,
     pub path: &'static str,
 }
@@ -232,7 +242,7 @@ pub fn targets(urls: &Urls) -> Vec<Target> {
                 service => urls.address(service).to_string(),
             };
             Target {
-                name: row.tool,
+                service: row.service,
                 base: base.trim_end_matches('/').to_string(),
                 path: row.health,
             }
@@ -241,7 +251,7 @@ pub fn targets(urls: &Urls) -> Vec<Target> {
 }
 
 pub fn probe(target: &Target) -> Probe {
-    let (url, result) = if target.name == "Sonda" {
+    let (url, result) = if target.service == Service::Sonda {
         let result = Sonda::new(&target.base)
             .timeout(TIMEOUT)
             .health()
@@ -275,9 +285,9 @@ mod tests {
     use super::*;
     use crate::http::stub::Stub;
 
-    fn target(name: &'static str, base: &str, path: &'static str) -> Target {
+    fn target(service: Service, base: &str, path: &'static str) -> Target {
         Target {
-            name,
+            service,
             base: base.to_string(),
             path,
         }
@@ -433,8 +443,8 @@ mod tests {
         for (row, target) in SERVICES.iter().zip(found) {
             assert_eq!(defaults.address(row.service), row.default, "{row:?}");
             assert_eq!(
-                (target.name, target.base.as_str(), target.path),
-                (row.tool, row.default, row.health)
+                (target.service, target.base.as_str(), target.path),
+                (row.service, row.default, row.health)
             );
         }
     }
@@ -467,20 +477,20 @@ mod tests {
 
     #[test]
     fn targets_are_the_seven_services_in_order_with_their_paths_and_default_bases() {
-        let seen: Vec<(&str, String, &str)> = targets(&Urls::defaults())
+        let seen: Vec<(Service, String, &str)> = targets(&Urls::defaults())
             .into_iter()
-            .map(|t| (t.name, t.base, t.path))
+            .map(|t| (t.service, t.base, t.path))
             .collect();
         let expected = [
-            ("Grafana", "http://localhost:3000", "/api/health"),
-            ("Prometheus", "http://localhost:9090", "/-/ready"),
-            ("Loki", "http://localhost:3001", "/ready"),
-            ("Alertmanager", "http://localhost:9093", "/-/ready"),
-            ("Infrahub", "http://localhost:8000", "/health"),
-            ("Prefect", "http://localhost:4200", "/api/health"),
-            ("Sonda", "http://localhost:8085", "/health"),
+            (Service::Grafana, "http://localhost:3000", "/api/health"),
+            (Service::Metrics, "http://localhost:9090", "/-/ready"),
+            (Service::Logs, "http://localhost:3001", "/ready"),
+            (Service::Alerts, "http://localhost:9093", "/-/ready"),
+            (Service::Sot, "http://localhost:8000", "/health"),
+            (Service::Flows, "http://localhost:4200", "/api/health"),
+            (Service::Sonda, "http://localhost:8085", "/health"),
         ];
-        let expected: Vec<(&str, String, &str)> = expected
+        let expected: Vec<(Service, String, &str)> = expected
             .into_iter()
             .map(|(name, base, path)| (name, base.to_string(), path))
             .collect();
@@ -530,6 +540,31 @@ mod tests {
     }
 
     #[test]
+    fn each_row_is_labelled_by_its_kind_then_its_tool_and_a_one_word_row_once() {
+        assert_eq!(
+            SERVICES.map(|row| row.label()),
+            [
+                "grafana",
+                "metrics (Prometheus)",
+                "logs (Loki)",
+                "alerts (Alertmanager)",
+                "sot (Infrahub)",
+                "flows (Prefect)",
+                "sonda",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_label_reads_both_words_from_the_row() {
+        let other = Row {
+            tool: "nobs-t-Other",
+            ..row(Service::Logs)
+        };
+        assert_eq!(other.label(), "logs (nobs-t-Other)");
+    }
+
+    #[test]
     fn the_timeout_is_three_seconds() {
         assert_eq!(TIMEOUT, Duration::from_secs(3));
     }
@@ -537,23 +572,26 @@ mod tests {
     #[test]
     fn a_200_reply_is_ok() {
         let stub = Stub::start(&[("GET", "/api/health", 200, "")]);
-        let probe = probe(&target("Grafana", stub.url(), "/api/health"));
+        let probe = probe(&target(Service::Grafana, stub.url(), "/api/health"));
         assert_eq!(probe.state, State::Ok);
     }
 
     #[test]
     fn a_503_reply_is_http_503() {
         let stub = Stub::start(&[("GET", "/-/ready", 503, "")]);
-        let probe = probe(&target("Prometheus", stub.url(), "/-/ready"));
+        let probe = probe(&target(Service::Metrics, stub.url(), "/-/ready"));
         assert_eq!(probe.state, State::Http(503));
     }
 
     #[test]
     fn a_2xx_status_is_ok_and_400_is_not() {
         let stub = Stub::start(&[("GET", "/a", 299, ""), ("GET", "/b", 400, "")]);
-        assert_eq!(probe(&target("Loki", stub.url(), "/a")).state, State::Ok);
         assert_eq!(
-            probe(&target("Loki", stub.url(), "/b")).state,
+            probe(&target(Service::Logs, stub.url(), "/a")).state,
+            State::Ok
+        );
+        assert_eq!(
+            probe(&target(Service::Logs, stub.url(), "/b")).state,
             State::Http(400)
         );
     }
@@ -561,14 +599,14 @@ mod tests {
     #[test]
     fn a_probe_keeps_its_target() {
         let stub = Stub::start(&[]);
-        let wanted = target("Loki", stub.url(), "/ready");
+        let wanted = target(Service::Logs, stub.url(), "/ready");
         assert_eq!(probe(&wanted).target, wanted);
     }
 
     #[test]
     fn a_probe_sends_one_get_to_the_base_plus_the_path() {
         let stub = Stub::start(&[]);
-        probe(&target("Alertmanager", stub.url(), "/-/ready"));
+        probe(&target(Service::Alerts, stub.url(), "/-/ready"));
 
         let requests = stub.requests();
         assert_eq!(requests.len(), 1);
@@ -579,7 +617,7 @@ mod tests {
     #[test]
     fn a_closed_port_is_down_with_a_reason_that_has_no_url_prefix() {
         let url = closed_port_url();
-        let probe = probe(&target("Grafana", &url, "/api/health"));
+        let probe = probe(&target(Service::Grafana, &url, "/api/health"));
         match probe.state {
             State::Down(reason) => assert!(!reason.starts_with("cannot reach"), "{reason}"),
             other => panic!("{other:?}"),
@@ -589,7 +627,7 @@ mod tests {
     #[test]
     fn the_sonda_target_is_probed_at_health() {
         let stub = Stub::start(&[("GET", "/health", 200, "")]);
-        let probe = probe(&target("Sonda", stub.url(), "/health"));
+        let probe = probe(&target(Service::Sonda, stub.url(), "/health"));
 
         assert_eq!(probe.state, State::Ok);
         let requests = stub.requests();
@@ -601,14 +639,14 @@ mod tests {
     #[test]
     fn a_sonda_503_is_http_503() {
         let stub = Stub::start(&[("GET", "/health", 503, "")]);
-        let probe = probe(&target("Sonda", stub.url(), "/health"));
+        let probe = probe(&target(Service::Sonda, stub.url(), "/health"));
         assert_eq!(probe.state, State::Http(503));
     }
 
     #[test]
     fn a_closed_sonda_port_is_down() {
         let url = closed_port_url();
-        let probe = probe(&target("Sonda", &url, "/health"));
+        let probe = probe(&target(Service::Sonda, &url, "/health"));
         match probe.state {
             State::Down(reason) => assert!(!reason.starts_with("cannot reach"), "{reason}"),
             other => panic!("{other:?}"),
@@ -620,7 +658,7 @@ mod tests {
         let stub = Stub::start_silent(Duration::from_secs(20));
         let started = Instant::now();
 
-        let probe = probe(&target("Grafana", stub.url(), "/api/health"));
+        let probe = probe(&target(Service::Grafana, stub.url(), "/api/health"));
 
         assert!(matches!(probe.state, State::Down(_)), "{:?}", probe.state);
         assert!(
@@ -635,7 +673,7 @@ mod tests {
         let stub = Stub::start_silent(Duration::from_secs(20));
         let started = Instant::now();
 
-        let probe = probe(&target("Sonda", stub.url(), "/health"));
+        let probe = probe(&target(Service::Sonda, stub.url(), "/health"));
 
         assert!(matches!(probe.state, State::Down(_)), "{:?}", probe.state);
         assert!(
@@ -655,17 +693,20 @@ mod tests {
 
         let probes = probe_all(&urls_all_at(stub.url()));
 
-        let seen: Vec<(&str, &State)> = probes.iter().map(|p| (p.target.name, &p.state)).collect();
+        let seen: Vec<(Service, &State)> = probes
+            .iter()
+            .map(|p| (p.target.service, &p.state))
+            .collect();
         assert_eq!(
             seen,
             [
-                ("Grafana", &State::Ok),
-                ("Prometheus", &State::Http(503)),
-                ("Loki", &State::Ok),
-                ("Alertmanager", &State::Http(503)),
-                ("Infrahub", &State::Http(404)),
-                ("Prefect", &State::Ok),
-                ("Sonda", &State::Http(404)),
+                (Service::Grafana, &State::Ok),
+                (Service::Metrics, &State::Http(503)),
+                (Service::Logs, &State::Ok),
+                (Service::Alerts, &State::Http(503)),
+                (Service::Sot, &State::Http(404)),
+                (Service::Flows, &State::Ok),
+                (Service::Sonda, &State::Http(404)),
             ]
         );
         let paths: Vec<String> = stub.requests().into_iter().map(|r| r.path).collect();

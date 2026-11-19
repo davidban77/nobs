@@ -74,15 +74,17 @@ impl fmt::Display for Error {
             Error::Reach { url, reason } => write!(f, "cannot reach {url}: {reason}"),
             Error::Status { status, path, body } => {
                 let body: String = body.chars().take(BODY_CUT).collect();
-                write!(f, "Infrahub answered {status} on {path}: {body}")
+                write!(f, "the source of truth answered {status} on {path}: {body}")
             }
-            Error::Graphql(message) => write!(f, "Infrahub: {message}"),
+            Error::Graphql(message) => write!(f, "the source of truth: {message}"),
             Error::NotReady(kinds) => write!(
                 f,
-                "workshop schema kinds {} not visible to Infrahub after 30 s",
+                "workshop schema kinds {} not visible to the source of truth after 30 s",
                 kinds.join(", ")
             ),
-            Error::NotFound { kind, device } => write!(f, "{kind} {device} not found in Infrahub."),
+            Error::NotFound { kind, device } => {
+                write!(f, "{kind} {device} not found in the source of truth.")
+            }
             Error::NoSource => write!(f, "this lab has no source of truth"),
         }
     }
