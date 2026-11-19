@@ -708,14 +708,22 @@ For each service, nobs sends one HTTP GET request (a request that only reads) to
 | Service | Path | Flag | Variable | Default address |
 |---|---|---|---|---|
 | Grafana | `/api/health` | `--grafana-url` | none | `http://localhost:3000` |
-| Prometheus | `/-/ready` | `--prom-url` | `PROMETHEUS_URL` | `http://localhost:9090` |
-| Loki | `/ready` | `--loki-url` | `LOKI_URL` | `http://localhost:3001` |
-| Alertmanager | `/-/ready` | `--am-url` | `ALERTMANAGER_URL` | `http://localhost:9093` |
-| Infrahub | `/health` | `--infrahub-url` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
-| Prefect | `/api/health` | `--prefect-url` | `PREFECT_API_URL` | `http://localhost:4200` |
+| Prometheus | `/-/ready` | `--metrics-url` (old: `--prom-url`) | `METRICS_URL` (old: `PROMETHEUS_URL`) | `http://localhost:9090` |
+| Loki | `/ready` | `--logs-url` (old: `--loki-url`) | `LOGS_URL` (old: `LOKI_URL`) | `http://localhost:3001` |
+| Alertmanager | `/-/ready` | `--alerts-url` (old: `--am-url`, `--alertmanager-url`) | `ALERTS_URL` (old: `ALERTMANAGER_URL`) | `http://localhost:9093` |
+| Infrahub | `/health` | `--sot-url` (old: `--infrahub-url`, `--address`) | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
+| Prefect | `/api/health` | `--flows-url` (old: `--prefect-url`) | `PREFECT_API_URL` | `http://localhost:4200` |
 | Sonda | `/health` | `--sonda-url` | `SONDA_SERVER_URL` | `http://localhost:8085` |
 
-For each address, nobs looks at the flag, then the variable when there is one, then the default address. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. So an empty shell variable does not hide the value in `.env`. A trailing `/` on an address is dropped. When the Infrahub address names `infrahub-server`, the name the containers use among themselves, nobs probes `http://localhost:8000` instead.
+The addresses of the metrics service, the logs service, the alerts service, the source of truth and the flows service have new names. The old names, in brackets in the table, still work, and nobs gives the same result with them. This order holds for each address in the table above, in every workshop command:
+
+1. the flag;
+2. the variable in the shell;
+3. the variable in the `.env` file of the workshop folder;
+4. the variable in the `.setup.env` file of the workshop folder;
+5. the default address.
+
+nobs takes the first value it finds. The place decides first: a value in an earlier place wins, whatever its name. Inside one place, the new name wins over the old one. For example, `--prom-url` wins over `METRICS_URL` in the shell, `PROMETHEUS_URL` in the shell wins over `METRICS_URL` in `.env`, and `METRICS_URL` in `.env` wins over `PROMETHEUS_URL` in `.env`. An address without a variable, like the one of Grafana in `status`, skips steps 2 to 4. A value that is empty or only spaces is skipped, so an empty shell variable does not hide the value in `.env`. One case differs: when `.env` names an address, with either name and even with an empty value, nobs does not look in `.setup.env` for that address. A trailing `/` on an address is dropped. When the Infrahub address names `infrahub-server`, the name the containers use among themselves, nobs probes `http://localhost:8000` instead.
 
 nobs waits at most 3 seconds for each service. The table has one header line and one line per service, in the order of the table above, with the columns `Service`, `URL` and `State`. The `URL` column shows the address nobs used. `State` shows one of three things:
 
@@ -748,13 +756,13 @@ Some services are not ready yet: give them a minute, or check nobs nobs-t-one lo
 
 | Command | Flag | What it does |
 |---|---|---|
-| both | `--am-url URL` | gives the address of Alertmanager |
+| both | `--alerts-url URL` | gives the address of the alerts service |
 | `alerts` | `-l KEY=VALUE`, `--label KEY=VALUE` | shows only the alerts that have this label; repeat it for more labels, and an alert must have them all |
 | `alerts` | `--silenced`, `--no-silenced` | shows or leaves out the silenced alerts; they are shown by default |
 | `alerts` | `--inhibited`, `--no-inhibited` | shows or leaves out the inhibited alerts; they are shown by default |
 | `silences` | `--show-expired` | shows the expired silences too |
 
-When you give both flags of a pair, the last one wins. For the address, nobs looks at `--am-url`, then the variable `ALERTMANAGER_URL`, then the default address `http://localhost:9093`. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped.
+When you give both flags of a pair, the last one wins. For the address, nobs looks at `--alerts-url`, then the variable `ALERTS_URL`, then the default address `http://localhost:9093`. The old names `--am-url`, `--alertmanager-url` and `ALERTMANAGER_URL` still work. The full order of the places and the names of an address is in [status](#status).
 
 For `alerts`, nobs asks Alertmanager for the active alerts, and tells it to leave out the silenced or inhibited ones when you give `--no-silenced` or `--no-inhibited`. nobs splits each label at the first `=` and trims spaces around the key and the value. When the same key is given twice, the last value counts. A label without `=` is a mistake: nobs checks every label before it sends anything, and when one is wrong it prints `nobs: --label must be key=value (got '<text>')` and exits with 2.
 
@@ -840,7 +848,7 @@ Infrahub is the database where the workshop keeps its devices, interfaces and BG
 | `maintenance` | `-d NAME`, `--device NAME` | gives the name of the device; this flag is required |
 | `maintenance` | `--state`, `--clear` | sets the device's `maintenance` flag to true or to false; the last one wins, and `--state` is the default |
 | `maintenance` | `--kind KIND` | gives the kind of the node; the default is `WorkshopDevice` |
-| all three | `--address URL` | gives the address of Infrahub |
+| all three | `--sot-url URL` | gives the address of the source of truth |
 | all three | `--token TOKEN` | gives the token: the secret key that lets nobs use Infrahub |
 
 A relative path is taken from the workshop folder, not from the current folder. An absolute path is used as it is.
@@ -849,12 +857,12 @@ nobs finds the address and the token in this order: the flag, then the variable,
 
 | Value | Flag | Variable | Default |
 |---|---|---|---|
-| the address of Infrahub | `--address URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
+| the address of the source of truth | `--sot-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
 | the token | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none |
 
-A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it. So keep the token in the `.env` file.
+The old flags `--address` and `--infrahub-url` still work for the address. The full order of the places and the names of an address is in [status](#status). A variable can be set in the shell, in the `.env` file or in the `.setup.env` file of the workshop, and nobs looks in that order. A flag or a variable that is empty or only spaces counts as not given. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it. So keep the token in the `.env` file.
 
-The containers reach Infrahub by the name `infrahub-server`, and your machine cannot. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead. Before any other line, it then prints the rewrite line: `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000`. The line says `INFRAHUB_ADDRESS` even when the address came from `--address`. A trailing `/` is dropped without a message.
+The containers reach Infrahub by the name `infrahub-server`, and your machine cannot. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead. Before any other line, it then prints the rewrite line: `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000`. The line says `INFRAHUB_ADDRESS` even when the address came from a flag. A trailing `/` is dropped without a message.
 
 `load-infrahub` and `maintenance` check the token first; `maintenance` does not when the lab has `sot = "none"` (see [Workshops](#workshops)). Then `load-infrahub` reads the schema file (unless you give `--skip-schema`) and the lab variables file. `schema load` first checks that its schema file is there, then checks the token, then reads the file. `load-infrahub` and `schema load` send nothing to Infrahub before they have read their files. When a file is missing, nobs prints `nobs: schema file not found: <path>` or `nobs: lab_vars file not found: <path>`. When a file is there but is not valid YAML, or does not have the shape nobs expects, nobs prints `nobs: cannot read <path>: <reason>`.
 
@@ -936,17 +944,17 @@ The files under `captures/` are the record of what the Python SDK (Infrahub's ow
 
 | Flag | What it does |
 |---|---|
-| `--infrahub-url URL` | gives the address of Infrahub |
+| `--sot-url URL` | gives the address of the source of truth |
 | `--token TOKEN` | gives the token for Infrahub |
 
 nobs finds the address and the token in this order: the flag, then the variable, then the default.
 
 | Value | Flag | Variable | Default |
 |---|---|---|---|
-| the address of Infrahub | `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
+| the address of the source of truth | `--sot-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
 | the token | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none |
 
-A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line first (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)). `load-infrahub`, `schema load` and `maintenance` name the address flag `--address`; `devices` and `evidence` name it `--infrahub-url`.
+The full order of the places and the names of an address is in [status](#status). A variable can be set in the shell, in the `.env` file or in the `.setup.env` file of the workshop, and nobs looks in that order. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. When the address names `infrahub-server`, nobs uses `http://localhost:8000` instead and prints the rewrite line first (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)). Every command that takes the address of the source of truth names its flag `--sot-url`, and accepts the old flags `--infrahub-url` and `--address`.
 
 The table has one header line and one line per device, with the columns lined up:
 
@@ -995,25 +1003,25 @@ Two commands show what the running stack knows about a BGP session. Both only re
 | `rca` | `PEER` | shows only the records of this peer address; optional; to give a peer without a device, give an empty device: `rca "" 10.1.99.2` |
 | `rca` | `--last N` | gives how many of the most recent records to show; the default is 1 |
 | `rca` | `--minutes N` | gives how far back to look; the default is 60 |
-| `rca` | `--loki-url URL` | gives the address of Loki |
+| `rca` | `--logs-url URL` | gives the address of the logs service |
 | `evidence` | `DEVICE`, `PEER` | give the device and the IP address of its peer; both are required |
 | `evidence` | `--afi-safi NAME` | gives the address family of the session; the default is `ipv4-unicast` |
 | `evidence` | `--instance NAME` | gives the network instance of the session; the default is `default` |
 | `evidence` | `--log-minutes N` | gives how many minutes back to look for log lines; the default is 10 |
 | `evidence` | `--log-limit N` | gives how many log lines to show at most; the default is 20 |
-| `evidence` | `--prom-url URL`, `--loki-url URL`, `--infrahub-url URL` | give the addresses of Prometheus, Loki and Infrahub |
+| `evidence` | `--metrics-url URL`, `--logs-url URL`, `--sot-url URL` | give the addresses of the metrics service, the logs service and the source of truth |
 | `evidence` | `--token TOKEN` | gives the token for Infrahub |
 
 nobs finds each address and the token in this order: the flag, then the variable, then the default.
 
 | Value | Flag | Variable | Default |
 |---|---|---|---|
-| the address of Prometheus (`evidence`) | `--prom-url URL` | `PROMETHEUS_URL` | `http://localhost:9090` |
-| the address of Loki | `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` |
-| the address of Infrahub (`evidence`) | `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
+| the address of the metrics service (`evidence`) | `--metrics-url URL` | `METRICS_URL` | `http://localhost:9090` |
+| the address of the logs service | `--logs-url URL` | `LOGS_URL` | `http://localhost:3001` |
+| the address of the source of truth (`evidence`) | `--sot-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` |
 | the token for Infrahub (`evidence`) | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none |
 
-A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. Each call waits at most 10 seconds. `evidence` treats the Infrahub address and the token as `load-infrahub` does (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)): when the address names `infrahub-server`, nobs prints the rewrite line first and uses `http://localhost:8000`, and with no token it prints the required-token line and sends nothing. With `sot = "none"`, `evidence` asks for no token and does not call Infrahub (see [Workshops](#workshops)).
+The old names still work: `--prom-url` and `PROMETHEUS_URL` for the metrics service, `--loki-url` and `LOKI_URL` for the logs service, and `--infrahub-url` and `--address` for the source of truth. The full order of the places and the names of an address is in [status](#status). A variable can be set in the shell, in the `.env` file or in the `.setup.env` file of the workshop, and nobs looks in that order. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. Each call waits at most 10 seconds. `evidence` treats the Infrahub address and the token as `load-infrahub` does (see [load-infrahub, schema load and maintenance](#load-infrahub-schema-load-and-maintenance)): when the address names `infrahub-server`, nobs prints the rewrite line first and uses `http://localhost:8000`, and with no token it prints the required-token line and sends nothing. With `sot = "none"`, `evidence` asks for no token and does not call Infrahub (see [Workshops](#workshops)).
 
 `rca` sends one request to Loki for the lines that carry the labels `source="prefect"` and `ai_rca="true"`, and the labels `device` and `peer_address` when you give them. It asks for the newest lines first, at most `--last` of them. When Loki returns no line, nobs prints one line, where `<scope>` is `device=D peer=P`, `device=D`, `peer=P` or `any device/peer`, `<folder>` is the workshop folder, and `<name>` is the `name` setting in its `nobs.toml`:
 
@@ -1072,7 +1080,7 @@ The first block depends on what Infrahub answered. A peer is intended when the d
 |---|---|
 | has the device | `Source of truth (Infrahub)` and the lines of the example |
 | has no such device | `Source of truth`, then `device not found in Infrahub.` |
-| did not answer, or answered with an error | `Source of truth`, then `Infrahub query failed: <error>`, where `<error>` is `cannot reach <address>: <reason>`, `Infrahub answered <status> on <path>: <answer>` or `Infrahub: <message>` |
+| did not answer, or answered with an error | `Source of truth`, then `sot query failed: <error>`, where `<error>` is `cannot reach <address>: <reason>`, `Infrahub answered <status> on <path>: <answer>` or `Infrahub: <message>` |
 | is not asked, because the lab has `sot = "none"` | `Source of truth`, then `this lab has no source of truth.` |
 
 In the second block, the `Value` column is right-aligned. A whole number shows without a fraction (`1`, `10`) and any other number as it is (`0.5`). A missing `admin_state` or `oper_state` shows as `-1`, a missing counter as `0`, and a number that is not finite as `?`. `Decoded` is `enable` for an `admin_state` of 1 and `disable` for 2, and `up`, `down`, `idle`, `connect` or `active` for an `oper_state` of 1 to 5. Any other number is `unknown`, a missing state is `—`, and the four counters always show `—`.
@@ -1083,7 +1091,7 @@ The last block shows the first row of this table that fits:
 
 | decision | reason | When |
 |---|---|---|
-| `stop` | `device not found in Infrahub`, `this lab has no source of truth`, or the `Infrahub query failed` text | the first block is not `Source of truth (Infrahub)` |
+| `stop` | `device not found in Infrahub`, `this lab has no source of truth`, or the `sot query failed` text | the first block is not `Source of truth (Infrahub)` |
 | `skip` | `device under maintenance` | the device has `maintenance` set to true |
 | `skip` | `peer not intended in SoT` | the peer is not intended |
 | `skip` | `SoT expects this peer to be down/disabled` | the expected state, in lower case, is `down` or `disabled`; with no expected state, nobs reads `established` |
@@ -1093,7 +1101,7 @@ The last block shows the first row of this table that fits:
 | Exit code | When |
 |---|---|
 | 0 | `rca` printed records or the line that says there are none; `evidence` printed its four blocks |
-| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query Loki at <address>: <reason>`. `<reason>` is one of three texts: why nobs could not connect; `the logs service answered <status> on /loki/api/v1/query_range: <answer>`, where `<answer>` is the first 200 characters of the answer; or `the logs service answered with text nobs cannot read: <error>`, where `<error>` says what was wrong with the answer |
+| 1 | `rca` could not get an answer from Loki: `nobs: Failed to query the logs service at <address>: <reason>`. `<reason>` is one of three texts: why nobs could not connect; `the logs service answered <status> on /loki/api/v1/query_range: <answer>`, where `<answer>` is the first 200 characters of the answer; or `the logs service answered with text nobs cannot read: <error>`, where `<error>` says what was wrong with the answer |
 | 1 | `evidence` has no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
 | 2 | a flag nobs does not know, a missing `DEVICE` or `PEER` for `evidence`, or a value that is not a whole number of 0 or more for `--last`, `--minutes`, `--log-minutes` or `--log-limit` |
 
@@ -1112,23 +1120,23 @@ The last block shows the first row of this table that fits:
 | `cycle` | `--trigger` | before the panels, sends a new alert to the webhook and waits for the flow run it starts |
 | `cycle` | `--status STATUS` | gives the status of the alert that `--trigger` sends, `firing` or `resolved`; the default is `firing`; any other value is a usage error, with or without `--trigger` |
 | `cycle` | `--minutes N` | gives how far back the flow runs and the decision are looked for; the default is 30 |
-| `cycle` | `--am-url URL`, `--loki-url URL`, `--prefect-url URL`, `--webhook-url URL` | give the addresses of Alertmanager, Loki, Prefect and the webhook |
+| `cycle` | `--alerts-url URL`, `--logs-url URL`, `--flows-url URL`, `--webhook-url URL` | give the addresses of the alerts service, the logs service, the flows service and the webhook |
 | `page` | `-a ALERT`, `--alert ALERT` | shows only an alert with this name; the default is `BgpSessionNotUp`, and an empty name filters nothing |
 | `page` | `-d DEVICE`, `--device DEVICE` | shows only an alert on this device; the default is empty, which filters nothing |
 | `page` | `-p PEER`, `--peer PEER` | shows only an alert for this peer address; the default is empty, which filters nothing |
 | `page` | `--now HH:MM` | gives the time printed after `PAGED`; the default is the current time in UTC |
-| `page` | `--am-url URL` | gives the address of Alertmanager |
+| `page` | `--alerts-url URL` | gives the address of the alerts service |
 
 nobs finds each address in this order: the flag, then the variable, then the default.
 
 | Value | Flag | Variable | Default |
 |---|---|---|---|
-| the address of Alertmanager | `--am-url URL` | `ALERTMANAGER_URL` | `http://localhost:9093` |
-| the address of Loki (`cycle`) | `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` |
-| the address of Prefect (`cycle`) | `--prefect-url URL` | `PREFECT_API_URL` | `http://localhost:4200` |
+| the address of the alerts service | `--alerts-url URL` | `ALERTS_URL` | `http://localhost:9093` |
+| the address of the logs service (`cycle`) | `--logs-url URL` | `LOGS_URL` | `http://localhost:3001` |
+| the address of the flows service (`cycle`) | `--flows-url URL` | `PREFECT_API_URL` | `http://localhost:4200` |
 | the address of the webhook (`cycle`) | `--webhook-url URL` | `WEBHOOK_URL` | `http://localhost:9997/v1/api/webhook` |
 
-A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Alertmanager, Loki or Prefect is dropped, and so is a trailing `/api` on the address of Prefect, so `http://localhost:4200/api` works as well as `http://localhost:4200`. The address of the webhook is used as it is given. `nobs <workshop> status` reads `PREFECT_API_URL` too, and drops a trailing `/api` from it as `cycle` does. Each call waits at most 10 seconds, and the post to the webhook waits at most 15.
+The old names still work: `--am-url`, `--alertmanager-url` and `ALERTMANAGER_URL` for the alerts service, `--loki-url` and `LOKI_URL` for the logs service, and `--prefect-url` for the flows service. The full order of the places and the names of an address is in [status](#status). A variable can be set in the shell, in the `.env` file or in the `.setup.env` file of the workshop, and nobs looks in that order. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Alertmanager, Loki or Prefect is dropped, and so is a trailing `/api` on the address of Prefect, so `http://localhost:4200/api` works as well as `http://localhost:4200`. The address of the webhook is used as it is given. `nobs <workshop> status` reads `PREFECT_API_URL` too, and drops a trailing `/api` from it as `cycle` does. Each call waits at most 10 seconds, and the post to the webhook waits at most 15.
 
 `cycle` prints a blank line, a title line and a body for each of four panels, in the order of the table below. When a call fails, the panel keeps its title and its body is the error. The exit code stays 0 whatever the panels found. For example, with an alert that a silence mutes, and a flow that started three child flows:
 
@@ -1160,10 +1168,10 @@ reason: SoT expects peer up, but metrics show mismatch
 
 | Panel | What it shows | When nothing is found | When the call fails |
 |---|---|---|---|
-| `Alert` | the alerts named `BgpSessionNotUp` whose `device` and `peer_address` labels are `DEVICE` and `PEER`, from one call to Alertmanager that includes silenced and inhibited alerts | `No BgpSessionNotUp alert active for <device> → <peer>.` | `Alertmanager query failed: <error>` |
+| `Alert` | the alerts named `BgpSessionNotUp` whose `device` and `peer_address` labels are `DEVICE` and `PEER`, from one call to Alertmanager that includes silenced and inhibited alerts | `No BgpSessionNotUp alert active for <device> → <peer>.` | `alerts query failed: <error>` |
 | `Silences (this peer)` | the silences that match `device` equal to `DEVICE` and `peer_address` equal to `PEER`, in every state, the newest start first, at most 5 | `No silences scoped to <device> → <peer>.` | `silences query failed: <error>` |
-| `Prefect flow runs (last <minutes>m)` | the flow runs of this device and peer that started within `--minutes`, the newest first, at most 5 runs, each with its child runs | `No quarantine_bgp / resolved_bgp runs for <device>:<peer> in the last <minutes>m.` | `Prefect query failed: <error>` |
-| `Most recent decision` | the newest decision record in Loki for this device and peer within `--minutes` | `No decision audit records for <device> → <peer> in the last <minutes>m.` | `Loki query failed: <error>` |
+| `Prefect flow runs (last <minutes>m)` | the flow runs of this device and peer that started within `--minutes`, the newest first, at most 5 runs, each with its child runs | `No quarantine_bgp / resolved_bgp runs for <device>:<peer> in the last <minutes>m.` | `flows query failed: <error>` |
+| `Most recent decision` | the newest decision record in Loki for this device and peer within `--minutes` | `No decision audit records for <device> → <peer> in the last <minutes>m.` | `logs query failed: <error>` |
 
 In the last column, `<error>` is the text of the failed call, and `<address>` is the address nobs used, without a trailing `/` (and, for Prefect, without a trailing `/api`). For Alertmanager it is `cannot reach the alerts service at <address>: <reason>`, `the alerts service at <address> answered <status>` or `the alerts service at <address> answered with a body nobs cannot read: <problem>`. For Prefect it is `cannot reach <address>: <reason>`, `the flows service answered <status> on /api/flow_runs/filter: <answer>` or `the flows service answered with text nobs cannot read: <problem>`. For Loki it is `cannot reach <address>: <reason>`, `the logs service answered <status> on /loki/api/v1/query_range: <answer>` or `the logs service answered with text nobs cannot read: <problem>`. `<reason>` is why nobs could not connect, `<answer>` is the first 200 characters of the answer, and `<problem>` says what was wrong with the answer. The `page` fetch error uses the texts of the alerts service.
 
@@ -1269,14 +1277,14 @@ Ctrl-C ends nobs at once, at a pause or at any other moment. nobs does not clean
 |---|---|---|---|
 | `--auto` | | off | waits 2 seconds at a pause instead of waiting for Enter |
 | `--timeout SECONDS` | | 60 | gives how many seconds nobs waits for the Loki match of each path; a whole number from 0 to 18446744073709551615; with 0 nobs asks Loki once; a number too large for the clock of the machine means nobs waits until Loki matches |
-| `--prom-url URL` | `PROMETHEUS_URL` | `http://localhost:9090` | gives the address of Prometheus |
-| `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` | gives the address of Loki |
-| `--am-url URL` | `ALERTMANAGER_URL` | `http://localhost:9093` | gives the address of Alertmanager |
-| `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` | gives the address of Infrahub |
+| `--metrics-url URL` | `METRICS_URL` | `http://localhost:9090` | gives the address of the metrics service |
+| `--logs-url URL` | `LOGS_URL` | `http://localhost:3001` | gives the address of the logs service |
+| `--alerts-url URL` | `ALERTS_URL` | `http://localhost:9093` | gives the address of the alerts service |
+| `--sot-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` | gives the address of the source of truth |
 | `--webhook-url URL` | `WEBHOOK_URL` | `http://localhost:9997/v1/api/webhook` | gives the address of the webhook |
 | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none | gives the token for Infrahub; it is required |
 
-nobs finds each address and the token in this order: the flag, then the variable, then the default, as in [cycle and page](#cycle-and-page). A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Prometheus, Loki, Alertmanager or Infrahub is dropped. The address of the webhook is used as it is given. After the pre-flight, each call to Loki or Infrahub waits at most 10 seconds, and the post to the webhook waits at most 15.
+The old names still work: `--prom-url` and `PROMETHEUS_URL` for the metrics service, `--loki-url` and `LOKI_URL` for the logs service, `--am-url`, `--alertmanager-url` and `ALERTMANAGER_URL` for the alerts service, and `--infrahub-url` and `--address` for the source of truth. nobs finds each address and the token in this order: the flag, then the variable, then the default, as in [cycle and page](#cycle-and-page). The full order of the places and the names of an address is in [status](#status). A variable can be set in the shell, in the `.env` file or in the `.setup.env` file of the workshop, and nobs looks in that order. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on the address of Prometheus, Loki, Alertmanager or Infrahub is dropped. The address of the webhook is used as it is given. After the pre-flight, each call to Loki or Infrahub waits at most 10 seconds, and the post to the webhook waits at most 15.
 
 nobs prints a blank line before each panel. For example, this is path 2:
 
@@ -1439,14 +1447,14 @@ A baseline is stuck when its state is `paused` and the name in the `pending_ref`
 
 | Flag | Variable | Default | What it does |
 |---|---|---|---|
-| `--alertmanager-url URL` | `ALERTMANAGER_URL` | `http://localhost:9093` | gives the address of Alertmanager |
+| `--alerts-url URL` | `ALERTS_URL` | `http://localhost:9093` | gives the address of the alerts service |
 | `--sonda-url URL` | `SONDA_SERVER_URL` | `http://localhost:8085` | gives the address of `sonda-server` |
-| `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` | gives the address of Loki |
-| `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` | gives the address of Infrahub |
+| `--logs-url URL` | `LOGS_URL` | `http://localhost:3001` | gives the address of the logs service |
+| `--sot-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` | gives the address of the source of truth |
 | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none | gives the token for Infrahub |
 | `--skip-sonda-logs` | | off | leaves out step 7, so nobs does not ask Loki and does not restart `sonda-logs` |
 
-nobs finds each address and the token in this order: the flag, then the variable, then the default. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it, so keep the token in the `.env` file. When the address of Infrahub names `infrahub-server`, nobs uses `http://localhost:8000` and prints the rewrite line `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000` after the first line, as `load-infrahub` does.
+The old names still work: `--alertmanager-url`, `--am-url` and `ALERTMANAGER_URL` for the alerts service, `--loki-url` and `LOKI_URL` for the logs service, and `--infrahub-url` and `--address` for the source of truth. nobs finds each address and the token in this order: the flag, then the variable, then the default. The full order of the places and the names of an address is in [status](#status). A variable can be set in the shell, in the `.env` file or in the `.setup.env` file of the workshop, and nobs looks in that order. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it, so keep the token in the `.env` file. When the address of Infrahub names `infrahub-server`, nobs uses `http://localhost:8000` and prints the rewrite line `INFRAHUB_ADDRESS rewritten to host-reachable http://localhost:8000` after the first line, as `load-infrahub` does.
 
 Two more variables apply. `SONDA_API_KEY` is the key that nobs sends to Sonda as `Authorization: Bearer <key>` in steps 2, 5 and 6; it has no flag and no default. `SONDA_LOKI_SINK_URL` is the address of Loki as Sonda sees it, and its default is `http://loki:3001`; step 2 sends it to Sonda, as `maintenance` does. Each of the two counts as not given when it is empty or only spaces.
 
@@ -1576,14 +1584,14 @@ A target is good only when its answer is `<n> frames, <m> rows`. A panel passes 
 |---|---|---|---|
 | `--skip-c` | | off | is accepted and changes nothing, because layer C is not built |
 | `--out-dir DIR` | `PREFLIGHT_OUT_DIR` | `/tmp/preflight-out` | gives the folder for the three files |
-| `--prom-url URL` | `PROMETHEUS_URL` | `http://localhost:9090` | gives the address of Prometheus |
-| `--loki-url URL` | `LOKI_URL` | `http://localhost:3001` | gives the address of Loki |
+| `--metrics-url URL` | `METRICS_URL` | `http://localhost:9090` | gives the address of the metrics service |
+| `--logs-url URL` | `LOGS_URL` | `http://localhost:3001` | gives the address of the logs service |
 | `--grafana-url URL` | `GRAFANA_URL` | `http://localhost:3000` | gives the address of Grafana |
 | `--sonda-url URL` | `SONDA_SERVER_URL` | `http://localhost:8085` | gives the address of `sonda-server` |
-| `--infrahub-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` | gives the address of Infrahub |
+| `--sot-url URL` | `INFRAHUB_ADDRESS` | `http://localhost:8000` | gives the address of the source of truth |
 | `--token TOKEN` | `INFRAHUB_API_TOKEN` | none | gives the token for Infrahub |
 
-nobs finds each address, the folder and the token in this order: the flag, then the variable, then the default. A variable can be set in the shell or in the `.env` file of the workshop; the shell wins. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. `--with-c` is not accepted: it is a usage error, and nobs exits with 2. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it, so keep the token in the `.env` file.
+The old names still work: `--prom-url` and `PROMETHEUS_URL` for the metrics service, `--loki-url` and `LOKI_URL` for the logs service, and `--infrahub-url` and `--address` for the source of truth. nobs finds each address, the folder and the token in this order: the flag, then the variable, then the default. The full order of the places and the names of an address is in [status](#status). A variable can be set in the shell, in the `.env` file or in the `.setup.env` file of the workshop, and nobs looks in that order. A flag or a variable that is empty or only spaces counts as not given. A trailing `/` on an address is dropped. `--with-c` is not accepted: it is a usage error, and nobs exits with 2. A token you give with `--token` is on the command line of nobs itself, and a list of processes shows it, so keep the token in the `.env` file.
 
 Four more variables apply, and none has a flag. `GRAFANA_USER` and `GRAFANA_PASSWORD` are the login that nobs sends to Grafana; both default to `admin`, and nobs never prints them. `SONDA_API_KEY` is the key that step 4 and step 5 of layer A send to Sonda; it has no default. `SONDA_LOKI_SINK_URL` is the address of Loki as Sonda sees it, its default is `http://loki:3001`, and steps 4 and 5 send it to Sonda; it is not the same as `--loki-url`, which is the address nobs itself uses. Each of the four counts as not given when it is empty or only spaces.
 

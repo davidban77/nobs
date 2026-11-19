@@ -119,6 +119,8 @@ fn run(copy: &Copy, args: &[&str]) -> Output {
         "SONDA_LOKI_SINK_URL",
         "PROMETHEUS_URL",
         "LOKI_URL",
+        "METRICS_URL",
+        "LOGS_URL",
         "NOBS_DIR",
     ] {
         command.env_remove(name);

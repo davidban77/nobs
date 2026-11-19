@@ -24,10 +24,10 @@ use nobs_core::layers;
 use nobs_core::locate::{find_workshops, locate, Kind, LocateError, Located};
 use nobs_core::loki::{self, Loki};
 use nobs_core::nautobot::{Error as NautobotError, Load, Nautobot, Outcome};
-use nobs_core::prefect::{self, FlowRun, Prefect};
+use nobs_core::prefect::{FlowRun, Prefect};
 use nobs_core::preflight::{preflight, Check, Status};
 use nobs_core::project;
-use nobs_core::prometheus::{self, Prometheus};
+use nobs_core::prometheus::Prometheus;
 use nobs_core::render::Renderer;
 use nobs_core::reset;
 use nobs_core::runner::{Output, Runner};
@@ -50,12 +50,6 @@ const DASH: &str = "—";
 const LOKI_SINK: &str = "http://loki:3001";
 
 const PROM_REMOTE_WRITE: &str = "http://prometheus:9090/api/v1/write";
-
-const LOKI_ADDRESS: (&str, &str) = ("LOKI_URL", loki::DEFAULT_URL);
-
-const PROMETHEUS_ADDRESS: (&str, &str) = ("PROMETHEUS_URL", prometheus::DEFAULT_URL);
-
-const PREFECT_ADDRESS: (&str, &str) = ("PREFECT_API_URL", prefect::DEFAULT_URL);
 
 const WEBHOOK_ADDRESS: (&str, &str) = ("WEBHOOK_URL", webhook::DEFAULT_URL);
 
@@ -506,31 +500,167 @@ pub struct ScenariosFlags {
 }
 
 #[derive(Debug, Args)]
-pub struct ResetFlags {
+pub struct MetricsUrl {
     #[arg(
-        long,
+        id = "metrics-url",
+        long = "metrics-url",
         value_name = "URL",
-        help = "Address of Alertmanager; nobs looks at --alertmanager-url, then ALERTMANAGER_URL, then http://localhost:9093"
+        help = "Address of the metrics service; nobs looks at --metrics-url, then METRICS_URL, then http://localhost:9090 (old names, still work: --prom-url, PROMETHEUS_URL)"
     )]
-    alertmanager_url: Option<String>,
+    new: Option<String>,
+    #[arg(id = "prom-url", long = "prom-url", value_name = "URL", hide = true)]
+    old: Option<String>,
+}
+
+type Place<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+impl MetricsUrl {
+    fn flags(&self) -> [Option<&str>; 2] {
+        [self.new.as_deref(), self.old.as_deref()]
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Metrics, &self.flags(), places)
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct LogsUrl {
+    #[arg(
+        id = "logs-url",
+        long = "logs-url",
+        value_name = "URL",
+        help = "Address of the logs service; nobs looks at --logs-url, then LOGS_URL, then http://localhost:3001 (old names, still work: --loki-url, LOKI_URL)"
+    )]
+    new: Option<String>,
+    #[arg(id = "loki-url", long = "loki-url", value_name = "URL", hide = true)]
+    old: Option<String>,
+}
+
+impl LogsUrl {
+    fn flags(&self) -> [Option<&str>; 2] {
+        [self.new.as_deref(), self.old.as_deref()]
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Logs, &self.flags(), places)
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct AlertsUrl {
+    #[arg(
+        id = "alerts-url",
+        long = "alerts-url",
+        value_name = "URL",
+        help = "Address of the alerts service; nobs looks at --alerts-url, then ALERTS_URL, then http://localhost:9093 (old names, still work: --am-url, --alertmanager-url, ALERTMANAGER_URL)"
+    )]
+    new: Option<String>,
+    #[arg(id = "am-url", long = "am-url", value_name = "URL", hide = true)]
+    old: Option<String>,
+    #[arg(
+        id = "alertmanager-url",
+        long = "alertmanager-url",
+        value_name = "URL",
+        hide = true
+    )]
+    older: Option<String>,
+}
+
+impl AlertsUrl {
+    fn flags(&self) -> [Option<&str>; 3] {
+        [
+            self.new.as_deref(),
+            self.old.as_deref(),
+            self.older.as_deref(),
+        ]
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Alerts, &self.flags(), places)
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct SotUrl {
+    #[arg(
+        id = "sot-url",
+        long = "sot-url",
+        value_name = "URL",
+        help = "Address of the source of truth; nobs looks at --sot-url, then INFRAHUB_ADDRESS, then http://localhost:8000 (old names, still work: --infrahub-url, --address)"
+    )]
+    new: Option<String>,
+    #[arg(
+        id = "infrahub-url",
+        long = "infrahub-url",
+        value_name = "URL",
+        hide = true
+    )]
+    old: Option<String>,
+    #[arg(id = "address", long = "address", value_name = "URL", hide = true)]
+    older: Option<String>,
+}
+
+impl SotUrl {
+    fn flags(&self) -> [Option<&str>; 3] {
+        [
+            self.new.as_deref(),
+            self.old.as_deref(),
+            self.older.as_deref(),
+        ]
+    }
+
+    fn given(&self) -> Option<String> {
+        status::given(Service::Sot, &self.flags(), &[])
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Sot, &self.flags(), places)
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct FlowsUrl {
+    #[arg(
+        id = "flows-url",
+        long = "flows-url",
+        value_name = "URL",
+        help = "Address of the flows service; nobs looks at --flows-url, then PREFECT_API_URL, then http://localhost:4200 (old name, still works: --prefect-url)"
+    )]
+    new: Option<String>,
+    #[arg(
+        id = "prefect-url",
+        long = "prefect-url",
+        value_name = "URL",
+        hide = true
+    )]
+    old: Option<String>,
+}
+
+impl FlowsUrl {
+    fn flags(&self) -> [Option<&str>; 2] {
+        [self.new.as_deref(), self.old.as_deref()]
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Flows, &self.flags(), places)
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ResetFlags {
+    #[command(flatten)]
+    alerts: AlertsUrl,
     #[arg(
         long,
         value_name = "URL",
         help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
     )]
     sonda_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
-    )]
-    loki_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
-    )]
-    infrahub_url: Option<String>,
+    #[command(flatten)]
+    logs: LogsUrl,
+    #[command(flatten)]
+    sot: SotUrl,
     #[arg(
         long,
         help = "Don't restart sonda-logs even if the loki sink looks wedged"
@@ -557,18 +687,10 @@ pub struct PreflightFlags {
         help = "Where to write layer_a.json, layer_b.json and REPORT.md; nobs looks at --out-dir, then PREFLIGHT_OUT_DIR, then /tmp/preflight-out"
     )]
     out_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090"
-    )]
-    prom_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
-    )]
-    loki_url: Option<String>,
+    #[command(flatten)]
+    metrics: MetricsUrl,
+    #[command(flatten)]
+    logs: LogsUrl,
     #[arg(
         long,
         value_name = "URL",
@@ -581,12 +703,8 @@ pub struct PreflightFlags {
         help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
     )]
     sonda_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
-    )]
-    infrahub_url: Option<String>,
+    #[command(flatten)]
+    sot: SotUrl,
     #[arg(
         long,
         value_name = "TOKEN",
@@ -606,30 +724,14 @@ pub struct TryItFlags {
         help = "How many seconds to wait for the Loki match of each path"
     )]
     timeout: u64,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090"
-    )]
-    prom_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
-    )]
-    loki_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
-    )]
-    am_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
-    )]
-    infrahub_url: Option<String>,
+    #[command(flatten)]
+    metrics: MetricsUrl,
+    #[command(flatten)]
+    logs: LogsUrl,
+    #[command(flatten)]
+    alerts: AlertsUrl,
+    #[command(flatten)]
+    sot: SotUrl,
     #[arg(
         long,
         value_name = "URL",
@@ -671,24 +773,12 @@ pub struct CycleFlags {
         help = "Lookback window for recent panels."
     )]
     minutes: u64,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
-    )]
-    am_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
-    )]
-    loki_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Prefect; nobs looks at --prefect-url, then PREFECT_API_URL, then http://localhost:4200"
-    )]
-    prefect_url: Option<String>,
+    #[command(flatten)]
+    alerts: AlertsUrl,
+    #[command(flatten)]
+    logs: LogsUrl,
+    #[command(flatten)]
+    flows: FlowsUrl,
     #[arg(
         long,
         value_name = "URL",
@@ -732,12 +822,8 @@ pub struct PageFlags {
         help = "Override the wall-clock printed in the page (HH:MM). Default: the current time in UTC."
     )]
     now: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
-    )]
-    am_url: Option<String>,
+    #[command(flatten)]
+    alerts: AlertsUrl,
 }
 
 #[derive(Debug, Args)]
@@ -760,12 +846,8 @@ pub struct RcaFlags {
         help = "How far back to look."
     )]
     minutes: u64,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
-    )]
-    loki_url: Option<String>,
+    #[command(flatten)]
+    logs: LogsUrl,
 }
 
 #[derive(Debug, Args)]
@@ -802,24 +884,12 @@ pub struct EvidenceFlags {
         help = "How many log lines to show at most"
     )]
     log_limit: u64,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090"
-    )]
-    prom_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
-    )]
-    loki_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
-    )]
-    infrahub_url: Option<String>,
+    #[command(flatten)]
+    metrics: MetricsUrl,
+    #[command(flatten)]
+    logs: LogsUrl,
+    #[command(flatten)]
+    sot: SotUrl,
     #[arg(
         long,
         value_name = "TOKEN",
@@ -830,12 +900,8 @@ pub struct EvidenceFlags {
 
 #[derive(Debug, Args)]
 pub struct InfrahubFlags {
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Infrahub; nobs looks at --address, then INFRAHUB_ADDRESS, then http://localhost:8000"
-    )]
-    address: Option<String>,
+    #[command(flatten)]
+    sot: SotUrl,
     #[arg(
         long,
         value_name = "TOKEN",
@@ -914,12 +980,8 @@ pub struct MaintenanceFlags {
 
 #[derive(Debug, Args)]
 pub struct DevicesFlags {
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
-    )]
-    infrahub_url: Option<String>,
+    #[command(flatten)]
+    sot: SotUrl,
     #[arg(
         long,
         value_name = "TOKEN",
@@ -941,12 +1003,8 @@ pub enum SchemaCommand {
 
 #[derive(Debug, Args)]
 pub struct AlertsFlags {
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
-    )]
-    am_url: Option<String>,
+    #[command(flatten)]
+    alerts: AlertsUrl,
     #[arg(
         short,
         long,
@@ -982,54 +1040,30 @@ pub struct AlertsFlags {
 
 #[derive(Debug, Args)]
 pub struct SilencesFlags {
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
-    )]
-    am_url: Option<String>,
+    #[command(flatten)]
+    alerts: AlertsUrl,
     #[arg(long, help = "Show expired silences too")]
     show_expired: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct StatusFlags {
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090"
-    )]
-    prom_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001"
-    )]
-    loki_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093"
-    )]
-    am_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000"
-    )]
-    infrahub_url: Option<String>,
+    #[command(flatten)]
+    metrics: MetricsUrl,
+    #[command(flatten)]
+    logs: LogsUrl,
+    #[command(flatten)]
+    alerts: AlertsUrl,
+    #[command(flatten)]
+    sot: SotUrl,
     #[arg(
         long,
         value_name = "URL",
         help = "Address of Grafana; nobs looks at --grafana-url, then http://localhost:3000"
     )]
     grafana_url: Option<String>,
-    #[arg(
-        long,
-        value_name = "URL",
-        help = "Address of Prefect; nobs looks at --prefect-url, then PREFECT_API_URL, then http://localhost:4200"
-    )]
-    prefect_url: Option<String>,
+    #[command(flatten)]
+    flows: FlowsUrl,
     #[arg(
         long,
         value_name = "URL",
@@ -1517,23 +1551,23 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         remove_blank_variables(&["NETWORK_AGENT_USER", "NETWORK_AGENT_PASSWORD"]);
     }
     if matches!(cli.command, Some(Command::External(_))) {
-        remove_blank_variables(&[
-            "PROMETHEUS_URL",
-            "LOKI_URL",
-            "GRAFANA_URL",
-            "GRAFANA_USER",
-            "GRAFANA_PASSWORD",
-            "PREFLIGHT_OUT_DIR",
-            "ALERTMANAGER_URL",
-            "PREFECT_API_URL",
-            "WEBHOOK_URL",
-            "INFRAHUB_ADDRESS",
-            "INFRAHUB_API_TOKEN",
-            "SONDA_SERVER_URL",
-            "SONDA_LOKI_SINK_URL",
-            "SONDA_PROM_REMOTE_WRITE_URL",
-            "SONDA_API_KEY",
-        ]);
+        let names: Vec<&str> = SERVICES
+            .iter()
+            .flat_map(|row| [row.setting, row.old_setting])
+            .flatten()
+            .chain([
+                "GRAFANA_URL",
+                "GRAFANA_USER",
+                "GRAFANA_PASSWORD",
+                "PREFLIGHT_OUT_DIR",
+                "WEBHOOK_URL",
+                "INFRAHUB_API_TOKEN",
+                "SONDA_LOKI_SINK_URL",
+                "SONDA_PROM_REMOTE_WRITE_URL",
+                "SONDA_API_KEY",
+            ])
+            .collect();
+        remove_blank_variables(&names);
     }
     let given = cli.dir.or_else(|| {
         std::env::var_os("NOBS_DIR")
@@ -3196,23 +3230,17 @@ fn given(value: Option<String>) -> Option<String> {
 }
 
 fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
-    let from = Urls::from_lookup(lookup);
+    let from = Urls::from_lookup(&[&lookup]);
     Urls {
         grafana: given(flags.grafana_url).unwrap_or(from.grafana),
-        prometheus: given(flags.prom_url).unwrap_or(from.prometheus),
-        loki: given(flags.loki_url).unwrap_or(from.loki),
-        alertmanager: given(flags.am_url).unwrap_or(from.alertmanager),
-        infrahub: given(flags.infrahub_url).unwrap_or(from.infrahub),
-        prefect: given(flags.prefect_url).unwrap_or(from.prefect),
+        prometheus: flags.metrics.address(&[&lookup]),
+        loki: flags.logs.address(&[&lookup]),
+        alertmanager: flags.alerts.address(&[&lookup]),
+        infrahub: flags.sot.address(&[&lookup]),
+        prefect: flags.flows.address(&[&lookup]),
         sonda: given(flags.sonda_url).unwrap_or(from.sonda),
         set: from.set,
     }
-}
-
-fn alertmanager_address(flag: Option<String>, lookup: impl Fn(&str) -> Option<String>) -> String {
-    given(flag)
-        .or_else(|| given(lookup("ALERTMANAGER_URL")))
-        .unwrap_or_else(|| Urls::defaults().alertmanager)
 }
 
 fn label_filter(text: &str) -> Result<(String, String), String> {
@@ -3242,9 +3270,8 @@ fn run_alerts(flags: AlertsFlags) -> i32 {
             return 2;
         }
     };
-    let client = Alertmanager::new(alertmanager_address(flags.am_url, |name| {
-        std::env::var(name).ok()
-    }));
+    let process = |name: &str| std::env::var(name).ok();
+    let client = Alertmanager::new(flags.alerts.address(&[&process]));
     let alerts = match client.alerts(
         flags.silenced || !flags.no_silenced,
         flags.inhibited || !flags.no_inhibited,
@@ -3273,9 +3300,8 @@ fn run_alerts(flags: AlertsFlags) -> i32 {
 }
 
 fn run_silences(flags: SilencesFlags) -> i32 {
-    let client = Alertmanager::new(alertmanager_address(flags.am_url, |name| {
-        std::env::var(name).ok()
-    }));
+    let process = |name: &str| std::env::var(name).ok();
+    let client = Alertmanager::new(flags.alerts.address(&[&process]));
     let silences = match client.silences() {
         Ok(silences) => silences,
         Err(error) => {
@@ -3424,7 +3450,7 @@ fn run_load_infrahub(flags: LoadInfrahubFlags, located: &Located) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let Some(infrahub) = connected(
-        flags.infrahub.address.as_deref(),
+        flags.infrahub.sot.given().as_deref(),
         flags.infrahub.token.as_deref(),
     ) else {
         return 1;
@@ -3484,9 +3510,11 @@ fn seed_table(seed: &Seed) -> String {
 }
 
 fn run_schema_load(file: &Path, flags: InfrahubFlags) -> i32 {
-    let (line, client) = connect(flags.address.as_deref(), flags.token.as_deref(), &|name| {
-        std::env::var(name).ok()
-    });
+    let (line, client) = connect(
+        flags.sot.given().as_deref(),
+        flags.token.as_deref(),
+        &|name| std::env::var(name).ok(),
+    );
     print_line(line);
     if is_missing(file, "schema") {
         return 1;
@@ -3544,7 +3572,7 @@ fn run_maintenance(flags: MaintenanceFlags, located: &Located) -> i32 {
     let state = flags.state || !flags.clear;
     let Some(source) = opened(
         workshop,
-        flags.infrahub.address.as_deref(),
+        flags.infrahub.sot.given().as_deref(),
         flags.infrahub.token.as_deref(),
         Some(&flags.kind),
     ) else {
@@ -3562,7 +3590,7 @@ fn run_devices(flags: DevicesFlags, located: &Located) -> i32 {
     };
     let Some(source) = opened(
         workshop,
-        flags.infrahub_url.as_deref(),
+        flags.sot.given().as_deref(),
         flags.token.as_deref(),
         None,
     ) else {
@@ -3634,9 +3662,8 @@ fn run_rca(flags: RcaFlags, located: &Located) -> i32 {
         query.pop();
         query.push_str(&format!(r#", peer_address="{peer}"}}"#));
     }
-    let client = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, |name| {
-        std::env::var(name).ok()
-    }));
+    let process = |name: &str| std::env::var(name).ok();
+    let client = Loki::new(flags.logs.address(&[&process]));
     let lines = match client.query_range(&query, flags.minutes, flags.last, SystemTime::now()) {
         Ok(lines) => lines,
         Err(error) => {
@@ -3644,7 +3671,10 @@ fn run_rca(flags: RcaFlags, located: &Located) -> i32 {
                 loki::Error::Reach { reason, .. } => reason,
                 other => other.to_string(),
             };
-            eprintln!("nobs: Failed to query Loki at {}: {reason}", client.url());
+            eprintln!(
+                "nobs: Failed to query the logs service at {}: {reason}",
+                client.url()
+            );
             return 1;
         }
     };
@@ -3786,18 +3816,15 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
     };
     let Some(source) = opened(
         workshop,
-        flags.infrahub_url.as_deref(),
+        flags.sot.given().as_deref(),
         flags.token.as_deref(),
         None,
     ) else {
         return 1;
     };
     let intent = source.device(&flags.device);
-    let prometheus = Prometheus::new(service_address(
-        flags.prom_url,
-        PROMETHEUS_ADDRESS,
-        |name| std::env::var(name).ok(),
-    ));
+    let process = |name: &str| std::env::var(name).ok();
+    let prometheus = Prometheus::new(flags.metrics.address(&[&process]));
     let metrics = read_metrics(
         &prometheus,
         &flags.device,
@@ -3806,22 +3833,20 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
         &flags.instance,
     );
     let query = evidence::fill(&workshop.evidence_query, &flags.device, &flags.peer);
-    let lines = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, |name| {
-        std::env::var(name).ok()
-    }))
-    .query_range(
-        &query,
-        flags.log_minutes,
-        flags.log_limit,
-        SystemTime::now(),
-    )
-    .unwrap_or_default();
+    let lines = Loki::new(flags.logs.address(&[&process]))
+        .query_range(
+            &query,
+            flags.log_minutes,
+            flags.log_limit,
+            SystemTime::now(),
+        )
+        .unwrap_or_default();
     let found = intent.as_ref().ok().and_then(Option::as_ref);
     let session = found.and_then(|found| evidence::session(found, &flags.peer, &flags.afi_safi));
     let missing = match &intent {
         Ok(_) if workshop.sot == "none" => sot::Error::NoSource.to_string(),
         Ok(_) => "device not found in Infrahub".to_string(),
-        Err(error) => format!("Infrahub query failed: {error}"),
+        Err(error) => format!("sot query failed: {error}"),
     };
     let source = match (found, &intent) {
         (Some(found), _) => source_found(found, session),
@@ -3936,7 +3961,7 @@ fn cycle_alert_lines(alert: &Alert, now: i64) -> String {
 
 fn alert_panel(alertmanager: &Alertmanager, device: &str, peer: &str, now: i64) -> String {
     let body = match alertmanager.alerts(true, true) {
-        Err(error) => format!("Alertmanager query failed: {error}"),
+        Err(error) => format!("alerts query failed: {error}"),
         Ok(alerts) => {
             let lines: Vec<String> = alerts
                 .iter()
@@ -4041,7 +4066,7 @@ fn flow_runs_table(groups: &[Group]) -> String {
 
 fn flow_runs_panel(prefect: &Prefect, device: &str, peer: &str, minutes: u64, now: i64) -> String {
     let body = match prefect.flow_runs(FLOW_RUN_LIMIT) {
-        Err(error) => format!("Prefect query failed: {error}"),
+        Err(error) => format!("flows query failed: {error}"),
         Ok(runs) => {
             let selected = cycle::select(runs, device, peer, minutes, now);
             if selected.is_empty() {
@@ -4083,7 +4108,7 @@ fn decision_panel(
         r#"{{source="prefect", workflow="{workflow_label}", device="{device}", peer_address="{peer}", decision=~".+"}} | json"#
     );
     let body = match loki.query_range(&query, minutes, 1, now) {
-        Err(error) => format!("Loki query failed: {error}"),
+        Err(error) => format!("logs query failed: {error}"),
         Ok(lines) => match lines.first() {
             None => {
                 format!("No decision audit records for {device} → {peer} in the last {minutes}m.")
@@ -4112,21 +4137,21 @@ fn run_cycle(flags: CycleFlags, located: &Located) -> i32 {
         trigger,
         status,
         minutes,
-        am_url,
-        loki_url,
-        prefect_url,
+        alerts,
+        logs,
+        flows,
         webhook_url,
     } = flags;
     let lookup = |name: &str| std::env::var(name).ok();
-    let prefect = Prefect::new(service_address(prefect_url, PREFECT_ADDRESS, lookup));
+    let prefect = Prefect::new(flows.address(&[&lookup]));
     if trigger {
         let webhook_url = service_address(webhook_url, WEBHOOK_ADDRESS, lookup);
         if let Some(code) = drive_cycle(&prefect, &webhook_url, &device, &peer, &status) {
             return code;
         }
     }
-    let alertmanager = Alertmanager::new(alertmanager_address(am_url, lookup));
-    let loki = Loki::new(service_address(loki_url, LOKI_ADDRESS, lookup));
+    let alertmanager = Alertmanager::new(alerts.address(&[&lookup]));
+    let loki = Loki::new(logs.address(&[&lookup]));
     let now = SystemTime::now();
     let seconds = seconds_of(now);
     println!("{}", alert_panel(&alertmanager, &device, &peer, seconds));
@@ -4178,9 +4203,8 @@ fn run_page(flags: PageFlags, located: &Located) -> i32 {
     let Kind::Workshop(workshop) = &located.kind else {
         unreachable!("a workshop command runs in a workshop");
     };
-    let alertmanager = Alertmanager::new(alertmanager_address(flags.am_url, |name| {
-        std::env::var(name).ok()
-    }));
+    let process = |name: &str| std::env::var(name).ok();
+    let alertmanager = Alertmanager::new(flags.alerts.address(&[&process]));
     let alerts = match alertmanager.alerts(true, true) {
         Ok(alerts) => alerts,
         Err(error) => {
@@ -4304,11 +4328,11 @@ fn run_try_it(flags: TryItFlags, located: &Located) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let lookup = |name: &str| std::env::var(name).ok();
-    let prometheus = service_address(flags.prom_url, PROMETHEUS_ADDRESS, lookup);
-    let loki_address = service_address(flags.loki_url, LOKI_ADDRESS, lookup);
+    let prometheus = flags.metrics.address(&[&lookup]);
+    let loki_address = flags.logs.address(&[&lookup]);
     let webhook_url = service_address(flags.webhook_url, WEBHOOK_ADDRESS, lookup);
-    let alertmanager = alertmanager_address(flags.am_url, lookup);
-    let Some(infrahub) = connected(flags.infrahub_url.as_deref(), flags.token.as_deref()) else {
+    let alertmanager = flags.alerts.address(&[&lookup]);
+    let Some(infrahub) = connected(flags.sot.given().as_deref(), flags.token.as_deref()) else {
         return 1;
     };
     if !stack_ready(
@@ -4662,11 +4686,11 @@ fn run_reset(flags: ResetFlags, located: &Located, runner: &dyn Runner) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let lookup = |name: &str| std::env::var(name).ok();
-    let alertmanager = Alertmanager::new(alertmanager_address(flags.alertmanager_url, lookup));
-    let loki = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, lookup));
+    let alertmanager = Alertmanager::new(flags.alerts.address(&[&lookup]));
+    let loki = Loki::new(flags.logs.address(&[&lookup]));
     let sonda = cascade_client(flags.sonda_url, None, lookup);
     println!("Resetting lab to known-good state.");
-    let Some(infrahub) = connected(flags.infrahub_url.as_deref(), flags.token.as_deref()) else {
+    let Some(infrahub) = connected(flags.sot.given().as_deref(), flags.token.as_deref()) else {
         return 1;
     };
     let compose = compose_in(located, None);
@@ -4771,8 +4795,8 @@ fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let lookup = |name: &str| std::env::var(name).ok();
-    let prometheus = Prometheus::new(service_address(flags.prom_url, PROMETHEUS_ADDRESS, lookup));
-    let loki = Loki::new(service_address(flags.loki_url, LOKI_ADDRESS, lookup));
+    let prometheus = Prometheus::new(flags.metrics.address(&[&lookup]));
+    let loki = Loki::new(flags.logs.address(&[&lookup]));
     let grafana_default = Urls::defaults().grafana;
     let grafana = Grafana::new(
         service_address(flags.grafana_url, ("GRAFANA_URL", &grafana_default), lookup),
@@ -4786,7 +4810,7 @@ fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
         .unwrap_or_else(|| PathBuf::from(PREFLIGHT_OUT_DIR));
     let sonda = cascade_client(flags.sonda_url.clone(), None, lookup);
     let (_, sink) = event_addresses(lookup);
-    let Some(infrahub) = connected(flags.infrahub_url.as_deref(), flags.token.as_deref()) else {
+    let Some(infrahub) = connected(flags.sot.given().as_deref(), flags.token.as_deref()) else {
         return 1;
     };
     if let Err(error) = fs::create_dir_all(&out_dir) {
@@ -5083,17 +5107,14 @@ fn screen_start_with(
                 .iter()
                 .find(|stack| stack.path == located.dir)
                 .map_or(&[][..], |stack| stack.env.as_slice());
-            let lookup = |name: &str| {
-                given(process(name)).or_else(|| {
-                    given(
-                        lab_env
-                            .iter()
-                            .find(|(key, _)| key == name)
-                            .map(|(_, value)| value.clone()),
-                    )
-                })
+            let lab_file = |name: &str| {
+                lab_env
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value.clone())
             };
-            let urls = Urls::from_lookup(lookup);
+            let lookup = |name: &str| given(process(name)).or_else(|| given(lab_file(name)));
+            let urls = Urls::from_lookup(&[process, &lab_file]);
             let path = located.dir.join("containerlab").join("lab_vars.yml");
             let ((source, source_error), source_service): (
                 (Option<std::sync::Arc<dyn SourceOfTruth>>, _),
@@ -5154,7 +5175,7 @@ fn screen_start_with(
                 source: None,
                 source_error: None,
                 source_service: None,
-                urls: Urls::from_lookup(process),
+                urls: Urls::from_lookup(&[process]),
                 chooser: true,
                 program,
                 login: std::sync::Arc::new(|_| None),
@@ -5168,7 +5189,7 @@ fn screen_start_with(
             source: None,
             source_error: None,
             source_service: None,
-            urls: Urls::from_lookup(process),
+            urls: Urls::from_lookup(&[process]),
             chooser: false,
             program,
             login: std::sync::Arc::new(|_| None),
@@ -5529,12 +5550,29 @@ mod tests {
     fn flags_all(text: Option<&str>) -> StatusFlags {
         let flag = || text.map(String::from);
         StatusFlags {
-            prom_url: flag(),
-            loki_url: flag(),
-            am_url: flag(),
-            infrahub_url: flag(),
+            metrics: MetricsUrl {
+                new: None,
+                old: flag(),
+            },
+            logs: LogsUrl {
+                new: None,
+                old: flag(),
+            },
+            alerts: AlertsUrl {
+                new: None,
+                old: flag(),
+                older: None,
+            },
+            sot: SotUrl {
+                new: None,
+                old: flag(),
+                older: None,
+            },
             grafana_url: flag(),
-            prefect_url: flag(),
+            flows: FlowsUrl {
+                new: None,
+                old: flag(),
+            },
             sonda_url: flag(),
         }
     }
@@ -5578,12 +5616,29 @@ mod tests {
     #[test]
     fn each_flag_gives_its_own_address_and_beats_the_variable() {
         let flags = StatusFlags {
-            prom_url: Some("http://flag-prometheus".to_string()),
-            loki_url: Some("http://flag-loki".to_string()),
-            am_url: Some("http://flag-alertmanager".to_string()),
-            infrahub_url: Some("http://flag-infrahub".to_string()),
+            metrics: MetricsUrl {
+                new: None,
+                old: Some("http://flag-prometheus".to_string()),
+            },
+            logs: LogsUrl {
+                new: None,
+                old: Some("http://flag-loki".to_string()),
+            },
+            alerts: AlertsUrl {
+                new: None,
+                old: Some("http://flag-alertmanager".to_string()),
+                older: None,
+            },
+            sot: SotUrl {
+                new: None,
+                old: Some("http://flag-infrahub".to_string()),
+                older: None,
+            },
             grafana_url: Some("http://flag-grafana".to_string()),
-            prefect_url: Some("http://flag-prefect".to_string()),
+            flows: FlowsUrl {
+                new: None,
+                old: Some("http://flag-prefect".to_string()),
+            },
             sonda_url: Some("http://flag-sonda".to_string()),
         };
 
@@ -5621,19 +5676,19 @@ mod tests {
         let variable = |_: &str| Some("http://var-alertmanager".to_string());
 
         assert_eq!(
-            alertmanager_address(Some("http://flag".to_string()), variable),
+            status::address(Service::Alerts, &[Some("http://flag")], &[&variable]),
             "http://flag"
         );
         assert_eq!(
-            alertmanager_address(Some(" ".to_string()), variable),
+            status::address(Service::Alerts, &[Some(" ")], &[&variable]),
             "http://var-alertmanager"
         );
         assert_eq!(
-            alertmanager_address(None, variable),
+            status::address(Service::Alerts, &[None], &[&variable]),
             "http://var-alertmanager"
         );
         assert_eq!(
-            alertmanager_address(Some(String::new()), |_| Some("  ".to_string())),
+            status::address(Service::Alerts, &[Some("")], &[&|_| Some("  ".to_string())]),
             "http://localhost:9093"
         );
     }
@@ -5642,44 +5697,42 @@ mod tests {
     fn the_loki_and_prometheus_addresses_are_the_flag_then_the_variable_then_the_default() {
         let blank = |_: &str| Some("  ".to_string());
         let cases = [
-            (LOKI_ADDRESS, "LOKI_URL", "http://localhost:3001"),
-            (
-                PROMETHEUS_ADDRESS,
-                "PROMETHEUS_URL",
-                "http://localhost:9090",
-            ),
+            (Service::Logs, "LOKI_URL", "http://localhost:3001"),
+            (Service::Metrics, "PROMETHEUS_URL", "http://localhost:9090"),
         ];
 
-        for (address, name, default) in cases {
+        for (service, name, default) in cases {
             let variable = move |asked: &str| (asked == name).then(|| format!("http://var-{name}"));
 
             assert_eq!(
-                service_address(Some("http://flag".to_string()), address, variable),
+                status::address(service, &[Some("http://flag")], &[&variable]),
                 "http://flag"
             );
             assert_eq!(
-                service_address(Some(" ".to_string()), address, variable),
+                status::address(service, &[Some(" ")], &[&variable]),
                 format!("http://var-{name}")
             );
             assert_eq!(
-                service_address(None, address, variable),
+                status::address(service, &[None], &[&variable]),
                 format!("http://var-{name}")
             );
-            assert_eq!(service_address(None, address, |_| None), default);
-            assert_eq!(
-                service_address(Some(String::new()), address, blank),
-                default
-            );
+            assert_eq!(status::address(service, &[None], &[&|_| None]), default);
+            assert_eq!(status::address(service, &[Some("")], &[&blank]), default);
         }
     }
 
     #[test]
     fn the_prefect_and_webhook_addresses_are_the_flag_then_the_variable_then_the_default() {
         let blank = |_: &str| Some("  ".to_string());
-        let cases = [
-            (PREFECT_ADDRESS, "PREFECT_API_URL", "http://localhost:4200"),
+        type Address = fn(Option<&str>, &dyn Fn(&str) -> Option<String>) -> String;
+        let cases: [(Address, &str, &str); 2] = [
             (
-                WEBHOOK_ADDRESS,
+                |flag, lookup| status::address(Service::Flows, &[flag], &[lookup]),
+                "PREFECT_API_URL",
+                "http://localhost:4200",
+            ),
+            (
+                |flag, lookup| service_address(flag.map(String::from), WEBHOOK_ADDRESS, lookup),
                 "WEBHOOK_URL",
                 "http://localhost:9997/v1/api/webhook",
             ),
@@ -5688,19 +5741,155 @@ mod tests {
         for (address, name, default) in cases {
             let variable = move |asked: &str| (asked == name).then(|| format!("http://var-{name}"));
 
+            assert_eq!(address(Some("http://flag"), &variable), "http://flag");
+            assert_eq!(address(Some(" "), &variable), format!("http://var-{name}"));
+            assert_eq!(address(None, &|_| None), default);
+            assert_eq!(address(Some(""), &blank), default);
+        }
+    }
+
+    const NEW: &str = "http://127.0.0.1:19001";
+    const OLD: &str = "http://127.0.0.1:19002";
+
+    #[test]
+    fn the_new_and_the_old_flag_of_one_kind_parse_on_one_line_and_the_new_one_is_given() {
+        for line in [
+            ["status", "--metrics-url", NEW, "--prom-url", OLD],
+            ["status", "--prom-url", OLD, "--metrics-url", NEW],
+        ] {
+            let parsed = WorkshopCli::try_parse_from(line).unwrap();
+            let WorkshopCommand::Status { flags } = parsed.command else {
+                panic!("{line:?} is not status");
+            };
             assert_eq!(
-                service_address(Some("http://flag".to_string()), address, variable),
-                "http://flag"
+                status::given(Service::Metrics, &flags.metrics.flags(), &[]),
+                Some(NEW.to_string()),
+                "{line:?}"
             );
-            assert_eq!(
-                service_address(Some(" ".to_string()), address, variable),
-                format!("http://var-{name}")
+        }
+    }
+
+    #[test]
+    fn every_old_word_still_parses() {
+        let commands: [(&[&str], &[&str]); 13] = [
+            (
+                &["status"],
+                &[
+                    "--prom-url",
+                    "--loki-url",
+                    "--am-url",
+                    "--infrahub-url",
+                    "--prefect-url",
+                ],
+            ),
+            (&["alerts"], &["--am-url"]),
+            (&["silences"], &["--am-url"]),
+            (&["page"], &["--am-url"]),
+            (&["rca"], &["--loki-url"]),
+            (
+                &["cycle", "srl1", "10.1.99.2"],
+                &["--am-url", "--loki-url", "--prefect-url"],
+            ),
+            (
+                &["evidence", "srl1", "10.1.99.2"],
+                &["--prom-url", "--loki-url", "--infrahub-url"],
+            ),
+            (
+                &["try-it"],
+                &["--prom-url", "--loki-url", "--am-url", "--infrahub-url"],
+            ),
+            (
+                &["preflight"],
+                &["--prom-url", "--loki-url", "--infrahub-url"],
+            ),
+            (
+                &["reset"],
+                &["--alertmanager-url", "--loki-url", "--infrahub-url"],
+            ),
+            (&["devices"], &["--infrahub-url"]),
+            (&["load-infrahub"], &["--address"]),
+            (&["maintenance", "-d", "srl1"], &["--address"]),
+        ];
+        let schema: (&[&str], &[&str]) = (&["schema", "load", "schema.yml"], &["--address"]);
+
+        for (command, words) in commands.into_iter().chain([schema]) {
+            for word in words {
+                let mut line: Vec<&str> = command.to_vec();
+                line.extend([*word, OLD]);
+                assert!(WorkshopCli::try_parse_from(&line).is_ok(), "{line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_new_flag_help_has_the_form_of_the_table() {
+        let kinds = [
+            (
+                Service::Metrics,
+                "the metrics service",
+                ["metrics-url", "prom-url", ""],
+            ),
+            (
+                Service::Logs,
+                "the logs service",
+                ["logs-url", "loki-url", ""],
+            ),
+            (
+                Service::Alerts,
+                "the alerts service",
+                ["alerts-url", "am-url", "alertmanager-url"],
+            ),
+            (
+                Service::Sot,
+                "the source of truth",
+                ["sot-url", "infrahub-url", "address"],
+            ),
+            (
+                Service::Flows,
+                "the flows service",
+                ["flows-url", "prefect-url", ""],
+            ),
+        ];
+        let command = WorkshopCli::command();
+        let status = command.find_subcommand("status").unwrap();
+        let argument = |id: &str| {
+            status
+                .get_arguments()
+                .find(|argument| argument.get_id() == id)
+                .unwrap_or_else(|| panic!("no argument {id}"))
+        };
+
+        for (service, noun, [new, old, older]) in kinds {
+            let row = status::row(service);
+            let new = argument(new);
+            let olds: Vec<&clap::Arg> = [old, older]
+                .into_iter()
+                .filter(|id| !id.is_empty())
+                .map(argument)
+                .collect();
+            let mut old_names: Vec<String> = olds
+                .iter()
+                .map(|argument| format!("--{}", argument.get_long().unwrap()))
+                .collect();
+            old_names.extend(row.old_setting.map(String::from));
+            let (names, work) = if old_names.len() == 1 {
+                ("name", "works")
+            } else {
+                ("names", "work")
+            };
+            let expected = format!(
+                "Address of {noun}; nobs looks at --{}, then {}, then {} (old {names}, still {work}: {})",
+                new.get_long().unwrap(),
+                row.setting.unwrap(),
+                row.default,
+                old_names.join(", ")
             );
-            assert_eq!(service_address(None, address, |_| None), default);
-            assert_eq!(
-                service_address(Some(String::new()), address, blank),
-                default
-            );
+
+            assert_eq!(new.get_help().unwrap().to_string(), expected);
+            assert!(!new.is_hide_set(), "{expected}");
+            for old in olds {
+                assert!(old.is_hide_set(), "{:?}", old.get_long());
+            }
         }
     }
 
@@ -6100,6 +6289,67 @@ mod tests {
         assert!(start.source_error.is_none());
         let header = nobs_tui::Shell::new(start).header();
         assert!(header.ends_with("sot none"), "{header}");
+    }
+
+    #[test]
+    fn the_screen_takes_the_metrics_address_from_the_first_place_then_the_new_name() {
+        type Case = (
+            &'static str,
+            Option<(&'static str, &'static str)>,
+            String,
+            Option<String>,
+        );
+        let cases: [Case; 7] = [
+            ("env-new", None, format!("METRICS_URL={NEW}\n"), None),
+            ("env-old", None, format!("PROMETHEUS_URL={NEW}\n"), None),
+            (
+                "shell-old-env-new",
+                Some(("PROMETHEUS_URL", NEW)),
+                format!("METRICS_URL={OLD}\n"),
+                None,
+            ),
+            (
+                "shell-new-env-old",
+                Some(("METRICS_URL", NEW)),
+                format!("PROMETHEUS_URL={OLD}\n"),
+                None,
+            ),
+            (
+                "env-both",
+                None,
+                format!("PROMETHEUS_URL={OLD}\nMETRICS_URL={NEW}\n"),
+                None,
+            ),
+            (
+                "env-then-setup",
+                None,
+                format!("PROMETHEUS_URL={NEW}\n"),
+                Some(format!("METRICS_URL={OLD}\n")),
+            ),
+            (
+                "env-blank-new",
+                None,
+                format!("METRICS_URL= \nPROMETHEUS_URL={NEW}\n"),
+                None,
+            ),
+        ];
+
+        for (name, shell, env, setup) in cases {
+            let lab = workshop_scratch(&format!("screen-names-{name}"), Some("none"), Some(&env));
+            if let Some(setup) = setup {
+                fs::write(lab.0.join(".setup.env"), setup).unwrap();
+            }
+            let process = |asked: &str| {
+                shell
+                    .filter(|(set, _)| *set == asked)
+                    .map(|(_, value)| value.to_string())
+            };
+
+            let start = screen_start_with(&lab.0, None, flags(None), false, &process).unwrap();
+
+            assert_eq!(start.urls.prometheus, NEW, "{name}");
+            assert!(start.urls.is_set(Service::Metrics), "{name}");
+        }
     }
 
     fn project_lab(name: &str, files: &[(&str, &str)]) -> Scratch {

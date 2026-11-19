@@ -59,7 +59,7 @@ Arguments:
 Options:
       --last <N>        Number of most-recent records to show. [default: 1]
       --minutes <N>     How far back to look. [default: 60]
-      --loki-url <URL>  Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001
+      --logs-url <URL>  Address of the logs service; nobs looks at --logs-url, then LOGS_URL, then http://localhost:3001 (old names, still work: --loki-url, LOKI_URL)
   -h, --help            Print help
 ";
 const EVIDENCE_HELP: &str = "Print the source-of-truth gate, BGP metrics snapshot, recent log lines, and a policy hint for one device and peer
@@ -71,15 +71,15 @@ Arguments:
   <PEER>    Peer IP address (e.g. 10.1.99.2).
 
 Options:
-      --afi-safi <NAME>     Address family of the BGP session [default: ipv4-unicast]
-      --instance <NAME>     Name of the network instance of the BGP session [default: default]
-      --log-minutes <N>     How many minutes back to look for log lines [default: 10]
-      --log-limit <N>       How many log lines to show at most [default: 20]
-      --prom-url <URL>      Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090
-      --loki-url <URL>      Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001
-      --infrahub-url <URL>  Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000
-      --token <TOKEN>       Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN
-  -h, --help                Print help
+      --afi-safi <NAME>    Address family of the BGP session [default: ipv4-unicast]
+      --instance <NAME>    Name of the network instance of the BGP session [default: default]
+      --log-minutes <N>    How many minutes back to look for log lines [default: 10]
+      --log-limit <N>      How many log lines to show at most [default: 20]
+      --metrics-url <URL>  Address of the metrics service; nobs looks at --metrics-url, then METRICS_URL, then http://localhost:9090 (old names, still work: --prom-url, PROMETHEUS_URL)
+      --logs-url <URL>     Address of the logs service; nobs looks at --logs-url, then LOGS_URL, then http://localhost:3001 (old names, still work: --loki-url, LOKI_URL)
+      --sot-url <URL>      Address of the source of truth; nobs looks at --sot-url, then INFRAHUB_ADDRESS, then http://localhost:8000 (old names, still work: --infrahub-url, --address)
+      --token <TOKEN>      Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN
+  -h, --help               Print help
 ";
 const CYCLE_HELP: &str = "Capture the workflow's full cycle state for one device and peer; optionally re-drive it
 
@@ -93,9 +93,9 @@ Options:
       --trigger            Post a fresh alert payload through the webhook before rendering.
       --status <STATUS>    Alert status to post with --trigger: 'firing' (default) or 'resolved'. [possible values: firing, resolved]
       --minutes <N>        Lookback window for recent panels. [default: 30]
-      --am-url <URL>       Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093
-      --loki-url <URL>     Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001
-      --prefect-url <URL>  Address of Prefect; nobs looks at --prefect-url, then PREFECT_API_URL, then http://localhost:4200
+      --alerts-url <URL>   Address of the alerts service; nobs looks at --alerts-url, then ALERTS_URL, then http://localhost:9093 (old names, still work: --am-url, --alertmanager-url, ALERTMANAGER_URL)
+      --logs-url <URL>     Address of the logs service; nobs looks at --logs-url, then LOGS_URL, then http://localhost:3001 (old names, still work: --loki-url, LOKI_URL)
+      --flows-url <URL>    Address of the flows service; nobs looks at --flows-url, then PREFECT_API_URL, then http://localhost:4200 (old name, still works: --prefect-url)
       --webhook-url <URL>  Address of the webhook; nobs looks at --webhook-url, then WEBHOOK_URL, then http://localhost:9997/v1/api/webhook
   -h, --help               Print help
 ";
@@ -104,27 +104,27 @@ const PAGE_HELP: &str = "Render a fake on-call page from a live alert
 Usage: nobs <workshop> page [OPTIONS]
 
 Options:
-  -a, --alert <ALERT>    Alertname to filter by; the default is BgpSessionNotUp
-  -d, --device <DEVICE>  Filter to alerts on this device.
-  -p, --peer <PEER>      Filter to alerts on this peer_address.
-      --now <HH:MM>      Override the wall-clock printed in the page (HH:MM). Default: the current time in UTC.
-      --am-url <URL>     Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093
-  -h, --help             Print help
+  -a, --alert <ALERT>     Alertname to filter by; the default is BgpSessionNotUp
+  -d, --device <DEVICE>   Filter to alerts on this device.
+  -p, --peer <PEER>       Filter to alerts on this peer_address.
+      --now <HH:MM>       Override the wall-clock printed in the page (HH:MM). Default: the current time in UTC.
+      --alerts-url <URL>  Address of the alerts service; nobs looks at --alerts-url, then ALERTS_URL, then http://localhost:9093 (old names, still work: --am-url, --alertmanager-url, ALERTMANAGER_URL)
+  -h, --help              Print help
 ";
 const TRY_IT_HELP: &str = "Walk the four canonical alert paths one at a time and prove each in Loki
 
 Usage: nobs <workshop> try-it [OPTIONS]
 
 Options:
-      --auto                Skip the between-step prompts (CI mode).
-      --timeout <SECONDS>   How many seconds to wait for the Loki match of each path [default: 60]
-      --prom-url <URL>      Address of Prometheus; nobs looks at --prom-url, then PROMETHEUS_URL, then http://localhost:9090
-      --loki-url <URL>      Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001
-      --am-url <URL>        Address of Alertmanager; nobs looks at --am-url, then ALERTMANAGER_URL, then http://localhost:9093
-      --infrahub-url <URL>  Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000
-      --webhook-url <URL>   Address of the webhook; nobs looks at --webhook-url, then WEBHOOK_URL, then http://localhost:9997/v1/api/webhook
-      --token <TOKEN>       Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN
-  -h, --help                Print help
+      --auto               Skip the between-step prompts (CI mode).
+      --timeout <SECONDS>  How many seconds to wait for the Loki match of each path [default: 60]
+      --metrics-url <URL>  Address of the metrics service; nobs looks at --metrics-url, then METRICS_URL, then http://localhost:9090 (old names, still work: --prom-url, PROMETHEUS_URL)
+      --logs-url <URL>     Address of the logs service; nobs looks at --logs-url, then LOGS_URL, then http://localhost:3001 (old names, still work: --loki-url, LOKI_URL)
+      --alerts-url <URL>   Address of the alerts service; nobs looks at --alerts-url, then ALERTS_URL, then http://localhost:9093 (old names, still work: --am-url, --alertmanager-url, ALERTMANAGER_URL)
+      --sot-url <URL>      Address of the source of truth; nobs looks at --sot-url, then INFRAHUB_ADDRESS, then http://localhost:8000 (old names, still work: --infrahub-url, --address)
+      --webhook-url <URL>  Address of the webhook; nobs looks at --webhook-url, then WEBHOOK_URL, then http://localhost:9997/v1/api/webhook
+      --token <TOKEN>      Token for Infrahub; nobs looks at --token, then INFRAHUB_API_TOKEN
+  -h, --help               Print help
 ";
 
 struct Copy(PathBuf);
@@ -287,6 +287,9 @@ fn run_with(copy: &Copy, args: &[&str], variables: &[(&str, &str)]) -> Output {
         "LOKI_URL",
         "PROMETHEUS_URL",
         "ALERTMANAGER_URL",
+        "LOGS_URL",
+        "METRICS_URL",
+        "ALERTS_URL",
         "PREFECT_API_URL",
         "WEBHOOK_URL",
         "INFRAHUB_ADDRESS",
@@ -503,7 +506,7 @@ fn rca_prints_the_error_and_exits_1_when_loki_answers_500() {
     assert_eq!(
         stderr(&output),
         format!(
-            "nobs: Failed to query Loki at {}: the logs service answered 500 on {LOKI_PATH}: boom\n",
+            "nobs: Failed to query the logs service at {}: the logs service answered 500 on {LOKI_PATH}: boom\n",
             loki.url()
         )
     );
@@ -517,7 +520,7 @@ fn rca_gives_the_reason_without_a_second_cannot_reach_when_loki_is_not_listening
     let output = run(&copy, &["rca"]);
 
     let message = stderr(&output);
-    let prefix = format!("nobs: Failed to query Loki at {url}: ");
+    let prefix = format!("nobs: Failed to query the logs service at {url}: ");
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stdout(&output), "");
     let reason = message
@@ -757,7 +760,7 @@ fn evidence_shows_the_error_and_exits_0_when_the_infrahub_query_fails() {
 
     let output = stack.run(&["evidence", "srl1", "10.1.99.2"]);
 
-    let failed = "Infrahub query failed: Infrahub answered 500 on /graphql/main: boom";
+    let failed = "sot query failed: Infrahub answered 500 on /graphql/main: boom";
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let blocks = blocks(&output);
     assert_eq!(blocks[0], format!("Source of truth\n{failed}"));
@@ -1233,16 +1236,16 @@ fn cycle_shows_each_error_under_its_title_and_still_exits_0() {
     let mut lines = vec![
         String::new(),
         "Alert".to_string(),
-        format!("Alertmanager query failed: the alerts service at {url} answered 500"),
+        format!("alerts query failed: the alerts service at {url} answered 500"),
         String::new(),
         "Silences (this peer)".to_string(),
         format!("silences query failed: the alerts service at {url} answered 500"),
         String::new(),
         "Prefect flow runs (last 30m)".to_string(),
-        format!("Prefect query failed: the flows service answered 500 on {FLOW_RUNS_ROUTE}: boom"),
+        format!("flows query failed: the flows service answered 500 on {FLOW_RUNS_ROUTE}: boom"),
         String::new(),
         "Most recent decision".to_string(),
-        format!("Loki query failed: the logs service answered 500 on {LOKI_PATH}: boom"),
+        format!("logs query failed: the logs service answered 500 on {LOKI_PATH}: boom"),
     ];
     lines.extend(HINT.map(String::from));
     lines.push(String::new());
@@ -1967,6 +1970,9 @@ fn try_it_run_with_input(copy: &Copy, args: &[&str], input: &str) -> Output {
         "LOKI_URL",
         "PROMETHEUS_URL",
         "ALERTMANAGER_URL",
+        "LOGS_URL",
+        "METRICS_URL",
+        "ALERTS_URL",
         "PREFECT_API_URL",
         "WEBHOOK_URL",
         "INFRAHUB_ADDRESS",

@@ -163,10 +163,12 @@ fn run(copy: &Copy, args: &[&str], env: &[(&str, &str)]) -> Output {
         "INFRAHUB_ADDRESS",
         "INFRAHUB_API_TOKEN",
         "ALERTMANAGER_URL",
+        "ALERTS_URL",
         "SONDA_SERVER_URL",
         "SONDA_API_KEY",
         "SONDA_LOKI_SINK_URL",
         "LOKI_URL",
+        "LOGS_URL",
         "NOBS_DIR",
         "FAKE_DOCKER_EXIT",
         "FAKE_DOCKER_RESTART_EXIT",
@@ -638,6 +640,53 @@ fn the_flags_win_over_the_variables_of_the_dot_env_file() {
 }
 
 #[test]
+fn reset_asks_every_alerts_logs_and_sot_word() {
+    for (run_number, [alerts, logs, sot]) in [
+        ["--alerts-url", "--logs-url", "--sot-url"],
+        ["--am-url", "--loki-url", "--address"],
+        ["--alertmanager-url", "--loki-url", "--infrahub-url"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let stubs = Stubs::clean();
+        let copy = Copy::new(
+            &format!("words-{run_number}"),
+            &format!("SONDA_SERVER_URL={}\n", stubs.sonda.url()),
+        );
+
+        let output = run(
+            &copy,
+            &[
+                alerts,
+                stubs.alertmanager.url(),
+                logs,
+                stubs.loki.url(),
+                sot,
+                stubs.infrahub.url(),
+                "--token",
+                TOKEN,
+            ],
+            &[],
+        );
+
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{alerts} {logs} {sot}\n{}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stdout(&output),
+            lines(&[FIRST, LOADED, CLEARED, REAPPLIED, LAST])
+        );
+        assert!(!stubs.alertmanager.requests().is_empty(), "{alerts}");
+        assert!(!stubs.loki.requests().is_empty(), "{logs}");
+        assert!(!stubs.infrahub.requests().is_empty(), "{sot}");
+    }
+}
+
+#[test]
 fn the_seeded_count_is_the_number_of_devices_the_lab_file_holds() {
     let answers = [
         vec![
@@ -881,20 +930,20 @@ fn the_help_names_the_command_and_the_six_flags_with_their_texts() {
     );
     let flags = [
         (
-            "--alertmanager-url <URL>",
-            "Address of Alertmanager; nobs looks at --alertmanager-url, then ALERTMANAGER_URL, then http://localhost:9093",
+            "--alerts-url <URL>",
+            "Address of the alerts service; nobs looks at --alerts-url, then ALERTS_URL, then http://localhost:9093 (old names, still work: --am-url, --alertmanager-url, ALERTMANAGER_URL)",
         ),
         (
             "--sonda-url <URL>",
             "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085",
         ),
         (
-            "--loki-url <URL>",
-            "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001",
+            "--logs-url <URL>",
+            "Address of the logs service; nobs looks at --logs-url, then LOGS_URL, then http://localhost:3001 (old names, still work: --loki-url, LOKI_URL)",
         ),
         (
-            "--infrahub-url <URL>",
-            "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000",
+            "--sot-url <URL>",
+            "Address of the source of truth; nobs looks at --sot-url, then INFRAHUB_ADDRESS, then http://localhost:8000 (old names, still work: --infrahub-url, --address)",
         ),
         (
             "--skip-sonda-logs",
