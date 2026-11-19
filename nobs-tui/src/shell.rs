@@ -3493,6 +3493,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn k_on_the_first_shown_alert_and_j_on_the_last_keep_the_selected_alert() {
+        let mut model = observability_model(three_alerts());
+        let labels = |model: &Model| model.selected_alert().map(|alert| alert.labels.clone());
+
+        ch(&mut model, 'k');
+        let first_row = model.selected_alert_row();
+        let first = labels(&model);
+        ch(&mut model, 'k');
+        let after_k = labels(&model);
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        let last_row = model.selected_alert_row();
+        let last = labels(&model);
+        ch(&mut model, 'j');
+        let after_j = labels(&model);
+
+        assert_eq!(first_row, Some(0));
+        assert_eq!(after_k, first);
+        assert_eq!(last_row, Some(2));
+        assert_eq!(after_j, last);
+    }
+
+    #[test]
     fn when_the_selected_alert_leaves_the_list_the_first_shown_alert_is_selected() {
         let mut model = observability_model(three_alerts());
         ch(&mut model, 'j');

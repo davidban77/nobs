@@ -3373,22 +3373,16 @@ mod tests {
         let mut model = devices_model(workshop_located("infrahub"));
         model.apply(Update::Alerts(Ok(older.to_vec())));
         press(&mut model, '3');
-        let title = |model: &mut Model| {
-            drawn(model, 100, 30)
-                .into_iter()
-                .find(|row| row.starts_with('╠'))
-                .unwrap_or_default()
-        };
 
-        let at_first = title(&mut model);
+        let at_first = lower_box_title(&mut model);
         press(&mut model, 'j');
-        let after_j = title(&mut model);
+        let after_j = lower_box_title(&mut model);
         let newer = alert("srl1", "nobs-t-newest", "2026-11-09T13:54:32Z");
         model.apply(Update::Alerts(Ok([newer]
             .into_iter()
             .chain(older)
             .collect())));
-        let after_newer = title(&mut model);
+        let after_newer = lower_box_title(&mut model);
 
         assert!(at_first.starts_with("╠ nobs-t-first  srl1 ═"), "{at_first}");
         assert!(after_j.starts_with("╠ nobs-t-second  srl2 ═"), "{after_j}");
