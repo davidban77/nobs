@@ -13,6 +13,9 @@ const TOKEN: &str = "secret-token";
 const TOKEN_REQUIRED: &str =
     "nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).\n";
 const LIMIT: Duration = Duration::from_secs(20);
+const PROMETHEUS_SIX: &str = r#"{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1793960400,"6"]}]}}"#;
+const BOTH_PIPELINES: &str =
+    r#"{"status":"success","data":[{"pipeline":"vector"},{"pipeline":"direct"}]}"#;
 
 struct Copy(PathBuf);
 
@@ -66,6 +69,20 @@ fn env_for(stub: &Stub, token: bool) -> String {
 }
 
 fn run(copy: &Copy, args: &[&str]) -> Output {
+    let mut child = preflight(copy, args).spawn().unwrap();
+    let deadline = Instant::now() + LIMIT;
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("preflight was still running after {LIMIT:?}");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    child.wait_with_output().unwrap()
+}
+
+fn preflight(copy: &Copy, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_nobs"));
     command
         .args(["nobs-t-one", "preflight"])
@@ -89,17 +106,7 @@ fn run(copy: &Copy, args: &[&str]) -> Output {
     ] {
         command.env_remove(name);
     }
-    let mut child = command.spawn().unwrap();
-    let deadline = Instant::now() + LIMIT;
-    while child.try_wait().unwrap().is_none() {
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("preflight was still running after {LIMIT:?}");
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    child.wait_with_output().unwrap()
+    command
 }
 
 fn stdout(output: &Output) -> String {
@@ -144,11 +151,11 @@ fn the_help_page_names_the_command_line_and_the_eight_flags() {
     for flag in [
         "--skip-c",
         "--out-dir <DIR>",
-        "--prom-url <URL>",
-        "--loki-url <URL>",
+        "--metrics-url <URL>",
+        "--logs-url <URL>",
         "--grafana-url <URL>",
         "--sonda-url <URL>",
-        "--infrahub-url <URL>",
+        "--sot-url <URL>",
         "--token <TOKEN>",
     ] {
         assert!(
@@ -223,6 +230,50 @@ fn a_workshop_without_dashboards_is_reported_and_nothing_is_requested() {
     assert_eq!(stdout(&output), "");
     assert_eq!(output.status.code(), Some(1));
     assert!(stub.requests().is_empty());
+}
+
+#[test]
+fn preflight_asks_the_new_metrics_logs_and_sot_flags() {
+    let metrics = Stub::start(&[("GET", "/api/v1/query*", 200, PROMETHEUS_SIX)]);
+    let logs = Stub::start(&[("GET", "/loki/api/v1/series*", 200, BOTH_PIPELINES)]);
+    let sot = Stub::start(&[("POST", "/graphql/main", 500, "boom")]);
+    let closed = Stub::start_silent(Duration::ZERO);
+    let copy = Copy::new("new-flags", &format!("INFRAHUB_API_TOKEN={TOKEN}\n"));
+    let out_dir = copy.dir().join("out");
+    let stubs = [&metrics, &logs, &sot];
+
+    let mut child = preflight(
+        &copy,
+        &[
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+            "--metrics-url",
+            metrics.url(),
+            "--logs-url",
+            logs.url(),
+            "--sot-url",
+            sot.url(),
+            "--grafana-url",
+            closed.url(),
+            "--sonda-url",
+            closed.url(),
+        ],
+    )
+    .spawn()
+    .unwrap();
+    let deadline = Instant::now() + LIMIT;
+    while stubs.iter().any(|stub| stub.requests().is_empty()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    for (flag, stub) in ["--metrics-url", "--logs-url", "--sot-url"]
+        .iter()
+        .zip(stubs)
+    {
+        assert!(!stub.requests().is_empty(), "{flag}");
+    }
 }
 
 #[test]

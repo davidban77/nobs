@@ -246,12 +246,12 @@ fn the_workshop_schema_help_names_load() {
 fn the_workshop_status_help_shows_the_seven_address_flags() {
     let help = workshop_help(&["nobs-t-one", "status", "--help"]);
     for flag in [
-        "--prom-url",
-        "--loki-url",
-        "--am-url",
-        "--infrahub-url",
+        "--metrics-url",
+        "--logs-url",
+        "--alerts-url",
+        "--sot-url",
         "--grafana-url",
-        "--prefect-url",
+        "--flows-url",
         "--sonda-url",
     ] {
         let option = format!("{flag} <URL>");

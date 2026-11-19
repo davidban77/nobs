@@ -638,6 +638,39 @@ fn the_flags_win_over_the_variables_of_the_dot_env_file() {
 }
 
 #[test]
+fn reset_asks_the_new_alerts_logs_and_sot_flags() {
+    let stubs = Stubs::clean();
+    let copy = Copy::new(
+        "new-flags",
+        &format!("SONDA_SERVER_URL={}\n", stubs.sonda.url()),
+    );
+
+    let output = run(
+        &copy,
+        &[
+            "--alerts-url",
+            stubs.alertmanager.url(),
+            "--logs-url",
+            stubs.loki.url(),
+            "--sot-url",
+            stubs.infrahub.url(),
+            "--token",
+            TOKEN,
+        ],
+        &[],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        lines(&[FIRST, LOADED, CLEARED, REAPPLIED, LAST])
+    );
+    assert!(!stubs.alertmanager.requests().is_empty());
+    assert!(!stubs.loki.requests().is_empty());
+    assert!(!stubs.infrahub.requests().is_empty());
+}
+
+#[test]
 fn the_seeded_count_is_the_number_of_devices_the_lab_file_holds() {
     let answers = [
         vec![
@@ -881,20 +914,20 @@ fn the_help_names_the_command_and_the_six_flags_with_their_texts() {
     );
     let flags = [
         (
-            "--alertmanager-url <URL>",
-            "Address of Alertmanager; nobs looks at --alertmanager-url, then ALERTMANAGER_URL, then http://localhost:9093",
+            "--alerts-url <URL>",
+            "Address of the alerts service; nobs looks at --alerts-url, then ALERTS_URL, then http://localhost:9093 (old names, still work: --am-url, --alertmanager-url, ALERTMANAGER_URL)",
         ),
         (
             "--sonda-url <URL>",
             "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085",
         ),
         (
-            "--loki-url <URL>",
-            "Address of Loki; nobs looks at --loki-url, then LOKI_URL, then http://localhost:3001",
+            "--logs-url <URL>",
+            "Address of the logs service; nobs looks at --logs-url, then LOGS_URL, then http://localhost:3001 (old names, still work: --loki-url, LOKI_URL)",
         ),
         (
-            "--infrahub-url <URL>",
-            "Address of Infrahub; nobs looks at --infrahub-url, then INFRAHUB_ADDRESS, then http://localhost:8000",
+            "--sot-url <URL>",
+            "Address of the source of truth; nobs looks at --sot-url, then INFRAHUB_ADDRESS, then http://localhost:8000 (old names, still work: --infrahub-url, --address)",
         ),
         (
             "--skip-sonda-logs",
