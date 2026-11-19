@@ -12,7 +12,7 @@ use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
 use nobs_core::runner::{Output, Runner};
 use nobs_core::sot::{Device, Fixed, SourceOfTruth};
-use nobs_core::status::Urls;
+use nobs_core::status::{Service, Urls};
 use nobs_core::time;
 use nobs_tui::devices::{
     alert_count, counts, has_bgp_series, health, join, list_rows, merge, oper_states, Health, Kind,
@@ -453,6 +453,17 @@ impl Runner for Silent {
     }
 }
 
+fn ask_the_four(pollers: &Pollers) {
+    for service in [
+        Service::Metrics,
+        Service::Alerts,
+        Service::Logs,
+        Service::Flows,
+    ] {
+        pollers.send(Command::Ask(service, true));
+    }
+}
+
 #[test]
 fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
     let stub = Stub::start(&[
@@ -470,6 +481,7 @@ fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
         infrahub: address(),
         prefect: address(),
         sonda: address(),
+        set: Vec::new(),
     };
     let (pollers, updates) = Pollers::start(
         Arc::new(Silent),
@@ -479,10 +491,11 @@ fn the_first_answers_of_the_five_device_pollers_reach_the_screen() {
             server: None,
             api_key: None,
         },
-        Some(Arc::new(fixed(WORKSHOP_ONE))),
+        Some((Arc::new(fixed(WORKSHOP_ONE)), None)),
         Some(urls),
         None,
     );
+    ask_the_four(&pollers);
     pollers.send(Command::SelectDevice("srl1".to_string()));
     pollers.send(Command::OpenTab(Tab::Timeline));
 
@@ -555,6 +568,7 @@ fn the_services_follow_does_not_stop_the_device_logs_and_the_device_follow_does(
         infrahub: address(),
         prefect: address(),
         sonda: address(),
+        set: Vec::new(),
     };
     let (pollers, updates) = Pollers::start(
         Arc::new(Silent),
@@ -564,10 +578,11 @@ fn the_services_follow_does_not_stop_the_device_logs_and_the_device_follow_does(
             server: None,
             api_key: None,
         },
-        Some(Arc::new(fixed(WORKSHOP_ONE))),
+        Some((Arc::new(fixed(WORKSHOP_ONE)), None)),
         Some(urls),
         None,
     );
+    ask_the_four(&pollers);
     let device_logs_within = |wait: Duration| {
         let end = Instant::now() + wait;
         loop {

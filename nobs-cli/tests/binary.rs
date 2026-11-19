@@ -547,8 +547,8 @@ fn a_bare_up_from_below_a_workshop_runs_compose_up_and_prints_the_seven_addresse
         String::from_utf8_lossy(&output.stdout),
         "Grafana       http://localhost:3000\n\
          Prometheus    http://localhost:9090\n\
-         Alertmanager  http://localhost:9093\n\
          Loki          http://localhost:3001\n\
+         Alertmanager  http://localhost:9093\n\
          Infrahub      http://localhost:8000\n\
          Prefect       http://localhost:4200\n\
          Sonda         http://localhost:8085\n"

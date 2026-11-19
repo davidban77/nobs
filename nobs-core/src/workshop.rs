@@ -4,16 +4,6 @@ use std::path::Path;
 
 use crate::runner::Runner;
 
-pub const URLS: [(&str, &str); 7] = [
-    ("Grafana", "http://localhost:3000"),
-    ("Prometheus", "http://localhost:9090"),
-    ("Alertmanager", "http://localhost:9093"),
-    ("Loki", "http://localhost:3001"),
-    ("Infrahub", "http://localhost:8000"),
-    ("Prefect", "http://localhost:4200"),
-    ("Sonda", "http://localhost:8085"),
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bootstrap {
     Copied,

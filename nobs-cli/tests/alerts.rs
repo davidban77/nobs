@@ -360,7 +360,9 @@ fn a_closed_port_exits_1_and_says_it_cannot_reach_alertmanager() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        stderr(&output).starts_with(&format!("nobs: cannot reach Alertmanager at {closed}: ")),
+        stderr(&output).starts_with(&format!(
+            "nobs: cannot reach the alerts service at {closed}: "
+        )),
         "{}",
         stderr(&output)
     );
@@ -376,7 +378,9 @@ fn a_closed_port_makes_silences_exit_1_and_say_it_cannot_reach_alertmanager() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        stderr(&output).starts_with(&format!("nobs: cannot reach Alertmanager at {closed}: ")),
+        stderr(&output).starts_with(&format!(
+            "nobs: cannot reach the alerts service at {closed}: "
+        )),
         "{}",
         stderr(&output)
     );

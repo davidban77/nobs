@@ -36,11 +36,11 @@ use nobs_core::sonda::{
     build_info, check_runnable, pretty, scenario_rows, Reply, ScenarioRow, Sonda,
 };
 use nobs_core::sot::{self, Device, Maintenance, Session, SourceOfTruth};
-use nobs_core::status::{self, probe_all, Probe, State, Urls};
+use nobs_core::status::{self, probe_all, Probe, Service, State, Urls, SERVICES};
 use nobs_core::time;
 use nobs_core::try_it;
 use nobs_core::webhook;
-use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap, URLS};
+use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap};
 use nobs_ssh::Ssh;
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
@@ -1033,7 +1033,7 @@ pub struct StatusFlags {
     #[arg(
         long,
         value_name = "URL",
-        help = "Address of Sonda; nobs looks at --sonda-url, then http://localhost:8085"
+        help = "Address of Sonda; nobs looks at --sonda-url, then SONDA_SERVER_URL, then http://localhost:8085"
     )]
     sonda_url: Option<String>,
 }
@@ -1853,8 +1853,8 @@ fn guard(located: &Located, here: &Path, given: Option<&Path>, runner: &dyn Runn
 }
 
 fn print_urls() {
-    for (name, url) in URLS {
-        println!("{name:<14}{url}");
+    for row in SERVICES {
+        println!("{:<14}{}", row.tool, row.default);
     }
 }
 
@@ -3205,6 +3205,7 @@ fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
         infrahub: given(flags.infrahub_url).unwrap_or(from.infrahub),
         prefect: given(flags.prefect_url).unwrap_or(from.prefect),
         sonda: given(flags.sonda_url).unwrap_or(from.sonda),
+        set: from.set,
     }
 }
 
@@ -5094,19 +5095,24 @@ fn screen_start_with(
             };
             let urls = Urls::from_lookup(lookup);
             let path = located.dir.join("containerlab").join("lab_vars.yml");
-            let (source, source_error): (Option<std::sync::Arc<dyn SourceOfTruth>>, _) =
-                match &located.kind {
-                    Kind::Workshop(workshop) if workshop.sot == "none" => (None, None),
-                    Kind::Workshop(workshop) => {
-                        match sot::open(workshop, None, None, None, &lookup).1 {
-                            Ok(source) => (Some(std::sync::Arc::from(source)), None),
-                            Err(text) => (None, Some(text)),
-                        }
+            let ((source, source_error), source_service): (
+                (Option<std::sync::Arc<dyn SourceOfTruth>>, _),
+                _,
+            ) = match &located.kind {
+                Kind::Workshop(workshop) if workshop.sot == "none" => ((None, None), None),
+                Kind::Workshop(workshop) => {
+                    match sot::open(workshop, None, None, None, &lookup).1 {
+                        Ok(source) => (
+                            (Some(std::sync::Arc::from(source)), None),
+                            Some(Service::Sot),
+                        ),
+                        Err(text) => ((None, Some(text)), None),
                     }
-                    Kind::BookLab(_) => lab_vars_source(&path),
-                    Kind::LabcliLab(_) if path.exists() => lab_vars_source(&path),
-                    Kind::LabcliLab(_) => (None, None),
-                };
+                }
+                Kind::BookLab(_) => (lab_vars_source(&path), None),
+                Kind::LabcliLab(_) if path.exists() => (lab_vars_source(&path), None),
+                Kind::LabcliLab(_) => ((None, None), None),
+            };
             let home = match located.kind {
                 Kind::Workshop(_) => nobs_tui::Workbench::Devices,
                 Kind::BookLab(_) => nobs_tui::Workbench::Lab,
@@ -5129,6 +5135,7 @@ fn screen_start_with(
                 home,
                 source,
                 source_error,
+                source_service,
                 urls,
                 chooser: false,
                 program,
@@ -5146,7 +5153,8 @@ fn screen_start_with(
                 home,
                 source: None,
                 source_error: None,
-                urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
+                source_service: None,
+                urls: Urls::from_lookup(process),
                 chooser: true,
                 program,
                 login: std::sync::Arc::new(|_| None),
@@ -5159,7 +5167,8 @@ fn screen_start_with(
             home,
             source: None,
             source_error: None,
-            urls: nobs_core::status::Urls::from_lookup(|name| process(name)),
+            source_service: None,
+            urls: Urls::from_lookup(process),
             chooser: false,
             program,
             login: std::sync::Arc::new(|_| None),
@@ -5546,6 +5555,12 @@ mod tests {
             loki: "http://var-loki".to_string(),
             alertmanager: "http://var-alertmanager".to_string(),
             infrahub: "http://var-infrahub".to_string(),
+            set: vec![
+                Service::Metrics,
+                Service::Logs,
+                Service::Alerts,
+                Service::Sot,
+            ],
             ..Urls::defaults()
         }
     }
@@ -5582,6 +5597,7 @@ mod tests {
                 infrahub: "http://flag-infrahub".to_string(),
                 prefect: "http://flag-prefect".to_string(),
                 sonda: "http://flag-sonda".to_string(),
+                set: with_variables_only().set,
             }
         );
     }
@@ -6128,6 +6144,27 @@ mod tests {
         assert_eq!(names, ["nobs-t-srl1", "nobs-t-srl2"]);
         let header = nobs_tui::Shell::new(start).header();
         assert!(header.ends_with("sot lab_vars"), "{header}");
+    }
+
+    #[test]
+    fn a_server_given_with_the_flag_counts_as_set_for_sonda_in_a_lab() {
+        let lab = project_lab(
+            "screen-project-server",
+            &[("expected/lab.clab.yml", "lab.clab.yml")],
+        );
+        let reach = |server| {
+            let start = screen_start_with(&lab.0, None, flags(server), false, &|_| None).unwrap();
+            let mut shell = nobs_tui::Shell::new(start);
+            shell.apply(nobs_tui::Update::Services(
+                0,
+                Ok(Vec::new()),
+                Ok(Vec::new()),
+            ));
+            shell.reach(Service::Sonda)
+        };
+
+        assert_eq!(reach(Some("http://s:9")), nobs_tui::shell::Reach::Answers);
+        assert_eq!(reach(None), nobs_tui::shell::Reach::NotInLab);
     }
 
     #[test]

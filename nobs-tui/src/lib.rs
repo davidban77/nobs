@@ -52,7 +52,10 @@ pub fn run(
         return Err("the screen needs a terminal".to_string());
     }
     let sonda = start.sonda.clone();
-    let source = start.source.clone();
+    let source = start
+        .source
+        .clone()
+        .map(|source| (source, start.source_service));
     let urls = start.lab.is_some().then(|| start.urls.clone());
     let topology = start
         .lab
@@ -175,6 +178,7 @@ fn turns<B: Backend>(
     mut next_key: impl FnMut(Duration) -> Result<Option<KeyEvent>, String>,
 ) -> Result<i32, String> {
     let mut gone = false;
+    send(model.ask_changes(), actions, pollers);
     loop {
         let until = Instant::now() + DRAIN_LIMIT;
         drain(updates, model, &mut gone, actions, pollers);
@@ -197,6 +201,7 @@ fn turns<B: Backend>(
         model.set_details_overflow(screen::sonda_overflow(model, area));
         if let Some(key) = next_key(KEY_WAIT)? {
             send(handle(model, key), actions, pollers);
+            send(model.ask_changes(), actions, pollers);
         }
         if model.quit() {
             return Ok(model.exit_code());
@@ -299,7 +304,9 @@ impl<W: Write, R: FnMut(bool) -> io::Result<()>> Drop for Screen<W, R> {
 mod tests {
     use std::collections::VecDeque;
     use std::ffi::OsString;
+    use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::sync::Mutex;
 
@@ -310,14 +317,14 @@ mod tests {
     use nobs_core::locate::{locate, Kind, Located};
     use nobs_core::runner::Output;
     use nobs_core::sot::{self, Device, Maintenance, SourceOfTruth};
-    use nobs_core::status::Urls;
+    use nobs_core::status::{Service, Urls, SERVICES};
     use ratatui::backend::TestBackend;
 
     use super::*;
     use crate::book::NodeRow;
     use crate::data::stub::Stub;
     use crate::run::tests::FakeLauncher;
-    use crate::shell::tests::{defined, finding, listing, SECRET, USER};
+    use crate::shell::tests::{defined, every_service_up, finding, listing, SECRET, USER};
     use crate::shell::RunState;
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");
@@ -409,6 +416,14 @@ mod tests {
                 .iter()
                 .map(|(name, value)| (name.to_string(), value.to_string()))
                 .collect(),
+            shows_sonda: false,
+        }
+    }
+
+    fn composed(env: &[(&str, &str)]) -> Stack {
+        Stack {
+            compose: fixture("workshop-one/docker-compose.yml"),
+            ..stack(env)
         }
     }
 
@@ -432,6 +447,7 @@ mod tests {
             chooser,
             source: None,
             source_error: None,
+            source_service: None,
             urls: Urls::defaults(),
             program: PathBuf::from("nobs"),
             login: finding(Some(USER), Some(SECRET)),
@@ -549,7 +565,7 @@ mod tests {
             ("ALERTMANAGER_URL", url),
             ("INFRAHUB_ADDRESS", url),
         ];
-        let mut model = Model::new(start(vec![stack(&env)], false));
+        let mut model = Model::new(start(vec![composed(&env)], false));
         model.tick(Instant::now(), SystemTime::now(), (100, 30));
         model.apply(listing(0, lab::services(TWO)));
         let runner = Arc::new(Scripted {
@@ -617,16 +633,7 @@ mod tests {
     }
 
     fn all_at(stub: &Stub) -> Urls {
-        let address = || stub.url().to_string();
-        Urls {
-            grafana: address(),
-            prometheus: address(),
-            loki: address(),
-            alertmanager: address(),
-            infrahub: address(),
-            prefect: address(),
-            sonda: address(),
-        }
+        at(stub.url(), Vec::new())
     }
 
     #[test]
@@ -656,7 +663,7 @@ mod tests {
             model.stacks().to_vec(),
             model.selected_stack(),
             target(),
-            source,
+            source.map(|source| (source, None)),
             urls,
             None,
         );
@@ -691,10 +698,11 @@ mod tests {
             model.stacks().to_vec(),
             model.selected_stack(),
             target(),
-            Some(Arc::new(Holding)),
+            Some((Arc::new(Holding), None)),
             Some(all_at(&stub)),
             None,
         );
+        pollers.send(Command::Ask(Service::Logs, true));
         pollers.send(Command::OpenTab(Tab::Logs));
         let (sender, updates) = mpsc::channel();
         sender
@@ -733,7 +741,7 @@ mod tests {
 
         assert!(joined.is_err());
         assert!(receiver.try_recv().is_err());
-        let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
+        let mut model = Model::new(start(vec![composed(&[CLOSED])], false));
         let (pollers, updates) = Pollers::start(
             Arc::new(Panicking),
             model.stacks().to_vec(),
@@ -837,8 +845,10 @@ mod tests {
             answer(0, "grafana\nloki\n", ""),
             answer(1, "", &format!("{DOCKER_DOWN}\n")),
         ]);
-        let model = Model::new(start(vec![stack(&[CLOSED])], false));
+        let model = Model::new(start(vec![composed(&[CLOSED])], false));
         let (pollers, updates) = launch(&runner, &model);
+        let compose = fixture("workshop-one/docker-compose.yml");
+        let compose = compose.to_str().unwrap();
 
         let rows = services(&updates).unwrap();
         pollers.send(Command::Refresh);
@@ -857,7 +867,7 @@ mod tests {
                 "--project-name",
                 "p",
                 "-f",
-                "/ws/compose.yml",
+                compose,
                 "config",
                 "--services",
             ]),
@@ -869,7 +879,7 @@ mod tests {
                 "--project-name",
                 "p",
                 "-f",
-                "/ws/compose.yml",
+                compose,
                 "ps",
                 "--all",
                 "--format",
@@ -898,7 +908,7 @@ mod tests {
             answer(1, "", &format!("{DOCKER_DOWN}\n")),
             answer(0, TWO, ""),
         ]);
-        let model = Model::new(start(vec![stack(&[CLOSED])], false));
+        let model = Model::new(start(vec![composed(&[CLOSED])], false));
         let (pollers, updates) = launch(&runner, &model);
         let defined = |updates: &Receiver<Update>| {
             next(updates, Duration::from_secs(5), |update| match update {
@@ -921,10 +931,13 @@ mod tests {
         let url = stub.url();
         let env = [CLOSED, ("PROMETHEUS_URL", url), ("LOKI_URL", url)];
         let model = Model::new(start(vec![stack(&env)], false));
-        let (_pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        for service in [Service::Grafana, Service::Metrics, Service::Logs] {
+            pollers.send(Command::Ask(service, true));
+        }
 
         let health = next(&updates, Duration::from_secs(10), |update| match update {
-            Update::Health(0, list) => Some(list),
+            Update::Health(0, list) if list.len() == 3 => Some(list),
             _ => None,
         });
 
@@ -943,7 +956,7 @@ mod tests {
     fn a_thread_that_dies_tells_the_screen_it_stopped() {
         let (_pollers, updates) = Pollers::start(
             Arc::new(Panicking),
-            vec![stack(&[CLOSED])],
+            vec![composed(&[CLOSED])],
             0,
             target(),
             None,
@@ -989,6 +1002,7 @@ mod tests {
         };
         let mut model = Model::new(start(vec![stack(&[CLOSED]), sonda], true));
         let (pollers, _updates) = launch(&scripted(Vec::new()), &model);
+        pollers.send(Command::Ask(Service::Sonda, true));
 
         let commands: Vec<Command> = [KeyCode::Char('j'), KeyCode::Enter]
             .into_iter()
@@ -1107,8 +1121,13 @@ mod tests {
             source: Some(Arc::new(Holding)),
             home: Workbench::Devices,
             login,
+            urls: Urls {
+                set: SERVICES.iter().map(|row| row.service).collect(),
+                ..Urls::defaults()
+            },
             ..start(vec![stack(&[CLOSED])], false)
         });
+        model.apply(every_service_up(0));
         model.apply(Update::Devices(Ok(vec![device("srl1")])));
         model
     }
@@ -1497,11 +1516,11 @@ mod tests {
         let chapter = Stack {
             name: "ch1".to_string(),
             kind: StackKind::BookLab,
-            ..stack(&[CLOSED])
+            ..composed(&[CLOSED])
         };
         let (_pollers, updates) = Pollers::start(
             runner.clone(),
-            vec![stack(&[CLOSED]), chapter],
+            vec![composed(&[CLOSED]), chapter],
             0,
             target(),
             None,
@@ -1513,7 +1532,14 @@ mod tests {
             matches!(update, Update::Services(1, ..)).then_some(())
         });
 
-        let project_and_file = ["compose", "--project-name", "p", "-f", "/ws/compose.yml"];
+        let compose = fixture("workshop-one/docker-compose.yml");
+        let project_and_file = [
+            "compose",
+            "--project-name",
+            "p",
+            "-f",
+            compose.to_str().unwrap(),
+        ];
         let ps = |extra: &[&str]| {
             let mut words = project_and_file.to_vec();
             words.extend(["ps", "--all"]);
@@ -1852,6 +1878,7 @@ mod tests {
     #[test]
     fn j_on_the_sonda_details_in_the_loop_moves_the_text_the_box_hid() {
         let mut model = Model::new(start(vec![stack(&[CLOSED])], false));
+        model.apply(every_service_up(0));
         handle(&mut model, key(KeyCode::Tab));
         handle(&mut model, ch('['));
         let fields: Vec<String> = (1..=30)
@@ -1911,5 +1938,579 @@ mod tests {
         let parts: Vec<u32> = now.split(':').map(|part| part.parse().unwrap()).collect();
         assert_eq!(now.len(), 8, "{now}");
         assert!(parts[0] < 24 && parts[1] < 60 && parts[2] < 60, "{now}");
+    }
+
+    struct Counter {
+        url: String,
+        accepted: Arc<AtomicUsize>,
+    }
+
+    impl Counter {
+        fn start() -> Counter {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let seen = Arc::clone(&accepted);
+            thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    drop(stream);
+                }
+            });
+            Counter { url, accepted }
+        }
+
+        fn count(&self) -> usize {
+            self.accepted.load(Ordering::SeqCst)
+        }
+    }
+
+    struct Dialing(String);
+
+    impl SourceOfTruth for Dialing {
+        fn devices(&self) -> Result<Vec<Device>, sot::Error> {
+            let _ = TcpStream::connect(self.0.trim_start_matches("http://"));
+            Ok(Vec::new())
+        }
+
+        fn device(&self, _name: &str) -> Result<Option<Device>, sot::Error> {
+            Ok(None)
+        }
+
+        fn set_maintenance(&self, _device: &str, _state: bool) -> Result<Maintenance, sot::Error> {
+            Ok(Maintenance { previous: false })
+        }
+    }
+
+    struct Docker {
+        names: Vec<&'static str>,
+        up: AtomicBool,
+        sleep: Duration,
+    }
+
+    impl Docker {
+        fn new(names: &[&'static str], up: bool) -> Arc<Docker> {
+            Arc::new(Docker {
+                names: names.to_vec(),
+                up: AtomicBool::new(up),
+                sleep: Duration::ZERO,
+            })
+        }
+    }
+
+    impl Runner for Docker {
+        fn run(&self, _program: &str, _args: &[OsString]) -> io::Result<i32> {
+            Ok(0)
+        }
+
+        fn output(&self, _program: &str, args: &[OsString]) -> io::Result<Output> {
+            thread::sleep(self.sleep);
+            let config = args.iter().any(|arg| arg == "config");
+            let state = if self.up.load(Ordering::SeqCst) {
+                "running"
+            } else {
+                "exited"
+            };
+            let stdout: String = self
+                .names
+                .iter()
+                .map(|name| match config {
+                    true => format!("{name}\n"),
+                    false => format!("{{\"Service\":\"{name}\",\"State\":\"{state}\"}}\n"),
+                })
+                .collect();
+            Ok(answer(0, &stdout, ""))
+        }
+    }
+
+    fn at(url: &str, set: Vec<Service>) -> Urls {
+        Urls {
+            grafana: url.to_string(),
+            prometheus: url.to_string(),
+            loki: url.to_string(),
+            alertmanager: url.to_string(),
+            infrahub: url.to_string(),
+            prefect: url.to_string(),
+            sonda: url.to_string(),
+            set,
+        }
+    }
+
+    fn every_setting(url: &str) -> Vec<(&'static str, &str)> {
+        SERVICES
+            .iter()
+            .filter_map(|row| row.setting)
+            .map(|name| (name, url))
+            .collect()
+    }
+
+    fn every_service() -> Vec<Service> {
+        SERVICES.iter().map(|row| row.service).collect()
+    }
+
+    fn compose_names() -> Vec<&'static str> {
+        SERVICES.iter().map(|row| row.compose).collect()
+    }
+
+    fn closed_url() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    }
+
+    fn polled(
+        begin: Start,
+        runner: Arc<dyn Runner + Send + Sync>,
+        sonda: Option<&str>,
+    ) -> (Model, Pollers, Receiver<Update>) {
+        let model = Model::new(begin.clone());
+        let (pollers, updates) = Pollers::start(
+            runner,
+            model.stacks().to_vec(),
+            model.selected_stack(),
+            SondaTarget {
+                server: sonda.map(str::to_string),
+                api_key: None,
+            },
+            begin.source.map(|source| (source, begin.source_service)),
+            Some(begin.urls),
+            None,
+        );
+        pollers.send(Command::SelectDevice("srl1".to_string()));
+        pollers.send(Command::OpenTab(Tab::Timeline));
+        (model, pollers, updates)
+    }
+
+    fn turn_until(
+        model: &mut Model,
+        pollers: &Pollers,
+        updates: &Receiver<Update>,
+        limit: Duration,
+        done: impl Fn(&Model) -> bool,
+    ) -> bool {
+        let end = Instant::now() + limit;
+        let mut actions = actions();
+        loop {
+            turns(
+                &mut terminal(100, 30),
+                model,
+                pollers,
+                updates,
+                &mut actions,
+                |_| {
+                    thread::sleep(Duration::from_millis(20));
+                    Err(PAUSED.to_string())
+                },
+            )
+            .unwrap_err();
+            if done(model) {
+                return true;
+            }
+            if Instant::now() > end {
+                return false;
+            }
+        }
+    }
+
+    fn reaches(model: &Model) -> Vec<(Service, shell::Reach)> {
+        every_service()
+            .into_iter()
+            .map(|service| (service, model.reach(service)))
+            .collect()
+    }
+
+    #[test]
+    fn a_lab_without_a_compose_file_or_a_set_address_sends_no_request_and_shows_no_red_line() {
+        let counter = Counter::start();
+        let sonda = nobs_core::status::row(Service::Sonda).setting;
+        let env: Vec<_> = every_setting(&counter.url)
+            .into_iter()
+            .filter(|(name, _)| Some(*name) != sonda)
+            .collect();
+        let runner = scripted(Vec::new());
+        let begin = Start {
+            source: Some(Arc::new(Dialing(counter.url.clone()))),
+            source_service: Some(Service::Sot),
+            urls: at(&counter.url, Vec::new()),
+            ..start(vec![stack(&env)], false)
+        };
+        let (mut model, pollers, updates) = polled(begin, runner.clone(), Some(&counter.url));
+
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| false,
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(counter.count(), 0);
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
+        assert_eq!(model.error(), None);
+        assert!(
+            reaches(&model)
+                .iter()
+                .all(|(_, reach)| *reach == shell::Reach::NotInLab),
+            "{:?}",
+            reaches(&model)
+        );
+    }
+
+    #[test]
+    fn a_set_address_without_a_compose_file_is_asked_and_a_refused_one_gives_no_answer_and_the_red_line(
+    ) {
+        let counter = Counter::start();
+        let closed = closed_url();
+        let env = [
+            ("PROMETHEUS_URL", counter.url.as_str()),
+            ("ALERTMANAGER_URL", closed.as_str()),
+        ];
+        let begin = Start {
+            urls: Urls {
+                prometheus: counter.url.clone(),
+                alertmanager: closed.clone(),
+                set: vec![Service::Metrics, Service::Alerts],
+                ..Urls::defaults()
+            },
+            ..start(vec![stack(&env)], false)
+        };
+        let (mut model, pollers, updates) = polled(begin, scripted(Vec::new()), None);
+
+        let refused = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_secs(5),
+            |model| model.reach(Service::Alerts) == shell::Reach::NoAnswer,
+        );
+        pollers.send(Command::Quit);
+
+        assert!(refused, "{:?}", reaches(&model));
+        assert!(counter.count() > 0);
+        assert!(model.error().is_some());
+        assert_eq!(model.reach(Service::Logs), shell::Reach::NotInLab);
+    }
+
+    #[test]
+    fn a_stack_that_names_the_service_and_is_down_sends_no_request_and_shows_no_red_line() {
+        let counter = Counter::start();
+        let env = every_setting(&counter.url);
+        let begin = Start {
+            source: Some(Arc::new(Dialing(counter.url.clone()))),
+            source_service: Some(Service::Sot),
+            urls: at(&counter.url, every_service()),
+            ..start(vec![composed(&env)], false)
+        };
+        let docker = Docker::new(&compose_names(), false);
+        let (mut model, pollers, updates) = polled(begin, docker, Some(&counter.url));
+
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| false,
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(counter.count(), 0);
+        assert_eq!(model.error(), None);
+        assert!(
+            reaches(&model)
+                .iter()
+                .all(|(_, reach)| *reach == shell::Reach::StackDown),
+            "{:?}",
+            reaches(&model)
+        );
+    }
+
+    #[test]
+    fn asking_starts_when_the_stack_comes_up_and_stops_with_its_values_and_red_line_when_it_goes_down(
+    ) {
+        let stub = Stub::start(&[(
+            "GET",
+            "/api/v2/alerts*",
+            200,
+            r#"[{"labels":{"alertname":"BgpSessionNotUp","device":"srl1"},"status":{"state":"active","silencedBy":[],"inhibitedBy":[]},"startsAt":"2026-11-09T13:40:00.000Z"}]"#,
+        )]);
+        let closed = closed_url();
+        let env = [
+            ("ALERTMANAGER_URL", stub.url()),
+            ("PROMETHEUS_URL", closed.as_str()),
+        ];
+        let begin = Start {
+            source: Some(Arc::new(Dialing(closed.clone()))),
+            urls: Urls {
+                alertmanager: stub.url().to_string(),
+                prometheus: closed.clone(),
+                ..Urls::defaults()
+            },
+            ..start(vec![composed(&env)], false)
+        };
+        let docker = Docker::new(&["prometheus", "alertmanager"], false);
+        let (mut model, pollers, updates) = polled(begin, docker.clone(), None);
+        let answered = |model: &Model| {
+            model.alerts_ok()
+                && model
+                    .error()
+                    .is_some_and(|(source, ..)| source == "metrics")
+        };
+
+        let down = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_secs(5),
+            |model| model.reach(Service::Alerts) == shell::Reach::StackDown,
+        );
+        let before = stub.requests().len();
+        docker.up.store(true, Ordering::SeqCst);
+        pollers.send(Command::Refresh);
+        let up = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_secs(5),
+            answered,
+        );
+        let values = model.alerts().len();
+        docker.up.store(false, Ordering::SeqCst);
+        pollers.send(Command::Refresh);
+        let down_again = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_secs(5),
+            |model| model.reach(Service::Alerts) == shell::Reach::StackDown,
+        );
+        let after = stub.requests().len();
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| false,
+        );
+        pollers.send(Command::Quit);
+
+        assert!(down && up && down_again, "{down} {up} {down_again}");
+        assert_eq!(before, 0);
+        assert_eq!(values, 1);
+        assert!(model.alerts().is_empty());
+        assert!(!model.alerts_ok());
+        assert_eq!(model.error(), None);
+        assert_eq!(stub.requests().len(), after);
+    }
+
+    #[test]
+    fn nothing_is_asked_until_the_first_docker_answer_about_the_stack() {
+        let counter = Counter::start();
+        let env = every_setting(&counter.url);
+        let begin = Start {
+            urls: at(&counter.url, every_service()),
+            ..start(vec![composed(&env)], false)
+        };
+        let docker = Arc::new(Docker {
+            sleep: Duration::from_secs(3),
+            ..Arc::into_inner(Docker::new(&compose_names(), true)).unwrap()
+        });
+        let (mut model, pollers, updates) = polled(begin, docker, Some(&counter.url));
+
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(1500),
+            |_| false,
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(counter.count(), 0);
+        assert_eq!(model.error(), None);
+        assert!(
+            reaches(&model)
+                .iter()
+                .all(|(_, reach)| *reach == shell::Reach::Unknown),
+            "{:?}",
+            reaches(&model)
+        );
+    }
+
+    #[test]
+    fn the_health_of_a_running_infrahub_prefect_and_sonda_server_shows() {
+        let stub = Stub::start(&[("GET", "/health", 200, ""), ("GET", "/api/health", 200, "")]);
+        let env = [
+            ("INFRAHUB_ADDRESS", stub.url()),
+            ("PREFECT_API_URL", stub.url()),
+            ("SONDA_SERVER_URL", stub.url()),
+        ];
+        let names = ["infrahub-server", "prefect-server", "sonda-server"];
+        let begin = start(vec![composed(&env)], false);
+        let (mut model, pollers, updates) = polled(begin, Docker::new(&names, true), None);
+        let healths = |model: &Model| -> Vec<Option<String>> {
+            names
+                .iter()
+                .map(|name| {
+                    model
+                        .services()
+                        .iter()
+                        .find(|service| service.name == *name)
+                        .and_then(|service| service.health.clone())
+                })
+                .collect()
+        };
+
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_secs(5),
+            |model| healths(model).iter().all(Option::is_some),
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(healths(&model), vec![Some("ok".to_string()); 3]);
+    }
+
+    fn counted_by_the_pollers_only(begin: Start, names: &[&'static str]) -> (Model, bool) {
+        let counted = Counter::start();
+        let (mut model, pollers, updates) =
+            polled(begin, Docker::new(names, true), Some(&counted.url));
+        let asked = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| counted.count() > 0,
+        );
+        pollers.send(Command::Quit);
+        (model, asked)
+    }
+
+    #[test]
+    fn outside_a_lab_a_stack_without_sonda_and_nothing_set_does_not_ask_sonda() {
+        let begin = start(vec![composed(&[])], true);
+
+        let (model, asked) = counted_by_the_pollers_only(begin, &["prometheus"]);
+
+        assert_eq!(model.reach(Service::Sonda), shell::Reach::NotInLab);
+        assert!(!asked);
+    }
+
+    #[test]
+    fn outside_a_lab_a_stack_whose_env_sets_the_sonda_address_is_asked_there() {
+        let counter = Counter::start();
+        let sonda = nobs_core::status::row(Service::Sonda).setting.unwrap();
+        let begin = start(vec![composed(&[(sonda, counter.url.as_str())])], true);
+        let (mut model, pollers, updates) = polled(begin, Docker::new(&["prometheus"], true), None);
+
+        let asked = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| counter.count() > 0,
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(model.reach(Service::Sonda), shell::Reach::Answers);
+        assert!(asked);
+    }
+
+    #[test]
+    fn in_a_lab_the_sonda_address_counts_as_set_only_from_the_env_of_the_selected_stack() {
+        let counter = Counter::start();
+        let sonda = nobs_core::status::row(Service::Sonda).setting.unwrap();
+        let other = Stack {
+            name: "other".to_string(),
+            path: PathBuf::from("/other"),
+            ..composed(&[(sonda, counter.url.as_str())])
+        };
+        let begin = start(vec![composed(&[]), other], false);
+        let (mut model, pollers, updates) = polled(begin, Docker::new(&["prometheus"], true), None);
+
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(1500),
+            |_| false,
+        );
+        let at_the_first = (model.reach(Service::Sonda), counter.count());
+        let moved = handle(&mut model, key(KeyCode::Char('j')));
+        for command in &moved {
+            pollers.send(command.clone());
+        }
+        let asked = turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_millis(2500),
+            |_| counter.count() > 0,
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(at_the_first, (shell::Reach::NotInLab, 0));
+        assert_eq!(moved, [Command::SelectStack(1)]);
+        assert!(asked);
+        assert_eq!(model.sonda().server(), counter.url);
+        assert!(
+            matches!(
+                model.reach(Service::Sonda),
+                shell::Reach::Answers | shell::Reach::NoAnswer
+            ),
+            "{:?}",
+            model.reach(Service::Sonda)
+        );
+    }
+
+    #[test]
+    fn the_sonda_only_stack_is_asked_with_nothing_set() {
+        let sonda_only = Stack {
+            kind: StackKind::Sonda,
+            shows_sonda: true,
+            ..stack(&[])
+        };
+        let begin = start(vec![sonda_only], true);
+
+        let (model, asked) = counted_by_the_pollers_only(begin, &[]);
+
+        assert_eq!(model.reach(Service::Sonda), shell::Reach::Answers);
+        assert!(asked);
+    }
+
+    #[test]
+    fn the_sonda_health_check_follows_the_server_flag() {
+        let stub = Stub::start(&[("GET", "/health", 200, "")]);
+        let begin = Start {
+            sonda: SondaTarget {
+                server: Some(stub.url().to_string()),
+                api_key: None,
+            },
+            ..start(vec![composed(&[])], false)
+        };
+        let (mut model, pollers, updates) = polled(
+            begin,
+            Docker::new(&["sonda-server"], true),
+            Some(stub.url()),
+        );
+        let health = |model: &Model| {
+            model
+                .services()
+                .iter()
+                .find(|service| service.name == "sonda-server")
+                .and_then(|service| service.health.clone())
+        };
+
+        turn_until(
+            &mut model,
+            &pollers,
+            &updates,
+            Duration::from_secs(5),
+            |model| health(model).is_some(),
+        );
+        pollers.send(Command::Quit);
+
+        assert_eq!(health(&model), Some("ok".to_string()));
     }
 }

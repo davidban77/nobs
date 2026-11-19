@@ -2,8 +2,8 @@
  [1 devices]  2 services  3 lab                                                      ? keys  q quit
 ┌ devices 2 ─────────────────────────────┐╔ nobs-t-srl1 ═══════════════════════════════════════════╗
 │   NAME         KIND  HLTH  SYNC  ALRT  │║overview  interfaces  CONFIG  timeline  logs            ║
-│>  nobs-t-srl1  —     ?     —        ?  │║press g to get the running config                       ║
-│   nobs-t-srl2  —     ?     —        ?  │║                                                        ║
+│>  nobs-t-srl1  —     —     —        —  │║press g to get the running config                       ║
+│   nobs-t-srl2  —     —     —        —  │║                                                        ║
 │                                        │║                                                        ║
 │                                        │║                                                        ║
 │                                        │║                                                        ║
@@ -18,8 +18,8 @@
 │                                        │║                                                        ║
 │                                        │║                                                        ║
 │                                        │║                                                        ║
-├ alerts ? ──────────────────────────────┤║                                                        ║
-│                                        │║                                                        ║
+├ alerts — ──────────────────────────────┤║                                                        ║
+│no alerts in this lab                   │║                                                        ║
 │                                        │║                                                        ║
 │                                        │║                                                        ║
 │                                        │║                                                        ║

@@ -35,6 +35,7 @@ fn model(lab: Located, stacks: Vec<Stack>) -> Shell {
         chooser: false,
         source: None,
         source_error: None,
+        source_service: None,
         urls: Urls::defaults(),
         program: PathBuf::from("nobs"),
         login: Arc::new(|name| match name {

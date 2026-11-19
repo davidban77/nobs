@@ -3,9 +3,107 @@ use std::time::Duration;
 use crate::http;
 use crate::infrahub::host_address;
 use crate::sonda::Sonda;
-use crate::workshop::URLS;
 
 pub const TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    Metrics,
+    Logs,
+    Alerts,
+    Flows,
+    Sot,
+    Sonda,
+    Grafana,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Row {
+    pub service: Service,
+    pub word: &'static str,
+    pub tool: &'static str,
+    pub compose: &'static str,
+    pub setting: Option<&'static str>,
+    pub default: &'static str,
+    pub health: &'static str,
+}
+
+pub const SERVICES: [Row; 7] = [
+    Row {
+        service: Service::Grafana,
+        word: "grafana",
+        tool: "Grafana",
+        compose: "grafana",
+        setting: None,
+        default: "http://localhost:3000",
+        health: "/api/health",
+    },
+    Row {
+        service: Service::Metrics,
+        word: "metrics",
+        tool: "Prometheus",
+        compose: "prometheus",
+        setting: Some("PROMETHEUS_URL"),
+        default: "http://localhost:9090",
+        health: "/-/ready",
+    },
+    Row {
+        service: Service::Logs,
+        word: "logs",
+        tool: "Loki",
+        compose: "loki",
+        setting: Some("LOKI_URL"),
+        default: "http://localhost:3001",
+        health: "/ready",
+    },
+    Row {
+        service: Service::Alerts,
+        word: "alerts",
+        tool: "Alertmanager",
+        compose: "alertmanager",
+        setting: Some("ALERTMANAGER_URL"),
+        default: "http://localhost:9093",
+        health: "/-/ready",
+    },
+    Row {
+        service: Service::Sot,
+        word: "sot",
+        tool: "Infrahub",
+        compose: "infrahub-server",
+        setting: Some("INFRAHUB_ADDRESS"),
+        default: "http://localhost:8000",
+        health: "/health",
+    },
+    Row {
+        service: Service::Flows,
+        word: "flows",
+        tool: "Prefect",
+        compose: "prefect-server",
+        setting: Some("PREFECT_API_URL"),
+        default: "http://localhost:4200",
+        health: "/api/health",
+    },
+    Row {
+        service: Service::Sonda,
+        word: "sonda",
+        tool: "Sonda",
+        compose: "sonda-server",
+        setting: Some("SONDA_SERVER_URL"),
+        default: "http://localhost:8085",
+        health: "/health",
+    },
+];
+
+pub const fn row(service: Service) -> Row {
+    let mut index = 0;
+    while index < SERVICES.len() {
+        if SERVICES[index].service as u8 == service as u8 {
+            return SERVICES[index];
+        }
+        index += 1;
+    }
+    panic!("SERVICES lists every service")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Urls {
@@ -16,6 +114,7 @@ pub struct Urls {
     pub infrahub: String,
     pub prefect: String,
     pub sonda: String,
+    pub set: Vec<Service>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,62 +139,73 @@ pub struct Probe {
 
 impl Urls {
     pub fn defaults() -> Self {
-        Self {
-            grafana: default_url("Grafana"),
-            prometheus: default_url("Prometheus"),
-            loki: default_url("Loki"),
-            alertmanager: default_url("Alertmanager"),
-            infrahub: default_url("Infrahub"),
-            prefect: default_url("Prefect"),
-            sonda: default_url("Sonda"),
-        }
+        Self::from_lookup(|_| None)
     }
 
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
-        let defaults = Self::defaults();
-        let pick = |name: &str, default: String| {
-            lookup(name)
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(default)
+        let given: Vec<(Service, String)> = SERVICES
+            .iter()
+            .filter_map(|row| {
+                lookup(row.setting?)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| (row.service, value))
+            })
+            .collect();
+        let address = |service: Service| {
+            given
+                .iter()
+                .find(|(set, _)| *set == service)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| row(service).default.to_string())
         };
         Self {
-            prometheus: pick("PROMETHEUS_URL", defaults.prometheus),
-            loki: pick("LOKI_URL", defaults.loki),
-            alertmanager: pick("ALERTMANAGER_URL", defaults.alertmanager),
-            infrahub: pick("INFRAHUB_ADDRESS", defaults.infrahub),
-            prefect: pick("PREFECT_API_URL", defaults.prefect),
-            ..defaults
+            grafana: address(Service::Grafana),
+            prometheus: address(Service::Metrics),
+            loki: address(Service::Logs),
+            alertmanager: address(Service::Alerts),
+            infrahub: address(Service::Sot),
+            prefect: address(Service::Flows),
+            sonda: address(Service::Sonda),
+            set: given.iter().map(|(service, _)| *service).collect(),
+        }
+    }
+
+    pub fn is_set(&self, service: Service) -> bool {
+        self.set.contains(&service)
+    }
+
+    fn address(&self, service: Service) -> &str {
+        match service {
+            Service::Grafana => &self.grafana,
+            Service::Metrics => &self.prometheus,
+            Service::Logs => &self.loki,
+            Service::Alerts => &self.alertmanager,
+            Service::Sot => &self.infrahub,
+            Service::Flows => &self.prefect,
+            Service::Sonda => &self.sonda,
         }
     }
 }
 
-fn default_url(name: &str) -> String {
-    URLS.iter()
-        .find(|(service, _)| *service == name)
-        .map(|(_, url)| url.to_string())
-        .expect("workshop::URLS lists every service")
-}
-
 pub fn targets(urls: &Urls) -> Vec<Target> {
-    let infrahub = host_address(&urls.infrahub);
-    let prefect = urls.prefect.trim_end_matches('/');
-    let prefect = prefect.strip_suffix("/api").unwrap_or(prefect);
-    [
-        ("Grafana", urls.grafana.as_str(), "/api/health"),
-        ("Prometheus", urls.prometheus.as_str(), "/-/ready"),
-        ("Loki", urls.loki.as_str(), "/ready"),
-        ("Alertmanager", urls.alertmanager.as_str(), "/-/ready"),
-        ("Infrahub", infrahub.as_str(), "/health"),
-        ("Prefect", prefect, "/api/health"),
-        ("Sonda", urls.sonda.as_str(), "/health"),
-    ]
-    .into_iter()
-    .map(|(name, base, path)| Target {
-        name,
-        base: base.trim_end_matches('/').to_string(),
-        path,
-    })
-    .collect()
+    SERVICES
+        .iter()
+        .map(|row| {
+            let base = match row.service {
+                Service::Sot => host_address(&urls.infrahub),
+                Service::Flows => {
+                    let prefect = urls.prefect.trim_end_matches('/');
+                    prefect.strip_suffix("/api").unwrap_or(prefect).to_string()
+                }
+                service => urls.address(service).to_string(),
+            };
+            Target {
+                name: row.tool,
+                base: base.trim_end_matches('/').to_string(),
+                path: row.health,
+            }
+        })
+        .collect()
 }
 
 pub fn probe(target: &Target) -> Probe {
@@ -159,6 +269,7 @@ mod tests {
             infrahub: base.to_string(),
             prefect: base.to_string(),
             sonda: base.to_string(),
+            set: Vec::new(),
         }
     }
 
@@ -174,8 +285,35 @@ mod tests {
                 infrahub: "http://localhost:8000".to_string(),
                 prefect: "http://localhost:4200".to_string(),
                 sonda: "http://localhost:8085".to_string(),
+                set: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn a_value_of_only_spaces_is_not_a_set_address() {
+        let urls = Urls::from_lookup(|name| match name {
+            "LOKI_URL" => Some("http://loki:3100".to_string()),
+            _ => Some(" \t ".to_string()),
+        });
+        assert_eq!(urls.set, [Service::Logs]);
+        assert!(urls.is_set(Service::Logs));
+        assert!(!urls.is_set(Service::Alerts));
+        assert_eq!(Urls::defaults().set, []);
+    }
+
+    #[test]
+    fn the_table_gives_the_default_address_and_the_probe_of_each_service() {
+        let defaults = Urls::defaults();
+        let found = targets(&defaults);
+        assert_eq!(found.len(), SERVICES.len());
+        for (row, target) in SERVICES.iter().zip(found) {
+            assert_eq!(defaults.address(row.service), row.default, "{row:?}");
+            assert_eq!(
+                (target.name, target.base.as_str(), target.path),
+                (row.tool, row.default, row.health)
+            );
+        }
     }
 
     #[test]

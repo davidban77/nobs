@@ -11,14 +11,15 @@ use ratatui::Frame;
 
 use nobs_core::count::counted;
 use nobs_core::locate::Located;
+use nobs_core::status::{row, Service};
 use nobs_core::time;
 
 use crate::actions::{self, arguments, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    kind_text, Cursor, Focus, LoginEntry, Model, Run, RunMeasure, RunState, StackKind, StackState,
-    Tab, Workbench, NO_BREAK, SERVICES_TABS,
+    kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState, StackKind,
+    StackState, Tab, Workbench, NO_BREAK, SERVICES_TABS,
 };
 use crate::view;
 
@@ -501,6 +502,16 @@ fn stacks(frame: &mut Frame, area: Rect, model: &Model) {
     let block = Block::bordered()
         .border_type(border_of(model, Holder::Stacks))
         .title_top(format!(" stacks {} ", visible.len()));
+    if !visible.is_empty()
+        && visible
+            .iter()
+            .all(|index| model.stack_state(*index).total() == Some(0))
+    {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        dim_line(frame, inner, "no services in this lab".to_string());
+        return;
+    }
     stack_list(frame, area, model, block, &visible, selected, Target::Stack);
 }
 
@@ -604,6 +615,14 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
                     _ => None,
                 },
             );
+            if let Some(sentence) = absent_of(model, Service::Sonda) {
+                let top_row = Rect {
+                    height: content.height.min(1),
+                    ..content
+                };
+                frame.render_widget(Clear, top_row);
+                dim_line(frame, top_row, sentence);
+            }
             if model.focus() == Focus::List {
                 let key_row = Rect {
                     y: content.bottom().saturating_sub(1),
@@ -856,24 +875,54 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Constraint::Length(alerts_height),
     ])
     .areas(inner);
-    let first = match model.source_note() {
+    let first = match device_note(model) {
         Some(note) => {
-            let line = fitted(vec![(note.to_string(), DIM)], usize::from(list.width));
-            frame.render_widget(Paragraph::new(line), list);
+            dim_line(frame, list, note);
             None
         }
         None => Some(device_rows(frame, list, model, &visible, wide)),
     };
-    let count = if model.alerts_ok() {
-        model.alerts().len().to_string()
-    } else {
-        "?".to_string()
+    let count = match model.reach(Service::Alerts) {
+        Reach::Answers if model.alerts_ok() => model.alerts().len().to_string(),
+        reach => cell(reach, "?").to_string(),
     };
     let row = Rect::new(area.x, separator.y, area.width, 1);
     let room = usize::from(list.height).saturating_sub(1);
     let window = first.map(|first| (first, room, visible.len()));
     alerts_separator(frame, row, &count, window, border);
     alert_rows(frame, alerts, model, wide);
+}
+
+fn absent(reach: Reach, word: &str) -> Option<String> {
+    match reach {
+        Reach::NotInLab => Some(format!("no {word} in this lab")),
+        Reach::StackDown => Some("the stack is down".to_string()),
+        Reach::Unknown | Reach::Answers | Reach::NoAnswer => None,
+    }
+}
+
+fn absent_of(model: &Model, service: Service) -> Option<String> {
+    absent(model.reach(service), row(service).word)
+}
+
+fn cell(reach: Reach, shown: &str) -> &str {
+    match reach {
+        Reach::Answers => shown,
+        Reach::NoAnswer => "?",
+        Reach::Unknown | Reach::NotInLab | Reach::StackDown => "—",
+    }
+}
+
+fn device_note(model: &Model) -> Option<String> {
+    model
+        .source_service()
+        .and_then(|service| absent_of(model, service))
+        .or_else(|| model.source_note().map(str::to_string))
+}
+
+fn dim_line(frame: &mut Frame, area: Rect, text: String) {
+    let line = fitted(vec![(text, DIM)], usize::from(area.width));
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn alerts_separator(
@@ -907,6 +956,8 @@ fn device_rows(
     wide: bool,
 ) -> usize {
     let rows = model.device_rows();
+    let metrics = model.reach(Service::Metrics);
+    let alerts = model.reach(Service::Alerts);
     let fixed = if wide { 27 } else { 15 };
     let name_width = rows
         .iter()
@@ -950,16 +1001,18 @@ fn device_rows(
                 tone(&row.kind),
             ));
         }
-        let health = row.health.text();
+        let health = cell(metrics, row.health.text());
         spans.push(Span::styled(format!("  {health:<4}"), tone(health)));
         if wide {
             spans.push(Span::styled("  —   ", DIM));
         }
-        let (count, style) = match row.alerts {
-            None => ("?".to_string(), DIM),
-            Some((0, _)) => (String::new(), Style::new()),
-            Some((count, true)) => (count.to_string(), Style::new().fg(Color::Red)),
-            Some((count, false)) => (count.to_string(), Style::new()),
+        let (count, style) = match (alerts, row.alerts) {
+            (Reach::Answers, Some((0, _))) => (String::new(), Style::new()),
+            (Reach::Answers, Some((count, true))) => {
+                (count.to_string(), Style::new().fg(Color::Red))
+            }
+            (Reach::Answers, Some((count, false))) => (count.to_string(), Style::new()),
+            (reach, _) => (cell(reach, "?").to_string(), DIM),
         };
         spans.push(Span::styled(format!("  {count:>4}"), style));
         let line = Line::from(spans);
@@ -974,6 +1027,15 @@ fn device_rows(
 }
 
 fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
+    let reach = model.reach(Service::Alerts);
+    if let Some(sentence) = absent(reach, row(Service::Alerts).word) {
+        dim_line(frame, area, sentence);
+        return;
+    }
+    let shown = match reach {
+        Reach::Answers => model.alerts(),
+        Reach::Unknown | Reach::NotInLab | Reach::StackDown | Reach::NoAnswer => &[],
+    };
     let room = usize::from(area.height);
     let cursor = model.cursor();
     let start = match cursor {
@@ -981,8 +1043,7 @@ fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Cursor::Device(_) => 0,
     };
     let wall = wall_seconds(model);
-    let lines: Vec<Line> = model
-        .alerts()
+    let lines: Vec<Line> = shown
         .iter()
         .enumerate()
         .skip(start)
@@ -1015,7 +1076,7 @@ fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
-    rows_mark(frame, border_below(area), start, room, model.alerts().len());
+    rows_mark(frame, border_below(area), start, room, shown.len());
 }
 
 fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
@@ -1031,9 +1092,8 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
-    if let Some(note) = model.source_note() {
-        let line = fitted(vec![(note.to_string(), DIM)], usize::from(content.width));
-        frame.render_widget(Paragraph::new(line), content);
+    if let Some(note) = device_note(model) {
+        dim_line(frame, content, note);
         return;
     }
     match model.tab() {
@@ -1054,16 +1114,21 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         &[0, 2, 3, 5]
     };
     let titles = ["NAME", "INTENT", "ADMIN", "OPER", "PEER", "BGP"];
+    let metrics = model.reach(Service::Metrics);
     let cells: Vec<[&str; 6]> = interfaces
         .iter()
         .map(|row| {
             [
                 row.name.as_str(),
                 row.intent.as_str(),
-                row.admin.as_str(),
-                row.oper.as_str(),
+                cell(metrics, &row.admin),
+                cell(metrics, &row.oper),
                 row.peer.as_str(),
-                row.bgp.as_str(),
+                if row.peer.is_empty() {
+                    ""
+                } else {
+                    cell(metrics, &row.bgp)
+                },
             ]
         })
         .collect();
@@ -1144,7 +1209,15 @@ fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
         let pieces: Vec<&str> = pieces.iter().map(String::as_str).collect();
         Line::from(cut_whole(&pieces, gap, width, Keep::Start))
     };
-    let states = model.session_states();
+    let metrics = model.reach(Service::Metrics);
+    let states: Vec<_> = model
+        .session_states()
+        .into_iter()
+        .map(|(session, state)| {
+            let shown = cell(metrics, &state).to_string();
+            (session, shown)
+        })
+        .collect();
     let established = states.iter().filter(|(_, state)| state == "up").count();
     let seen = model.devices_at().map_or("—".to_string(), |at| {
         format!("{}s ago", seconds(model, at))
@@ -1207,12 +1280,19 @@ fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
         }
         lines.push(fitted(parts, width));
     }
+    lines.extend(
+        absent(metrics, row(Service::Metrics).word)
+            .map(|sentence| fitted(vec![(sentence, DIM)], width)),
+    );
     let latest = model.alerts().iter().find(|alert| {
         alert.labels.get("device") == Some(&device.name) && alert.state_word() == "firing"
     });
     let label = |name: &str| format!("alerts   {name}");
+    let alerts = model.reach(Service::Alerts);
     lines.push(match latest {
-        _ if !model.alerts_ok() => facts(&[label("?")], ""),
+        _ if alerts != Reach::Answers || !model.alerts_ok() => {
+            facts(&[label(cell(alerts, "?"))], "")
+        }
         Some(alert) => facts(
             &[
                 label(alert.labels.get("alertname").map_or("—", String::as_str)),
@@ -1241,7 +1321,27 @@ fn kind_style(kind: devices::Kind) -> Style {
 
 fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
     let entries = model.timeline();
-    let [counts, rows] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let mut notes: Vec<String> = Vec::new();
+    for sentence in [Service::Alerts, Service::Logs, Service::Flows]
+        .into_iter()
+        .filter_map(|service| absent_of(model, service))
+    {
+        if !notes.contains(&sentence) {
+            notes.push(sentence);
+        }
+    }
+    let [counts, rows, absent_rows] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(u16::try_from(notes.len()).unwrap_or(u16::MAX)),
+    ])
+    .areas(area);
+    let width = usize::from(absent_rows.width);
+    let notes: Vec<Line> = notes
+        .into_iter()
+        .map(|sentence| fitted(vec![(sentence, DIM)], width))
+        .collect();
+    frame.render_widget(Paragraph::new(notes), absent_rows);
     let [alerts, flows, rcas, logs] = devices::counts(&entries);
     let last = format!("last {}", devices::window_text(model.window()));
     let alerts = format!("   alerts {alerts}");
@@ -1359,6 +1459,14 @@ fn timeline_popup(
 }
 
 fn device_logs(frame: &mut Frame, area: Rect, model: &Model) {
+    let reach = model.reach(Service::Logs);
+    if let Some(sentence) = absent(reach, row(Service::Logs).word) {
+        dim_line(frame, area, sentence);
+        return;
+    }
+    if reach != Reach::Answers {
+        return;
+    }
     let Some((_, lines, following, scroll)) = model.device_logs() else {
         return;
     };
@@ -2099,8 +2207,8 @@ mod tests {
     use crate::book::NodeRow;
     use crate::data;
     use crate::shell::tests::{
-        alert, defined, devices_model, fixture, lab_devices_model, listing, row, sonda_rows, stack,
-        start, workshop_located,
+        alert, defined, devices_model, every_service_up, fixture, lab_devices_model, listing, row,
+        sonda_rows, stack, start, workshop_located,
     };
     use crate::shell::{handle, stacks, Stack, Start, Update, DEVICE_TABS};
 
@@ -2199,7 +2307,10 @@ mod tests {
         let stacks = (1..=12)
             .map(|index| Stack {
                 path: PathBuf::from(LAB_DIR),
-                ..stack(&format!("stack-{index:02}"), &[])
+                ..stack(
+                    &format!("stack-{index:02}"),
+                    &[("SONDA_SERVER_URL", "http://localhost:8085")],
+                )
             })
             .collect();
         let mut model = Model::new(start(stacks));
@@ -2720,6 +2831,7 @@ mod tests {
     #[test]
     fn a_long_error_keeps_its_source_its_reason_and_its_age() {
         let mut model = Model::new(start(vec![stack("a", &[])]));
+        model.apply(every_service_up(0));
         model.apply(Update::Metrics(Err(
             "cannot reach http://localhost:9090: io: Connection refused (os error 61)".to_string(),
         )));
@@ -2728,7 +2840,7 @@ mod tests {
 
         assert_eq!(
             rows[2],
-            " prometheus: … io: Connection refused (os error 61)  0s ago",
+            " metrics: … io: Connection refused (os error 61)  0s ago",
             "{}",
             rows.join("\n")
         );
@@ -3226,6 +3338,7 @@ mod tests {
 
     fn sonda_of(count: usize) -> Model {
         let mut model = opened("a");
+        model.apply(every_service_up(0));
         model.apply(Update::Sonda(data::Update {
             at: Instant::now(),
             list: Ok(scenarios(count)),
@@ -4006,6 +4119,7 @@ mod tests {
             }),
             ("sonda", || {
                 let mut model = opened("a");
+                model.apply(every_service_up(0));
                 sonda_rows(&mut model);
                 open_tab(&mut model, Tab::Sonda);
                 model

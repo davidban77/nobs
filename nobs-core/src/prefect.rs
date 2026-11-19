@@ -6,8 +6,9 @@ use serde_json::Value;
 use ureq::Agent;
 
 use crate::http;
+use crate::status::{row, Service};
 
-pub const DEFAULT_URL: &str = "http://localhost:4200";
+pub const DEFAULT_URL: &str = row(Service::Flows).default;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const FLOW_RUNS_PATH: &str = "/api/flow_runs/filter";
@@ -53,14 +54,18 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let word = row(Service::Flows).word;
         match self {
             Error::Reach { url, reason } => write!(f, "cannot reach {url}: {reason}"),
             Error::Status { status, path, body } => {
                 let body: String = body.chars().take(BODY_CUT).collect();
-                write!(f, "Prefect answered {status} on {path}: {body}")
+                write!(f, "the {word} service answered {status} on {path}: {body}")
             }
             Error::Body(reason) => {
-                write!(f, "Prefect answered with text nobs cannot read: {reason}")
+                write!(
+                    f,
+                    "the {word} service answered with text nobs cannot read: {reason}"
+                )
             }
         }
     }
@@ -385,13 +390,13 @@ mod tests {
             }
             .to_string(),
             format!(
-                "Prefect answered 500 on /api/flow_runs/filter: {}",
+                "the flows service answered 500 on /api/flow_runs/filter: {}",
                 "x".repeat(200)
             )
         );
         assert_eq!(
             Error::Body("the reply is not a list".to_string()).to_string(),
-            "Prefect answered with text nobs cannot read: the reply is not a list"
+            "the flows service answered with text nobs cannot read: the reply is not a list"
         );
     }
 }

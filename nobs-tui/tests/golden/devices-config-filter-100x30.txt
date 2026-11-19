@@ -2,8 +2,8 @@
  [1 devices]  2 services  3 lab                                                      ? keys  q quit
 ┌ devices 2 ─────────────────────────────┐╔ nobs-t-srl1 ═══════════════════════════════════════════╗
 │   NAME         KIND  HLTH  SYNC  ALRT  │║overview  interfaces  CONFIG  timeline  logs            ║
-│>  nobs-t-srl1  —     ?     —        ?  │║fetched 13:42:07  41 lines                              ║
-│   nobs-t-srl2  —     ?     —        ?  │║set / acl acl-filter cpm type ipv4 entry 10 match ipv4 …║
+│>  nobs-t-srl1  —     —     —        —  │║fetched 13:42:07  41 lines                              ║
+│   nobs-t-srl2  —     —     —        —  │║set / acl acl-filter cpm type ipv4 entry 10 match ipv4 …║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 100 match ipv4…║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 110 match ipv4…║
 │                                        │║set / acl acl-filter cpm type ipv4 entry 120 match ipv4…║
@@ -18,8 +18,8 @@
 │                                        │║                                                        ║
 │                                        │║                                                        ║
 │                                        │║                                                        ║
-├ alerts ? ──────────────────────────────┤║                                                        ║
-│                                        │║                                                        ║
+├ alerts — ──────────────────────────────┤║                                                        ║
+│no alerts in this lab                   │║                                                        ║
 │                                        │║                                                        ║
 │                                        │║                                                        ║
 │                                        │║                                                        ║

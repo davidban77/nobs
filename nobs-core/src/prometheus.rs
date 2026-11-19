@@ -6,8 +6,9 @@ use serde_json::Value;
 use ureq::Agent;
 
 use crate::http;
+use crate::status::{row, Service};
 
-pub const DEFAULT_URL: &str = "http://localhost:9090";
+pub const DEFAULT_URL: &str = row(Service::Metrics).default;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const PATH: &str = "/api/v1/query";
@@ -40,16 +41,17 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let word = row(Service::Metrics).word;
         match self {
             Error::Reach { url, reason } => write!(f, "cannot reach {url}: {reason}"),
             Error::Status { status, path, body } => {
                 let body: String = body.chars().take(BODY_CUT).collect();
-                write!(f, "Prometheus answered {status} on {path}: {body}")
+                write!(f, "the {word} service answered {status} on {path}: {body}")
             }
             Error::Body(reason) => {
                 write!(
                     f,
-                    "Prometheus answered with text nobs cannot read: {reason}"
+                    "the {word} service answered with text nobs cannot read: {reason}"
                 )
             }
         }
@@ -334,13 +336,13 @@ mod tests {
             }
             .to_string(),
             format!(
-                "Prometheus answered 400 on /api/v1/query: {}",
+                "the metrics service answered 400 on /api/v1/query: {}",
                 "x".repeat(200)
             )
         );
         assert_eq!(
             Error::Body("the reply is not JSON".to_string()).to_string(),
-            "Prometheus answered with text nobs cannot read: the reply is not JSON"
+            "the metrics service answered with text nobs cannot read: the reply is not JSON"
         );
     }
 }

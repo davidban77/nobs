@@ -247,6 +247,23 @@ fn a_blank_flag_counts_as_not_given_and_the_dot_env_file_is_used() {
 }
 
 #[test]
+fn status_asks_sonda_at_the_sonda_server_url_variable() {
+    let copy = Copy::new("sonda-variable");
+    let stub = healthy_stub();
+    let sonda = healthy_stub();
+
+    let args = flags_at(stub.url(), &["Sonda"]);
+    let output = nobs(&copy, &args, &[("SONDA_SERVER_URL", sonda.url())]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        row(&stdout(&output), "Sonda"),
+        (sonda.url().to_string(), "ok".to_string())
+    );
+    assert_eq!(sonda.requests().len(), 1);
+}
+
+#[test]
 fn a_blank_shell_value_does_not_hide_the_dot_env_file() {
     let copy = Copy::new("blank-shell");
     let stub = healthy_stub();

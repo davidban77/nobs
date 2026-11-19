@@ -503,7 +503,7 @@ fn rca_prints_the_error_and_exits_1_when_loki_answers_500() {
     assert_eq!(
         stderr(&output),
         format!(
-            "nobs: Failed to query Loki at {}: Loki answered 500 on {LOKI_PATH}: boom\n",
+            "nobs: Failed to query Loki at {}: the logs service answered 500 on {LOKI_PATH}: boom\n",
             loki.url()
         )
     );
@@ -1233,16 +1233,16 @@ fn cycle_shows_each_error_under_its_title_and_still_exits_0() {
     let mut lines = vec![
         String::new(),
         "Alert".to_string(),
-        format!("Alertmanager query failed: Alertmanager at {url} answered 500"),
+        format!("Alertmanager query failed: the alerts service at {url} answered 500"),
         String::new(),
         "Silences (this peer)".to_string(),
-        format!("silences query failed: Alertmanager at {url} answered 500"),
+        format!("silences query failed: the alerts service at {url} answered 500"),
         String::new(),
         "Prefect flow runs (last 30m)".to_string(),
-        format!("Prefect query failed: Prefect answered 500 on {FLOW_RUNS_ROUTE}: boom"),
+        format!("Prefect query failed: the flows service answered 500 on {FLOW_RUNS_ROUTE}: boom"),
         String::new(),
         "Most recent decision".to_string(),
-        format!("Loki query failed: Loki answered 500 on {LOKI_PATH}: boom"),
+        format!("Loki query failed: the logs service answered 500 on {LOKI_PATH}: boom"),
     ];
     lines.extend(HINT.map(String::from));
     lines.push(String::new());
@@ -1807,7 +1807,7 @@ fn page_takes_the_address_from_its_flag_and_exits_1_when_alertmanager_answers_50
     assert_eq!(
         stderr(&output),
         format!(
-            "nobs: Alertmanager fetch failed: Alertmanager at {} answered 500\n",
+            "nobs: Alertmanager fetch failed: the alerts service at {} answered 500\n",
             stub.url()
         )
     );

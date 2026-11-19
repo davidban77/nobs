@@ -7,8 +7,9 @@ use serde_json::Value;
 use ureq::Agent;
 
 use crate::http;
+use crate::status::{row, Service};
 
-pub const DEFAULT_URL: &str = "http://localhost:3001";
+pub const DEFAULT_URL: &str = row(Service::Logs).default;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const PATH: &str = "/loki/api/v1/query_range";
@@ -51,14 +52,18 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let word = row(Service::Logs).word;
         match self {
             Error::Reach { url, reason } => write!(f, "cannot reach {url}: {reason}"),
             Error::Status { status, path, body } => {
                 let body: String = body.chars().take(BODY_CUT).collect();
-                write!(f, "Loki answered {status} on {path}: {body}")
+                write!(f, "the {word} service answered {status} on {path}: {body}")
             }
             Error::Body(reason) => {
-                write!(f, "Loki answered with text nobs cannot read: {reason}")
+                write!(
+                    f,
+                    "the {word} service answered with text nobs cannot read: {reason}"
+                )
             }
         }
     }
@@ -405,13 +410,13 @@ mod tests {
             }
             .to_string(),
             format!(
-                "Loki answered 500 on /loki/api/v1/query_range: {}",
+                "the logs service answered 500 on /loki/api/v1/query_range: {}",
                 "x".repeat(200)
             )
         );
         assert_eq!(
             Error::Body("the reply is not JSON".to_string()).to_string(),
-            "Loki answered with text nobs cannot read: the reply is not JSON"
+            "the logs service answered with text nobs cannot read: the reply is not JSON"
         );
     }
 

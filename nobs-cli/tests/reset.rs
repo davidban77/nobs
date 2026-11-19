@@ -725,7 +725,7 @@ fn a_loki_that_fails_warns_and_sonda_logs_is_not_restarted() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "nobs: Loki probe failed: Loki answered 500 on /loki/api/v1/query_range: boom — skipping sonda-logs check\n"
+        "nobs: Loki probe failed: the logs service answered 500 on /loki/api/v1/query_range: boom — skipping sonda-logs check\n"
     );
     assert_eq!(stdout(&output), lines(&[FIRST, LOADED, CLEARED, REAPPLIED]));
     assert_eq!(docker_calls(&copy), [compose_call(&copy, "up sonda-setup")]);
@@ -760,7 +760,7 @@ fn an_alertmanager_answering_500_warns_and_the_sonda_steps_still_run() {
     assert_eq!(
         stderr(&output),
         format!(
-            "nobs: Alertmanager fetch failed: Alertmanager at {} answered 500 — skipping silence cleanup\n",
+            "nobs: Alertmanager fetch failed: the alerts service at {} answered 500 — skipping silence cleanup\n",
             stubs.alertmanager.url()
         )
     );
