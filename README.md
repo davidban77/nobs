@@ -648,7 +648,7 @@ After `up`, and after a `restart` with no services, nobs prints the addresses of
 | flows (Prefect) | `http://localhost:4200` |
 | sonda | `http://localhost:8085` |
 
-Each line is the label of the service, the kind first and the tool in brackets, and then the address, in one column:
+Each line is the label of the service and then its address. The label is the kind first and the tool in brackets, or one word for `grafana` and `sonda`. The addresses start in one column, two spaces after the longest label:
 
 ```
 grafana                http://localhost:3000
@@ -1255,7 +1255,7 @@ One run goes through these steps in order. Steps 4 to 9 repeat for each path.
 | Step | What nobs does |
 |---|---|
 | 1 | reads the addresses and the token (see the table below), and stops when there is no token |
-| 2 | the pre-flight: prints the panel `Pre-flight`, then asks Prometheus on `/-/ready`, Loki on `/ready`, Alertmanager on `/-/ready` and Infrahub on `/api/healthcheck` (or, when that fails, on `/health`), in this order; each call waits at most 3 seconds; an answer with a status below 400 counts as ready, and so does an answer from Loki with the status 503 whose text holds `Ingester not ready`; it prints `<service> reachable` for each one and stops at the first that is not ready |
+| 2 | the pre-flight: prints the panel `Pre-flight`, then asks Prometheus on `/-/ready`, Loki on `/ready`, Alertmanager on `/-/ready` and Infrahub on `/api/healthcheck` (or, when that fails, on `/health`), in this order; each call waits at most 3 seconds; an answer with a status below 400 counts as ready, and so does an answer from Loki with the status 503 whose text holds `Ingester not ready`; it prints `<service> reachable` for each one, where `<service>` is `metrics (Prometheus)`, `logs (Loki)`, `alerts (Alertmanager)` or `sot (Infrahub)`, and stops at the first that is not ready |
 | 3 | a pause |
 | 4 | prints the panel of the path: a blank line, the title and one or two lines about the path |
 | 5 | path 2 only: sets the maintenance flag of `srl1` to true and prints `srl1.maintenance = true` |
@@ -1312,7 +1312,7 @@ The lines that start with `nobs:` go to standard error (the channel for error me
 |---|---|
 | 0 | every path found its Loki match |
 | 1 | there is no token: `nobs: INFRAHUB_API_TOKEN is required (set it in .env or pass --token).` |
-| 1 | a service is not ready in the pre-flight: `nobs: <label> NOT reachable at <url> - bring the stack up first (nobs <name> up)` for `metrics (Prometheus)`, `logs (Loki)` or `alerts (Alertmanager)`, where `<url>` is the address with `/-/ready` or `/ready`, or `nobs: sot (Infrahub) NOT reachable - bring the stack up first (nobs <name> up)`; `<name>` is the `name` setting of the workshop; nobs posts nothing to the webhook |
+| 1 | a service is not ready in the pre-flight: `nobs: <service> NOT reachable at <url> - bring the stack up first (nobs <name> up)` for `metrics (Prometheus)`, `logs (Loki)` or `alerts (Alertmanager)`, where `<url>` is the address with `/-/ready` or `/ready`, or `nobs: sot (Infrahub) NOT reachable - bring the stack up first (nobs <name> up)`; `<name>` is the `name` setting of the workshop; nobs posts nothing to the webhook |
 | 1 | without `--auto`, there is no more input to read at a pause, for example with `< /dev/null`; no message |
 | 1 | Infrahub fails with an error other than a missing device, when nobs sets or clears the flag: `nobs: <error>`, where `<error>` is the text of the failed call; the run ends at once, without the `Done` panel; when the clear failed, `srl1` can stay in maintenance, and you clear it as described in the Ctrl-C paragraph |
 | 1 | a wait timed out: `nobs: <n> of 4 waits timed out`, printed after the `Done` panel |
