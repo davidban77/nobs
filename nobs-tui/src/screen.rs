@@ -75,11 +75,6 @@ const HELP_LAB: [(&str, &str); 7] = [
     ("?", "close"),
     ("Esc", "close/fold/back"),
 ];
-const WORKBENCHES: [(Workbench, &str, &str); 3] = [
-    (Workbench::Devices, "1", "devices"),
-    (Workbench::Services, "2", "services"),
-    (Workbench::Lab, "3", "lab"),
-];
 const HELP_MORE: &str = "j/k more";
 const FOLD: &str = "Esc fold";
 const PANE_LEAST: u16 = 3;
@@ -414,12 +409,12 @@ fn switcher(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     }
     let mut spans = vec![Span::raw(" ")];
-    for (index, (workbench, key, name)) in workbenches(model).iter().enumerate() {
-        if index > 0 {
+    for (key, workbench) in workbench_keys(model) {
+        if key > 1 {
             spans.push(Span::raw("  "));
         }
-        let name = format!("{key} {name}");
-        spans.push(if *workbench == model.workbench() {
+        let name = format!("{key} {}", workbench.title(true));
+        spans.push(if workbench == model.workbench() {
             Span::styled(format!("[{name}]"), REVERSE)
         } else {
             Span::raw(name)
@@ -429,9 +424,8 @@ fn switcher(frame: &mut Frame, area: Rect, model: &Model) {
     right(frame, area, Line::from("? keys  q quit"), 1);
 }
 
-fn workbenches(model: &Model) -> &'static [(Workbench, &'static str, &'static str)] {
-    let shown = if model.book_lab() { 3 } else { 2 };
-    &WORKBENCHES[..shown]
+fn workbench_keys(model: &Model) -> impl Iterator<Item = (usize, Workbench)> {
+    (1..).zip(model.workbenches())
 }
 
 fn workbench(frame: &mut Frame, area: Rect, model: &Model) {
@@ -2035,7 +2029,9 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
         Workbench::Services => &HELP,
         Workbench::Lab => &HELP_LAB,
     };
-    let switch: Vec<&str> = workbenches(model).iter().map(|(_, key, _)| *key).collect();
+    let switch: Vec<String> = workbench_keys(model)
+        .map(|(key, _)| key.to_string())
+        .collect();
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench)
@@ -2136,11 +2132,7 @@ fn help(frame: &mut Frame, area: Rect, model: &Model) {
         fits,
     } = help_layout(model, area);
     frame.render_widget(Clear, area);
-    let name = match model.workbench() {
-        Workbench::Devices => "devices",
-        Workbench::Services => "services",
-        Workbench::Lab => "lab",
-    };
+    let name = model.workbench().title(true);
     let block = Block::bordered()
         .border_type(border_of(model, Holder::Keys))
         .title_top(format!(" keys  {name} workbench "));
@@ -2210,7 +2202,7 @@ mod tests {
         alert, defined, devices_model, every_service_up, fixture, lab_devices_model, listing, row,
         sonda_rows, stack, start, workshop_located,
     };
-    use crate::shell::{handle, stacks, Stack, Start, Update, DEVICE_TABS};
+    use crate::shell::{handle, stacks, Stack, Start, Update, DEVICE_TABS, WORKBENCHES};
 
     fn tab_text(tabs: &[Tab], open: Tab) -> String {
         tab_line(tabs, open, false, 35)
@@ -4288,7 +4280,7 @@ mod tests {
             assert_eq!(screen, alone, "{label}");
             cases += 1;
         };
-        for (workbench, _, _) in WORKBENCHES {
+        for workbench in WORKBENCHES {
             let mut set_up = lab_devices_model().workbench() == workbench;
             for bench in benches() {
                 if (bench.build)().workbench() != workbench {

@@ -309,12 +309,10 @@ mod tests {
     use crossterm::event::KeyCode;
 
     use super::*;
+    use crate::shell::WORKBENCHES;
 
-    const GLOBAL_KEYS: [KeyCode; 10] = [
+    const GLOBAL_KEYS: [KeyCode; 7] = [
         KeyCode::Char('q'),
-        KeyCode::Char('1'),
-        KeyCode::Char('2'),
-        KeyCode::Char('3'),
         KeyCode::Char('?'),
         KeyCode::Char('x'),
         KeyCode::Char('o'),
@@ -358,12 +356,18 @@ mod tests {
                 KeyCode::Char('f'),
             ],
         };
-        GLOBAL_KEYS.iter().chain(own).copied().collect()
+        let switch = ('1'..='9').take(WORKBENCHES.len()).map(KeyCode::Char);
+        GLOBAL_KEYS
+            .iter()
+            .chain(own)
+            .copied()
+            .chain(switch)
+            .collect()
     }
 
     #[test]
     fn each_workbench_has_unique_action_keys_that_no_fixed_key_of_it_uses() {
-        for workbench in [Workbench::Services, Workbench::Devices, Workbench::Lab] {
+        for workbench in WORKBENCHES {
             let fixed = fixed_keys(workbench);
             let mut seen = Vec::new();
             for action in ACTIONS

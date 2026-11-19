@@ -100,6 +100,27 @@ pub enum Workbench {
     Lab,
 }
 
+pub(crate) const WORKBENCHES: [Workbench; 3] =
+    [Workbench::Devices, Workbench::Services, Workbench::Lab];
+
+impl Workbench {
+    pub fn title(self, _wide: bool) -> &'static str {
+        match self {
+            Workbench::Devices => "devices",
+            Workbench::Services => "services",
+            Workbench::Lab => "lab",
+        }
+    }
+}
+
+fn workbench_place(code: KeyCode) -> Option<usize> {
+    let KeyCode::Char(typed) = code else {
+        return None;
+    };
+    let place = usize::try_from(typed.to_digit(10)?).ok()?.checked_sub(1)?;
+    (place < WORKBENCHES.len()).then_some(place)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     List,
@@ -1776,6 +1797,13 @@ impl Model {
         )
     }
 
+    pub fn workbenches(&self) -> Vec<Workbench> {
+        WORKBENCHES
+            .into_iter()
+            .filter(|&workbench| workbench != Workbench::Lab || self.book_lab())
+            .collect()
+    }
+
     pub fn lab_with_nodes(&self) -> bool {
         matches!(
             self.lab.as_ref().map(|lab| &lab.kind),
@@ -1984,11 +2012,13 @@ impl Model {
                 return commands;
             }
         }
+        if let Some(place) = workbench_place(key.code) {
+            return match self.workbenches().get(place) {
+                Some(&workbench) => self.switch(workbench),
+                None => Vec::new(),
+            };
+        }
         match key.code {
-            KeyCode::Char('1') => return self.switch(Workbench::Devices),
-            KeyCode::Char('2') => return self.switch(Workbench::Services),
-            KeyCode::Char('3') if self.book_lab() => return self.switch(Workbench::Lab),
-            KeyCode::Char('3') => {}
             KeyCode::Char('?') => {
                 self.help = true;
                 self.help_scroll = 0;
@@ -2032,7 +2062,7 @@ impl Model {
             Workbench::Lab => &[],
         };
         if !tabs.is_empty() && !tabs.contains(&self.tab) {
-            self.tab = Tab::Overview;
+            self.tab = tabs[0];
         }
         self.settle_focus();
         if left_devices {
@@ -3199,6 +3229,57 @@ pub(crate) mod tests {
         ch(&mut model, '2');
         ch(&mut model, '3');
         assert_eq!(model.workbench(), Workbench::Lab);
+    }
+
+    fn workbenches_after(mut model: Model, keys: &str) -> Vec<Workbench> {
+        keys.chars()
+            .map(|key| {
+                ch(&mut model, key);
+                model.workbench()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn in_a_workshop_one_and_two_open_devices_and_services_and_three_does_nothing() {
+        let model = devices_model(workshop_located("infrahub"));
+        assert_eq!(
+            workbenches_after(model, "2313"),
+            [
+                Workbench::Services,
+                Workbench::Services,
+                Workbench::Devices,
+                Workbench::Devices
+            ]
+        );
+    }
+
+    #[test]
+    fn in_a_book_lab_one_two_and_three_open_devices_services_and_lab() {
+        assert_eq!(
+            workbenches_after(book_model(), "1234"),
+            [
+                Workbench::Devices,
+                Workbench::Services,
+                Workbench::Lab,
+                Workbench::Lab
+            ]
+        );
+    }
+
+    #[test]
+    fn in_a_labcli_lab_the_keys_open_what_they_open_in_a_workshop() {
+        let model = lab_model("project-two-node", "project-two-node/expected/lab_vars.yml");
+        assert!(matches!(model.located().unwrap().kind, Kind::LabcliLab(_)));
+        assert_eq!(
+            workbenches_after(model, "2313"),
+            [
+                Workbench::Services,
+                Workbench::Services,
+                Workbench::Devices,
+                Workbench::Devices
+            ]
+        );
     }
 
     #[test]
