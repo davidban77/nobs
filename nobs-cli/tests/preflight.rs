@@ -95,6 +95,8 @@ fn preflight(copy: &Copy, args: &[&str]) -> Command {
         "INFRAHUB_API_TOKEN",
         "PROMETHEUS_URL",
         "LOKI_URL",
+        "METRICS_URL",
+        "LOGS_URL",
         "GRAFANA_URL",
         "GRAFANA_USER",
         "GRAFANA_PASSWORD",
@@ -233,46 +235,55 @@ fn a_workshop_without_dashboards_is_reported_and_nothing_is_requested() {
 }
 
 #[test]
-fn preflight_asks_the_new_metrics_logs_and_sot_flags() {
-    let metrics = Stub::start(&[("GET", "/api/v1/query*", 200, PROMETHEUS_SIX)]);
-    let logs = Stub::start(&[("GET", "/loki/api/v1/series*", 200, BOTH_PIPELINES)]);
-    let sot = Stub::start(&[("POST", "/graphql/main", 500, "boom")]);
-    let closed = Stub::start_silent(Duration::ZERO);
-    let copy = Copy::new("new-flags", &format!("INFRAHUB_API_TOKEN={TOKEN}\n"));
-    let out_dir = copy.dir().join("out");
-    let stubs = [&metrics, &logs, &sot];
-
-    let mut child = preflight(
-        &copy,
-        &[
-            "--out-dir",
-            out_dir.to_str().unwrap(),
-            "--metrics-url",
-            metrics.url(),
-            "--logs-url",
-            logs.url(),
-            "--sot-url",
-            sot.url(),
-            "--grafana-url",
-            closed.url(),
-            "--sonda-url",
-            closed.url(),
-        ],
-    )
-    .spawn()
-    .unwrap();
-    let deadline = Instant::now() + LIMIT;
-    while stubs.iter().any(|stub| stub.requests().is_empty()) && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(50));
-    }
-    child.kill().unwrap();
-    child.wait().unwrap();
-
-    for (flag, stub) in ["--metrics-url", "--logs-url", "--sot-url"]
-        .iter()
-        .zip(stubs)
+fn preflight_asks_every_metrics_logs_and_sot_word() {
+    for (run_number, words) in [
+        ["--metrics-url", "--logs-url", "--sot-url"],
+        ["--prom-url", "--loki-url", "--infrahub-url"],
+        ["--metrics-url", "--logs-url", "--address"],
+    ]
+    .into_iter()
+    .enumerate()
     {
-        assert!(!stub.requests().is_empty(), "{flag}");
+        let metrics = Stub::start(&[("GET", "/api/v1/query*", 200, PROMETHEUS_SIX)]);
+        let logs = Stub::start(&[("GET", "/loki/api/v1/series*", 200, BOTH_PIPELINES)]);
+        let sot = Stub::start(&[("POST", "/graphql/main", 500, "boom")]);
+        let closed = Stub::start_silent(Duration::ZERO);
+        let copy = Copy::new(
+            &format!("words-{run_number}"),
+            &format!("INFRAHUB_API_TOKEN={TOKEN}\n"),
+        );
+        let out_dir = copy.dir().join("out");
+        let stubs = [&metrics, &logs, &sot];
+
+        let mut child = preflight(
+            &copy,
+            &[
+                "--out-dir",
+                out_dir.to_str().unwrap(),
+                words[0],
+                metrics.url(),
+                words[1],
+                logs.url(),
+                words[2],
+                sot.url(),
+                "--grafana-url",
+                closed.url(),
+                "--sonda-url",
+                closed.url(),
+            ],
+        )
+        .spawn()
+        .unwrap();
+        let deadline = Instant::now() + LIMIT;
+        while stubs.iter().any(|stub| stub.requests().is_empty()) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        for (word, stub) in words.iter().zip(stubs) {
+            assert!(!stub.requests().is_empty(), "{word}");
+        }
     }
 }
 

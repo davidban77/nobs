@@ -163,10 +163,12 @@ fn run(copy: &Copy, args: &[&str], env: &[(&str, &str)]) -> Output {
         "INFRAHUB_ADDRESS",
         "INFRAHUB_API_TOKEN",
         "ALERTMANAGER_URL",
+        "ALERTS_URL",
         "SONDA_SERVER_URL",
         "SONDA_API_KEY",
         "SONDA_LOKI_SINK_URL",
         "LOKI_URL",
+        "LOGS_URL",
         "NOBS_DIR",
         "FAKE_DOCKER_EXIT",
         "FAKE_DOCKER_RESTART_EXIT",
@@ -638,36 +640,50 @@ fn the_flags_win_over_the_variables_of_the_dot_env_file() {
 }
 
 #[test]
-fn reset_asks_the_new_alerts_logs_and_sot_flags() {
-    let stubs = Stubs::clean();
-    let copy = Copy::new(
-        "new-flags",
-        &format!("SONDA_SERVER_URL={}\n", stubs.sonda.url()),
-    );
+fn reset_asks_every_alerts_logs_and_sot_word() {
+    for (run_number, [alerts, logs, sot]) in [
+        ["--alerts-url", "--logs-url", "--sot-url"],
+        ["--am-url", "--loki-url", "--address"],
+        ["--alertmanager-url", "--loki-url", "--infrahub-url"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let stubs = Stubs::clean();
+        let copy = Copy::new(
+            &format!("words-{run_number}"),
+            &format!("SONDA_SERVER_URL={}\n", stubs.sonda.url()),
+        );
 
-    let output = run(
-        &copy,
-        &[
-            "--alerts-url",
-            stubs.alertmanager.url(),
-            "--logs-url",
-            stubs.loki.url(),
-            "--sot-url",
-            stubs.infrahub.url(),
-            "--token",
-            TOKEN,
-        ],
-        &[],
-    );
+        let output = run(
+            &copy,
+            &[
+                alerts,
+                stubs.alertmanager.url(),
+                logs,
+                stubs.loki.url(),
+                sot,
+                stubs.infrahub.url(),
+                "--token",
+                TOKEN,
+            ],
+            &[],
+        );
 
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(
-        stdout(&output),
-        lines(&[FIRST, LOADED, CLEARED, REAPPLIED, LAST])
-    );
-    assert!(!stubs.alertmanager.requests().is_empty());
-    assert!(!stubs.loki.requests().is_empty());
-    assert!(!stubs.infrahub.requests().is_empty());
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{alerts} {logs} {sot}\n{}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stdout(&output),
+            lines(&[FIRST, LOADED, CLEARED, REAPPLIED, LAST])
+        );
+        assert!(!stubs.alertmanager.requests().is_empty(), "{alerts}");
+        assert!(!stubs.loki.requests().is_empty(), "{logs}");
+        assert!(!stubs.infrahub.requests().is_empty(), "{sot}");
+    }
 }
 
 #[test]

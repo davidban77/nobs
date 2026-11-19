@@ -96,6 +96,9 @@ fn nobs(copy: &Copy, args: &[String], envs: &[(&str, &str)]) -> Output {
         .env_remove("PROMETHEUS_URL")
         .env_remove("LOKI_URL")
         .env_remove("ALERTMANAGER_URL")
+        .env_remove("METRICS_URL")
+        .env_remove("LOGS_URL")
+        .env_remove("ALERTS_URL")
         .env_remove("INFRAHUB_ADDRESS")
         .env_remove("NOBS_DIR")
         .current_dir(copy.dir());

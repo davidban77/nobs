@@ -68,6 +68,7 @@ fn nobs(copy: &Copy, args: &[&str]) -> Output {
         .arg("nobs-t-one")
         .args(args)
         .env_remove("ALERTMANAGER_URL")
+        .env_remove("ALERTS_URL")
         .env_remove("NOBS_DIR")
         .current_dir(copy.dir())
         .output()

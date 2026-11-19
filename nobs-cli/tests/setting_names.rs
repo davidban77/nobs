@@ -6,6 +6,8 @@ use std::process::{Command, Output};
 #[path = "../../tests/support/stub.rs"]
 mod stub;
 
+use clap::CommandFactory;
+use nobs_cli::{Cli, WorkshopCli};
 use stub::Stub;
 
 const NAMES: [&str; 8] = [
@@ -313,100 +315,121 @@ fn any_answer() -> Stub {
     ])
 }
 
-fn command_asks_each_new_flag(name: &str, command: &[&str], flags: &[&str]) {
-    let copy = Copy::new(&format!("command-{name}"), "");
-    let stubs: Vec<Stub> = flags.iter().map(|_| any_answer()).collect();
-    let mut args = words(command);
-    for (flag, stub) in flags.iter().zip(&stubs) {
-        args.extend(words(&[flag, stub.url()]));
+const ALERTS_WORDS: [&[&str]; 3] = [&["--alerts-url"], &["--am-url"], &["--alertmanager-url"]];
+const SOT_WORDS: [&[&str]; 3] = [&["--sot-url"], &["--infrahub-url"], &["--address"]];
+
+fn command_asks_each_word(name: &str, command: &[&str], runs: &[&[&str]]) {
+    for (run, flags) in runs.iter().enumerate() {
+        let copy = Copy::new(&format!("command-{name}-{run}"), "");
+        let stubs: Vec<Stub> = flags.iter().map(|_| any_answer()).collect();
+        let mut args = words(command);
+        for (flag, stub) in flags.iter().zip(&stubs) {
+            args.extend(words(&[flag, stub.url()]));
+        }
+        if flags
+            .iter()
+            .any(|flag| SOT_WORDS.iter().any(|words| words[0] == *flag))
+        {
+            args.extend(words(&["--token", TOKEN]));
+        }
+
+        let output = nobs(&copy, &args, &[]);
+
+        for (flag, stub) in flags.iter().zip(&stubs) {
+            assert!(
+                !stub.requests().is_empty(),
+                "{name} {flag}\n{}",
+                stderr(&output)
+            );
+        }
     }
-    if flags.contains(&"--sot-url") {
-        args.extend(words(&["--token", TOKEN]));
-    }
-
-    let output = nobs(&copy, &args, &[]);
-
-    for (flag, stub) in flags.iter().zip(&stubs) {
-        assert!(
-            !stub.requests().is_empty(),
-            "{name} {flag}\n{}",
-            stderr(&output)
-        );
-    }
 }
 
 #[test]
-fn alerts_asks_the_new_alerts_flag() {
-    command_asks_each_new_flag("alerts", &["alerts"], &["--alerts-url"]);
+fn alerts_asks_every_alerts_word() {
+    command_asks_each_word("alerts", &["alerts"], &ALERTS_WORDS);
 }
 
 #[test]
-fn silences_asks_the_new_alerts_flag() {
-    command_asks_each_new_flag("silences", &["silences"], &["--alerts-url"]);
+fn silences_asks_every_alerts_word() {
+    command_asks_each_word("silences", &["silences"], &ALERTS_WORDS);
 }
 
 #[test]
-fn page_asks_the_new_alerts_flag() {
-    command_asks_each_new_flag("page", &["page"], &["--alerts-url"]);
+fn page_asks_every_alerts_word() {
+    command_asks_each_word("page", &["page"], &ALERTS_WORDS);
 }
 
 #[test]
-fn rca_asks_the_new_logs_flag() {
-    command_asks_each_new_flag("rca", &["rca"], &["--logs-url"]);
+fn rca_asks_every_logs_word() {
+    command_asks_each_word("rca", &["rca"], &[&["--logs-url"], &["--loki-url"]]);
 }
 
 #[test]
-fn cycle_asks_the_new_alerts_logs_and_flows_flags() {
-    command_asks_each_new_flag(
+fn cycle_asks_every_alerts_logs_and_flows_word() {
+    command_asks_each_word(
         "cycle",
         &["cycle", "srl1", "10.1.99.2"],
-        &["--alerts-url", "--logs-url", "--flows-url"],
+        &[
+            &["--alerts-url", "--logs-url", "--flows-url"],
+            &["--am-url", "--loki-url", "--prefect-url"],
+            &["--alertmanager-url"],
+        ],
     );
 }
 
 #[test]
-fn evidence_asks_the_new_metrics_logs_and_sot_flags() {
-    command_asks_each_new_flag(
+fn evidence_asks_every_metrics_logs_and_sot_word() {
+    command_asks_each_word(
         "evidence",
         &["evidence", "srl1", "10.1.99.2"],
-        &["--metrics-url", "--logs-url", "--sot-url"],
+        &[
+            &["--metrics-url", "--logs-url", "--sot-url"],
+            &["--prom-url", "--loki-url", "--infrahub-url"],
+            &["--address"],
+        ],
     );
 }
 
 #[test]
-fn try_it_asks_the_new_metrics_logs_alerts_and_sot_flags() {
-    command_asks_each_new_flag(
+fn try_it_asks_every_metrics_logs_alerts_and_sot_word() {
+    command_asks_each_word(
         "try-it",
         &["try-it"],
-        &["--metrics-url", "--logs-url", "--alerts-url", "--sot-url"],
+        &[
+            &["--metrics-url", "--logs-url", "--alerts-url", "--sot-url"],
+            &["--prom-url", "--loki-url", "--am-url", "--infrahub-url"],
+            &[
+                "--metrics-url",
+                "--logs-url",
+                "--alertmanager-url",
+                "--address",
+            ],
+        ],
     );
 }
 
 #[test]
-fn devices_asks_the_new_sot_flag() {
-    command_asks_each_new_flag("devices", &["devices"], &["--sot-url"]);
+fn devices_asks_every_sot_word() {
+    command_asks_each_word("devices", &["devices"], &SOT_WORDS);
 }
 
 #[test]
-fn load_infrahub_asks_the_new_sot_flag() {
-    command_asks_each_new_flag("load-infrahub", &["load-infrahub"], &["--sot-url"]);
+fn load_infrahub_asks_every_sot_word() {
+    command_asks_each_word("load-infrahub", &["load-infrahub"], &SOT_WORDS);
 }
 
 #[test]
-fn maintenance_asks_the_new_sot_flag() {
-    command_asks_each_new_flag(
-        "maintenance",
-        &["maintenance", "-d", "srl1"],
-        &["--sot-url"],
-    );
+fn maintenance_asks_every_sot_word() {
+    command_asks_each_word("maintenance", &["maintenance", "-d", "srl1"], &SOT_WORDS);
 }
 
 #[test]
-fn schema_load_asks_the_new_sot_flag() {
-    command_asks_each_new_flag(
+fn schema_load_asks_every_sot_word() {
+    command_asks_each_word(
         "schema-load",
         &["schema", "load", "infrahub/schema.yml"],
-        &["--sot-url"],
+        &SOT_WORDS,
     );
 }
 
@@ -422,7 +445,7 @@ fn product_code() -> Vec<(PathBuf, String)> {
             let path = file.path();
             if path.extension().is_some_and(|extension| extension == "rs") {
                 let text = fs::read_to_string(&path).unwrap();
-                let product = text.split("#[cfg(test)]").next().unwrap().to_string();
+                let product = text.split("mod tests {").next().unwrap().to_string();
                 files.push((path, product));
             }
         }
@@ -465,5 +488,47 @@ fn each_name_is_spelled_in_one_place() {
             .map(|(_, text)| text.matches(&declaration).count())
             .sum();
         assert_eq!(count, 1, "{declaration}");
+    }
+}
+
+fn long_words(command: &clap::Command, path: &str, found: &mut Vec<(String, String, String)>) {
+    for argument in command.get_arguments() {
+        if let Some(long) = argument.get_long() {
+            found.push((
+                path.to_string(),
+                long.to_string(),
+                argument.get_id().to_string(),
+            ));
+        }
+    }
+    for sub in command.get_subcommands() {
+        long_words(sub, &format!("{path} {}", sub.get_name()), found);
+    }
+}
+
+#[test]
+fn each_flag_word_of_a_kind_comes_from_its_struct() {
+    let sonda_targets = [("flap-interface", "loki-url"), ("incident", "prom-url")];
+    let mut found = Vec::new();
+    long_words(&Cli::command(), "nobs", &mut found);
+    long_words(&WorkshopCli::command(), "nobs <workshop>", &mut found);
+
+    let strays: Vec<&(String, String, String)> = found
+        .iter()
+        .filter(|(path, long, id)| {
+            KIND_WORDS.contains(&long.as_str())
+                && id != long
+                && !sonda_targets
+                    .iter()
+                    .any(|(command, word)| path.ends_with(command) && long == word)
+        })
+        .collect();
+
+    assert!(strays.is_empty(), "{strays:#?}");
+    for word in KIND_WORDS {
+        assert!(
+            found.iter().any(|(_, long, id)| long == word && id == word),
+            "{word}"
+        );
     }
 }

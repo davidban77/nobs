@@ -512,9 +512,15 @@ pub struct MetricsUrl {
     old: Option<String>,
 }
 
+type Place<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 impl MetricsUrl {
     fn flags(&self) -> [Option<&str>; 2] {
         [self.new.as_deref(), self.old.as_deref()]
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Metrics, &self.flags(), places)
     }
 }
 
@@ -534,6 +540,10 @@ pub struct LogsUrl {
 impl LogsUrl {
     fn flags(&self) -> [Option<&str>; 2] {
         [self.new.as_deref(), self.old.as_deref()]
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Logs, &self.flags(), places)
     }
 }
 
@@ -564,6 +574,10 @@ impl AlertsUrl {
             self.old.as_deref(),
             self.older.as_deref(),
         ]
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Alerts, &self.flags(), places)
     }
 }
 
@@ -599,6 +613,10 @@ impl SotUrl {
     fn given(&self) -> Option<String> {
         status::given(Service::Sot, &self.flags(), &[])
     }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Sot, &self.flags(), places)
+    }
 }
 
 #[derive(Debug, Args)]
@@ -622,6 +640,10 @@ pub struct FlowsUrl {
 impl FlowsUrl {
     fn flags(&self) -> [Option<&str>; 2] {
         [self.new.as_deref(), self.old.as_deref()]
+    }
+
+    fn address(&self, places: &[Place<'_>]) -> String {
+        status::address(Service::Flows, &self.flags(), places)
     }
 }
 
@@ -3211,11 +3233,11 @@ fn urls(flags: StatusFlags, lookup: impl Fn(&str) -> Option<String>) -> Urls {
     let from = Urls::from_lookup(&[&lookup]);
     Urls {
         grafana: given(flags.grafana_url).unwrap_or(from.grafana),
-        prometheus: status::address(Service::Metrics, &flags.metrics.flags(), &[&lookup]),
-        loki: status::address(Service::Logs, &flags.logs.flags(), &[&lookup]),
-        alertmanager: status::address(Service::Alerts, &flags.alerts.flags(), &[&lookup]),
-        infrahub: status::address(Service::Sot, &flags.sot.flags(), &[&lookup]),
-        prefect: status::address(Service::Flows, &flags.flows.flags(), &[&lookup]),
+        prometheus: flags.metrics.address(&[&lookup]),
+        loki: flags.logs.address(&[&lookup]),
+        alertmanager: flags.alerts.address(&[&lookup]),
+        infrahub: flags.sot.address(&[&lookup]),
+        prefect: flags.flows.address(&[&lookup]),
         sonda: given(flags.sonda_url).unwrap_or(from.sonda),
         set: from.set,
     }
@@ -3249,11 +3271,7 @@ fn run_alerts(flags: AlertsFlags) -> i32 {
         }
     };
     let process = |name: &str| std::env::var(name).ok();
-    let client = Alertmanager::new(status::address(
-        Service::Alerts,
-        &flags.alerts.flags(),
-        &[&process],
-    ));
+    let client = Alertmanager::new(flags.alerts.address(&[&process]));
     let alerts = match client.alerts(
         flags.silenced || !flags.no_silenced,
         flags.inhibited || !flags.no_inhibited,
@@ -3283,11 +3301,7 @@ fn run_alerts(flags: AlertsFlags) -> i32 {
 
 fn run_silences(flags: SilencesFlags) -> i32 {
     let process = |name: &str| std::env::var(name).ok();
-    let client = Alertmanager::new(status::address(
-        Service::Alerts,
-        &flags.alerts.flags(),
-        &[&process],
-    ));
+    let client = Alertmanager::new(flags.alerts.address(&[&process]));
     let silences = match client.silences() {
         Ok(silences) => silences,
         Err(error) => {
@@ -3649,11 +3663,7 @@ fn run_rca(flags: RcaFlags, located: &Located) -> i32 {
         query.push_str(&format!(r#", peer_address="{peer}"}}"#));
     }
     let process = |name: &str| std::env::var(name).ok();
-    let client = Loki::new(status::address(
-        Service::Logs,
-        &flags.logs.flags(),
-        &[&process],
-    ));
+    let client = Loki::new(flags.logs.address(&[&process]));
     let lines = match client.query_range(&query, flags.minutes, flags.last, SystemTime::now()) {
         Ok(lines) => lines,
         Err(error) => {
@@ -3814,11 +3824,7 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
     };
     let intent = source.device(&flags.device);
     let process = |name: &str| std::env::var(name).ok();
-    let prometheus = Prometheus::new(status::address(
-        Service::Metrics,
-        &flags.metrics.flags(),
-        &[&process],
-    ));
+    let prometheus = Prometheus::new(flags.metrics.address(&[&process]));
     let metrics = read_metrics(
         &prometheus,
         &flags.device,
@@ -3827,18 +3833,14 @@ fn run_evidence(flags: EvidenceFlags, located: &Located) -> i32 {
         &flags.instance,
     );
     let query = evidence::fill(&workshop.evidence_query, &flags.device, &flags.peer);
-    let lines = Loki::new(status::address(
-        Service::Logs,
-        &flags.logs.flags(),
-        &[&process],
-    ))
-    .query_range(
-        &query,
-        flags.log_minutes,
-        flags.log_limit,
-        SystemTime::now(),
-    )
-    .unwrap_or_default();
+    let lines = Loki::new(flags.logs.address(&[&process]))
+        .query_range(
+            &query,
+            flags.log_minutes,
+            flags.log_limit,
+            SystemTime::now(),
+        )
+        .unwrap_or_default();
     let found = intent.as_ref().ok().and_then(Option::as_ref);
     let session = found.and_then(|found| evidence::session(found, &flags.peer, &flags.afi_safi));
     let missing = match &intent {
@@ -4141,19 +4143,15 @@ fn run_cycle(flags: CycleFlags, located: &Located) -> i32 {
         webhook_url,
     } = flags;
     let lookup = |name: &str| std::env::var(name).ok();
-    let prefect = Prefect::new(status::address(Service::Flows, &flows.flags(), &[&lookup]));
+    let prefect = Prefect::new(flows.address(&[&lookup]));
     if trigger {
         let webhook_url = service_address(webhook_url, WEBHOOK_ADDRESS, lookup);
         if let Some(code) = drive_cycle(&prefect, &webhook_url, &device, &peer, &status) {
             return code;
         }
     }
-    let alertmanager = Alertmanager::new(status::address(
-        Service::Alerts,
-        &alerts.flags(),
-        &[&lookup],
-    ));
-    let loki = Loki::new(status::address(Service::Logs, &logs.flags(), &[&lookup]));
+    let alertmanager = Alertmanager::new(alerts.address(&[&lookup]));
+    let loki = Loki::new(logs.address(&[&lookup]));
     let now = SystemTime::now();
     let seconds = seconds_of(now);
     println!("{}", alert_panel(&alertmanager, &device, &peer, seconds));
@@ -4206,11 +4204,7 @@ fn run_page(flags: PageFlags, located: &Located) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let process = |name: &str| std::env::var(name).ok();
-    let alertmanager = Alertmanager::new(status::address(
-        Service::Alerts,
-        &flags.alerts.flags(),
-        &[&process],
-    ));
+    let alertmanager = Alertmanager::new(flags.alerts.address(&[&process]));
     let alerts = match alertmanager.alerts(true, true) {
         Ok(alerts) => alerts,
         Err(error) => {
@@ -4334,10 +4328,10 @@ fn run_try_it(flags: TryItFlags, located: &Located) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let lookup = |name: &str| std::env::var(name).ok();
-    let prometheus = status::address(Service::Metrics, &flags.metrics.flags(), &[&lookup]);
-    let loki_address = status::address(Service::Logs, &flags.logs.flags(), &[&lookup]);
+    let prometheus = flags.metrics.address(&[&lookup]);
+    let loki_address = flags.logs.address(&[&lookup]);
     let webhook_url = service_address(flags.webhook_url, WEBHOOK_ADDRESS, lookup);
-    let alertmanager = status::address(Service::Alerts, &flags.alerts.flags(), &[&lookup]);
+    let alertmanager = flags.alerts.address(&[&lookup]);
     let Some(infrahub) = connected(flags.sot.given().as_deref(), flags.token.as_deref()) else {
         return 1;
     };
@@ -4692,16 +4686,8 @@ fn run_reset(flags: ResetFlags, located: &Located, runner: &dyn Runner) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let lookup = |name: &str| std::env::var(name).ok();
-    let alertmanager = Alertmanager::new(status::address(
-        Service::Alerts,
-        &flags.alerts.flags(),
-        &[&lookup],
-    ));
-    let loki = Loki::new(status::address(
-        Service::Logs,
-        &flags.logs.flags(),
-        &[&lookup],
-    ));
+    let alertmanager = Alertmanager::new(flags.alerts.address(&[&lookup]));
+    let loki = Loki::new(flags.logs.address(&[&lookup]));
     let sonda = cascade_client(flags.sonda_url, None, lookup);
     println!("Resetting lab to known-good state.");
     let Some(infrahub) = connected(flags.sot.given().as_deref(), flags.token.as_deref()) else {
@@ -4809,16 +4795,8 @@ fn run_workshop_preflight(flags: PreflightFlags, located: &Located) -> i32 {
         unreachable!("a workshop command runs in a workshop");
     };
     let lookup = |name: &str| std::env::var(name).ok();
-    let prometheus = Prometheus::new(status::address(
-        Service::Metrics,
-        &flags.metrics.flags(),
-        &[&lookup],
-    ));
-    let loki = Loki::new(status::address(
-        Service::Logs,
-        &flags.logs.flags(),
-        &[&lookup],
-    ));
+    let prometheus = Prometheus::new(flags.metrics.address(&[&lookup]));
+    let loki = Loki::new(flags.logs.address(&[&lookup]));
     let grafana_default = Urls::defaults().grafana;
     let grafana = Grafana::new(
         service_address(flags.grafana_url, ("GRAFANA_URL", &grafana_default), lookup),
