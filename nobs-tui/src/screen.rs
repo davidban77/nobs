@@ -1233,10 +1233,7 @@ fn alert_table(frame: &mut Frame, area: Rect, model: &Model, visible: &[usize]) 
     widths[3] = widths[3].max(STATE_WIDTH);
     let fixed = 2 + widths[1..].iter().map(|width| width + 2).sum::<usize>();
     widths[0] = widths[0].min(usize::from(area.width).saturating_sub(fixed));
-    let selected = model.selected_alert();
-    let at = visible
-        .iter()
-        .position(|&index| selected.is_some_and(|chosen| std::ptr::eq(chosen, &alerts[index])));
+    let at = model.selected_alert_row();
     let body_rows = visible.iter().zip(&rows).map(|(&index, row)| {
         Row::new([
             Cell::from(fit(&row[0], widths[0])),
@@ -3399,6 +3396,57 @@ mod tests {
             after_newer.starts_with("╠ nobs-t-second  srl2 ═"),
             "{after_newer}"
         );
+    }
+
+    fn lower_box_title(model: &mut Model) -> String {
+        drawn(model, 100, 30)
+            .into_iter()
+            .find(|row| row.starts_with('╠'))
+            .unwrap_or_default()
+    }
+
+    fn titles_across_a_failed_poll_and_a_newer_alert(filter: &str) -> (String, String) {
+        let older = [
+            alert("srl1", "nobs-t-first", "2026-11-09T13:53:32Z"),
+            alert("srl2", "nobs-t-second", "2026-11-09T13:52:32Z"),
+            alert("srl2", "nobs-t-third", "2026-11-09T13:51:32Z"),
+        ];
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(older.to_vec())));
+        press(&mut model, '3');
+        if !filter.is_empty() {
+            press(&mut model, '/');
+            filter.chars().for_each(|letter| press(&mut model, letter));
+            handle(
+                &mut model,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+        }
+        press(&mut model, 'j');
+        let before = lower_box_title(&mut model);
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        let newer = alert("srl2", "nobs-t-newest", "2026-11-09T13:54:32Z");
+        model.apply(Update::Alerts(Ok([newer]
+            .into_iter()
+            .chain(older)
+            .collect())));
+        (before, lower_box_title(&mut model))
+    }
+
+    #[test]
+    fn under_a_filter_the_lower_box_keeps_its_alert_across_a_failed_poll_and_a_newer_alert() {
+        let (before, after) = titles_across_a_failed_poll_and_a_newer_alert("srl2");
+
+        assert!(before.starts_with("╠ nobs-t-third  srl2 ═"), "{before}");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn the_lower_box_keeps_its_alert_across_a_failed_poll_and_a_newer_alert() {
+        let (before, after) = titles_across_a_failed_poll_and_a_newer_alert("");
+
+        assert!(before.starts_with("╠ nobs-t-second  srl2 ═"), "{before}");
+        assert_eq!(after, before);
     }
 
     #[test]

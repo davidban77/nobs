@@ -556,7 +556,7 @@ pub struct Model {
     metrics: Option<Vec<Sample>>,
     alerts: Vec<Alert>,
     alerts_ok: bool,
-    alert: usize,
+    kept_alert: Option<BTreeMap<String, String>>,
     alert_filter: Filter,
     runs: Vec<FlowRun>,
     rcas: Vec<Line>,
@@ -678,7 +678,7 @@ impl Model {
             metrics: None,
             alerts: Vec::new(),
             alerts_ok: false,
-            alert: 0,
+            kept_alert: None,
             alert_filter: Filter::default(),
             runs: Vec::new(),
             rcas: Vec::new(),
@@ -810,6 +810,7 @@ impl Model {
             commands.push(Command::Ask(row.service, on));
         }
         self.asks = asking;
+        self.keep_alert();
         commands
     }
 
@@ -838,7 +839,6 @@ impl Model {
             status::Service::Alerts => {
                 self.alerts.clear();
                 self.alerts_ok = false;
-                self.alert = 0;
                 if let Cursor::Alert(_) = self.cursor {
                     self.cursor = Cursor::Device(self.device);
                 }
@@ -929,16 +929,8 @@ impl Model {
             }
             Update::Alerts(Ok(mut list)) => {
                 list.sort_by_key(|alert| Reverse(time::parse_rfc3339(&alert.starts_at)));
-                let selected = self
-                    .alerts
-                    .get(self.alert)
-                    .map(|alert| alert.labels.clone());
-                self.alert = selected
-                    .and_then(|labels| list.iter().position(|alert| alert.labels == labels))
-                    .unwrap_or(0);
                 self.alerts = list;
                 self.alerts_ok = true;
-                self.show_alert();
                 self.clear_error(error_source(status::Service::Alerts));
                 if let Cursor::Alert(at) = self.cursor {
                     return match self.alerts.len() {
@@ -1652,16 +1644,23 @@ impl Model {
             .collect()
     }
 
-    fn selected_alert_index(&self) -> Option<usize> {
+    pub(crate) fn selected_alert_row(&self) -> Option<usize> {
         let visible = self.visible_alerts();
         visible
-            .contains(&self.alert)
-            .then_some(self.alert)
-            .or(visible.first().copied())
+            .iter()
+            .position(|&index| Some(&self.alerts[index].labels) == self.kept_alert.as_ref())
+            .or((!visible.is_empty()).then_some(0))
     }
 
     pub fn selected_alert(&self) -> Option<&Alert> {
-        self.selected_alert_index().map(|index| &self.alerts[index])
+        let row = self.selected_alert_row()?;
+        Some(&self.alerts[self.visible_alerts()[row]])
+    }
+
+    fn keep_alert(&mut self) {
+        if let Some(alert) = self.selected_alert() {
+            self.kept_alert = Some(alert.labels.clone());
+        }
     }
 
     pub fn alert_device(&self, alert: &Alert) -> Option<usize> {
@@ -2073,7 +2072,6 @@ impl Model {
         }
         if self.alert_filter.typing {
             self.alert_filter.type_key(key.code);
-            self.show_alert();
             return Vec::new();
         }
         if let Some(logs) = self.logs.as_mut().filter(|logs| logs.filter.typing) {
@@ -2373,27 +2371,18 @@ impl Model {
         Vec::new()
     }
 
-    fn show_alert(&mut self) {
-        if let Some(index) = self.selected_alert_index() {
-            self.alert = index;
-        }
-    }
-
     fn step_alert(&mut self, down: bool) {
-        let visible = self.visible_alerts();
-        let Some(at) = self
-            .selected_alert_index()
-            .and_then(|index| visible.iter().position(|shown| *shown == index))
-        else {
+        let Some(at) = self.selected_alert_row() else {
             return;
         };
         let next = if down {
-            visible.get(at + 1)
+            Some(at + 1)
         } else {
-            at.checked_sub(1).and_then(|before| visible.get(before))
+            at.checked_sub(1)
         };
-        if let Some(&index) = next {
-            self.alert = index;
+        let visible = self.visible_alerts();
+        if let Some(&index) = next.and_then(|row| visible.get(row)) {
+            self.kept_alert = Some(self.alerts[index].labels.clone());
         }
     }
 
@@ -2618,6 +2607,12 @@ impl Model {
 }
 
 pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+    let commands = take_key(model, key);
+    model.keep_alert();
+    commands
+}
+
+fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     if key.kind != KeyEventKind::Press {
         return Vec::new();
     }
@@ -3485,6 +3480,114 @@ pub(crate) mod tests {
 
         assert_eq!(model.visible_alerts(), [0, 2, 3]);
         assert_eq!(model.selected_alert().unwrap().labels, shown);
+    }
+
+    fn selected_words(model: &Model) -> Option<[String; 2]> {
+        model
+            .selected_alert()
+            .map(|alert| ["device", "alertname"].map(|name| alert.labels[name].clone()))
+    }
+
+    fn alert_words(device: &str, name: &str) -> Option<[String; 2]> {
+        Some([device.to_string(), name.to_string()])
+    }
+
+    #[test]
+    fn when_the_selected_alert_leaves_the_list_the_first_shown_alert_is_selected() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        assert_eq!(selected_words(&model), alert_words("srl2", "InterfaceDown"));
+
+        let mut list = three_alerts();
+        list.remove(2);
+        model.apply(Update::Alerts(Ok(list)));
+
+        assert_eq!(
+            selected_words(&model),
+            alert_words("srl1", "BgpSessionNotUp")
+        );
+    }
+
+    #[test]
+    fn the_alert_shown_as_selected_under_a_filter_stays_selected_after_the_filter_is_cleared() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'k');
+        assert_eq!(
+            selected_words(&model),
+            alert_words("srl1", "BgpSessionNotUp")
+        );
+
+        ch(&mut model, '/');
+        typed(&mut model, "srl2");
+        code(&mut model, KeyCode::Enter);
+        let under_the_filter = selected_words(&model);
+        ch(&mut model, '/');
+        code(&mut model, KeyCode::Esc);
+
+        assert_eq!(under_the_filter, alert_words("srl2", "BgpSessionNotUp"));
+        assert_eq!(model.visible_alerts(), [0, 1, 2]);
+        assert_eq!(selected_words(&model), under_the_filter);
+    }
+
+    #[test]
+    fn when_the_stack_comes_back_with_the_same_alerts_the_same_alert_is_selected_again() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        assert_eq!(selected_words(&model), alert_words("srl2", "InterfaceDown"));
+        let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
+
+        model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
+        let while_down = (model.reach(status::Service::Alerts), selected_words(&model));
+        model.apply(every_service_up(0));
+        model.apply(Update::Alerts(Ok(three_alerts())));
+
+        assert_eq!(while_down, (Reach::StackDown, None));
+        assert_eq!(selected_words(&model), alert_words("srl2", "InterfaceDown"));
+    }
+
+    #[test]
+    fn an_alert_nobody_chose_stays_marked_when_a_newer_alert_arrives_at_the_top() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        assert_eq!(model.selected_alert_row(), Some(0));
+
+        model.apply(Update::Alerts(Ok(vec![
+            alert("srl2", "BgpSessionNotUp", "2026-11-09T13:53:32Z"),
+            alert("srl1", "LinkFlap", "2026-11-09T13:54:32Z"),
+        ])));
+
+        assert_eq!(model.selected_alert_row(), Some(1));
+        assert_eq!(
+            selected_words(&model),
+            alert_words("srl2", "BgpSessionNotUp")
+        );
+    }
+
+    #[test]
+    fn outside_a_lab_the_selected_alert_comes_back_after_another_stack_was_selected() {
+        let mut model = opened(&["a", "b"]);
+        model.apply(every_service_up(0));
+        model.apply(Update::Services(
+            1,
+            defined(&["prometheus"]),
+            Ok(vec![row("prometheus", RUNNING)]),
+        ));
+        model.apply(Update::Alerts(Ok(three_alerts())));
+        ch(&mut model, '3');
+        ch(&mut model, 'j');
+        let chosen = selected_words(&model);
+        assert_eq!(model.workbench(), Workbench::Observability);
+
+        ch(&mut model, '2');
+        ch(&mut model, 'j');
+        model.ask_changes();
+        let at_b = (model.reach(status::Service::Alerts), selected_words(&model));
+        ch(&mut model, 'k');
+        model.ask_changes();
+        model.apply(Update::Alerts(Ok(three_alerts())));
+
+        assert_eq!(at_b, (Reach::NotInLab, None));
+        assert_eq!(chosen, alert_words("srl2", "BgpSessionNotUp"));
+        assert_eq!(selected_words(&model), chosen);
     }
 
     #[test]
