@@ -2025,6 +2025,24 @@ fn the_observability_frames_are_pinned() {
 }
 
 #[test]
+fn both_alert_borders_say_unknown_before_the_first_answer_and_after_x() {
+    let first = after(model_with(false, false, None, None), &[KeyCode::Char('3')]);
+    let dismissed = after(observability_no_answer(), &[KeyCode::Char('x')]);
+    for model in [first, dismissed] {
+        let screen = lines(&render(model, 60, 15));
+        let border = |corner: char| {
+            let line = screen.iter().find(|line| line.starts_with(corner)).unwrap();
+            line.split_whitespace()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(border('╔'), "╔ ALERTS ?");
+        assert_eq!(border('╚'), "╚ alerts ?");
+    }
+}
+
+#[test]
 fn the_observability_view_names_no_view_kind_or_key_that_is_not_built() {
     let builds: [fn() -> Shell; 7] = [
         observability,

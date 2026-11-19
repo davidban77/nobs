@@ -456,6 +456,12 @@ impl Filter {
             .as_deref()
             .is_none_or(|filter| text.contains(filter))
     }
+
+    fn matches_any_case(&self, text: &str) -> bool {
+        self.text
+            .as_deref()
+            .is_none_or(|filter| text.to_lowercase().contains(&filter.to_lowercase()))
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -923,7 +929,10 @@ impl Model {
             }
             Update::Alerts(Ok(mut list)) => {
                 list.sort_by_key(|alert| Reverse(time::parse_rfc3339(&alert.starts_at)));
-                let selected = self.selected_alert().map(|alert| alert.labels.clone());
+                let selected = self
+                    .alerts
+                    .get(self.alert)
+                    .map(|alert| alert.labels.clone());
                 self.alert = selected
                     .and_then(|labels| list.iter().position(|alert| alert.labels == labels))
                     .unwrap_or(0);
@@ -1556,12 +1565,10 @@ impl Model {
     }
 
     pub fn visible_devices(&self) -> Vec<usize> {
-        let needle = self.device_filter.text.as_deref().map(str::to_lowercase);
         (0..self.devices.len())
             .filter(|index| {
-                needle
-                    .as_deref()
-                    .is_none_or(|needle| self.devices[*index].name.to_lowercase().contains(needle))
+                self.device_filter
+                    .matches_any_case(&self.devices[*index].name)
             })
             .collect()
     }
@@ -1626,25 +1633,19 @@ impl Model {
     }
 
     pub fn visible_alerts(&self) -> Vec<usize> {
-        let needle = self.alert_filter.text.as_deref().map(str::to_lowercase);
-        let matches = |alert: &Alert, needle: &str| {
-            let label = |name: &str| alert.labels.get(name).cloned().unwrap_or_default();
-            [
-                label("alertname"),
-                label("device"),
-                label("severity"),
-                alert.state_word(),
-            ]
-            .iter()
-            .any(|text| text.to_lowercase().contains(needle))
-        };
         self.shown_alerts()
             .iter()
             .enumerate()
             .filter(|(_, alert)| {
-                needle
-                    .as_deref()
-                    .is_none_or(|needle| matches(alert, needle))
+                let label = |name: &str| alert.labels.get(name).cloned().unwrap_or_default();
+                [
+                    label("alertname"),
+                    label("device"),
+                    label("severity"),
+                    alert.state_word(),
+                ]
+                .iter()
+                .any(|text| self.alert_filter.matches_any_case(text))
             })
             .map(|(index, _)| index)
             .collect()
@@ -3442,6 +3443,20 @@ pub(crate) mod tests {
         assert!(!model.typing());
         assert_eq!(model.workbench(), Workbench::Observability);
         assert_eq!(model.visible_alerts(), [1, 2]);
+    }
+
+    #[test]
+    fn the_selected_alert_stays_selected_across_a_failed_poll_and_a_newer_alert() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        let chosen = model.selected_alert().unwrap().labels.clone();
+
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        let mut list = three_alerts();
+        list.push(alert("srl3", "InterfaceDown", "2026-11-09T13:54:32Z"));
+        model.apply(Update::Alerts(Ok(list)));
+
+        assert_eq!(model.selected_alert().unwrap().labels, chosen);
     }
 
     #[test]

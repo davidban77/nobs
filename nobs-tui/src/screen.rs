@@ -905,7 +905,7 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         }
         None => Some(device_rows(frame, list, model, &visible, wide)),
     };
-    let count = alerts_count(model, model.alerts().len());
+    let count = alerts_cell(model, &model.alerts().len().to_string());
     let row = Rect::new(area.x, separator.y, area.width, 1);
     let room = usize::from(list.height).saturating_sub(1);
     let window = first.map(|first| (first, room, visible.len()));
@@ -913,7 +913,7 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     alert_rows(frame, alerts, model, wide);
 }
 
-fn alerts_count(model: &Model, shown: usize) -> String {
+fn alerts_cell(model: &Model, shown: &str) -> String {
     match model.reach(Service::Alerts) {
         Reach::Answers if model.alerts_ok() => shown.to_string(),
         reach => cell(reach, "?").to_string(),
@@ -1129,7 +1129,7 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
         area.width >= WIDE,
         usize::from(area.width),
     );
-    let count = format!(" {} ", alerts_count(model, visible.len()));
+    let count = format!(" {} ", alerts_cell(model, &visible.len().to_string()));
     let top: Vec<Span> = [Span::raw(" ")]
         .into_iter()
         .chain(views.spans)
@@ -1138,7 +1138,7 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
     let block = Block::bordered()
         .border_type(border)
         .title_top(Line::from(top))
-        .title_bottom(format!(" alerts {} ", cell(reach, "ok")));
+        .title_bottom(format!(" alerts {} ", alerts_cell(model, "ok")));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if let Some(sentence) = absent(reach, row(Service::Alerts).word) {

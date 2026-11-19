@@ -352,6 +352,7 @@ The view follows the state of the alerts service:
 | the lab has no alerts service | `ALERTS —` | the grey sentence `no alerts in this lab`, then `to add them, write the address in the lab's .env:` and `  ALERTS_URL=http://localhost:9093` |
 | the stack is down | `ALERTS —` | the grey sentence `the stack is down` |
 | no answer yet | `ALERTS —` | nothing |
+| the service runs, but no list has come yet or since `x` closed its error | `ALERTS ?` | the last list of alerts, or nothing before the first one |
 | the service answers with no alert | `ALERTS 0` | a grey `none` |
 | the service does not answer | `ALERTS ?` | nothing; the red line `alerts: <error>  <n>s ago` shows above the pane (see [Errors](#errors)) |
 
