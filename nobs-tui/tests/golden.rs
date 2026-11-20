@@ -2210,7 +2210,7 @@ fn both_alert_borders_say_unknown_before_the_first_answer_and_after_x() {
         };
         assert_eq!(border('╔'), "╔ ALERTS ?");
         let bottom = screen.iter().find(|line| line.starts_with('╚')).unwrap();
-        assert!(bottom.contains("  alerts ? "), "{bottom}");
+        assert!(bottom.starts_with("╚ logs ok  alerts ? ═"), "{bottom}");
     }
 }
 

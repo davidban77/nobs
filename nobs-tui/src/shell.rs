@@ -183,12 +183,20 @@ fn step(tabs: &[Tab], tab: Tab, forward: bool) -> Tab {
     tabs[next]
 }
 
-fn neighbour(row: usize, down: bool) -> Option<usize> {
-    if down {
+fn kept_row<T>(shown: &[T], kept: impl Fn(&T) -> bool) -> Option<usize> {
+    shown
+        .iter()
+        .position(kept)
+        .or((!shown.is_empty()).then_some(0))
+}
+
+fn neighbour<T: Copy>(shown: &[T], row: usize, down: bool) -> Option<T> {
+    let next = if down {
         Some(row + 1)
     } else {
         row.checked_sub(1)
-    }
+    };
+    shown.get(next?).copied()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1758,11 +1766,9 @@ impl Model {
     }
 
     pub(crate) fn selected_alert_row(&self) -> Option<usize> {
-        let visible = self.visible_alerts();
-        visible
-            .iter()
-            .position(|&index| Some(&self.alerts[index].labels) == self.kept_alert.as_ref())
-            .or((!visible.is_empty()).then_some(0))
+        kept_row(&self.visible_alerts(), |&index| {
+            Some(&self.alerts[index].labels) == self.kept_alert.as_ref()
+        })
     }
 
     pub fn selected_alert(&self) -> Option<&Alert> {
@@ -1820,15 +1826,11 @@ impl Model {
         if self.lab_logs.following {
             return None;
         }
-        let shown = self.lab_logs.shown();
-        shown
-            .iter()
-            .position(|held| {
-                self.lab_mark
-                    .as_ref()
-                    .is_some_and(|(device, line)| held.device == *device && held.line == *line)
-            })
-            .or((!shown.is_empty()).then_some(0))
+        kept_row(&self.lab_logs.shown(), |held| {
+            self.lab_mark
+                .as_ref()
+                .is_some_and(|(device, line)| held.device == *device && held.line == *line)
+        })
     }
 
     fn marked_lab_line(&self) -> Option<&DeviceLine> {
@@ -1836,9 +1838,30 @@ impl Model {
     }
 
     fn keep_mark(&mut self) {
-        self.lab_mark = self
-            .marked_lab_line()
-            .map(|held| (held.device.clone(), held.line.clone()));
+        if self.lab_logs.following {
+            self.lab_mark = None;
+        } else if let Some(held) = self.marked_lab_line() {
+            self.lab_mark = Some((held.device.clone(), held.line.clone()));
+        }
+    }
+
+    pub(crate) fn lab_can_pause(&self) -> bool {
+        self.asking().contains(&status::Service::Logs)
+    }
+
+    pub(crate) fn lab_can_filter(&self) -> bool {
+        self.lab_lines_shown() && !self.lab_logs.lines.is_empty()
+    }
+
+    pub(crate) fn lab_can_move(&self) -> bool {
+        self.lab_lines_shown() && self.marked_lab_row().is_some()
+    }
+
+    pub(crate) fn lab_enter_device(&self) -> Option<usize> {
+        if !self.lab_lines_shown() {
+            return None;
+        }
+        self.device_index(&self.marked_lab_line()?.device)
     }
 
     pub fn interfaces(&self) -> Vec<devices::Row> {
@@ -2163,6 +2186,7 @@ impl Model {
         self.service = 0;
         self.logs = None;
         self.lab_logs.clear();
+        self.lab_mark = None;
         if self.tab == Tab::Logs {
             self.tab = Tab::Overview;
         }
@@ -2560,23 +2584,14 @@ impl Model {
     }
 
     fn lab_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let shown = self.lab_lines_shown();
         match code {
-            KeyCode::Char('f') => {
+            KeyCode::Char('f') if self.lab_can_pause() => {
                 self.lab_logs.toggle();
             }
-            KeyCode::Char('/') if shown && !self.lab_logs.lines.is_empty() => {
-                self.lab_logs.filter.start();
-            }
-            _ if self.lab_logs.following || !shown => {}
-            KeyCode::Char('j') | KeyCode::Down => self.step_mark(true),
-            KeyCode::Char('k') | KeyCode::Up => self.step_mark(false),
-            KeyCode::Enter => {
-                let index = self
-                    .marked_lab_line()
-                    .and_then(|held| self.device_index(&held.device));
-                return self.open_in_devices(index, Tab::Logs);
-            }
+            KeyCode::Char('/') if self.lab_can_filter() => self.lab_logs.filter.start(),
+            KeyCode::Char('j') | KeyCode::Down if self.lab_can_move() => self.step_mark(true),
+            KeyCode::Char('k') | KeyCode::Up if self.lab_can_move() => self.step_mark(false),
+            KeyCode::Enter => return self.open_in_devices(self.lab_enter_device(), Tab::Logs),
             _ => {}
         }
         Vec::new()
@@ -2586,9 +2601,7 @@ impl Model {
         let Some(at) = self.marked_lab_row() else {
             return;
         };
-        if let Some(held) =
-            neighbour(at, down).and_then(|row| self.lab_logs.shown().get(row).copied())
-        {
+        if let Some(held) = neighbour(&self.lab_logs.shown(), at, down) {
             self.lab_mark = Some((held.device.clone(), held.line.clone()));
         }
     }
@@ -2597,8 +2610,7 @@ impl Model {
         let Some(at) = self.selected_alert_row() else {
             return;
         };
-        let visible = self.visible_alerts();
-        if let Some(&index) = neighbour(at, down).and_then(|row| visible.get(row)) {
+        if let Some(index) = neighbour(&self.visible_alerts(), at, down) {
             self.kept_alert = Some(self.alerts[index].labels.clone());
         }
     }
@@ -5726,6 +5738,46 @@ pub(crate) mod tests {
         assert_eq!(follow_lab(&sent), [false]);
         assert!(!model.lab_logs().1);
         assert_eq!(marked(&model), Some(("srl1", "bgp up")));
+    }
+
+    #[test]
+    fn a_filter_that_hides_every_line_keeps_the_marked_line() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+
+        filtered(&mut model, "nowhere");
+        assert_eq!(marked(&model), None);
+        unfiltered(&mut model);
+
+        assert_eq!(marked(&model), Some(("other", "link down")));
+    }
+
+    #[test]
+    fn f_does_nothing_where_the_view_cannot_pause() {
+        let mut model = logs_view();
+        let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
+        model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
+        assert_eq!(model.reach(status::Service::Logs), Reach::StackDown);
+
+        ch(&mut model, 'f');
+
+        assert!(model.lab_logs().1);
+    }
+
+    #[test]
+    fn without_an_answer_a_paused_view_neither_opens_a_device_nor_moves_the_marker() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        typed(&mut model, "jj");
+        model.apply(Update::LabLogs(Err("refused".to_string())));
+        assert_eq!(model.reach(status::Service::Logs), Reach::NoAnswer);
+
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+        ch(&mut model, 'j');
+
+        assert_eq!(model.workbench(), Workbench::Observability);
+        assert_eq!(marked(&model), Some(("srl2", "bgp down")));
     }
 
     #[test]

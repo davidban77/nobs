@@ -278,20 +278,10 @@ fn a_lab_without_the_logs_service_sends_no_request_for_the_lines_of_all_devices(
 
 #[test]
 fn a_paused_logs_view_sends_no_request_for_the_lines_of_all_devices() {
-    let stub = loki();
-    let (pollers, updates) = start_pollers(&stub);
-    pollers.send(Command::Ask(Service::Logs, true));
-    pollers.send(Command::FollowLab(true));
-    assert!(wait_for(&updates, Duration::from_secs(5), lab_logs).is_some());
-    let before = lab_requests(&stub).len();
+    let (shown, paused, later) = lab_requests_shown_then_left(&['f']);
 
-    pollers.send(Command::FollowLab(false));
-    pollers.send(Command::Refresh);
-    let answered = wait_for(&updates, QUIET, lab_logs);
-    pollers.send(Command::Quit);
-
-    assert!(answered.is_none());
-    assert_eq!(lab_requests(&stub).len(), before);
+    assert!(shown > 0);
+    assert_eq!(later, paused);
 }
 
 #[test]

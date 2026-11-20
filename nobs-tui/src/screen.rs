@@ -2289,28 +2289,22 @@ fn observability_hints(model: &Model) -> Vec<&'static str> {
 }
 
 fn lab_hints(model: &Model) -> Vec<(bool, &'static str)> {
-    let (lines, following, marked, held) = model.lab_logs();
-    if !model.asking().contains(&Service::Logs) {
+    if !model.lab_can_pause() {
         return vec![(true, "[ ] view"), (true, "r refresh")];
     }
-    let shown = model.lab_lines_shown();
-    let filters = shown && held.unwrap_or(lines.len()) > 0;
-    if following {
+    if model.lab_logs().1 {
         return vec![
             (true, "f pause"),
-            (filters, "/ filter"),
+            (model.lab_can_filter(), "/ filter"),
             (true, "[ ] view"),
             (true, "r refresh"),
         ];
     }
-    let opens = marked
-        .and_then(|at| lines.get(at))
-        .is_some_and(|(_, device, _)| model.device_index(device).is_some());
     vec![
         (true, "f follow"),
-        (shown && marked.is_some(), "j/k move"),
-        (filters, "/ filter"),
-        (shown && opens, "Enter open the device"),
+        (model.lab_can_move(), "j/k move"),
+        (model.lab_can_filter(), "/ filter"),
+        (model.lab_enter_device().is_some(), "Enter open the device"),
     ]
 }
 
