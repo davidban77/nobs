@@ -1095,7 +1095,10 @@ fn the_devices_without_a_source_frame_is_pinned() {
 }
 
 fn workshop_down() -> Shell {
-    let mut model = workshop_unpolled();
+    stack_down(workshop_unpolled())
+}
+
+fn stack_down(mut model: Shell) -> Shell {
     let names: Vec<&str> = status::SERVICES.iter().map(|row| row.compose).collect();
     model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
     model
@@ -1964,12 +1967,15 @@ fn observability() -> Shell {
 }
 
 fn observability_none() -> Shell {
-    let model = devices_model_in(
+    after(project_lab(), &[KeyCode::Char('3')])
+}
+
+fn project_lab() -> Shell {
+    devices_model_in(
         PROJECT_LAB,
         "expected/lab_vars.yml",
         "/home/me/nobs-t-project",
-    );
-    after(model, &[KeyCode::Char('3')])
+    )
 }
 
 fn observability_down() -> Shell {
@@ -2059,6 +2065,31 @@ fn paused(model: Shell) -> Shell {
     after(model, &[KeyCode::Char('f')])
 }
 
+fn logs_answering(mut model: Shell) -> Shell {
+    model.apply(listing(0, ps(&WORKSHOP[2..3])));
+    model.apply(Update::LabLogs(Ok(lab_lines())));
+    after(model, &[KeyCode::Char('3'), KeyCode::Char(']')])
+}
+
+fn unpolled_again(mut model: Shell) -> Shell {
+    model.apply(Update::Services(
+        0,
+        Err("refused".to_string()),
+        Err("refused".to_string()),
+    ));
+    after(model, &[KeyCode::Char('x'), KeyCode::Char('x')])
+}
+
+fn without_logs(mut model: Shell) -> Shell {
+    model.apply(Update::Services(0, defined(&[]), Ok(Vec::new())));
+    model
+}
+
+fn still_paused(model: Shell) -> Shell {
+    assert!(!model.lab_logs().1);
+    model
+}
+
 #[test]
 fn the_logs_view_frames_are_pinned() {
     golden("observability-logs", observability_logs);
@@ -2073,10 +2104,14 @@ fn the_logs_view_frames_are_pinned() {
         paused(logs_no_answer())
     });
     golden("observability-logs-paused-unknown", || {
-        paused(logs_unknown())
+        still_paused(unpolled_again(paused(logs_answering(workshop_unpolled()))))
     });
-    golden("observability-logs-paused-down", || paused(logs_down()));
-    golden("observability-logs-paused-none", || paused(logs_none()));
+    golden("observability-logs-paused-down", || {
+        still_paused(stack_down(paused(logs_answering(workshop_unpolled()))))
+    });
+    golden("observability-logs-paused-none", || {
+        still_paused(without_logs(paused(logs_answering(project_lab()))))
+    });
 }
 
 fn logs_screen(held: Vec<(BTreeMap<String, String>, LokiLine)>) -> Vec<String> {
