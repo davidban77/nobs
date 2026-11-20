@@ -1487,7 +1487,7 @@ fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
             (session, shown)
         })
         .collect();
-    let established = states.iter().filter(|(_, state)| state == "up").count();
+    let (established, intended) = devices::sessions_up(&states);
     let seen = model.devices_at().map_or("—".to_string(), |at| {
         format!("{}s ago", seconds(model, at))
     });
@@ -1514,9 +1514,9 @@ fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
         facts(
             &[
                 "bgp sessions".to_string(),
-                format!("{} intended", states.len()),
+                format!("{intended} intended"),
                 format!("{established} established"),
-                format!("{} other", states.len() - established),
+                format!("{} other", intended - established),
             ],
             "  ",
         ),

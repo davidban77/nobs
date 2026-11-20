@@ -11,7 +11,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::alertmanager::Alert;
 use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
-use nobs_core::evidence;
 use nobs_core::lab;
 use nobs_core::locate::{locate, Kind, Located};
 use nobs_core::loki::Line;
@@ -1879,21 +1878,7 @@ impl Model {
         let Some(device) = self.selected_device() else {
             return Vec::new();
         };
-        let values = self
-            .metrics
-            .as_deref()
-            .map(|samples| devices::oper_states(&device.name, &device.sessions, samples));
-        device
-            .sessions
-            .iter()
-            .map(|session| {
-                let state = match &values {
-                    Some(values) => evidence::decode_oper(values.get(&session.peer).copied()),
-                    None => "?".to_string(),
-                };
-                (session.clone(), state)
-            })
-            .collect()
+        devices::session_states(device, self.metrics.as_deref())
     }
 
     pub fn timeline(&self) -> Vec<devices::Entry> {
