@@ -48,6 +48,7 @@ pub(crate) const DOCKER_LOGS: &str = "docker logs";
 
 pub type ShownDeviceLogs<'a> = (&'a str, Vec<(i64, &'a str)>, bool, usize);
 pub(crate) type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+type Labels = BTreeMap<String, String>;
 
 #[derive(Clone)]
 pub struct Start {
@@ -284,6 +285,7 @@ pub enum Update {
     Alerts(Result<Vec<Alert>, String>),
     DeviceLogs(String, Result<Vec<Line>, String>),
     Rcas(String, Result<Vec<Line>, String>),
+    LabLogs(Result<Vec<(Labels, Line)>, String>),
     FlowRuns(Result<Vec<FlowRun>, String>),
     ActionLine(String),
     ActionError(String),
@@ -302,6 +304,7 @@ pub enum Command {
     },
     Follow(bool),
     FollowDevice(bool),
+    FollowLab(bool),
     CloseLogs,
     Sonda(data::Command),
     SelectDevice(String),
@@ -504,6 +507,16 @@ struct LogStream {
     filter: Filter,
 }
 
+impl Default for LogStream {
+    fn default() -> LogStream {
+        LogStream {
+            lines: Vec::new(),
+            following: true,
+            filter: Filter::default(),
+        }
+    }
+}
+
 impl LogStream {
     fn take(&mut self, lines: Vec<(String, Line)>) {
         for (device, line) in lines {
@@ -607,6 +620,9 @@ pub struct Model {
     rcas: Vec<Line>,
     device_logs: LogStream,
     logs_scroll: usize,
+    lab_logs: LogStream,
+    lab_asked: bool,
+    view: Tab,
     config_scroll: usize,
     config_filter: Filter,
     window: u64,
@@ -725,12 +741,11 @@ impl Model {
             alert_filter: Filter::default(),
             runs: Vec::new(),
             rcas: Vec::new(),
-            device_logs: LogStream {
-                lines: Vec::new(),
-                following: true,
-                filter: Filter::default(),
-            },
+            device_logs: LogStream::default(),
             logs_scroll: 0,
+            lab_logs: LogStream::default(),
+            lab_asked: false,
+            view: Tab::Alerts,
             config_scroll: 0,
             config_filter: Filter::default(),
             window: WINDOW_MINUTES,
@@ -855,15 +870,28 @@ impl Model {
             commands.push(Command::Ask(row.service, on));
         }
         self.asks = asking;
+        let lab = self.lab_wanted();
+        if lab != self.lab_asked {
+            self.lab_asked = lab;
+            commands.push(Command::FollowLab(lab));
+        }
         self.keep_alert();
         commands
+    }
+
+    fn lab_wanted(&self) -> bool {
+        self.workbench == Workbench::Observability
+            && self.view == Tab::Logs
+            && self.lab_logs.following
     }
 
     fn answer_of(&self, update: &Update) -> Option<status::Service> {
         match update {
             Update::Metrics(_) => Some(status::Service::Metrics),
             Update::Alerts(_) => Some(status::Service::Alerts),
-            Update::DeviceLogs(..) | Update::Rcas(..) => Some(status::Service::Logs),
+            Update::DeviceLogs(..) | Update::Rcas(..) | Update::LabLogs(_) => {
+                Some(status::Service::Logs)
+            }
             Update::FlowRuns(_) => Some(status::Service::Flows),
             Update::Devices(_) => self.source_service,
             Update::Sonda(_) => Some(status::Service::Sonda),
@@ -879,6 +907,7 @@ impl Model {
             status::Service::Metrics => self.metrics = None,
             status::Service::Logs => {
                 self.device_logs.clear();
+                self.lab_logs.clear();
                 self.rcas.clear();
             }
             status::Service::Alerts => {
@@ -1016,6 +1045,20 @@ impl Model {
                 }
             }
             Update::Rcas(_, Err(text)) => self.fail(error_source(status::Service::Logs), text),
+            Update::LabLogs(Ok(lines)) => {
+                self.clear_error(error_source(status::Service::Logs));
+                if self.lab_logs.following {
+                    self.lab_logs.take(
+                        lines
+                            .into_iter()
+                            .filter_map(|(mut labels, line)| {
+                                labels.remove("device").map(|device| (device, line))
+                            })
+                            .collect(),
+                    );
+                }
+            }
+            Update::LabLogs(Err(text)) => self.fail(error_source(status::Service::Logs), text),
             Update::FlowRuns(Ok(runs)) => {
                 self.runs = runs;
                 self.clear_error(error_source(status::Service::Flows));
@@ -2034,6 +2077,7 @@ impl Model {
         self.health.clear();
         self.service = 0;
         self.logs = None;
+        self.lab_logs.clear();
         if self.tab == Tab::Logs {
             self.tab = Tab::Overview;
         }
@@ -5173,6 +5217,127 @@ pub(crate) mod tests {
         ));
 
         assert!(model.rcas.is_empty());
+    }
+
+    fn follow_lab(commands: &[Command]) -> Vec<bool> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::FollowLab(on) => Some(*on),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn lab_lines(model: &Model) -> Vec<(&str, &str)> {
+        model
+            .lab_logs
+            .shown()
+            .into_iter()
+            .map(|held| (held.device.as_str(), held.shown.as_str()))
+            .collect()
+    }
+
+    fn labelled(pairs: &[(&str, &str)], nanoseconds: i64, text: &str) -> (Labels, Line) {
+        (map(pairs), log_line(nanoseconds, text))
+    }
+
+    #[test]
+    fn the_logs_view_shown_and_following_sends_follow_lab_once_and_a_pause_stops_it() {
+        let mut model = observability_model(Vec::new());
+        assert_eq!(follow_lab(&model.ask_changes()), [false; 0]);
+
+        model.view = Tab::Logs;
+        assert_eq!(follow_lab(&model.ask_changes()), [true]);
+        assert_eq!(follow_lab(&model.ask_changes()), [false; 0]);
+
+        model.lab_logs.following = false;
+        assert_eq!(follow_lab(&model.ask_changes()), [false]);
+        assert_eq!(follow_lab(&model.ask_changes()), [false; 0]);
+    }
+
+    #[test]
+    fn the_logs_view_in_another_workbench_sends_no_follow_lab_and_leaving_it_sends_false() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.view = Tab::Logs;
+        assert_eq!(follow_lab(&model.ask_changes()), [false; 0]);
+
+        ch(&mut model, '3');
+        assert_eq!(follow_lab(&model.ask_changes()), [true]);
+
+        ch(&mut model, '1');
+        assert_eq!(follow_lab(&model.ask_changes()), [false]);
+    }
+
+    #[test]
+    fn a_lab_line_without_a_device_is_not_kept() {
+        let mut model = observability_model(Vec::new());
+
+        model.apply(Update::LabLogs(Ok(vec![
+            labelled(&[("device", "srl1"), ("job", "lab")], 3, "bgp up"),
+            labelled(&[("job", "lab")], 2, "no device"),
+            labelled(&[("device", "other")], 1, "link down"),
+        ])));
+
+        assert_eq!(
+            lab_lines(&model),
+            [("srl1", "bgp up"), ("other", "link down")]
+        );
+    }
+
+    #[test]
+    fn a_lab_answer_while_paused_adds_no_line() {
+        let mut model = observability_model(Vec::new());
+        model.lab_logs.following = false;
+
+        model.apply(Update::LabLogs(Ok(vec![labelled(
+            &[("device", "srl1")],
+            1,
+            "late",
+        )])));
+        assert_eq!(lab_lines(&model), []);
+
+        model.lab_logs.following = true;
+        model.apply(Update::LabLogs(Ok(vec![labelled(
+            &[("device", "srl1")],
+            2,
+            "new",
+        )])));
+        assert_eq!(lab_lines(&model), [("srl1", "new")]);
+    }
+
+    #[test]
+    fn a_lab_answer_while_the_logs_service_is_not_asked_is_dropped() {
+        let mut model = Model::new(Start {
+            lab: Some(workshop_located("infrahub")),
+            chooser: false,
+            ..start(vec![stack("a", &[])])
+        });
+        assert_eq!(model.reach(status::Service::Logs), Reach::Unknown);
+
+        model.apply(Update::LabLogs(Ok(vec![labelled(
+            &[("device", "srl1")],
+            1,
+            "bgp up",
+        )])));
+
+        assert_eq!(lab_lines(&model), []);
+    }
+
+    #[test]
+    fn the_lab_lines_go_when_the_logs_service_goes_and_when_another_stack_is_selected() {
+        let answer = || Update::LabLogs(Ok(vec![labelled(&[("device", "srl1")], 1, "bgp up")]));
+        let mut model = observability_model(Vec::new());
+
+        model.apply(answer());
+        assert_eq!(lab_lines(&model), [("srl1", "bgp up")]);
+        model.forget(status::Service::Logs);
+        assert_eq!(lab_lines(&model), []);
+
+        model.apply(answer());
+        assert_eq!(lab_lines(&model), [("srl1", "bgp up")]);
+        model.select(0);
+        assert_eq!(lab_lines(&model), []);
     }
 
     fn os(list: &[&str]) -> Vec<OsString> {
