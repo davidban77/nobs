@@ -1,0 +1,30 @@
+ nobs  nobs-t-project lab  sot lab_vars                                                    13:42:07
+ 1 devices  2 services  [3 observability]                                            ? keys  q quit
+╔ alerts —  logs  METRICS ═════════════════════════════════════════════════════════════════════════╗
+║no metrics in this lab                                                                            ║
+║                                                                                                  ║
+║to add them, write the address in the lab's .env:                                                 ║
+║  METRICS_URL=http://localhost:9090                                                               ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+╚ metrics —  logs —  alerts — ═════════════════════════════════════════════════════════════════════╝
+ run  none                                                                                   o open
+ [ ] view  r refresh

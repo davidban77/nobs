@@ -1,0 +1,15 @@
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ 1 devices  2 services  [3 observability]    ? keys  q quit
+╔ alerts 2  logs  METRICS ═════════════════════════════════╗
+║  DEVICE  INTERFACES   BGP SESSIONS                       ║
+║> srl1    2 of 2 up    2 of 2 up                          ║
+║  srl2    1 of 2 up    2 of 3 up                          ║
+║  srl3    2 of 2 up    —                                  ║
+║  srl4    no data                                         ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╚ metrics ok  logs ok  alerts ok ══════════════════════════╝
+ run  none                                           o open
+ j/k move  / filter  [ ] view  Enter open the device
