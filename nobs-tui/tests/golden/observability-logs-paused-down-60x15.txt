@@ -1,0 +1,15 @@
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ 1 devices  2 services  [3 observability]    ? keys  q quit
+╔ alerts —  LOGS ══════════════════════════════════════════╗
+║the stack is down                                         ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╚ logs —  alerts — ════════════════════════════════════════╝
+ run  none                                           o open
+ [ ] view  r refresh

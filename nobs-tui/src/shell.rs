@@ -41,12 +41,18 @@ const LAB_DEVICE_TABS: [Tab; 5] = [
     Tab::Timeline,
     Tab::Logs,
 ];
-pub(crate) const OBSERVABILITY_TABS: [Tab; 1] = [Tab::Alerts];
+pub(crate) const OBSERVABILITY_TABS: [Tab; 2] = [Tab::Alerts, Tab::Logs];
 const MIN_SIZE: (u16, u16) = (60, 15);
 const RUNNING: &str = "running";
 pub(crate) const DOCKER_LOGS: &str = "docker logs";
 
 pub type ShownDeviceLogs<'a> = (&'a str, Vec<(i64, &'a str)>, bool, usize);
+pub type ShownLabLogs<'a> = (
+    Vec<(i64, &'a str, &'a str)>,
+    bool,
+    Option<usize>,
+    Option<usize>,
+);
 pub(crate) type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 type Labels = BTreeMap<String, String>;
 
@@ -175,6 +181,14 @@ fn step(tabs: &[Tab], tab: Tab, forward: bool) -> Tab {
         (at + tabs.len() - 1) % tabs.len()
     };
     tabs[next]
+}
+
+fn neighbour(row: usize, down: bool) -> Option<usize> {
+    if down {
+        Some(row + 1)
+    } else {
+        row.checked_sub(1)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -621,6 +635,7 @@ pub struct Model {
     device_logs: LogStream,
     logs_scroll: usize,
     lab_logs: LogStream,
+    lab_mark: Option<(String, Line)>,
     lab_asked: bool,
     view: Tab,
     config_scroll: usize,
@@ -744,6 +759,7 @@ impl Model {
             device_logs: LogStream::default(),
             logs_scroll: 0,
             lab_logs: LogStream::default(),
+            lab_mark: None,
             lab_asked: false,
             view: Tab::Alerts,
             config_scroll: 0,
@@ -876,6 +892,7 @@ impl Model {
             commands.push(Command::FollowLab(lab));
         }
         self.keep_alert();
+        self.keep_mark();
         commands
     }
 
@@ -975,7 +992,10 @@ impl Model {
                 match service {
                     Some(status::Service::Metrics) => self.metrics = None,
                     Some(status::Service::Alerts) => self.alerts_ok = false,
-                    Some(status::Service::Logs) => self.device_logs.following = false,
+                    Some(status::Service::Logs) => {
+                        self.device_logs.following = false;
+                        self.lab_logs.following = false;
+                    }
                     _ if source == "nodes" => self.nodes_ok = false,
                     _ => {}
                 }
@@ -1417,7 +1437,11 @@ impl Model {
     }
 
     pub fn tab(&self) -> Tab {
-        self.tab
+        if self.workbench == Workbench::Observability {
+            self.view
+        } else {
+            self.tab
+        }
     }
 
     pub fn stacks(&self) -> &[Stack] {
@@ -1447,6 +1471,7 @@ impl Model {
             || self.filter.typing
             || self.device_filter.typing
             || self.device_logs.filter.typing
+            || self.lab_logs.filter.typing
             || self.config_filter.typing
             || self.alert_filter.typing
             || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
@@ -1491,6 +1516,9 @@ impl Model {
         }
         if self.device_logs.filter.typing {
             return self.device_logs.filter.text.as_deref();
+        }
+        if self.lab_logs.filter.typing {
+            return self.lab_logs.filter.text.as_deref();
         }
         if self.config_filter.typing {
             return self.config_filter.text.as_deref();
@@ -1752,8 +1780,65 @@ impl Model {
     }
 
     pub fn alert_device(&self, alert: &Alert) -> Option<usize> {
-        let name = alert.labels.get("device")?;
-        self.devices.iter().position(|device| device.name == *name)
+        self.device_index(alert.labels.get("device")?)
+    }
+
+    pub(crate) fn device_index(&self, name: &str) -> Option<usize> {
+        self.devices.iter().position(|device| device.name == name)
+    }
+
+    pub fn lab_logs(&self) -> ShownLabLogs<'_> {
+        let rows = self
+            .lab_logs
+            .shown()
+            .into_iter()
+            .map(|held| {
+                (
+                    held.line.nanoseconds,
+                    held.device.as_str(),
+                    held.shown.as_str(),
+                )
+            })
+            .collect();
+        (
+            rows,
+            self.lab_logs.following,
+            self.marked_lab_row(),
+            self.lab_logs
+                .filter
+                .text
+                .is_some()
+                .then_some(self.lab_logs.lines.len()),
+        )
+    }
+
+    pub(crate) fn lab_lines_shown(&self) -> bool {
+        self.reach(status::Service::Logs) == Reach::Answers
+    }
+
+    fn marked_lab_row(&self) -> Option<usize> {
+        if self.lab_logs.following {
+            return None;
+        }
+        let shown = self.lab_logs.shown();
+        shown
+            .iter()
+            .position(|held| {
+                self.lab_mark
+                    .as_ref()
+                    .is_some_and(|(device, line)| held.device == *device && held.line == *line)
+            })
+            .or((!shown.is_empty()).then_some(0))
+    }
+
+    fn marked_lab_line(&self) -> Option<&DeviceLine> {
+        self.lab_logs.shown().get(self.marked_lab_row()?).copied()
+    }
+
+    fn keep_mark(&mut self) {
+        self.lab_mark = self
+            .marked_lab_line()
+            .map(|held| (held.device.clone(), held.line.clone()));
     }
 
     pub fn interfaces(&self) -> Vec<devices::Row> {
@@ -2158,6 +2243,10 @@ impl Model {
             self.device_logs.filter.type_key(key.code);
             return Vec::new();
         }
+        if self.lab_logs.filter.typing {
+            self.lab_logs.filter.type_key(key.code);
+            return Vec::new();
+        }
         if self.config_filter.typing {
             self.config_filter.type_key(key.code);
             return Vec::new();
@@ -2231,8 +2320,7 @@ impl Model {
         let tabs: &[Tab] = match workbench {
             Workbench::Devices => self.device_tabs(),
             Workbench::Services => &SERVICES_TABS,
-            Workbench::Lab => &[],
-            Workbench::Observability => &OBSERVABILITY_TABS,
+            Workbench::Lab | Workbench::Observability => &[],
         };
         if !tabs.is_empty() && !tabs.contains(&self.tab) {
             self.tab = tabs[0];
@@ -2437,57 +2525,91 @@ impl Model {
                     .get(at)
                     .and_then(|alert| self.alert_device(alert))
                 {
-                    Some(index) => self.open_timeline(index),
+                    Some(index) => self.open_device_on(index, Tab::Timeline),
                     None => Vec::new(),
                 }
             }
         }
     }
 
-    fn open_timeline(&mut self, index: usize) -> Vec<Command> {
+    fn open_device_on(&mut self, index: usize, tab: Tab) -> Vec<Command> {
         let mut commands = self.select_device(index);
         self.focus = Focus::Tabs;
-        self.tab = Tab::Timeline;
-        commands.push(Command::OpenTab(Tab::Timeline));
+        self.tab = tab;
+        commands.push(Command::OpenTab(tab));
         commands
     }
 
     fn observability_key(&mut self, code: KeyCode) -> Vec<Command> {
         match code {
+            KeyCode::Char('[') => self.view = step(&OBSERVABILITY_TABS, self.view, false),
+            KeyCode::Char(']') => self.view = step(&OBSERVABILITY_TABS, self.view, true),
+            _ if self.view == Tab::Logs => return self.lab_logs_key(code),
             KeyCode::Char('j') | KeyCode::Down => self.step_alert(true),
             KeyCode::Char('k') | KeyCode::Up => self.step_alert(false),
             KeyCode::Char('/') if !self.shown_alerts().is_empty() => self.alert_filter.start(),
-            KeyCode::Enter => return self.open_alert_device(),
+            KeyCode::Enter => {
+                let index = self
+                    .selected_alert()
+                    .and_then(|alert| self.alert_device(alert));
+                return self.open_in_devices(index, Tab::Timeline);
+            }
             _ => {}
         }
         Vec::new()
+    }
+
+    fn lab_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let shown = self.lab_lines_shown();
+        match code {
+            KeyCode::Char('f') => {
+                self.lab_logs.toggle();
+            }
+            KeyCode::Char('/') if shown && !self.lab_logs.lines.is_empty() => {
+                self.lab_logs.filter.start();
+            }
+            _ if self.lab_logs.following || !shown => {}
+            KeyCode::Char('j') | KeyCode::Down => self.step_mark(true),
+            KeyCode::Char('k') | KeyCode::Up => self.step_mark(false),
+            KeyCode::Enter => {
+                let index = self
+                    .marked_lab_line()
+                    .and_then(|held| self.device_index(&held.device));
+                return self.open_in_devices(index, Tab::Logs);
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn step_mark(&mut self, down: bool) {
+        let Some(at) = self.marked_lab_row() else {
+            return;
+        };
+        if let Some(held) =
+            neighbour(at, down).and_then(|row| self.lab_logs.shown().get(row).copied())
+        {
+            self.lab_mark = Some((held.device.clone(), held.line.clone()));
+        }
     }
 
     fn step_alert(&mut self, down: bool) {
         let Some(at) = self.selected_alert_row() else {
             return;
         };
-        let next = if down {
-            Some(at + 1)
-        } else {
-            at.checked_sub(1)
-        };
         let visible = self.visible_alerts();
-        if let Some(&index) = next.and_then(|row| visible.get(row)) {
+        if let Some(&index) = neighbour(at, down).and_then(|row| visible.get(row)) {
             self.kept_alert = Some(self.alerts[index].labels.clone());
         }
     }
 
-    fn open_alert_device(&mut self) -> Vec<Command> {
-        let Some(index) = self
-            .selected_alert()
-            .and_then(|alert| self.alert_device(alert))
-        else {
+    fn open_in_devices(&mut self, index: Option<usize>, tab: Tab) -> Vec<Command> {
+        let Some(index) = index else {
             return Vec::new();
         };
         self.workbench = Workbench::Devices;
         self.cursor = Cursor::Device(index);
-        self.open_timeline(index)
+        self.open_device_on(index, tab)
     }
 
     fn select_device(&mut self, index: usize) -> Vec<Command> {
@@ -2701,6 +2823,7 @@ impl Model {
 pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     let commands = take_key(model, key);
     model.keep_alert();
+    model.keep_mark();
     commands
 }
 
@@ -5338,6 +5461,438 @@ pub(crate) mod tests {
         assert_eq!(lab_lines(&model), [("srl1", "bgp up")]);
         model.select(0);
         assert_eq!(lab_lines(&model), []);
+    }
+
+    const LAB_LINES: [(&str, i64, &str); 4] = [
+        ("srl1", 4, "bgp up"),
+        ("other", 3, "link down"),
+        ("srl2", 2, "bgp down"),
+        ("srl1", 1, "link up"),
+    ];
+
+    fn logs_view() -> Model {
+        let mut model = observability_model(Vec::new());
+        model.apply(Update::LabLogs(Ok(LAB_LINES
+            .iter()
+            .map(|(device, nanoseconds, text)| labelled(&[("device", device)], *nanoseconds, text))
+            .collect())));
+        ch(&mut model, ']');
+        model
+    }
+
+    fn marked(model: &Model) -> Option<(&str, &str)> {
+        let (rows, _, row, _) = model.lab_logs();
+        row.map(|at| (rows[at].1, rows[at].2))
+    }
+
+    fn filtered(model: &mut Model, text: &str) {
+        ch(model, '/');
+        typed(model, text);
+        code(model, KeyCode::Enter);
+    }
+
+    fn unfiltered(model: &mut Model) {
+        ch(model, '/');
+        code(model, KeyCode::Esc);
+    }
+
+    #[test]
+    fn the_pause_marks_the_newest_shown_line() {
+        let mut model = logs_view();
+        assert_eq!(marked(&model), None);
+
+        ch(&mut model, 'f');
+
+        assert!(!model.lab_logs().1);
+        assert_eq!(marked(&model), Some(("srl1", "bgp up")));
+    }
+
+    #[test]
+    fn following_shows_no_marker() {
+        let mut model = logs_view();
+        ch(&mut model, 'j');
+        assert_eq!(marked(&model), None);
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+
+        ch(&mut model, 'f');
+
+        assert!(model.lab_logs().1);
+        assert_eq!(marked(&model), None);
+        assert_eq!(model.lab_mark, None);
+    }
+
+    #[test]
+    fn j_and_k_move_the_marker_by_one_line() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+
+        ch(&mut model, 'j');
+        assert_eq!(marked(&model), Some(("other", "link down")));
+        code(&mut model, KeyCode::Down);
+        assert_eq!(marked(&model), Some(("srl2", "bgp down")));
+        ch(&mut model, 'k');
+        assert_eq!(marked(&model), Some(("other", "link down")));
+        code(&mut model, KeyCode::Up);
+        assert_eq!(marked(&model), Some(("srl1", "bgp up")));
+    }
+
+    #[test]
+    fn the_marker_stops_at_the_ends() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+
+        ch(&mut model, 'k');
+        assert_eq!(marked(&model), Some(("srl1", "bgp up")));
+        typed(&mut model, "jjjj");
+        assert_eq!(marked(&model), Some(("srl1", "link up")));
+    }
+
+    #[test]
+    fn a_filter_that_keeps_the_marked_line_keeps_it() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+
+        filtered(&mut model, "link");
+
+        assert_eq!(marked(&model), Some(("other", "link down")));
+        assert_eq!(model.lab_logs().2, Some(0));
+    }
+
+    #[test]
+    fn a_filter_that_hides_the_marked_line_marks_the_newest_shown() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+
+        filtered(&mut model, "bgp");
+
+        assert_eq!(marked(&model), Some(("srl1", "bgp up")));
+        assert_eq!(
+            model.lab_mark,
+            Some(("srl1".to_string(), log_line(4, "bgp up")))
+        );
+    }
+
+    #[test]
+    fn the_line_marked_under_a_filter_stays_marked_when_it_is_cleared() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        filtered(&mut model, "link");
+        assert_eq!(marked(&model), Some(("other", "link down")));
+        ch(&mut model, 'j');
+        assert_eq!(marked(&model), Some(("srl1", "link up")));
+
+        unfiltered(&mut model);
+
+        assert_eq!(marked(&model), Some(("srl1", "link up")));
+        assert_eq!(model.lab_logs().2, Some(3));
+    }
+
+    #[test]
+    fn an_answer_while_paused_keeps_the_lines_and_the_marked_line() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+
+        model.apply(Update::LabLogs(Ok(vec![labelled(
+            &[("device", "srl1")],
+            5,
+            "late",
+        )])));
+
+        assert_eq!(model.lab_logs().0.len(), 4);
+        assert_eq!(marked(&model), Some(("other", "link down")));
+    }
+
+    #[test]
+    fn a_failed_answer_keeps_the_marked_line() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+
+        model.apply(Update::LabLogs(Err("refused".to_string())));
+        assert_eq!(model.reach(status::Service::Logs), Reach::NoAnswer);
+        assert_eq!(marked(&model), Some(("other", "link down")));
+        ch(&mut model, 'x');
+
+        assert_eq!(model.reach(status::Service::Logs), Reach::Answers);
+        assert_eq!(model.lab_logs().0.len(), 4);
+        assert_eq!(marked(&model), Some(("other", "link down")));
+    }
+
+    #[test]
+    fn a_new_window_while_paused_sends_no_request() {
+        let mut model = logs_view();
+        model.ask_changes();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+        assert_eq!(follow_lab(&model.ask_changes()), [false]);
+
+        ch(&mut model, '1');
+        code(&mut model, KeyCode::Enter);
+        typed(&mut model, "]]");
+        assert_eq!(model.tab(), Tab::Timeline);
+        let mut sent = ch(&mut model, '+');
+        assert_eq!(sent, [Command::Window(WINDOW_MINUTES * 2)]);
+        sent.extend(model.ask_changes());
+        sent.extend(ch(&mut model, '3'));
+        sent.extend(model.ask_changes());
+
+        assert_eq!(follow_lab(&sent), [false; 0]);
+        assert_eq!(model.tab(), Tab::Logs);
+        assert_eq!(marked(&model), Some(("other", "link down")));
+        ch(&mut model, 'f');
+        assert_eq!(follow_lab(&model.ask_changes()), [true]);
+    }
+
+    #[test]
+    fn the_stack_down_leaves_no_marked_line() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+        let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
+
+        model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
+        assert_eq!(model.reach(status::Service::Logs), Reach::StackDown);
+        assert_eq!(marked(&model), None);
+        model.apply(every_service_up(0));
+        model.apply(Update::LabLogs(Ok(vec![labelled(
+            &[("device", "srl1")],
+            5,
+            "new",
+        )])));
+
+        assert_eq!(model.reach(status::Service::Logs), Reach::Answers);
+        let (rows, following, row, held) = model.lab_logs();
+        assert_eq!((rows.len(), following, row, held), (0, false, None, None));
+    }
+
+    #[test]
+    fn the_marked_line_is_kept_across_the_views() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+
+        ch(&mut model, '[');
+        assert_eq!(model.tab(), Tab::Alerts);
+        ch(&mut model, ']');
+
+        assert_eq!(model.tab(), Tab::Logs);
+        assert!(!model.lab_logs().1);
+        assert_eq!(marked(&model), Some(("other", "link down")));
+    }
+
+    #[test]
+    fn the_marked_line_is_kept_across_the_workbenches() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+        model.ask_changes();
+
+        let mut sent = ch(&mut model, '1');
+        sent.extend(model.ask_changes());
+        sent.extend(ch(&mut model, '3'));
+        sent.extend(model.ask_changes());
+
+        assert_eq!(follow_lab(&sent), [false; 0]);
+        assert_eq!(model.tab(), Tab::Logs);
+        assert!(!model.lab_logs().1);
+        assert_eq!(marked(&model), Some(("other", "link down")));
+    }
+
+    #[test]
+    fn another_stack_clears_the_lab_lines_and_the_marker() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+
+        model.select(0);
+        model.ask_changes();
+
+        assert_eq!(model.lab_logs().0.len(), 0);
+        assert_eq!(marked(&model), None);
+        assert_eq!(model.lab_mark, None);
+    }
+
+    #[test]
+    fn a_stopped_poller_pauses_the_view() {
+        let mut model = logs_view();
+        model.ask_changes();
+
+        let sent = model.apply(Update::Stopped("logs".to_string()));
+
+        assert_eq!(follow_lab(&sent), [false]);
+        assert!(!model.lab_logs().1);
+        assert_eq!(marked(&model), Some(("srl1", "bgp up")));
+    }
+
+    #[test]
+    fn brackets_move_between_the_views_both_ways() {
+        let mut model = observability_model(Vec::new());
+        assert_eq!(model.tab(), Tab::Alerts);
+
+        let mut views = Vec::new();
+        for key in "]][[".chars() {
+            assert_eq!(ch(&mut model, key), []);
+            views.push(model.tab());
+        }
+
+        assert_eq!(views, [Tab::Logs, Tab::Alerts, Tab::Logs, Tab::Alerts]);
+    }
+
+    #[test]
+    fn tab_keeps_its_meaning_in_the_observability_workbench() {
+        let mut model = logs_view();
+
+        code(&mut model, KeyCode::Tab);
+        assert_eq!((model.focus(), model.tab()), (Focus::List, Tab::Logs));
+        ch(&mut model, 'o');
+        model.set_run_view(measured(0, 0));
+        code(&mut model, KeyCode::Tab);
+        assert_eq!((model.focus(), model.tab()), (Focus::Run, Tab::Logs));
+        code(&mut model, KeyCode::Tab);
+        assert_eq!((model.focus(), model.tab()), (Focus::List, Tab::Logs));
+    }
+
+    #[test]
+    fn enter_opens_the_marked_device_on_its_logs_tab() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        typed(&mut model, "jj");
+
+        let sent = code(&mut model, KeyCode::Enter);
+
+        assert_eq!(
+            sent,
+            [
+                Command::SelectDevice("srl2".to_string()),
+                Command::OpenTab(Tab::Logs)
+            ]
+        );
+        assert_eq!(model.workbench(), Workbench::Devices);
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Logs));
+        ch(&mut model, '3');
+        assert_eq!(model.tab(), Tab::Logs);
+        assert_eq!(marked(&model), Some(("srl2", "bgp down")));
+    }
+
+    #[test]
+    fn enter_does_nothing_while_following() {
+        let mut model = logs_view();
+
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+        assert_eq!(model.workbench(), Workbench::Observability);
+    }
+
+    #[test]
+    fn enter_does_nothing_on_a_device_outside_the_lab() {
+        let mut model = logs_view();
+        ch(&mut model, 'f');
+        ch(&mut model, 'j');
+        assert_eq!(marked(&model), Some(("other", "link down")));
+
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+        assert_eq!(model.workbench(), Workbench::Observability);
+    }
+
+    #[test]
+    fn the_observability_workbench_opens_on_the_alerts_the_first_time() {
+        let mut devices = devices_model(workshop_located("infrahub"));
+        code(&mut devices, KeyCode::Enter);
+        typed(&mut devices, "]]");
+        let sent = ch(&mut devices, '3');
+        assert_eq!(sent, [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(devices.tab(), Tab::Alerts);
+        assert_eq!(follow_lab(&devices.ask_changes()), [false; 0]);
+        ch(&mut devices, '1');
+        assert_eq!(devices.tab(), Tab::Timeline);
+
+        let mut services = logs_open("grafana");
+        assert_eq!(ch(&mut services, '3'), []);
+        assert_eq!(services.tab(), Tab::Alerts);
+
+        let mut book = book_model();
+        assert_eq!(ch(&mut book, '4'), []);
+        assert_eq!(book.tab(), Tab::Alerts);
+        ch(&mut book, ']');
+        assert_eq!(follow_lab(&book.ask_changes()), [true]);
+        assert_eq!(ch(&mut book, '3'), []);
+        assert_eq!(book.workbench(), Workbench::Lab);
+        assert_eq!(follow_lab(&book.ask_changes()), [false]);
+    }
+
+    #[test]
+    fn the_observability_workbench_opens_on_the_view_it_was_left_on() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, '3');
+        ch(&mut model, ']');
+        assert_eq!(follow_lab(&model.ask_changes()), [true]);
+        ch(&mut model, '1');
+        assert_eq!(follow_lab(&model.ask_changes()), [false]);
+
+        assert_eq!(ch(&mut model, '3'), [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(model.tab(), Tab::Logs);
+        assert_eq!(follow_lab(&model.ask_changes()), [true]);
+        assert_eq!(ch(&mut model, '3'), []);
+        assert_eq!(model.tab(), Tab::Logs);
+        assert_eq!(follow_lab(&model.ask_changes()), [false; 0]);
+    }
+
+    #[test]
+    fn a_visit_to_the_observability_workbench_keeps_the_device_tab() {
+        let labs: [(fn() -> Model, char); 2] = [
+            (|| devices_model(workshop_located("infrahub")), '3'),
+            (lab_devices_model, '4'),
+        ];
+        for (build, key) in labs {
+            for tab in [Tab::Logs, Tab::Timeline] {
+                let mut model = build();
+                code(&mut model, KeyCode::Enter);
+                while model.tab() != tab {
+                    ch(&mut model, ']');
+                }
+                let device = model.selected_device().unwrap().name.clone();
+
+                assert_eq!(ch(&mut model, key), [Command::OpenTab(Tab::Overview)]);
+                ch(&mut model, ']');
+                assert_eq!(follow_lab(&model.ask_changes()), [true]);
+                let sent = ch(&mut model, '1');
+
+                assert_eq!(
+                    sent,
+                    [Command::SelectDevice(device), Command::OpenTab(tab)],
+                    "{key} {tab:?}"
+                );
+                assert_eq!(model.tab(), tab);
+                assert_eq!(follow_lab(&model.ask_changes()), [false]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_visit_to_the_observability_workbench_keeps_the_services_tab() {
+        let mut model = logs_open("grafana");
+        assert_eq!(model.tab(), Tab::Logs);
+
+        assert_eq!(ch(&mut model, '3'), []);
+        ch(&mut model, ']');
+        assert_eq!(follow_lab(&model.ask_changes()), [true]);
+        assert_eq!(ch(&mut model, '2'), []);
+
+        assert_eq!(model.workbench(), Workbench::Services);
+        assert_eq!(model.tab(), Tab::Logs);
+        assert_eq!(follow_lab(&model.ask_changes()), [false]);
+
+        let mut sonda = opened(&["a"]);
+        code(&mut sonda, KeyCode::Tab);
+        ch(&mut sonda, '[');
+        assert_eq!(sonda.tab(), Tab::Sonda);
+        ch(&mut sonda, '3');
+        ch(&mut sonda, '2');
+        assert_eq!(sonda.tab(), Tab::Sonda);
     }
 
     fn os(list: &[&str]) -> Vec<OsString> {

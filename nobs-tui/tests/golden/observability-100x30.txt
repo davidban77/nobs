@@ -1,6 +1,6 @@
  nobs  autocon5 workshop  sot infrahub                                                     13:42:07
  1 devices  2 services  [3 observability]                                            ? keys  q quit
-╔ ALERTS 2 ════════════════════════════════════════════════════════════════════════════════════════╗
+╔ ALERTS 2  logs ══════════════════════════════════════════════════════════════════════════════════╗
 ║  NAME             DEVICE  SEVERITY  STATE      SINCE                                             ║
 ║> BgpSessionNotUp  srl1    warning   firing     21s                                               ║
 ║  BgpSessionNotUp  srl1    warning   silenced   1m32s                                             ║
@@ -25,6 +25,6 @@
 ║                                                                                                  ║
 ║                                                                                                  ║
 ║                                                                                                  ║
-╚ alerts ok ═══════════════════════════════════════════════════════════════════════════════════════╝
+╚ logs ok  alerts ok ══════════════════════════════════════════════════════════════════════════════╝
  run  none                                                                                   o open
- j/k move  / filter  Enter open the device  r refresh
+ j/k move  / filter  [ ] view  Enter open the device  r refresh

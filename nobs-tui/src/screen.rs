@@ -76,9 +76,10 @@ const HELP_LAB: [(&str, &str); 7] = [
     ("?", "close"),
     ("Esc", "close/fold/back"),
 ];
-const HELP_OBSERVABILITY: [(&str, &str); 9] = [
+const HELP_OBSERVABILITY: [(&str, &str); 10] = [
     ("Tab", "focus"),
     ("j k ↑ ↓", "move"),
+    ("[ ]", "other view"),
     ("/", "filter"),
     ("Enter", "open the device"),
     ("r", "refresh now"),
@@ -1125,29 +1126,96 @@ fn alert_style(alert: &Alert) -> Style {
 }
 
 fn observability(frame: &mut Frame, area: Rect, model: &Model) {
-    let reach = model.reach(Service::Alerts);
     let visible = model.visible_alerts();
     let border = border_of(model, Holder::Alerts);
-    let views = tab_line(
+    let mut views = tab_line(
         &OBSERVABILITY_TABS,
-        Tab::Alerts,
+        model.tab(),
         area.width >= WIDE,
         usize::from(area.width),
-    );
-    let count = format!(" {} ", alerts_cell(model, &visible.len().to_string()));
+    )
+    .spans;
+    let count = format!(" {}", alerts_cell(model, &visible.len().to_string()));
+    views.insert(1, Span::raw(count));
     let top: Vec<Span> = [Span::raw(" ")]
         .into_iter()
-        .chain(views.spans)
-        .chain([Span::raw(count)])
+        .chain(views)
+        .chain([Span::raw(" ")])
         .collect();
+    let bottom = format!(
+        " logs {}  alerts {} ",
+        cell(model.reach(Service::Logs), "ok"),
+        alerts_cell(model, "ok")
+    );
     let block = Block::bordered()
         .border_type(border)
         .title_top(Line::from(top))
-        .title_bottom(format!(" alerts {} ", alerts_cell(model, "ok")));
+        .title_bottom(bottom);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if model.tab() == Tab::Logs {
+        logs_view(frame, inner, model);
+    } else {
+        alerts_view(frame, area, inner, model, border, &visible);
+    }
+}
+
+fn logs_view(frame: &mut Frame, area: Rect, model: &Model) {
+    let reach = model.reach(Service::Logs);
+    if let Some(sentence) = absent(reach, row(Service::Logs).word) {
+        dim_lines(frame, area, absent_lines(reach, sentence, Service::Logs));
+        return;
+    }
+    if !model.lab_lines_shown() {
+        return;
+    }
+    let (lines, following, marked, held) = model.lab_logs();
+    let [header, rows_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let count = match held {
+        Some(held) => format!("{} of {}", lines.len(), counted(held, "line")),
+        None => counted(lines.len(), "line"),
+    };
+    let width = usize::from(area.width);
+    frame.render_widget(
+        Paragraph::new(fit(&format!(" all devices   {count}"), width)),
+        header,
+    );
+    let mode = if following { "following" } else { "paused" };
+    right(frame, header, Line::from(mode), 1);
+    let pad = lines
+        .iter()
+        .map(|(_, device, _)| device.chars().count())
+        .max()
+        .unwrap_or(0);
+    let rows = lines
+        .iter()
+        .enumerate()
+        .map(|(at, (nanoseconds, device, text))| {
+            let gutter = if marked == Some(at) { "> " } else { "  " };
+            let text = log_row(
+                *nanoseconds,
+                Some((device, pad)),
+                text,
+                width.saturating_sub(3),
+            );
+            Line::from(format!("{gutter}{text}"))
+        });
+    let start = first_row(marked.unwrap_or(0), usize::from(rows_area.height));
+    pane_rows(frame, rows_area, rows, start, lines.len());
+}
+
+fn alerts_view(
+    frame: &mut Frame,
+    area: Rect,
+    inner: Rect,
+    model: &Model,
+    border: BorderType,
+    visible: &[usize],
+) {
+    let reach = model.reach(Service::Alerts);
     if let Some(sentence) = absent(reach, row(Service::Alerts).word) {
-        dim_lines(frame, inner, absent_lines(reach, sentence));
+        dim_lines(frame, inner, absent_lines(reach, sentence, Service::Alerts));
         return;
     }
     if model.shown_alerts().is_empty() {
@@ -1157,7 +1225,7 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     }
     let Some(selected) = model.selected_alert() else {
-        alert_table(frame, inner, model, &visible);
+        alert_table(frame, inner, model, visible);
         return;
     };
     let box_height = (inner.height / 4).max(ALERTS_LEAST);
@@ -1167,7 +1235,7 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
         Constraint::Length(box_height),
     ])
     .areas(inner);
-    let first = alert_table(frame, table, model, &visible);
+    let first = alert_table(frame, table, model, visible);
     let room = usize::from(table.height).saturating_sub(1);
     let title = cut_whole(
         &[label(selected, "alertname"), label(selected, "device")],
@@ -1186,8 +1254,8 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
     alert_box(frame, lower, selected);
 }
 
-fn absent_lines(reach: Reach, sentence: String) -> Vec<String> {
-    let alerts = row(Service::Alerts);
+fn absent_lines(reach: Reach, sentence: String, service: Service) -> Vec<String> {
+    let service = row(service);
     let mut lines = vec![sentence];
     if reach == Reach::NotInLab {
         lines.extend([
@@ -1195,8 +1263,8 @@ fn absent_lines(reach: Reach, sentence: String) -> Vec<String> {
             "to add them, write the address in the lab's .env:".to_string(),
             format!(
                 "  {}={}",
-                alerts.setting.unwrap_or_default(),
-                alerts.default
+                service.setting.unwrap_or_default(),
+                service.default
             ),
         ]);
     }
@@ -1232,7 +1300,7 @@ fn alert_table(frame: &mut Frame, area: Rect, model: &Model, visible: &[usize]) 
     let mut widths = widest(titles, &rows);
     widths[3] = widths[3].max(STATE_WIDTH);
     let fixed = 2 + widths[1..].iter().map(|width| width + 2).sum::<usize>();
-    widths[0] = widths[0].min(usize::from(area.width).saturating_sub(fixed));
+    widths[0] = widths[0].min(usize::from(area.width).saturating_sub(fixed + 1));
     let at = model.selected_alert_row();
     let body_rows = visible.iter().zip(&rows).map(|(&index, row)| {
         Row::new([
@@ -2198,20 +2266,52 @@ fn key_hints(model: &Model) -> Vec<String> {
 }
 
 fn observability_hints(model: &Model) -> Vec<&'static str> {
-    let opens = model
-        .selected_alert()
-        .is_some_and(|alert| model.alert_device(alert).is_some());
-    let listed = !model.shown_alerts().is_empty();
-    [
-        (model.run_drawn(), "Tab focus"),
-        (listed, "j/k move"),
-        (listed, "/ filter"),
-        (opens, "Enter open the device"),
-        (true, "r refresh"),
+    let offered = if model.tab() == Tab::Logs {
+        lab_hints(model)
+    } else {
+        let opens = model
+            .selected_alert()
+            .is_some_and(|alert| model.alert_device(alert).is_some());
+        let listed = !model.shown_alerts().is_empty();
+        vec![
+            (listed, "j/k move"),
+            (listed, "/ filter"),
+            (true, "[ ] view"),
+            (opens, "Enter open the device"),
+            (true, "r refresh"),
+        ]
+    };
+    [(model.run_drawn(), "Tab focus")]
+        .into_iter()
+        .chain(offered)
+        .filter_map(|(offered, hint)| offered.then_some(hint))
+        .collect()
+}
+
+fn lab_hints(model: &Model) -> Vec<(bool, &'static str)> {
+    let (lines, following, marked, held) = model.lab_logs();
+    if !model.asking().contains(&Service::Logs) {
+        return vec![(true, "[ ] view"), (true, "r refresh")];
+    }
+    let shown = model.lab_lines_shown();
+    let filters = shown && held.unwrap_or(lines.len()) > 0;
+    if following {
+        return vec![
+            (true, "f pause"),
+            (filters, "/ filter"),
+            (true, "[ ] view"),
+            (true, "r refresh"),
+        ];
+    }
+    let opens = marked
+        .and_then(|at| lines.get(at))
+        .is_some_and(|(_, device, _)| model.device_index(device).is_some());
+    vec![
+        (true, "f follow"),
+        (shown && marked.is_some(), "j/k move"),
+        (filters, "/ filter"),
+        (shown && opens, "Enter open the device"),
     ]
-    .into_iter()
-    .filter_map(|(offered, hint)| offered.then_some(hint))
-    .collect()
 }
 
 fn log_hints(paused: bool) -> Vec<&'static str> {
@@ -3486,15 +3586,48 @@ mod tests {
         }));
         let beside_the_run_pane = key_line(&model, 100);
 
-        assert_eq!(elsewhere, [" j/k move  / filter  r refresh"]);
+        assert_eq!(elsewhere, [" j/k move  / filter  [ ] view  r refresh"]);
         assert_eq!(
             in_the_lab,
-            [" j/k move  / filter  Enter open the device  r refresh"]
+            [" j/k move  / filter  [ ] view  Enter open the device  r refresh"]
         );
         assert_eq!(
             beside_the_run_pane,
-            [" Tab focus  j/k move  / filter  Enter open the device  r refresh"]
+            [" Tab focus  j/k move  / filter  [ ] view  Enter open the device  r refresh"]
         );
+    }
+
+    #[test]
+    fn the_logs_view_key_line_offers_enter_only_on_a_paused_line_of_a_device_of_the_lab() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        let line = |device: &str, nanoseconds: i64, text: &str| {
+            (
+                [("device".to_string(), device.to_string())].into(),
+                nobs_core::loki::Line {
+                    nanoseconds,
+                    text: text.to_string(),
+                },
+            )
+        };
+        model.apply(Update::LabLogs(Ok(vec![
+            line("srl1", 2, "bgp up"),
+            line("nobs-t-elsewhere", 1, "link down"),
+        ])));
+        press(&mut model, '3');
+        press(&mut model, ']');
+
+        let following = key_line(&model, 100);
+        press(&mut model, 'f');
+        let in_the_lab = key_line(&model, 100);
+        press(&mut model, 'j');
+        let elsewhere = key_line(&model, 100);
+
+        assert_eq!(following, [" f pause  / filter  [ ] view  r refresh"]);
+        assert_eq!(
+            in_the_lab,
+            [" f follow  j/k move  / filter  Enter open the device"]
+        );
+        assert_eq!(elsewhere, [" f follow  j/k move  / filter"]);
     }
 
     #[test]

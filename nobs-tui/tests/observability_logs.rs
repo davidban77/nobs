@@ -187,6 +187,53 @@ fn lab_requests_of_a_shell(home: Workbench, key: Option<char>, logs: bool) -> Ve
     lab_requests(&stub)
 }
 
+fn press(model: &mut Shell, typed: char) -> Vec<Command> {
+    handle(
+        model,
+        KeyEvent::new(KeyCode::Char(typed), KeyModifiers::NONE),
+    )
+}
+
+fn lab_requests_shown_then_left(keys: &[char]) -> (usize, usize, usize) {
+    let stub = loki();
+    let (pollers, updates) = start_pollers(&stub);
+    let mut model = shell(Workbench::Devices);
+    for typed in ['3', ']'] {
+        send(&pollers, press(&mut model, typed));
+    }
+    send(&pollers, model.apply(listed(true)));
+    pump(&mut model, &pollers, &updates, QUIET);
+    let shown = lab_requests(&stub).len();
+
+    for typed in keys {
+        send(&pollers, press(&mut model, *typed));
+    }
+    send(&pollers, model.apply(listed(true)));
+    pump(&mut model, &pollers, &updates, Duration::from_millis(300));
+    let left = lab_requests(&stub).len();
+    pump(&mut model, &pollers, &updates, QUIET);
+    pollers.send(Command::Quit);
+    (shown, left, lab_requests(&stub).len())
+}
+
+#[test]
+fn leaving_the_logs_view_for_another_workbench_stops_the_request_for_the_lines_of_all_devices() {
+    for key in ['1', '2'] {
+        let (shown, left, later) = lab_requests_shown_then_left(&[key]);
+
+        assert!(shown > 0, "{key}");
+        assert_eq!(later, left, "{key}");
+    }
+}
+
+#[test]
+fn going_back_to_the_alerts_view_stops_the_request_for_the_lines_of_all_devices() {
+    let (shown, left, later) = lab_requests_shown_then_left(&['[']);
+
+    assert!(shown > 0);
+    assert_eq!(later, left);
+}
+
 #[test]
 fn the_alerts_view_sends_no_request_for_the_lines_of_all_devices() {
     let sent = lab_requests_of_a_shell(Workbench::Devices, Some('3'), true);
