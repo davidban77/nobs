@@ -493,8 +493,53 @@ pub(crate) enum LoginEntry<'a> {
 }
 
 struct DeviceLine {
+    device: String,
     line: Line,
     shown: String,
+}
+
+struct LogStream {
+    lines: Vec<DeviceLine>,
+    following: bool,
+    filter: Filter,
+}
+
+impl LogStream {
+    fn take(&mut self, lines: Vec<(String, Line)>) {
+        for (device, line) in lines {
+            if !self
+                .lines
+                .iter()
+                .any(|held| held.device == device && held.line == line)
+            {
+                let shown = line.message().unwrap_or_else(|| line.text.clone());
+                self.lines.push(DeviceLine {
+                    device,
+                    line,
+                    shown,
+                });
+            }
+        }
+        self.lines
+            .sort_by_key(|held| Reverse(held.line.nanoseconds));
+        self.lines.truncate(LOG_LINES);
+    }
+
+    fn shown(&self) -> Vec<&DeviceLine> {
+        self.lines
+            .iter()
+            .filter(|held| self.filter.matches(&held.shown))
+            .collect()
+    }
+
+    fn toggle(&mut self) -> bool {
+        self.following = !self.following;
+        self.following
+    }
+
+    fn clear(&mut self) {
+        self.lines.clear();
+    }
 }
 
 struct LogsState {
@@ -560,10 +605,8 @@ pub struct Model {
     alert_filter: Filter,
     runs: Vec<FlowRun>,
     rcas: Vec<Line>,
-    device_lines: Vec<DeviceLine>,
-    logs_following: bool,
+    device_logs: LogStream,
     logs_scroll: usize,
-    logs_filter: Filter,
     config_scroll: usize,
     config_filter: Filter,
     window: u64,
@@ -682,10 +725,12 @@ impl Model {
             alert_filter: Filter::default(),
             runs: Vec::new(),
             rcas: Vec::new(),
-            device_lines: Vec::new(),
-            logs_following: true,
+            device_logs: LogStream {
+                lines: Vec::new(),
+                following: true,
+                filter: Filter::default(),
+            },
             logs_scroll: 0,
-            logs_filter: Filter::default(),
             config_scroll: 0,
             config_filter: Filter::default(),
             window: WINDOW_MINUTES,
@@ -833,7 +878,7 @@ impl Model {
         match service {
             status::Service::Metrics => self.metrics = None,
             status::Service::Logs => {
-                self.device_lines.clear();
+                self.device_logs.clear();
                 self.rcas.clear();
             }
             status::Service::Alerts => {
@@ -901,7 +946,7 @@ impl Model {
                 match service {
                     Some(status::Service::Metrics) => self.metrics = None,
                     Some(status::Service::Alerts) => self.alerts_ok = false,
-                    Some(status::Service::Logs) => self.logs_following = false,
+                    Some(status::Service::Logs) => self.device_logs.following = false,
                     _ if source == "nodes" => self.nodes_ok = false,
                     _ => {}
                 }
@@ -954,15 +999,12 @@ impl Model {
                 if !self.is_selected(&device) {
                     return Vec::new();
                 }
-                for line in lines {
-                    if self.device_lines.iter().all(|held| held.line != line) {
-                        let shown = line.message().unwrap_or_else(|| line.text.clone());
-                        self.device_lines.push(DeviceLine { line, shown });
-                    }
-                }
-                self.device_lines
-                    .sort_by_key(|held| Reverse(held.line.nanoseconds));
-                self.device_lines.truncate(LOG_LINES);
+                self.device_logs.take(
+                    lines
+                        .into_iter()
+                        .map(|line| (device.clone(), line))
+                        .collect(),
+                );
             }
             Update::DeviceLogs(_, Err(text)) => {
                 self.fail(error_source(status::Service::Logs), text);
@@ -1361,7 +1403,7 @@ impl Model {
         self.asked.is_some()
             || self.filter.typing
             || self.device_filter.typing
-            || self.logs_filter.typing
+            || self.device_logs.filter.typing
             || self.config_filter.typing
             || self.alert_filter.typing
             || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
@@ -1404,8 +1446,8 @@ impl Model {
         if self.device_filter.typing {
             return self.device_filter.text.as_deref();
         }
-        if self.logs_filter.typing {
-            return self.logs_filter.text.as_deref();
+        if self.device_logs.filter.typing {
+            return self.device_logs.filter.text.as_deref();
         }
         if self.config_filter.typing {
             return self.config_filter.text.as_deref();
@@ -1755,20 +1797,23 @@ impl Model {
         Some((
             device.name.as_str(),
             self.shown_device_logs(),
-            self.logs_following,
+            self.device_logs.following,
             self.logs_scroll,
         ))
     }
 
     fn held_device_logs(&self) -> impl Iterator<Item = (i64, &str)> {
-        self.device_lines
+        self.device_logs
+            .lines
             .iter()
             .map(|held| (held.line.nanoseconds, held.shown.as_str()))
     }
 
     fn shown_device_logs(&self) -> Vec<(i64, &str)> {
-        self.held_device_logs()
-            .filter(|(_, text)| self.logs_filter.matches(text))
+        self.device_logs
+            .shown()
+            .into_iter()
+            .map(|held| (held.line.nanoseconds, held.shown.as_str()))
             .collect()
     }
 
@@ -2065,8 +2110,8 @@ impl Model {
             self.device_filter.type_key(key.code);
             return self.show_cursor();
         }
-        if self.logs_filter.typing {
-            self.logs_filter.type_key(key.code);
+        if self.device_logs.filter.typing {
+            self.device_logs.filter.type_key(key.code);
             return Vec::new();
         }
         if self.config_filter.typing {
@@ -2407,7 +2452,7 @@ impl Model {
         };
         if index != self.device {
             self.device = index;
-            self.device_lines.clear();
+            self.device_logs.clear();
             self.rcas.clear();
             self.logs_scroll = 0;
             self.config_scroll = 0;
@@ -2480,14 +2525,14 @@ impl Model {
     fn device_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
         match code {
             KeyCode::Char('f') => {
-                self.logs_following = !self.logs_following;
-                if self.logs_following {
+                let following = self.device_logs.toggle();
+                if following {
                     self.logs_scroll = 0;
                 }
-                return vec![Command::FollowDevice(self.logs_following)];
+                return vec![Command::FollowDevice(following)];
             }
-            KeyCode::Char('/') => self.logs_filter.start(),
-            _ if !self.logs_following => {
+            KeyCode::Char('/') => self.device_logs.filter.start(),
+            _ if !self.device_logs.following => {
                 let shown = self.shown_device_logs().len();
                 scroll_step(code, &mut self.logs_scroll, shown);
             }

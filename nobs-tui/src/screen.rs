@@ -1671,10 +1671,19 @@ fn device_logs(frame: &mut Frame, area: Rect, model: &Model) {
     };
     let start = if following { 0 } else { scroll };
     let rows = lines.iter().map(|(nanoseconds, text)| {
-        let text = format!("{}  {text}", devices::clock_of(*nanoseconds));
-        Line::from(fit(&text, usize::from(area.width)))
+        Line::from(log_row(*nanoseconds, None, text, usize::from(area.width)))
     });
     pane_rows(frame, area, rows, start, lines.len());
+}
+
+fn log_row(nanoseconds: i64, device: Option<(&str, usize)>, text: &str, width: usize) -> String {
+    let device = device
+        .map(|(name, pad)| format!("{name:<pad$}  "))
+        .unwrap_or_default();
+    fit(
+        &format!("{}  {device}{text}", devices::clock_of(nanoseconds)),
+        width,
+    )
 }
 
 fn config_pane(frame: &mut Frame, area: Rect, model: &Model) {
@@ -2434,6 +2443,16 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn a_log_row_pads_the_device_name_between_the_time_and_the_text() {
+        let at = 49_323_000_000_000;
+        assert_eq!(
+            log_row(at, Some(("srl1", 6)), "up", 24),
+            "13:42:03  srl1    up    "
+        );
+        assert_eq!(log_row(at, None, "up", 12), "13:42:03  up");
     }
 
     #[test]
