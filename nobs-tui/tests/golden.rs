@@ -2388,9 +2388,24 @@ fn a_short_row_is_yellow_and_a_full_row_is_not() {
     let buffer = render(observability_metrics(), 100, 30);
 
     for (device, yellow) in [("srl1", false), ("srl2", true), ("srl3", false)] {
-        let at = position(&buffer, device, device);
-        assert_eq!(buffer[at].fg == Color::Yellow, yellow, "{device}");
+        for needle in [device, "of"] {
+            let at = position(&buffer, device, needle);
+            assert_eq!(buffer[at].fg == Color::Yellow, yellow, "{device} {needle}");
+        }
     }
+}
+
+#[test]
+fn the_metrics_view_of_a_lab_without_a_device_list_says_what_is_missing_in_grey() {
+    let model = after(
+        without_a_source(),
+        &[KeyCode::Char('3'), KeyCode::Char('[')],
+    );
+    let buffer = render(model, 100, 30);
+    let note = "no source of truth (sot = \"none\")";
+
+    let at = position(&buffer, note, note);
+    assert!(buffer[at].modifier.contains(Modifier::DIM));
 }
 
 #[test]
@@ -2408,7 +2423,7 @@ fn a_no_data_row_is_grey() {
 fn both_alert_borders_say_unknown_before_the_first_answer_and_after_x() {
     let first = after(model_with(false, false, None, None), &[KeyCode::Char('3')]);
     let dismissed = after(observability_no_answer(), &[KeyCode::Char('x')]);
-    for model in [first, dismissed] {
+    for (model, metrics) in [(first, "?"), (dismissed, "ok")] {
         let screen = lines(&render(model, 60, 15));
         let border = |corner: char| {
             let line = screen.iter().find(|line| line.starts_with(corner)).unwrap();
@@ -2420,7 +2435,7 @@ fn both_alert_borders_say_unknown_before_the_first_answer_and_after_x() {
         assert_eq!(border('╔'), "╔ ALERTS ?");
         let bottom = screen.iter().find(|line| line.starts_with('╚')).unwrap();
         assert!(
-            bottom.starts_with("╚ metrics ok  logs ok  alerts ? ═"),
+            bottom.starts_with(&format!("╚ metrics {metrics}  logs ok  alerts ? ═")),
             "{bottom}"
         );
     }

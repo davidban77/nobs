@@ -919,14 +919,22 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
 }
 
 fn alerts_answer(model: &Model) -> bool {
-    model.reach(Service::Alerts) == Reach::Answers && model.alerts_ok()
+    has_answer(model.reach(Service::Alerts), model.alerts_ok())
+}
+
+fn has_answer(reach: Reach, answered: bool) -> bool {
+    reach == Reach::Answers && answered
 }
 
 fn alerts_cell(model: &Model, shown: &str) -> String {
-    if alerts_answer(model) {
+    answer_cell(model.reach(Service::Alerts), model.alerts_ok(), shown)
+}
+
+fn answer_cell(reach: Reach, answered: bool, shown: &str) -> String {
+    if has_answer(reach, answered) {
         shown.to_string()
     } else {
-        cell(model.reach(Service::Alerts), "?").to_string()
+        cell(reach, "?").to_string()
     }
 }
 
@@ -1148,7 +1156,7 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
         .collect();
     let bottom = format!(
         " metrics {}  logs {}  alerts {} ",
-        cell(model.reach(Service::Metrics), "ok"),
+        answer_cell(model.reach(Service::Metrics), model.metrics_ok(), "ok"),
         cell(model.reach(Service::Logs), "ok"),
         alerts_cell(model, "ok")
     );
@@ -1169,6 +1177,10 @@ fn metrics_view(frame: &mut Frame, area: Rect, model: &Model) {
     let reach = model.reach(Service::Metrics);
     if let Some(sentence) = absent(reach, row(Service::Metrics).word) {
         dim_lines(frame, area, absent_lines(reach, sentence, Service::Metrics));
+        return;
+    }
+    if let Some(note) = device_note(model).filter(|_| !model.metrics_listed()) {
+        dim_line(frame, area, note);
         return;
     }
     let rows = model.metrics_rows();

@@ -1750,6 +1750,10 @@ impl Model {
         self.alerts_ok
     }
 
+    pub(crate) fn metrics_ok(&self) -> bool {
+        self.metrics.is_some()
+    }
+
     pub fn shown_alerts(&self) -> &[Alert] {
         match self.reach(status::Service::Alerts) {
             Reach::Answers => &self.alerts,
@@ -5856,19 +5860,6 @@ pub(crate) mod tests {
     fn brackets_move_between_the_views_both_ways() {
         let mut model = observability_model(Vec::new());
         assert_eq!(model.tab(), Tab::Alerts);
-
-        let mut views = Vec::new();
-        for key in "]][[".chars() {
-            assert_eq!(ch(&mut model, key), []);
-            views.push(model.tab());
-        }
-
-        assert_eq!(views, [Tab::Logs, Tab::Metrics, Tab::Logs, Tab::Alerts]);
-    }
-
-    #[test]
-    fn square_brackets_go_through_the_three_views_both_ways_and_around() {
-        let mut model = observability_model(Vec::new());
 
         let mut views = Vec::new();
         for key in "]]][[[".chars() {
