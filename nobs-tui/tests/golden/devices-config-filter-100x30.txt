@@ -1,5 +1,5 @@
  nobs  book-lab book lab  sot lab_vars                                                     13:42:07
- [1 devices]  2 services  3 lab                                                      ? keys  q quit
+ [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
 ┌ devices 2 ─────────────────────────────┐╔ nobs-t-srl1 ═══════════════════════════════════════════╗
 │   NAME         KIND  HLTH  SYNC  ALRT  │║overview  interfaces  CONFIG  timeline  logs            ║
 │>  nobs-t-srl1  —     —     —        —  │║fetched 13:42:07  41 lines                              ║

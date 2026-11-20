@@ -1,0 +1,15 @@
+ nobs  nobs-t-project lab  sot lab_vars            13:42:07
+ 1 devices  2 services  [3 observability]    ? keys  q quit
+╔ ALERTS — ════════════════════════════════════════════════╗
+║no alerts in this lab                                     ║
+║                                                          ║
+║to add them, write the address in the lab's .env:         ║
+║  ALERTS_URL=http://localhost:9093                        ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╚ alerts — ════════════════════════════════════════════════╝
+ run  none                                           o open
+ r refresh

@@ -9,6 +9,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+use nobs_core::alertmanager::Alert;
 use nobs_core::count::counted;
 use nobs_core::locate::Located;
 use nobs_core::status::{row, Service};
@@ -19,7 +20,7 @@ use crate::devices;
 use crate::run::End;
 use crate::shell::{
     kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState, StackKind,
-    StackState, Tab, Workbench, NO_BREAK, SERVICES_TABS,
+    StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
 };
 use crate::view;
 
@@ -75,11 +76,19 @@ const HELP_LAB: [(&str, &str); 7] = [
     ("?", "close"),
     ("Esc", "close/fold/back"),
 ];
-const WORKBENCHES: [(Workbench, &str, &str); 3] = [
-    (Workbench::Devices, "1", "devices"),
-    (Workbench::Services, "2", "services"),
-    (Workbench::Lab, "3", "lab"),
+const HELP_OBSERVABILITY: [(&str, &str); 9] = [
+    ("Tab", "focus"),
+    ("j k ↑ ↓", "move"),
+    ("/", "filter"),
+    ("Enter", "open the device"),
+    ("r", "refresh now"),
+    ("o", "run pane"),
+    ("x", "dismiss the error"),
+    ("Esc", "close/clear/back"),
+    ("?", "close"),
 ];
+const KEYS_HINT: &str = "? keys  q quit";
+const STATE_WIDTH: usize = 9;
 const HELP_MORE: &str = "j/k more";
 const FOLD: &str = "Esc fold";
 const PANE_LEAST: u16 = 3;
@@ -102,6 +111,7 @@ enum Holder {
     Devices,
     Sonda(view::Part),
     Run,
+    Alerts,
 }
 
 fn holder(model: &Model) -> Holder {
@@ -129,6 +139,7 @@ fn holder(model: &Model) -> Holder {
         (Workbench::Lab, Focus::List) => Holder::Chapters,
         (Workbench::Lab, Focus::Tabs) => Holder::Nodes,
         (Workbench::Lab, Focus::Lines) => Holder::Overview,
+        (Workbench::Observability, _) => Holder::Alerts,
     }
 }
 
@@ -267,14 +278,14 @@ pub(crate) fn run_view(model: &Model, area: Rect) -> Option<RunMeasure> {
 
 fn workbench_least(model: &Model) -> u16 {
     let list = match model.workbench() {
-        Workbench::Devices => BORDERS + 3 + ALERTS_LEAST,
+        Workbench::Devices | Workbench::Observability => BORDERS + 3 + ALERTS_LEAST,
         Workbench::Services => BORDERS + 1,
         Workbench::Lab => NODES_LEAST + BORDERS + 1,
     };
     let tab_rows = match (model.workbench(), model.tab()) {
         (Workbench::Lab, _) => 1,
         (Workbench::Services, Tab::Overview) | (_, Tab::Timeline | Tab::Config) => 2,
-        (_, Tab::Overview | Tab::Logs) => 1,
+        (_, Tab::Overview | Tab::Logs | Tab::Alerts) => 1,
         (_, Tab::Interfaces) => 3,
         (_, Tab::Sonda) => 6,
     };
@@ -413,25 +424,36 @@ fn switcher(frame: &mut Frame, area: Rect, model: &Model) {
         frame.render_widget(Paragraph::new(" choose a lab, or q to quit"), area);
         return;
     }
+    let keys = Line::from(KEYS_HINT);
+    let full = workbench_line(model, true);
+    let fits = full.width() + 2 + keys.width() < usize::from(area.width);
+    let line = if fits {
+        full
+    } else {
+        workbench_line(model, false)
+    };
+    frame.render_widget(Paragraph::new(line), area);
+    right(frame, area, keys, 1);
+}
+
+fn workbench_line(model: &Model, wide: bool) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
-    for (index, (workbench, key, name)) in workbenches(model).iter().enumerate() {
-        if index > 0 {
+    for (key, workbench) in workbench_keys(model) {
+        if key > 1 {
             spans.push(Span::raw("  "));
         }
-        let name = format!("{key} {name}");
-        spans.push(if *workbench == model.workbench() {
+        let name = format!("{key} {}", workbench.title(wide));
+        spans.push(if workbench == model.workbench() {
             Span::styled(format!("[{name}]"), REVERSE)
         } else {
             Span::raw(name)
         });
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    right(frame, area, Line::from("? keys  q quit"), 1);
+    Line::from(spans)
 }
 
-fn workbenches(model: &Model) -> &'static [(Workbench, &'static str, &'static str)] {
-    let shown = if model.book_lab() { 3 } else { 2 };
-    &WORKBENCHES[..shown]
+fn workbench_keys(model: &Model) -> impl Iterator<Item = (usize, Workbench)> {
+    (1..).zip(model.workbenches())
 }
 
 fn workbench(frame: &mut Frame, area: Rect, model: &Model) {
@@ -443,6 +465,7 @@ fn workbench(frame: &mut Frame, area: Rect, model: &Model) {
         Workbench::Devices => devices(frame, area, model),
         Workbench::Lab => lab(frame, area, model),
         Workbench::Services => services(frame, area, model),
+        Workbench::Observability => observability(frame, area, model),
     }
 }
 
@@ -600,7 +623,7 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     match model.tab() {
-        Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline => {
+        Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline | Tab::Alerts => {
             overview(frame, content, model, wide)
         }
         Tab::Logs => logs(frame, content, model),
@@ -882,15 +905,24 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         }
         None => Some(device_rows(frame, list, model, &visible, wide)),
     };
-    let count = match model.reach(Service::Alerts) {
-        Reach::Answers if model.alerts_ok() => model.alerts().len().to_string(),
-        reach => cell(reach, "?").to_string(),
-    };
+    let count = alerts_cell(model, &model.alerts().len().to_string());
     let row = Rect::new(area.x, separator.y, area.width, 1);
     let room = usize::from(list.height).saturating_sub(1);
     let window = first.map(|first| (first, room, visible.len()));
     alerts_separator(frame, row, &count, window, border);
     alert_rows(frame, alerts, model, wide);
+}
+
+fn alerts_answer(model: &Model) -> bool {
+    model.reach(Service::Alerts) == Reach::Answers && model.alerts_ok()
+}
+
+fn alerts_cell(model: &Model, shown: &str) -> String {
+    if alerts_answer(model) {
+        shown.to_string()
+    } else {
+        cell(model.reach(Service::Alerts), "?").to_string()
+    }
 }
 
 fn absent(reach: Reach, word: &str) -> Option<String> {
@@ -921,8 +953,7 @@ fn device_note(model: &Model) -> Option<String> {
 }
 
 fn dim_line(frame: &mut Frame, area: Rect, text: String) {
-    let line = fitted(vec![(text, DIM)], usize::from(area.width));
-    frame.render_widget(Paragraph::new(line), area);
+    dim_lines(frame, area, vec![text]);
 }
 
 fn alerts_separator(
@@ -932,8 +963,18 @@ fn alerts_separator(
     window: Option<(usize, usize, usize)>,
     border: BorderType,
 ) {
+    separator_line(frame, row, &format!("alerts {count}"), window, border);
+}
+
+fn separator_line(
+    frame: &mut Frame,
+    row: Rect,
+    title: &str,
+    window: Option<(usize, usize, usize)>,
+    border: BorderType,
+) {
     let set = line_set(border);
-    let head = format!("{} alerts {count} ", set.vertical_right);
+    let head = format!("{} {title} ", set.vertical_right);
     let fill = usize::from(row.width).saturating_sub(head.chars().count() + 1);
     let line = format!("{head}{}{}", set.horizontal.repeat(fill), set.vertical_left);
     frame.render_widget(Paragraph::new(line), row);
@@ -1032,10 +1073,7 @@ fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         dim_line(frame, area, sentence);
         return;
     }
-    let shown = match reach {
-        Reach::Answers => model.alerts(),
-        Reach::Unknown | Reach::NotInLab | Reach::StackDown | Reach::NoAnswer => &[],
-    };
+    let shown = model.shown_alerts();
     let room = usize::from(area.height);
     let cursor = model.cursor();
     let start = match cursor {
@@ -1049,13 +1087,8 @@ fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         .skip(start)
         .take(room)
         .map(|(index, alert)| {
-            let label = |name: &str| alert.labels.get(name).map_or("—", String::as_str);
-            let (name, device) = (label("alertname"), label("device"));
-            let base = if alert.silenced || alert.inhibited {
-                DIM
-            } else {
-                Style::new()
-            };
+            let (name, device) = (label(alert, "alertname"), label(alert, "device"));
+            let base = alert_style(alert);
             let parts = if wide {
                 let state = alert.state_word();
                 let style = base.patch(tone(&state));
@@ -1077,6 +1110,174 @@ fn alert_rows(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
     rows_mark(frame, border_below(area), start, room, shown.len());
+}
+
+fn label<'a>(alert: &'a Alert, name: &str) -> &'a str {
+    alert.labels.get(name).map_or("—", String::as_str)
+}
+
+fn alert_style(alert: &Alert) -> Style {
+    if alert.silenced || alert.inhibited {
+        DIM
+    } else {
+        Style::new()
+    }
+}
+
+fn observability(frame: &mut Frame, area: Rect, model: &Model) {
+    let reach = model.reach(Service::Alerts);
+    let visible = model.visible_alerts();
+    let border = border_of(model, Holder::Alerts);
+    let views = tab_line(
+        &OBSERVABILITY_TABS,
+        Tab::Alerts,
+        area.width >= WIDE,
+        usize::from(area.width),
+    );
+    let count = format!(" {} ", alerts_cell(model, &visible.len().to_string()));
+    let top: Vec<Span> = [Span::raw(" ")]
+        .into_iter()
+        .chain(views.spans)
+        .chain([Span::raw(count)])
+        .collect();
+    let block = Block::bordered()
+        .border_type(border)
+        .title_top(Line::from(top))
+        .title_bottom(format!(" alerts {} ", alerts_cell(model, "ok")));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if let Some(sentence) = absent(reach, row(Service::Alerts).word) {
+        dim_lines(frame, inner, absent_lines(reach, sentence));
+        return;
+    }
+    if model.shown_alerts().is_empty() {
+        if alerts_answer(model) {
+            dim_line(frame, inner, "none".to_string());
+        }
+        return;
+    }
+    let Some(selected) = model.selected_alert() else {
+        alert_table(frame, inner, model, &visible);
+        return;
+    };
+    let box_height = (inner.height / 4).max(ALERTS_LEAST);
+    let [table, separator, lower] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(box_height),
+    ])
+    .areas(inner);
+    let first = alert_table(frame, table, model, &visible);
+    let room = usize::from(table.height).saturating_sub(1);
+    let title = cut_whole(
+        &[label(selected, "alertname"), label(selected, "device")],
+        "  ",
+        usize::from(area.width).saturating_sub(4),
+        Keep::Start,
+    );
+    let row = Rect::new(area.x, separator.y, area.width, 1);
+    separator_line(
+        frame,
+        row,
+        &title,
+        Some((first, room, visible.len())),
+        border,
+    );
+    alert_box(frame, lower, selected);
+}
+
+fn absent_lines(reach: Reach, sentence: String) -> Vec<String> {
+    let alerts = row(Service::Alerts);
+    let mut lines = vec![sentence];
+    if reach == Reach::NotInLab {
+        lines.extend([
+            String::new(),
+            "to add them, write the address in the lab's .env:".to_string(),
+            format!(
+                "  {}={}",
+                alerts.setting.unwrap_or_default(),
+                alerts.default
+            ),
+        ]);
+    }
+    lines
+}
+
+fn dim_lines(frame: &mut Frame, area: Rect, texts: Vec<String>) {
+    let width = usize::from(area.width);
+    let lines: Vec<Line> = texts
+        .into_iter()
+        .map(|text| fitted(vec![(text, DIM)], width))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn alert_table(frame: &mut Frame, area: Rect, model: &Model, visible: &[usize]) -> usize {
+    let alerts = model.shown_alerts();
+    let wall = wall_seconds(model);
+    let rows: Vec<[String; 5]> = visible
+        .iter()
+        .map(|&index| {
+            let alert = &alerts[index];
+            [
+                label(alert, "alertname").to_string(),
+                label(alert, "device").to_string(),
+                label(alert, "severity").to_string(),
+                alert.state_word(),
+                time::age(&alert.starts_at, wall),
+            ]
+        })
+        .collect();
+    let titles = ["NAME", "DEVICE", "SEVERITY", "STATE", "SINCE"];
+    let mut widths = widest(titles, &rows);
+    widths[3] = widths[3].max(STATE_WIDTH);
+    let fixed = 2 + widths[1..].iter().map(|width| width + 2).sum::<usize>();
+    widths[0] = widths[0].min(usize::from(area.width).saturating_sub(fixed));
+    let at = model.selected_alert_row();
+    let body_rows = visible.iter().zip(&rows).map(|(&index, row)| {
+        Row::new([
+            Cell::from(fit(&row[0], widths[0])),
+            Cell::from(row[1].as_str()),
+            Cell::from(row[2].as_str()),
+            Cell::from(row[3].as_str()).style(tone(&row[3])),
+            Cell::from(row[4].as_str()),
+        ])
+        .style(alert_style(&alerts[index]))
+    });
+    let constraints = widths
+        .iter()
+        .map(|width| Constraint::Length(u16::try_from(*width).unwrap_or(u16::MAX)));
+    let table = Table::new(body_rows, constraints)
+        .header(Row::new(titles))
+        .column_spacing(2)
+        .highlight_spacing(HighlightSpacing::Always)
+        .highlight_symbol("> ")
+        .row_highlight_style(REVERSE);
+    let room = usize::from(area.height).saturating_sub(1);
+    let first = first_row(at.unwrap_or(0), room);
+    let mut state = TableState::default().with_selected(at).with_offset(first);
+    frame.render_stateful_widget(table, area, &mut state);
+    first
+}
+
+fn alert_box(frame: &mut Frame, area: Rect, alert: &Alert) {
+    let width = usize::from(area.width);
+    let text = alert
+        .annotations
+        .get("summary")
+        .or_else(|| alert.annotations.get("description"))
+        .cloned();
+    let started = format!(
+        "started {}   severity {}",
+        time::clock(&alert.starts_at),
+        label(alert, "severity")
+    );
+    let lines: Vec<Line> = text
+        .into_iter()
+        .chain([started])
+        .map(|line| fitted(vec![(line, Style::new())], width))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
@@ -1102,7 +1303,7 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Tab::Logs => device_logs(frame, content, model),
         Tab::Interfaces => device_interfaces(frame, content, model, wide),
         Tab::Config => config_pane(frame, content, model),
-        Tab::Sonda => {}
+        Tab::Sonda | Tab::Alerts => {}
     }
 }
 
@@ -1290,9 +1491,7 @@ fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
     let label = |name: &str| format!("alerts   {name}");
     let alerts = model.reach(Service::Alerts);
     lines.push(match latest {
-        _ if alerts != Reach::Answers || !model.alerts_ok() => {
-            facts(&[label(cell(alerts, "?"))], "")
-        }
+        _ if !alerts_answer(model) => facts(&[label(cell(alerts, "?"))], ""),
         Some(alert) => facts(
             &[
                 label(alert.labels.get("alertname").map_or("—", String::as_str)),
@@ -1944,13 +2143,14 @@ fn key_hints(model: &Model) -> Vec<String> {
                 .chain(listed(vec!["r refresh", "o pane"]))
                 .collect();
         }
+        (Workbench::Observability, ..) => observability_hints(model),
         (Workbench::Services, Focus::List, _) => {
             vec!["Tab focus", "j/k move", "/ filter", "l logs", "r refresh"]
         }
         (
             Workbench::Services,
             Focus::Tabs,
-            Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline,
+            Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline | Tab::Alerts,
         ) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Enter logs", "Esc back"]
         }
@@ -1986,6 +2186,23 @@ fn key_hints(model: &Model) -> Vec<String> {
         }
     };
     listed(fixed).chain(actions).collect()
+}
+
+fn observability_hints(model: &Model) -> Vec<&'static str> {
+    let opens = model
+        .selected_alert()
+        .is_some_and(|alert| model.alert_device(alert).is_some());
+    let listed = !model.shown_alerts().is_empty();
+    [
+        (model.run_drawn(), "Tab focus"),
+        (listed, "j/k move"),
+        (listed, "/ filter"),
+        (opens, "Enter open the device"),
+        (true, "r refresh"),
+    ]
+    .into_iter()
+    .filter_map(|(offered, hint)| offered.then_some(hint))
+    .collect()
 }
 
 fn log_hints(paused: bool) -> Vec<&'static str> {
@@ -2034,8 +2251,11 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
         Workbench::Devices => &HELP_DEVICES,
         Workbench::Services => &HELP,
         Workbench::Lab => &HELP_LAB,
+        Workbench::Observability => &HELP_OBSERVABILITY,
     };
-    let switch: Vec<&str> = workbenches(model).iter().map(|(_, key, _)| *key).collect();
+    let switch: Vec<String> = workbench_keys(model)
+        .map(|(key, _)| key.to_string())
+        .collect();
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench)
@@ -2067,7 +2287,7 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
     let mut notes = match model.workbench() {
         Workbench::Devices => vec![HELP_DEVICES_NOTE],
         Workbench::Services => vec![HELP_SONDA],
-        Workbench::Lab => vec![],
+        Workbench::Lab | Workbench::Observability => vec![],
     };
     if model.run_drawn() {
         notes.push(HELP_RUN);
@@ -2136,11 +2356,7 @@ fn help(frame: &mut Frame, area: Rect, model: &Model) {
         fits,
     } = help_layout(model, area);
     frame.render_widget(Clear, area);
-    let name = match model.workbench() {
-        Workbench::Devices => "devices",
-        Workbench::Services => "services",
-        Workbench::Lab => "lab",
-    };
+    let name = model.workbench().title(true);
     let block = Block::bordered()
         .border_type(border_of(model, Holder::Keys))
         .title_top(format!(" keys  {name} workbench "));
@@ -2210,7 +2426,7 @@ mod tests {
         alert, defined, devices_model, every_service_up, fixture, lab_devices_model, listing, row,
         sonda_rows, stack, start, workshop_located,
     };
-    use crate::shell::{handle, stacks, Stack, Start, Update, DEVICE_TABS};
+    use crate::shell::{handle, stacks, Command, Stack, Start, Update, DEVICE_TABS, WORKBENCHES};
 
     fn tab_text(tabs: &[Tab], open: Tab) -> String {
         tab_line(tabs, open, false, 35)
@@ -3051,10 +3267,10 @@ mod tests {
         let mut book_services = lab_bench(2);
         press(&mut book_services, '2');
         for (model, switch) in [
-            (devices_bench(), "1 2"),
-            (services_bench(), "1 2"),
-            (lab_bench(2), "1 2 3"),
-            (book_services, "1 2 3"),
+            (devices_bench(), "1 2 3"),
+            (services_bench(), "1 2 3"),
+            (lab_bench(2), "1 2 3 4"),
+            (book_services, "1 2 3 4"),
         ] {
             let entries = help_entries(&model);
 
@@ -3065,6 +3281,201 @@ mod tests {
                 model.workbench()
             );
         }
+    }
+
+    #[test]
+    fn in_a_book_lab_the_switcher_says_obs_up_to_64_columns_and_observability_from_65() {
+        let mut model = lab_devices_model();
+
+        let narrow = drawn(&mut model, 64, 15);
+        let wide = drawn(&mut model, 65, 15);
+
+        assert_eq!(
+            narrow[1],
+            " [1 devices]  2 services  3 lab  4 obs           ? keys  q quit"
+        );
+        assert_eq!(
+            wide[1],
+            " [1 devices]  2 services  3 lab  4 observability  ? keys  q quit"
+        );
+    }
+
+    fn alert_names(rows: &[String], names: &[&'static str]) -> Vec<&'static str> {
+        rows.iter()
+            .filter_map(|row| names.iter().find(|name| row.contains(*name)).copied())
+            .collect()
+    }
+
+    fn requests(commands: &[Command]) -> Vec<&Command> {
+        commands
+            .iter()
+            .filter(|command| matches!(command, Command::Ask(..) | Command::Refresh))
+            .collect()
+    }
+
+    #[test]
+    fn the_table_lists_the_alerts_of_the_box_in_its_order_and_a_new_alert_needs_no_request() {
+        let names = ["nobs-t-mike", "nobs-t-alpha", "nobs-t-zulu", "nobs-t-bravo"];
+        let first = vec![
+            alert("srl1", names[2], "2026-11-09T13:51:32Z"),
+            alert("srl1", names[0], "2026-11-09T13:53:32Z"),
+            alert("srl2", names[1], "2026-11-09T13:52:32Z"),
+        ];
+        let mut model = devices_model(workshop_located("infrahub"));
+        let answered = model.apply(Update::Alerts(Ok(first.clone())));
+        let screen = drawn(&mut model, 100, 30);
+        let separator = screen
+            .iter()
+            .position(|row| row.contains(" alerts 3 "))
+            .unwrap();
+        let left: Vec<String> = screen[separator + 1..]
+            .iter()
+            .map(|row| row.chars().take(usize::from(LEFT_DEVICES)).collect())
+            .collect();
+        let in_the_box = alert_names(&left, &names);
+        let table = |model: &mut Model| {
+            let screen = drawn(model, 100, 30);
+            let end = screen.iter().position(|row| row.starts_with('╠')).unwrap();
+            alert_names(&screen[..end], &names)
+        };
+
+        let switched = handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE),
+        );
+        let in_the_table = table(&mut model);
+        let newer = alert("srl2", names[3], "2026-11-09T13:54:32Z");
+        let grown = model.apply(Update::Alerts(Ok([newer]
+            .into_iter()
+            .chain(first)
+            .collect())));
+        let moved = handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(in_the_box, [names[0], names[1], names[2]]);
+        assert_eq!(in_the_table, in_the_box);
+        assert_eq!(table(&mut model), [names[3], names[0], names[1], names[2]]);
+        assert_eq!(requests(&answered), Vec::<&Command>::new());
+        assert_eq!(requests(&switched), Vec::<&Command>::new());
+        assert_eq!(requests(&grown), Vec::<&Command>::new());
+        assert_eq!(requests(&moved), Vec::<&Command>::new());
+    }
+
+    #[test]
+    fn the_lower_box_follows_the_selection_and_the_selection_stays_on_its_alert_when_the_list_changes(
+    ) {
+        let older = [
+            alert("srl1", "nobs-t-first", "2026-11-09T13:53:32Z"),
+            alert("srl2", "nobs-t-second", "2026-11-09T13:52:32Z"),
+        ];
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(older.to_vec())));
+        press(&mut model, '3');
+
+        let at_first = lower_box_title(&mut model);
+        press(&mut model, 'j');
+        let after_j = lower_box_title(&mut model);
+        let newer = alert("srl1", "nobs-t-newest", "2026-11-09T13:54:32Z");
+        model.apply(Update::Alerts(Ok([newer]
+            .into_iter()
+            .chain(older)
+            .collect())));
+        let after_newer = lower_box_title(&mut model);
+
+        assert!(at_first.starts_with("╠ nobs-t-first  srl1 ═"), "{at_first}");
+        assert!(after_j.starts_with("╠ nobs-t-second  srl2 ═"), "{after_j}");
+        assert!(
+            after_newer.starts_with("╠ nobs-t-second  srl2 ═"),
+            "{after_newer}"
+        );
+    }
+
+    fn lower_box_title(model: &mut Model) -> String {
+        drawn(model, 100, 30)
+            .into_iter()
+            .find(|row| row.starts_with('╠'))
+            .unwrap_or_default()
+    }
+
+    fn titles_across_a_failed_poll_and_a_newer_alert(filter: &str) -> (String, String) {
+        let older = [
+            alert("srl1", "nobs-t-first", "2026-11-09T13:53:32Z"),
+            alert("srl2", "nobs-t-second", "2026-11-09T13:52:32Z"),
+            alert("srl2", "nobs-t-third", "2026-11-09T13:51:32Z"),
+        ];
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(older.to_vec())));
+        press(&mut model, '3');
+        if !filter.is_empty() {
+            press(&mut model, '/');
+            filter.chars().for_each(|letter| press(&mut model, letter));
+            handle(
+                &mut model,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+        }
+        press(&mut model, 'j');
+        let before = lower_box_title(&mut model);
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        let newer = alert("srl2", "nobs-t-newest", "2026-11-09T13:54:32Z");
+        model.apply(Update::Alerts(Ok([newer]
+            .into_iter()
+            .chain(older)
+            .collect())));
+        (before, lower_box_title(&mut model))
+    }
+
+    #[test]
+    fn under_a_filter_the_lower_box_keeps_its_alert_across_a_failed_poll_and_a_newer_alert() {
+        let (before, after) = titles_across_a_failed_poll_and_a_newer_alert("srl2");
+
+        assert!(before.starts_with("╠ nobs-t-third  srl2 ═"), "{before}");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn the_lower_box_keeps_its_alert_across_a_failed_poll_and_a_newer_alert() {
+        let (before, after) = titles_across_a_failed_poll_and_a_newer_alert("");
+
+        assert!(before.starts_with("╠ nobs-t-second  srl2 ═"), "{before}");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn the_observability_key_line_offers_enter_only_on_an_alert_of_a_device_of_the_lab_and_tab_only_beside_a_drawn_run_pane(
+    ) {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(vec![
+            alert(
+                "nobs-t-elsewhere",
+                "BgpSessionNotUp",
+                "2026-11-09T13:53:32Z",
+            ),
+            alert("srl1", "BgpSessionNotUp", "2026-11-09T13:52:32Z"),
+        ])));
+        press(&mut model, '3');
+
+        let elsewhere = key_line(&model, 100);
+        press(&mut model, 'j');
+        let in_the_lab = key_line(&model, 100);
+        press(&mut model, 'o');
+        model.set_run_view(Some(RunMeasure {
+            overflow: 0,
+            cut_rows: 0,
+        }));
+        let beside_the_run_pane = key_line(&model, 100);
+
+        assert_eq!(elsewhere, [" j/k move  / filter  r refresh"]);
+        assert_eq!(
+            in_the_lab,
+            [" j/k move  / filter  Enter open the device  r refresh"]
+        );
+        assert_eq!(
+            beside_the_run_pane,
+            [" Tab focus  j/k move  / filter  Enter open the device  r refresh"]
+        );
     }
 
     #[test]
@@ -4288,7 +4699,7 @@ mod tests {
             assert_eq!(screen, alone, "{label}");
             cases += 1;
         };
-        for (workbench, _, _) in WORKBENCHES {
+        for workbench in WORKBENCHES {
             let mut set_up = lab_devices_model().workbench() == workbench;
             for bench in benches() {
                 if (bench.build)().workbench() != workbench {
@@ -4299,6 +4710,7 @@ mod tests {
                     Workbench::Devices => (bench.build)().device_tabs(),
                     Workbench::Services => &SERVICES_TABS,
                     Workbench::Lab => &[Tab::Overview],
+                    Workbench::Observability => &OBSERVABILITY_TABS,
                 };
                 for &tab in tabs {
                     for (width, height) in sizes {
@@ -4306,6 +4718,15 @@ mod tests {
                         let model = staged(&bench, tab, false, Keys::Hints, true);
                         check(label, tab, width, height, model);
                     }
+                }
+            }
+            if workbench == Workbench::Observability {
+                set_up = true;
+                for (width, height) in sizes {
+                    let label = format!("observability {width}x{height}");
+                    let mut model = staged(&benches()[0], Tab::Overview, false, Keys::Hints, true);
+                    press(&mut model, '3');
+                    check(label, Tab::Alerts, width, height, model);
                 }
             }
             assert!(set_up, "no setup for {workbench:?}");
@@ -4327,7 +4748,7 @@ mod tests {
                 check(label, tab, width, height, model);
             }
         }
-        assert_eq!(cases, 28);
+        assert_eq!(cases, 30);
     }
 
     #[test]

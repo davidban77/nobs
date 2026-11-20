@@ -41,6 +41,7 @@ const LAB_DEVICE_TABS: [Tab; 5] = [
     Tab::Timeline,
     Tab::Logs,
 ];
+pub(crate) const OBSERVABILITY_TABS: [Tab; 1] = [Tab::Alerts];
 const MIN_SIZE: (u16, u16) = (60, 15);
 const RUNNING: &str = "running";
 pub(crate) const DOCKER_LOGS: &str = "docker logs";
@@ -98,6 +99,34 @@ pub enum Workbench {
     Devices,
     Services,
     Lab,
+    Observability,
+}
+
+pub(crate) const WORKBENCHES: [Workbench; 4] = [
+    Workbench::Devices,
+    Workbench::Services,
+    Workbench::Lab,
+    Workbench::Observability,
+];
+
+impl Workbench {
+    pub fn title(self, wide: bool) -> &'static str {
+        match self {
+            Workbench::Devices => "devices",
+            Workbench::Services => "services",
+            Workbench::Lab => "lab",
+            Workbench::Observability if wide => "observability",
+            Workbench::Observability => "obs",
+        }
+    }
+}
+
+fn workbench_place(code: KeyCode) -> Option<usize> {
+    let KeyCode::Char(typed) = code else {
+        return None;
+    };
+    let place = usize::try_from(typed.to_digit(10)?).ok()?.checked_sub(1)?;
+    (place < WORKBENCHES.len()).then_some(place)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +145,7 @@ pub enum Tab {
     Timeline,
     Logs,
     Sonda,
+    Alerts,
 }
 
 impl Tab {
@@ -128,6 +158,7 @@ impl Tab {
             Tab::Timeline => "timeline",
             Tab::Logs => "logs",
             Tab::Sonda => "sonda",
+            Tab::Alerts => "alerts",
         }
     }
 }
@@ -425,6 +456,12 @@ impl Filter {
             .as_deref()
             .is_none_or(|filter| text.contains(filter))
     }
+
+    fn matches_any_case(&self, text: &str) -> bool {
+        self.text
+            .as_deref()
+            .is_none_or(|filter| text.to_lowercase().contains(&filter.to_lowercase()))
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -519,6 +556,8 @@ pub struct Model {
     metrics: Option<Vec<Sample>>,
     alerts: Vec<Alert>,
     alerts_ok: bool,
+    kept_alert: Option<BTreeMap<String, String>>,
+    alert_filter: Filter,
     runs: Vec<FlowRun>,
     rcas: Vec<Line>,
     device_lines: Vec<DeviceLine>,
@@ -639,6 +678,8 @@ impl Model {
             metrics: None,
             alerts: Vec::new(),
             alerts_ok: false,
+            kept_alert: None,
+            alert_filter: Filter::default(),
             runs: Vec::new(),
             rcas: Vec::new(),
             device_lines: Vec::new(),
@@ -769,6 +810,7 @@ impl Model {
             commands.push(Command::Ask(row.service, on));
         }
         self.asks = asking;
+        self.keep_alert();
         commands
     }
 
@@ -1321,6 +1363,7 @@ impl Model {
             || self.device_filter.typing
             || self.logs_filter.typing
             || self.config_filter.typing
+            || self.alert_filter.typing
             || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
     }
 
@@ -1366,6 +1409,9 @@ impl Model {
         }
         if self.config_filter.typing {
             return self.config_filter.text.as_deref();
+        }
+        if self.alert_filter.typing {
+            return self.alert_filter.text.as_deref();
         }
         self.logs
             .as_ref()
@@ -1512,12 +1558,10 @@ impl Model {
     }
 
     pub fn visible_devices(&self) -> Vec<usize> {
-        let needle = self.device_filter.text.as_deref().map(str::to_lowercase);
         (0..self.devices.len())
             .filter(|index| {
-                needle
-                    .as_deref()
-                    .is_none_or(|needle| self.devices[*index].name.to_lowercase().contains(needle))
+                self.device_filter
+                    .matches_any_case(&self.devices[*index].name)
             })
             .collect()
     }
@@ -1572,6 +1616,59 @@ impl Model {
 
     pub fn alerts_ok(&self) -> bool {
         self.alerts_ok
+    }
+
+    pub fn shown_alerts(&self) -> &[Alert] {
+        match self.reach(status::Service::Alerts) {
+            Reach::Answers => &self.alerts,
+            Reach::Unknown | Reach::NotInLab | Reach::StackDown | Reach::NoAnswer => &[],
+        }
+    }
+
+    pub fn visible_alerts(&self) -> Vec<usize> {
+        self.shown_alerts()
+            .iter()
+            .enumerate()
+            .filter(|(_, alert)| {
+                let label = |name: &str| alert.labels.get(name).cloned().unwrap_or_default();
+                [
+                    label("alertname"),
+                    label("device"),
+                    label("severity"),
+                    alert.state_word(),
+                ]
+                .iter()
+                .any(|text| self.alert_filter.matches_any_case(text))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub(crate) fn selected_alert_row(&self) -> Option<usize> {
+        let visible = self.visible_alerts();
+        visible
+            .iter()
+            .position(|&index| Some(&self.alerts[index].labels) == self.kept_alert.as_ref())
+            .or((!visible.is_empty()).then_some(0))
+    }
+
+    pub fn selected_alert(&self) -> Option<&Alert> {
+        let row = self.selected_alert_row()?;
+        Some(&self.alerts[self.visible_alerts()[row]])
+    }
+
+    fn keep_alert(&mut self) {
+        if self.workbench != Workbench::Observability {
+            return;
+        }
+        if let Some(alert) = self.selected_alert() {
+            self.kept_alert = Some(alert.labels.clone());
+        }
+    }
+
+    pub fn alert_device(&self, alert: &Alert) -> Option<usize> {
+        let name = alert.labels.get("device")?;
+        self.devices.iter().position(|device| device.name == *name)
     }
 
     pub fn interfaces(&self) -> Vec<devices::Row> {
@@ -1776,6 +1873,13 @@ impl Model {
         )
     }
 
+    pub fn workbenches(&self) -> Vec<Workbench> {
+        WORKBENCHES
+            .into_iter()
+            .filter(|&workbench| workbench != Workbench::Lab || self.book_lab())
+            .collect()
+    }
+
     pub fn lab_with_nodes(&self) -> bool {
         matches!(
             self.lab.as_ref().map(|lab| &lab.kind),
@@ -1969,6 +2073,10 @@ impl Model {
             self.config_filter.type_key(key.code);
             return Vec::new();
         }
+        if self.alert_filter.typing {
+            self.alert_filter.type_key(key.code);
+            return Vec::new();
+        }
         if let Some(logs) = self.logs.as_mut().filter(|logs| logs.filter.typing) {
             logs.filter.type_key(key.code);
             return Vec::new();
@@ -1984,11 +2092,13 @@ impl Model {
                 return commands;
             }
         }
+        if let Some(place) = workbench_place(key.code) {
+            return match self.workbenches().get(place) {
+                Some(&workbench) => self.switch(workbench),
+                None => Vec::new(),
+            };
+        }
         match key.code {
-            KeyCode::Char('1') => return self.switch(Workbench::Devices),
-            KeyCode::Char('2') => return self.switch(Workbench::Services),
-            KeyCode::Char('3') if self.book_lab() => return self.switch(Workbench::Lab),
-            KeyCode::Char('3') => {}
             KeyCode::Char('?') => {
                 self.help = true;
                 self.help_scroll = 0;
@@ -1998,10 +2108,10 @@ impl Model {
             KeyCode::Char('o') => self.run_pane = true,
             KeyCode::Tab => {
                 self.focus = match self.focus {
-                    Focus::List => Focus::Tabs,
+                    Focus::List if self.workbench != Workbench::Observability => Focus::Tabs,
                     Focus::Tabs if self.has_lines() => Focus::Lines,
-                    Focus::Tabs | Focus::Lines if self.run_view.drawn => Focus::Run,
-                    Focus::Tabs | Focus::Lines | Focus::Run => Focus::List,
+                    Focus::List | Focus::Tabs | Focus::Lines if self.run_view.drawn => Focus::Run,
+                    Focus::List | Focus::Tabs | Focus::Lines | Focus::Run => Focus::List,
                 };
             }
             KeyCode::Esc => return self.escape(key),
@@ -2015,6 +2125,9 @@ impl Model {
             _ if self.workbench == Workbench::Services => return self.services_key(key),
             _ if self.workbench == Workbench::Devices => return self.devices_key(key),
             _ if self.workbench == Workbench::Lab => return self.lab_key(key.code),
+            _ if self.workbench == Workbench::Observability => {
+                return self.observability_key(key.code)
+            }
             _ => {}
         }
         Vec::new()
@@ -2023,16 +2136,17 @@ impl Model {
     fn switch(&mut self, workbench: Workbench) -> Vec<Command> {
         let left_devices = self.workbench == Workbench::Devices && workbench != Workbench::Devices;
         self.workbench = workbench;
-        if workbench == Workbench::Lab {
+        if matches!(workbench, Workbench::Lab | Workbench::Observability) {
             self.focus = Focus::List;
         }
         let tabs: &[Tab] = match workbench {
             Workbench::Devices => self.device_tabs(),
             Workbench::Services => &SERVICES_TABS,
             Workbench::Lab => &[],
+            Workbench::Observability => &OBSERVABILITY_TABS,
         };
         if !tabs.is_empty() && !tabs.contains(&self.tab) {
-            self.tab = Tab::Overview;
+            self.tab = tabs[0];
         }
         self.settle_focus();
         if left_devices {
@@ -2109,9 +2223,10 @@ impl Model {
         match (self.focus, self.tab) {
             (Focus::List, _) => self.list_key(key.code),
             (Focus::Lines, _) => self.details_key(key),
-            (Focus::Tabs, Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline) => {
-                self.overview_key(key.code)
-            }
+            (
+                Focus::Tabs,
+                Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline | Tab::Alerts,
+            ) => self.overview_key(key.code),
             (Focus::Tabs, Tab::Logs) => self.logs_key(key.code),
             (Focus::Tabs, Tab::Sonda) => self.sonda_key(key),
             (Focus::Run, _) => Vec::new(),
@@ -2228,21 +2343,62 @@ impl Model {
             }
             Cursor::Device(_) => Vec::new(),
             Cursor::Alert(at) => {
-                let Some(index) = self
+                match self
                     .alerts
                     .get(at)
-                    .and_then(|alert| alert.labels.get("device"))
-                    .and_then(|name| self.devices.iter().position(|device| device.name == *name))
-                else {
-                    return Vec::new();
-                };
-                let mut commands = self.select_device(index);
-                self.focus = Focus::Tabs;
-                self.tab = Tab::Timeline;
-                commands.push(Command::OpenTab(Tab::Timeline));
-                commands
+                    .and_then(|alert| self.alert_device(alert))
+                {
+                    Some(index) => self.open_timeline(index),
+                    None => Vec::new(),
+                }
             }
         }
+    }
+
+    fn open_timeline(&mut self, index: usize) -> Vec<Command> {
+        let mut commands = self.select_device(index);
+        self.focus = Focus::Tabs;
+        self.tab = Tab::Timeline;
+        commands.push(Command::OpenTab(Tab::Timeline));
+        commands
+    }
+
+    fn observability_key(&mut self, code: KeyCode) -> Vec<Command> {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.step_alert(true),
+            KeyCode::Char('k') | KeyCode::Up => self.step_alert(false),
+            KeyCode::Char('/') if !self.shown_alerts().is_empty() => self.alert_filter.start(),
+            KeyCode::Enter => return self.open_alert_device(),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn step_alert(&mut self, down: bool) {
+        let Some(at) = self.selected_alert_row() else {
+            return;
+        };
+        let next = if down {
+            Some(at + 1)
+        } else {
+            at.checked_sub(1)
+        };
+        let visible = self.visible_alerts();
+        if let Some(&index) = next.and_then(|row| visible.get(row)) {
+            self.kept_alert = Some(self.alerts[index].labels.clone());
+        }
+    }
+
+    fn open_alert_device(&mut self) -> Vec<Command> {
+        let Some(index) = self
+            .selected_alert()
+            .and_then(|alert| self.alert_device(alert))
+        else {
+            return Vec::new();
+        };
+        self.workbench = Workbench::Devices;
+        self.cursor = Cursor::Device(index);
+        self.open_timeline(index)
     }
 
     fn select_device(&mut self, index: usize) -> Vec<Command> {
@@ -2454,6 +2610,12 @@ impl Model {
 }
 
 pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+    let commands = take_key(model, key);
+    model.keep_alert();
+    commands
+}
+
+fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     if key.kind != KeyEventKind::Press {
         return Vec::new();
     }
@@ -3187,18 +3349,396 @@ pub(crate) mod tests {
     #[test]
     fn three_opens_the_lab_workbench_only_in_a_book_lab() {
         let mut model = opened(&["a"]);
-        let before = snapshot(&model);
         assert_eq!(ch(&mut model, '3'), []);
-        assert_eq!(snapshot(&model), before);
+        assert_eq!(model.workbench(), Workbench::Observability);
 
         let mut model = devices_model(workshop_located("infrahub"));
-        assert_eq!(ch(&mut model, '3'), []);
-        assert_eq!(model.workbench(), Workbench::Devices);
+        assert_eq!(ch(&mut model, '3'), [Command::OpenTab(Tab::Overview)]);
+        assert_eq!(model.workbench(), Workbench::Observability);
 
         let mut model = book_model();
         ch(&mut model, '2');
         ch(&mut model, '3');
         assert_eq!(model.workbench(), Workbench::Lab);
+    }
+
+    fn workbenches_after(mut model: Model, keys: &str) -> Vec<Workbench> {
+        keys.chars()
+            .map(|key| {
+                ch(&mut model, key);
+                model.workbench()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn in_a_workshop_one_two_and_three_open_devices_services_and_observability_and_four_does_nothing(
+    ) {
+        let model = devices_model(workshop_located("infrahub"));
+        assert_eq!(
+            workbenches_after(model, "23143"),
+            [
+                Workbench::Services,
+                Workbench::Observability,
+                Workbench::Devices,
+                Workbench::Devices,
+                Workbench::Observability
+            ]
+        );
+    }
+
+    #[test]
+    fn in_a_book_lab_one_to_four_open_devices_services_lab_and_observability() {
+        assert_eq!(
+            workbenches_after(book_model(), "123454"),
+            [
+                Workbench::Devices,
+                Workbench::Services,
+                Workbench::Lab,
+                Workbench::Observability,
+                Workbench::Observability,
+                Workbench::Observability
+            ]
+        );
+    }
+
+    #[test]
+    fn in_a_labcli_lab_the_keys_open_what_they_open_in_a_workshop() {
+        let model = lab_model("project-two-node", "project-two-node/expected/lab_vars.yml");
+        assert!(matches!(model.located().unwrap().kind, Kind::LabcliLab(_)));
+        assert_eq!(
+            workbenches_after(model, "23143"),
+            [
+                Workbench::Services,
+                Workbench::Observability,
+                Workbench::Devices,
+                Workbench::Devices,
+                Workbench::Observability
+            ]
+        );
+    }
+
+    fn observability_model(alerts: Vec<Alert>) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(alerts)));
+        ch(&mut model, '3');
+        model
+    }
+
+    fn three_alerts() -> Vec<Alert> {
+        vec![
+            alert("srl1", "BgpSessionNotUp", "2026-11-09T13:53:32Z"),
+            alert("srl2", "BgpSessionNotUp", "2026-11-09T13:52:32Z"),
+            alert("srl2", "InterfaceDown", "2026-11-09T13:51:32Z"),
+        ]
+    }
+
+    #[test]
+    fn the_alert_filter_keeps_the_alerts_whose_words_hold_the_typed_text_and_reads_q_as_a_letter() {
+        let mut model = observability_model(three_alerts());
+
+        ch(&mut model, '/');
+        assert!(model.typing());
+        assert_eq!(ch(&mut model, 'q'), []);
+        code(&mut model, KeyCode::Backspace);
+        typed(&mut model, "SRL2");
+        assert_eq!(model.typed_filter(), Some("SRL2"));
+        code(&mut model, KeyCode::Enter);
+
+        assert!(!model.quit());
+        assert!(!model.typing());
+        assert_eq!(model.workbench(), Workbench::Observability);
+        assert_eq!(model.visible_alerts(), [1, 2]);
+    }
+
+    #[test]
+    fn the_selected_alert_stays_selected_across_a_failed_poll_and_a_newer_alert() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        let chosen = model.selected_alert().unwrap().labels.clone();
+
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        let mut list = three_alerts();
+        list.push(alert("srl3", "InterfaceDown", "2026-11-09T13:54:32Z"));
+        model.apply(Update::Alerts(Ok(list)));
+
+        assert_eq!(model.selected_alert().unwrap().labels, chosen);
+    }
+
+    #[test]
+    fn the_selected_alert_stays_on_the_shown_row_when_the_filter_hid_the_old_one_and_a_newer_alert_arrives(
+    ) {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'k');
+        assert_eq!(model.selected_alert().unwrap().labels["device"], "srl1");
+        ch(&mut model, '/');
+        typed(&mut model, "srl2");
+        code(&mut model, KeyCode::Enter);
+        let shown = model.selected_alert().unwrap().labels.clone();
+        assert_eq!(shown["device"], "srl2");
+
+        let mut list = three_alerts();
+        list.push(alert("srl2", "LinkFlap", "2026-11-09T13:54:32Z"));
+        model.apply(Update::Alerts(Ok(list)));
+
+        assert_eq!(model.visible_alerts(), [0, 2, 3]);
+        assert_eq!(model.selected_alert().unwrap().labels, shown);
+    }
+
+    fn selected_words(model: &Model) -> Option<[String; 2]> {
+        model
+            .selected_alert()
+            .map(|alert| ["device", "alertname"].map(|name| alert.labels[name].clone()))
+    }
+
+    fn alert_words(device: &str, name: &str) -> Option<[String; 2]> {
+        Some([device.to_string(), name.to_string()])
+    }
+
+    #[test]
+    fn k_on_the_first_shown_alert_and_j_on_the_last_keep_the_selected_alert() {
+        let mut model = observability_model(three_alerts());
+        let labels = |model: &Model| model.selected_alert().map(|alert| alert.labels.clone());
+
+        ch(&mut model, 'k');
+        let first_row = model.selected_alert_row();
+        let first = labels(&model);
+        ch(&mut model, 'k');
+        let after_k = labels(&model);
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        let last_row = model.selected_alert_row();
+        let last = labels(&model);
+        ch(&mut model, 'j');
+        let after_j = labels(&model);
+
+        assert_eq!(first_row, Some(0));
+        assert_eq!(after_k, first);
+        assert_eq!(last_row, Some(2));
+        assert_eq!(after_j, last);
+    }
+
+    #[test]
+    fn when_the_selected_alert_leaves_the_list_the_first_shown_alert_is_selected() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(selected_words(&model), alert_words("srl2", "InterfaceDown"));
+
+        let mut list = three_alerts();
+        list.remove(2);
+        model.apply(Update::Alerts(Ok(list)));
+
+        assert_eq!(
+            selected_words(&model),
+            alert_words("srl1", "BgpSessionNotUp")
+        );
+    }
+
+    #[test]
+    fn the_alert_shown_as_selected_under_a_filter_stays_selected_after_the_filter_is_cleared() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'k');
+        assert_eq!(
+            selected_words(&model),
+            alert_words("srl1", "BgpSessionNotUp")
+        );
+
+        ch(&mut model, '/');
+        typed(&mut model, "srl2");
+        code(&mut model, KeyCode::Enter);
+        let under_the_filter = selected_words(&model);
+        ch(&mut model, '/');
+        code(&mut model, KeyCode::Esc);
+
+        assert_eq!(under_the_filter, alert_words("srl2", "BgpSessionNotUp"));
+        assert_eq!(model.visible_alerts(), [0, 1, 2]);
+        assert_eq!(selected_words(&model), under_the_filter);
+    }
+
+    #[test]
+    fn when_the_stack_comes_back_with_the_same_alerts_the_same_alert_is_selected_again() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(selected_words(&model), alert_words("srl2", "InterfaceDown"));
+        let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
+
+        model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
+        let while_down = (model.reach(status::Service::Alerts), selected_words(&model));
+        model.apply(every_service_up(0));
+        model.apply(Update::Alerts(Ok(three_alerts())));
+
+        assert_eq!(while_down, (Reach::StackDown, None));
+        assert_eq!(selected_words(&model), alert_words("srl2", "InterfaceDown"));
+    }
+
+    #[test]
+    fn an_alert_nobody_chose_stays_marked_when_a_newer_alert_arrives_at_the_top() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, '3');
+        assert_eq!(model.selected_alert_row(), Some(0));
+
+        model.apply(Update::Alerts(Ok(vec![
+            alert("srl2", "BgpSessionNotUp", "2026-11-09T13:53:32Z"),
+            alert("srl1", "LinkFlap", "2026-11-09T13:54:32Z"),
+        ])));
+
+        assert_eq!(model.selected_alert_row(), Some(1));
+        assert_eq!(
+            selected_words(&model),
+            alert_words("srl2", "BgpSessionNotUp")
+        );
+    }
+
+    fn opened_after_a_newer_alert_arrived_on_the_devices_workbench() -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(vec![
+            alert("srl2", "BgpSessionNotUp", "2026-11-09T13:53:32Z"),
+            alert("srl1", "LinkFlap", "2026-11-09T13:54:32Z"),
+        ])));
+        ch(&mut model, '3');
+        model
+    }
+
+    #[test]
+    fn the_first_opening_marks_the_newest_alert_of_those_that_arrived_before() {
+        let model = opened_after_a_newer_alert_arrived_on_the_devices_workbench();
+
+        assert_eq!(model.selected_alert_row(), Some(0));
+        assert_eq!(selected_words(&model), alert_words("srl1", "LinkFlap"));
+    }
+
+    #[test]
+    fn after_the_first_opening_the_marker_stays_on_its_alert_when_a_newer_alert_arrives() {
+        let mut model = opened_after_a_newer_alert_arrived_on_the_devices_workbench();
+
+        model.apply(Update::Alerts(Ok(vec![
+            alert("srl2", "BgpSessionNotUp", "2026-11-09T13:53:32Z"),
+            alert("srl1", "LinkFlap", "2026-11-09T13:54:32Z"),
+            alert("srl3", "InterfaceDown", "2026-11-09T13:55:32Z"),
+        ])));
+
+        assert_eq!(model.selected_alert_row(), Some(1));
+        assert_eq!(selected_words(&model), alert_words("srl1", "LinkFlap"));
+    }
+
+    #[test]
+    fn the_alert_marked_before_enter_is_marked_on_the_way_back_after_a_newer_alert_arrived() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+        let chosen = selected_words(&model);
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.workbench(), Workbench::Devices);
+
+        let mut list = three_alerts();
+        list.push(alert("srl3", "LinkFlap", "2026-11-09T13:54:32Z"));
+        model.apply(Update::Alerts(Ok(list)));
+        ch(&mut model, '3');
+
+        assert_eq!(chosen, alert_words("srl2", "BgpSessionNotUp"));
+        assert_eq!(model.selected_alert_row(), Some(2));
+        assert_eq!(selected_words(&model), chosen);
+    }
+
+    #[test]
+    fn an_alert_that_ended_while_another_workbench_was_open_gives_the_top_on_the_way_back() {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'k');
+        ch(&mut model, 'j');
+        assert_eq!(
+            selected_words(&model),
+            alert_words("srl2", "BgpSessionNotUp")
+        );
+        ch(&mut model, '1');
+
+        let mut list = three_alerts();
+        list.remove(1);
+        model.apply(Update::Alerts(Ok(list.clone())));
+        list.push(alert("srl3", "LinkFlap", "2026-11-09T13:54:32Z"));
+        model.apply(Update::Alerts(Ok(list)));
+        ch(&mut model, '3');
+
+        assert_eq!(model.selected_alert_row(), Some(0));
+        assert_eq!(selected_words(&model), alert_words("srl3", "LinkFlap"));
+    }
+
+    #[test]
+    fn outside_a_lab_the_selected_alert_comes_back_after_another_stack_was_selected() {
+        let mut model = opened(&["a", "b"]);
+        model.apply(every_service_up(0));
+        model.apply(Update::Services(
+            1,
+            defined(&["prometheus"]),
+            Ok(vec![row("prometheus", RUNNING)]),
+        ));
+        model.apply(Update::Alerts(Ok(three_alerts())));
+        ch(&mut model, '3');
+        ch(&mut model, 'j');
+        let chosen = selected_words(&model);
+        assert_eq!(model.workbench(), Workbench::Observability);
+
+        ch(&mut model, '2');
+        ch(&mut model, 'j');
+        model.ask_changes();
+        let at_b = (model.reach(status::Service::Alerts), selected_words(&model));
+        ch(&mut model, 'k');
+        model.ask_changes();
+        model.apply(Update::Alerts(Ok(three_alerts())));
+
+        assert_eq!(at_b, (Reach::NotInLab, None));
+        assert_eq!(chosen, alert_words("srl2", "BgpSessionNotUp"));
+        assert_eq!(selected_words(&model), chosen);
+    }
+
+    #[test]
+    fn tab_in_the_observability_workbench_reaches_the_run_pane_only_while_it_is_drawn() {
+        let mut model = observability_model(three_alerts());
+
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::List);
+        ch(&mut model, 'o');
+        model.set_run_view(measured(0, 0));
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::Run);
+        code(&mut model, KeyCode::Tab);
+        assert_eq!(model.focus(), Focus::List);
+    }
+
+    #[test]
+    fn enter_on_an_alert_of_a_device_of_the_lab_opens_that_device_on_its_timeline_and_on_another_does_nothing(
+    ) {
+        let mut model = observability_model(three_alerts());
+        ch(&mut model, 'j');
+
+        assert_eq!(
+            code(&mut model, KeyCode::Enter),
+            [
+                Command::SelectDevice("srl2".to_string()),
+                Command::OpenTab(Tab::Timeline)
+            ]
+        );
+        assert_eq!(model.workbench(), Workbench::Devices);
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!(model.cursor(), Cursor::Device(1));
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Timeline));
+
+        let mut without_device = alert("srl1", "BgpSessionNotUp", "2026-11-09T13:53:32Z");
+        without_device.labels.remove("device");
+        let elsewhere = alert(
+            "nobs-t-elsewhere",
+            "BgpSessionNotUp",
+            "2026-11-09T13:53:32Z",
+        );
+        for lone in [without_device, elsewhere] {
+            let mut model = observability_model(vec![lone]);
+            let before = snapshot(&model);
+
+            assert_eq!(code(&mut model, KeyCode::Enter), []);
+
+            assert_eq!(snapshot(&model), before);
+            assert_eq!(model.selected_device().unwrap().name, "srl1");
+        }
     }
 
     #[test]
