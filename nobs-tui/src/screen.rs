@@ -90,6 +90,7 @@ const HELP_OBSERVABILITY: [(&str, &str); 10] = [
 ];
 const KEYS_HINT: &str = "? keys  q quit";
 const STATE_WIDTH: usize = 9;
+const COUNT_WIDTH: usize = 11;
 const HELP_MORE: &str = "j/k more";
 const FOLD: &str = "Esc fold";
 const PANE_LEAST: u16 = 3;
@@ -286,7 +287,7 @@ fn workbench_least(model: &Model) -> u16 {
     let tab_rows = match (model.workbench(), model.tab()) {
         (Workbench::Lab, _) => 1,
         (Workbench::Services, Tab::Overview) | (_, Tab::Timeline | Tab::Config) => 2,
-        (_, Tab::Overview | Tab::Logs | Tab::Alerts) => 1,
+        (_, Tab::Overview | Tab::Logs | Tab::Alerts | Tab::Metrics) => 1,
         (_, Tab::Interfaces) => 3,
         (_, Tab::Sonda) => 6,
     };
@@ -624,9 +625,12 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
     match model.tab() {
-        Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline | Tab::Alerts => {
-            overview(frame, content, model, wide)
-        }
+        Tab::Overview
+        | Tab::Interfaces
+        | Tab::Config
+        | Tab::Timeline
+        | Tab::Alerts
+        | Tab::Metrics => overview(frame, content, model, wide),
         Tab::Logs => logs(frame, content, model),
         Tab::Sonda => {
             view::draw_in(
@@ -915,14 +919,22 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
 }
 
 fn alerts_answer(model: &Model) -> bool {
-    model.reach(Service::Alerts) == Reach::Answers && model.alerts_ok()
+    has_answer(model.reach(Service::Alerts), model.alerts_ok())
+}
+
+fn has_answer(reach: Reach, answered: bool) -> bool {
+    reach == Reach::Answers && answered
 }
 
 fn alerts_cell(model: &Model, shown: &str) -> String {
-    if alerts_answer(model) {
+    answer_cell(model.reach(Service::Alerts), model.alerts_ok(), shown)
+}
+
+fn answer_cell(reach: Reach, answered: bool, shown: &str) -> String {
+    if has_answer(reach, answered) {
         shown.to_string()
     } else {
-        cell(model.reach(Service::Alerts), "?").to_string()
+        cell(reach, "?").to_string()
     }
 }
 
@@ -1143,7 +1155,8 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
         .chain([Span::raw(" ")])
         .collect();
     let bottom = format!(
-        " logs {}  alerts {} ",
+        " metrics {}  logs {}  alerts {} ",
+        answer_cell(model.reach(Service::Metrics), model.metrics_ok(), "ok"),
         cell(model.reach(Service::Logs), "ok"),
         alerts_cell(model, "ok")
     );
@@ -1153,11 +1166,49 @@ fn observability(frame: &mut Frame, area: Rect, model: &Model) {
         .title_bottom(bottom);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if model.tab() == Tab::Logs {
-        logs_view(frame, inner, model);
-    } else {
-        alerts_view(frame, area, inner, model, border, &visible);
+    match model.tab() {
+        Tab::Logs => logs_view(frame, inner, model),
+        Tab::Metrics => metrics_view(frame, inner, model),
+        _ => alerts_view(frame, area, inner, model, border, &visible),
     }
+}
+
+fn metrics_view(frame: &mut Frame, area: Rect, model: &Model) {
+    let reach = model.reach(Service::Metrics);
+    if let Some(sentence) = absent(reach, row(Service::Metrics).word) {
+        dim_lines(frame, area, absent_lines(reach, sentence, Service::Metrics));
+        return;
+    }
+    if let Some(note) = device_note(model).filter(|_| !model.metrics_listed()) {
+        dim_line(frame, area, note);
+        return;
+    }
+    let rows = model.metrics_rows();
+    let cells: Vec<[&str; 3]> = rows
+        .iter()
+        .map(|row| {
+            [
+                row.name.as_str(),
+                cell(reach, &row.interfaces),
+                cell(reach, &row.sessions),
+            ]
+        })
+        .collect();
+    let titles = ["DEVICE", "INTERFACES", "BGP SESSIONS"];
+    let mut widths = widest(titles, &cells);
+    widths[1] = widths[1].max(COUNT_WIDTH);
+    let body_rows = rows.iter().zip(&cells).map(|(row, cells)| {
+        let style = if row.no_data {
+            DIM
+        } else if row.short {
+            Style::new().fg(Color::Yellow)
+        } else {
+            Style::new()
+        };
+        Row::new(*cells).style(style)
+    });
+    let at = model.marked_metrics_row();
+    marked_table(frame, area, Row::new(titles), &widths, body_rows, at);
 }
 
 fn logs_view(frame: &mut Frame, area: Rect, model: &Model) {
@@ -1312,11 +1363,22 @@ fn alert_table(frame: &mut Frame, area: Rect, model: &Model, visible: &[usize]) 
         ])
         .style(alert_style(&alerts[index]))
     });
+    marked_table(frame, area, Row::new(titles), &widths, body_rows, at)
+}
+
+fn marked_table<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    header: Row<'a>,
+    widths: &[usize],
+    body_rows: impl IntoIterator<Item = Row<'a>>,
+    at: Option<usize>,
+) -> usize {
     let constraints = widths
         .iter()
         .map(|width| Constraint::Length(u16::try_from(*width).unwrap_or(u16::MAX)));
     let table = Table::new(body_rows, constraints)
-        .header(Row::new(titles))
+        .header(header)
         .column_spacing(2)
         .highlight_spacing(HighlightSpacing::Always)
         .highlight_symbol("> ")
@@ -1371,7 +1433,7 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Tab::Logs => device_logs(frame, content, model),
         Tab::Interfaces => device_interfaces(frame, content, model, wide),
         Tab::Config => config_pane(frame, content, model),
-        Tab::Sonda | Tab::Alerts => {}
+        Tab::Sonda | Tab::Alerts | Tab::Metrics => {}
     }
 }
 
@@ -1487,7 +1549,7 @@ fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
             (session, shown)
         })
         .collect();
-    let established = states.iter().filter(|(_, state)| state == "up").count();
+    let (established, intended) = devices::sessions_up(&states);
     let seen = model.devices_at().map_or("—".to_string(), |at| {
         format!("{}s ago", seconds(model, at))
     });
@@ -1514,9 +1576,9 @@ fn overview_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
         facts(
             &[
                 "bgp sessions".to_string(),
-                format!("{} intended", states.len()),
+                format!("{intended} intended"),
                 format!("{established} established"),
-                format!("{} other", states.len() - established),
+                format!("{} other", intended - established),
             ],
             "  ",
         ),
@@ -2227,7 +2289,12 @@ fn key_hints(model: &Model) -> Vec<String> {
         (
             Workbench::Services,
             Focus::Tabs,
-            Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline | Tab::Alerts,
+            Tab::Overview
+            | Tab::Interfaces
+            | Tab::Config
+            | Tab::Timeline
+            | Tab::Alerts
+            | Tab::Metrics,
         ) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Enter logs", "Esc back"]
         }
@@ -2269,10 +2336,19 @@ fn observability_hints(model: &Model) -> Vec<&'static str> {
     let offered = if model.tab() == Tab::Logs {
         lab_hints(model)
     } else {
-        let opens = model
-            .selected_alert()
-            .is_some_and(|alert| model.alert_device(alert).is_some());
-        let listed = !model.shown_alerts().is_empty();
+        let (listed, opens) = if model.tab() == Tab::Metrics {
+            (
+                model.metrics_listed(),
+                model.marked_metrics_device().is_some(),
+            )
+        } else {
+            (
+                !model.shown_alerts().is_empty(),
+                model
+                    .selected_alert()
+                    .is_some_and(|alert| model.alert_device(alert).is_some()),
+            )
+        };
         vec![
             (listed, "j/k move"),
             (listed, "/ filter"),

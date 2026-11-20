@@ -13,7 +13,7 @@ use nobs_core::locate::{locate, Kind, Located};
 use nobs_core::loki::Line as LokiLine;
 use nobs_core::prefect::FlowRun;
 use nobs_core::prometheus::Sample;
-use nobs_core::sot::{Fixed, SourceOfTruth};
+use nobs_core::sot::{Device, Fixed, Interface, Session, SourceOfTruth};
 use nobs_core::status::{self, Urls};
 use nobs_tui::actions::{Action, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
@@ -270,16 +270,7 @@ fn metrics() -> Vec<Sample> {
         ("srl2", "10.1.11.1", 1.0),
     ];
     for (device, peer, value) in peers {
-        samples.push(sample(
-            &[
-                ("__name__", "bgp_oper_state"),
-                ("device", device),
-                ("peer_address", peer),
-                ("afi_safi_name", "ipv4-unicast"),
-                ("name", "default"),
-            ],
-            value,
-        ));
+        samples.push(session_sample(device, peer, value));
     }
     for device in ["srl1", "srl2"] {
         for (name, oper) in [
@@ -287,18 +278,36 @@ fn metrics() -> Vec<Sample> {
             ("ethernet-1/10", 1.0),
             ("ethernet-1/11", 2.0),
         ] {
-            for (metric, value) in [
-                ("interface_admin_state", 1.0),
-                ("interface_oper_state", oper),
-            ] {
-                samples.push(sample(
-                    &[("__name__", metric), ("device", device), ("name", name)],
-                    value,
-                ));
-            }
+            samples.extend(interface_samples(device, name, oper));
         }
     }
     samples
+}
+
+fn session_sample(device: &str, peer: &str, value: f64) -> Sample {
+    sample(
+        &[
+            ("__name__", "bgp_oper_state"),
+            ("device", device),
+            ("peer_address", peer),
+            ("afi_safi_name", "ipv4-unicast"),
+            ("name", "default"),
+        ],
+        value,
+    )
+}
+
+fn interface_samples(device: &str, name: &str, oper: f64) -> [Sample; 2] {
+    [
+        ("interface_admin_state", 1.0),
+        ("interface_oper_state", oper),
+    ]
+    .map(|(metric, value)| {
+        sample(
+            &[("__name__", metric), ("device", device), ("name", name)],
+            value,
+        )
+    })
 }
 
 fn alert(state: &str, silenced: bool, peer: &str, starts_at: &str) -> Alert {
@@ -2230,11 +2239,191 @@ fn the_observability_frames_are_pinned() {
     );
 }
 
+const ETHERNET: [&str; 2] = ["ethernet-1/1", "ethernet-1/2"];
+
+fn made_up(name: &str, interfaces: &[&str], peers: &[&str]) -> Device {
+    Device {
+        name: name.to_string(),
+        kind: None,
+        site: None,
+        role: None,
+        asn: None,
+        maintenance: false,
+        interfaces: interfaces
+            .iter()
+            .map(|interface| Interface {
+                name: interface.to_string(),
+                role: None,
+                address: None,
+                expected_state: Some("up".to_string()),
+            })
+            .collect(),
+        sessions: peers
+            .iter()
+            .map(|peer| Session {
+                peer: peer.to_string(),
+                afi_safi: None,
+                expected_state: None,
+                remote_as: None,
+                expected_prefixes: None,
+                reason: None,
+            })
+            .collect(),
+    }
+}
+
+fn four_devices() -> Vec<Device> {
+    vec![
+        made_up(
+            "srl1",
+            &["ethernet-1/1", "ethernet-1/2", "lo0"],
+            &["192.0.2.1", "192.0.2.3"],
+        ),
+        made_up("srl2", &ETHERNET, &["192.0.2.0", "192.0.2.5", "192.0.2.7"]),
+        made_up("srl3", &ETHERNET, &[]),
+        made_up("srl4", &ETHERNET, &[]),
+    ]
+}
+
+fn four_metrics() -> Vec<Sample> {
+    let mut samples = Vec::new();
+    for (device, opers) in [
+        ("srl1", [1.0, 1.0]),
+        ("srl2", [1.0, 2.0]),
+        ("srl3", [1.0, 1.0]),
+    ] {
+        for (name, oper) in ETHERNET.into_iter().zip(opers) {
+            samples.extend(interface_samples(device, name, oper));
+        }
+    }
+    for (device, peer, value) in [
+        ("srl1", "192.0.2.1", 1.0),
+        ("srl1", "192.0.2.3", 1.0),
+        ("srl2", "192.0.2.0", 1.0),
+        ("srl2", "192.0.2.5", 1.0),
+        ("srl2", "192.0.2.7", 5.0),
+    ] {
+        samples.push(session_sample(device, peer, value));
+    }
+    samples
+}
+
+fn observability_metrics() -> Shell {
+    let mut model = observability();
+    model.apply(Update::Devices(Ok(four_devices())));
+    model.apply(Update::Metrics(Ok(four_metrics())));
+    after(model, &[KeyCode::Char('[')])
+}
+
+fn metrics_no_answer() -> Shell {
+    let mut model = observability_metrics();
+    model.apply(Update::Metrics(Err("refused".to_string())));
+    model
+}
+
+fn metrics_book() -> Shell {
+    let mut model = observability_book();
+    model.apply(listing(
+        0,
+        ps(&[
+            ("alertmanager", "running", 9093, "40 seconds ago"),
+            ("prometheus", "running", 9090, "40 seconds ago"),
+        ]),
+    ));
+    let mut devices = lab_vars_source(&PathBuf::from(BOOK_LAB).join("containerlab/lab_vars.yml"))
+        .devices()
+        .unwrap();
+    devices.push(Device {
+        name: "nobs-t-srl3".to_string(),
+        ..devices[1].clone()
+    });
+    model.apply(Update::Devices(Ok(devices)));
+    let mut samples = Vec::new();
+    samples.extend(interface_samples("nobs-t-srl1", "ethernet-1/1", 1.0));
+    samples.extend(interface_samples("nobs-t-srl2", "ethernet-1/1", 2.0));
+    samples.push(session_sample("nobs-t-srl1", "192.0.2.1", 1.0));
+    samples.push(session_sample("nobs-t-srl2", "192.0.2.0", 3.0));
+    model.apply(Update::Metrics(Ok(samples)));
+    after(model, &[KeyCode::Char('[')])
+}
+
+#[test]
+fn the_metrics_view_frames_are_pinned() {
+    golden("observability-metrics", observability_metrics);
+    golden("observability-metrics-no-answer", metrics_no_answer);
+    golden("observability-metrics-unknown", || {
+        unpolled_again(observability_metrics())
+    });
+    golden("observability-metrics-down", || {
+        stack_down(observability_metrics())
+    });
+    golden("observability-metrics-none", || {
+        after(observability_none(), &[KeyCode::Char('[')])
+    });
+    pinned(metrics_book(), "observability-metrics-book", 60, 15);
+}
+
+#[test]
+fn the_bgp_cell_of_a_row_is_the_overview_count_of_that_device() {
+    let overview = lines(&render(devices_model(), 100, 30));
+    let view = lines(&render(
+        after(observability(), &[KeyCode::Char('[')]),
+        100,
+        30,
+    ));
+
+    let counted = overview
+        .iter()
+        .any(|line| line.contains("│bgp sessions  3 intended  2 established "));
+    assert!(counted, "{}", overview.join("\n"));
+    let row = view
+        .iter()
+        .find(|line| line.starts_with("║> srl1 "))
+        .unwrap();
+    assert!(row.contains("  2 of 3 up "), "{row}");
+}
+
+#[test]
+fn a_short_row_is_yellow_and_a_full_row_is_not() {
+    let buffer = render(observability_metrics(), 100, 30);
+
+    for (device, yellow) in [("srl1", false), ("srl2", true), ("srl3", false)] {
+        for needle in [device, "of"] {
+            let at = position(&buffer, device, needle);
+            assert_eq!(buffer[at].fg == Color::Yellow, yellow, "{device} {needle}");
+        }
+    }
+}
+
+#[test]
+fn the_metrics_view_of_a_lab_without_a_device_list_says_what_is_missing_in_grey() {
+    let model = after(
+        without_a_source(),
+        &[KeyCode::Char('3'), KeyCode::Char('[')],
+    );
+    let buffer = render(model, 100, 30);
+    let note = "no source of truth (sot = \"none\")";
+
+    let at = position(&buffer, note, note);
+    assert!(buffer[at].modifier.contains(Modifier::DIM));
+}
+
+#[test]
+fn a_no_data_row_is_grey() {
+    let buffer = render(observability_metrics(), 100, 30);
+
+    for (device, grey) in [("srl3", false), ("srl4", true)] {
+        let at = position(&buffer, device, device);
+        let dim = buffer[at].modifier.contains(Modifier::DIM);
+        assert_eq!(dim, grey, "{device}");
+    }
+}
+
 #[test]
 fn both_alert_borders_say_unknown_before_the_first_answer_and_after_x() {
     let first = after(model_with(false, false, None, None), &[KeyCode::Char('3')]);
     let dismissed = after(observability_no_answer(), &[KeyCode::Char('x')]);
-    for model in [first, dismissed] {
+    for (model, metrics) in [(first, "?"), (dismissed, "ok")] {
         let screen = lines(&render(model, 60, 15));
         let border = |corner: char| {
             let line = screen.iter().find(|line| line.starts_with(corner)).unwrap();
@@ -2245,7 +2434,10 @@ fn both_alert_borders_say_unknown_before_the_first_answer_and_after_x() {
         };
         assert_eq!(border('╔'), "╔ ALERTS ?");
         let bottom = screen.iter().find(|line| line.starts_with('╚')).unwrap();
-        assert!(bottom.starts_with("╚ logs ok  alerts ? ═"), "{bottom}");
+        assert!(
+            bottom.starts_with(&format!("╚ metrics {metrics}  logs ok  alerts ? ═")),
+            "{bottom}"
+        );
     }
 }
 
@@ -2269,7 +2461,7 @@ fn the_observability_view_names_no_view_kind_or_key_that_is_not_built() {
     for build in builds {
         for (width, height) in SIZES {
             let screen = lines(&render(build(), width, height)).join("\n");
-            for word in ["metrics", "Tab view", "Tab focus"] {
+            for word in ["Tab view", "Tab focus"] {
                 assert!(!screen.contains(word), "{word}\n{screen}");
             }
         }

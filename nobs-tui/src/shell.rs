@@ -11,7 +11,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::alertmanager::Alert;
 use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
-use nobs_core::evidence;
 use nobs_core::lab;
 use nobs_core::locate::{locate, Kind, Located};
 use nobs_core::loki::Line;
@@ -41,7 +40,7 @@ const LAB_DEVICE_TABS: [Tab; 5] = [
     Tab::Timeline,
     Tab::Logs,
 ];
-pub(crate) const OBSERVABILITY_TABS: [Tab; 2] = [Tab::Alerts, Tab::Logs];
+pub(crate) const OBSERVABILITY_TABS: [Tab; 3] = [Tab::Alerts, Tab::Logs, Tab::Metrics];
 const MIN_SIZE: (u16, u16) = (60, 15);
 const RUNNING: &str = "running";
 pub(crate) const DOCKER_LOGS: &str = "docker logs";
@@ -153,6 +152,7 @@ pub enum Tab {
     Logs,
     Sonda,
     Alerts,
+    Metrics,
 }
 
 impl Tab {
@@ -166,6 +166,7 @@ impl Tab {
             Tab::Logs => "logs",
             Tab::Sonda => "sonda",
             Tab::Alerts => "alerts",
+            Tab::Metrics => "metrics",
         }
     }
 }
@@ -638,6 +639,8 @@ pub struct Model {
     alerts_ok: bool,
     kept_alert: Option<BTreeMap<String, String>>,
     alert_filter: Filter,
+    kept_device: Option<String>,
+    metrics_filter: Filter,
     runs: Vec<FlowRun>,
     rcas: Vec<Line>,
     device_logs: LogStream,
@@ -762,6 +765,8 @@ impl Model {
             alerts_ok: false,
             kept_alert: None,
             alert_filter: Filter::default(),
+            kept_device: None,
+            metrics_filter: Filter::default(),
             runs: Vec::new(),
             rcas: Vec::new(),
             device_logs: LogStream::default(),
@@ -900,6 +905,7 @@ impl Model {
             commands.push(Command::FollowLab(lab));
         }
         self.keep_alert();
+        self.keep_marked_device();
         self.keep_mark();
         commands
     }
@@ -1482,6 +1488,7 @@ impl Model {
             || self.lab_logs.filter.typing
             || self.config_filter.typing
             || self.alert_filter.typing
+            || self.metrics_filter.typing
             || self.logs.as_ref().is_some_and(|logs| logs.filter.typing)
     }
 
@@ -1533,6 +1540,9 @@ impl Model {
         }
         if self.alert_filter.typing {
             return self.alert_filter.text.as_deref();
+        }
+        if self.metrics_filter.typing {
+            return self.metrics_filter.text.as_deref();
         }
         self.logs
             .as_ref()
@@ -1679,11 +1689,12 @@ impl Model {
     }
 
     pub fn visible_devices(&self) -> Vec<usize> {
+        self.devices_matching(&self.device_filter)
+    }
+
+    fn devices_matching(&self, filter: &Filter) -> Vec<usize> {
         (0..self.devices.len())
-            .filter(|index| {
-                self.device_filter
-                    .matches_any_case(&self.devices[*index].name)
-            })
+            .filter(|index| filter.matches_any_case(&self.devices[*index].name))
             .collect()
     }
 
@@ -1739,6 +1750,10 @@ impl Model {
         self.alerts_ok
     }
 
+    pub(crate) fn metrics_ok(&self) -> bool {
+        self.metrics.is_some()
+    }
+
     pub fn shown_alerts(&self) -> &[Alert] {
         match self.reach(status::Service::Alerts) {
             Reach::Answers => &self.alerts,
@@ -1782,6 +1797,47 @@ impl Model {
         }
         if let Some(alert) = self.selected_alert() {
             self.kept_alert = Some(alert.labels.clone());
+        }
+    }
+
+    pub fn metrics_rows(&self) -> Vec<devices::MetricsRow> {
+        self.visible_metric_devices()
+            .into_iter()
+            .map(|index| devices::metrics_row(&self.devices[index], self.metrics.as_deref()))
+            .collect()
+    }
+
+    pub(crate) fn metrics_listed(&self) -> bool {
+        !self.devices.is_empty()
+            && !matches!(
+                self.reach(status::Service::Metrics),
+                Reach::NotInLab | Reach::StackDown
+            )
+    }
+
+    pub(crate) fn visible_metric_devices(&self) -> Vec<usize> {
+        if !self.metrics_listed() {
+            return Vec::new();
+        }
+        self.devices_matching(&self.metrics_filter)
+    }
+
+    pub(crate) fn marked_metrics_row(&self) -> Option<usize> {
+        kept_row(&self.visible_metric_devices(), |&index| {
+            Some(&self.devices[index].name) == self.kept_device.as_ref()
+        })
+    }
+
+    pub(crate) fn marked_metrics_device(&self) -> Option<usize> {
+        Some(self.visible_metric_devices()[self.marked_metrics_row()?])
+    }
+
+    fn keep_marked_device(&mut self) {
+        if self.workbench != Workbench::Observability {
+            return;
+        }
+        if let Some(index) = self.marked_metrics_device() {
+            self.kept_device = Some(self.devices[index].name.clone());
         }
     }
 
@@ -1879,21 +1935,7 @@ impl Model {
         let Some(device) = self.selected_device() else {
             return Vec::new();
         };
-        let values = self
-            .metrics
-            .as_deref()
-            .map(|samples| devices::oper_states(&device.name, &device.sessions, samples));
-        device
-            .sessions
-            .iter()
-            .map(|session| {
-                let state = match &values {
-                    Some(values) => evidence::decode_oper(values.get(&session.peer).copied()),
-                    None => "?".to_string(),
-                };
-                (session.clone(), state)
-            })
-            .collect()
+        devices::session_states(device, self.metrics.as_deref())
     }
 
     pub fn timeline(&self) -> Vec<devices::Entry> {
@@ -2279,6 +2321,10 @@ impl Model {
             self.alert_filter.type_key(key.code);
             return Vec::new();
         }
+        if self.metrics_filter.typing {
+            self.metrics_filter.type_key(key.code);
+            return Vec::new();
+        }
         if let Some(logs) = self.logs.as_mut().filter(|logs| logs.filter.typing) {
             logs.filter.type_key(key.code);
             return Vec::new();
@@ -2426,7 +2472,12 @@ impl Model {
             (Focus::Lines, _) => self.details_key(key),
             (
                 Focus::Tabs,
-                Tab::Overview | Tab::Interfaces | Tab::Config | Tab::Timeline | Tab::Alerts,
+                Tab::Overview
+                | Tab::Interfaces
+                | Tab::Config
+                | Tab::Timeline
+                | Tab::Alerts
+                | Tab::Metrics,
             ) => self.overview_key(key.code),
             (Focus::Tabs, Tab::Logs) => self.logs_key(key.code),
             (Focus::Tabs, Tab::Sonda) => self.sonda_key(key),
@@ -2569,6 +2620,7 @@ impl Model {
             KeyCode::Char('[') => self.view = step(&OBSERVABILITY_TABS, self.view, false),
             KeyCode::Char(']') => self.view = step(&OBSERVABILITY_TABS, self.view, true),
             _ if self.view == Tab::Logs => return self.lab_logs_key(code),
+            _ if self.view == Tab::Metrics => return self.metrics_key(code),
             KeyCode::Char('j') | KeyCode::Down => self.step_alert(true),
             KeyCode::Char('k') | KeyCode::Up => self.step_alert(false),
             KeyCode::Char('/') if !self.shown_alerts().is_empty() => self.alert_filter.start(),
@@ -2593,6 +2645,29 @@ impl Model {
             KeyCode::Char('k') | KeyCode::Up if self.lab_can_move() => self.step_mark(false),
             KeyCode::Enter => return self.open_in_devices(self.lab_enter_device(), Tab::Logs),
             _ => {}
+        }
+        Vec::new()
+    }
+
+    fn metrics_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let down = match code {
+            KeyCode::Char('j') | KeyCode::Down => true,
+            KeyCode::Char('k') | KeyCode::Up => false,
+            KeyCode::Char('/') if self.metrics_listed() => {
+                self.metrics_filter.start();
+                return Vec::new();
+            }
+            KeyCode::Enter => {
+                return self.open_in_devices(self.marked_metrics_device(), Tab::Interfaces)
+            }
+            _ => return Vec::new(),
+        };
+        let visible = self.visible_metric_devices();
+        let next = self
+            .marked_metrics_row()
+            .and_then(|at| neighbour(&visible, at, down));
+        if let Some(index) = next {
+            self.kept_device = Some(self.devices[index].name.clone());
         }
         Vec::new()
     }
@@ -2835,6 +2910,7 @@ impl Model {
 pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     let commands = take_key(model, key);
     model.keep_alert();
+    model.keep_marked_device();
     model.keep_mark();
     commands
 }
@@ -5786,12 +5862,305 @@ pub(crate) mod tests {
         assert_eq!(model.tab(), Tab::Alerts);
 
         let mut views = Vec::new();
-        for key in "]][[".chars() {
+        for key in "]]][[[".chars() {
             assert_eq!(ch(&mut model, key), []);
             views.push(model.tab());
         }
 
-        assert_eq!(views, [Tab::Logs, Tab::Alerts, Tab::Logs, Tab::Alerts]);
+        assert_eq!(
+            views,
+            [
+                Tab::Logs,
+                Tab::Metrics,
+                Tab::Alerts,
+                Tab::Metrics,
+                Tab::Logs,
+                Tab::Alerts
+            ]
+        );
+    }
+
+    #[test]
+    fn the_workbench_remembers_the_metrics_view() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        typed(&mut model, "3[");
+        assert_eq!(model.tab(), Tab::Metrics);
+
+        typed(&mut model, "13");
+
+        assert_eq!(model.workbench(), Workbench::Observability);
+        assert_eq!(model.tab(), Tab::Metrics);
+    }
+
+    fn named(names: &[&str]) -> Update {
+        let device = workshop_source().devices().unwrap().remove(0);
+        Update::Devices(Ok(names
+            .iter()
+            .map(|name| Device {
+                name: name.to_string(),
+                ..device.clone()
+            })
+            .collect()))
+    }
+
+    fn metrics_view(names: &[&str]) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(named(names));
+        typed(&mut model, "3[");
+        model
+    }
+
+    fn marked_device(model: &Model) -> Option<&str> {
+        model
+            .marked_metrics_device()
+            .map(|index| model.devices()[index].name.as_str())
+    }
+
+    fn row_names(model: &Model) -> Vec<String> {
+        model
+            .metrics_rows()
+            .into_iter()
+            .map(|row| row.name)
+            .collect()
+    }
+
+    #[test]
+    fn the_first_opening_marks_the_first_row() {
+        let model = metrics_view(&["srl1", "srl2", "srl3"]);
+
+        assert_eq!(marked_device(&model), Some("srl1"));
+        assert_eq!(model.marked_metrics_row(), Some(0));
+    }
+
+    #[test]
+    fn j_and_k_move_the_marker_to_the_next_and_the_previous_device() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+
+        ch(&mut model, 'j');
+        assert_eq!(marked_device(&model), Some("srl2"));
+        code(&mut model, KeyCode::Down);
+        assert_eq!(marked_device(&model), Some("srl3"));
+        ch(&mut model, 'k');
+        assert_eq!(marked_device(&model), Some("srl2"));
+        code(&mut model, KeyCode::Up);
+        assert_eq!(marked_device(&model), Some("srl1"));
+    }
+
+    #[test]
+    fn j_on_the_last_device_and_k_on_the_first_keep_the_marker() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+
+        ch(&mut model, 'k');
+        assert_eq!(marked_device(&model), Some("srl1"));
+        typed(&mut model, "jjjj");
+
+        assert_eq!(marked_device(&model), Some("srl3"));
+    }
+
+    #[test]
+    fn a_filter_that_hides_the_marked_device_marks_the_first_shown_and_keeps_it() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+        ch(&mut model, 'j');
+
+        filtered(&mut model, "3");
+
+        assert_eq!(row_names(&model), ["srl3"]);
+        assert_eq!(marked_device(&model), Some("srl3"));
+        assert_eq!(model.kept_device.as_deref(), Some("srl3"));
+    }
+
+    #[test]
+    fn the_device_marked_under_a_filter_stays_marked_when_it_is_cleared() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+        ch(&mut model, 'j');
+        filtered(&mut model, "3");
+
+        unfiltered(&mut model);
+
+        assert_eq!(row_names(&model), ["srl1", "srl2", "srl3"]);
+        assert_eq!(marked_device(&model), Some("srl3"));
+    }
+
+    #[test]
+    fn a_filter_that_hides_every_device_marks_none_keeps_the_name_and_enter_does_nothing() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+        ch(&mut model, 'j');
+
+        filtered(&mut model, "nowhere");
+
+        assert_eq!(marked_device(&model), None);
+        assert_eq!(model.kept_device.as_deref(), Some("srl2"));
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+        assert_eq!(model.workbench(), Workbench::Observability);
+        unfiltered(&mut model);
+        assert_eq!(marked_device(&model), Some("srl2"));
+    }
+
+    #[test]
+    fn a_new_device_list_keeps_the_marked_device_at_its_new_place() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+        ch(&mut model, 'j');
+
+        model.apply(named(&["srl2", "srl3", "srl1"]));
+
+        assert_eq!(marked_device(&model), Some("srl2"));
+        assert_eq!(model.marked_metrics_row(), Some(0));
+    }
+
+    #[test]
+    fn a_new_device_list_without_the_marked_device_marks_the_first_row_and_keeps_it() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+        ch(&mut model, 'j');
+
+        model.apply(named(&["srl1", "srl3"]));
+
+        assert_eq!(marked_device(&model), Some("srl1"));
+        assert_eq!(model.kept_device.as_deref(), Some("srl1"));
+    }
+
+    #[test]
+    fn an_answer_a_failed_answer_and_a_forgotten_answer_keep_the_marked_device() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+        ch(&mut model, 'j');
+
+        model.apply(Update::Metrics(Ok(peer_samples(1.0))));
+        assert_eq!(marked_device(&model), Some("srl2"));
+        model.apply(Update::Metrics(Err("refused".to_string())));
+        assert_eq!(marked_device(&model), Some("srl2"));
+        model.forget(status::Service::Metrics);
+        model.ask_changes();
+
+        assert_eq!(marked_device(&model), Some("srl2"));
+    }
+
+    #[test]
+    fn the_marked_device_is_kept_across_the_views() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+        ch(&mut model, 'j');
+
+        typed(&mut model, "][[");
+        assert_eq!(model.tab(), Tab::Logs);
+        ch(&mut model, '[');
+        assert_eq!(model.tab(), Tab::Alerts);
+        ch(&mut model, '[');
+
+        assert_eq!(model.tab(), Tab::Metrics);
+        assert_eq!(marked_device(&model), Some("srl2"));
+    }
+
+    #[test]
+    fn the_marked_device_is_kept_across_the_workbenches() {
+        let mut model = metrics_view(&["srl1", "srl2", "srl3"]);
+        ch(&mut model, 'j');
+
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.workbench(), Workbench::Devices);
+        model.apply(named(&["srl3", "srl1", "srl2"]));
+        ch(&mut model, '3');
+        assert_eq!(marked_device(&model), Some("srl2"));
+        typed(&mut model, "13");
+
+        assert_eq!(model.tab(), Tab::Metrics);
+        assert_eq!(marked_device(&model), Some("srl2"));
+    }
+
+    #[test]
+    fn outside_a_lab_another_stack_keeps_the_marked_device_while_it_is_listed() {
+        let mut model = opened(&["a", "b"]);
+        model.apply(every_service_up(0));
+        model.apply(every_service_up(1));
+        model.apply(named(&["srl1", "srl2", "srl3"]));
+        typed(&mut model, "3[j");
+        assert_eq!(marked_device(&model), Some("srl2"));
+
+        typed(&mut model, "2j");
+        model.ask_changes();
+        ch(&mut model, '3');
+        assert_eq!(model.selected_stack(), 1);
+        assert_eq!(marked_device(&model), Some("srl2"));
+        typed(&mut model, "2k");
+        model.apply(named(&["srl1", "srl3"]));
+        ch(&mut model, '3');
+
+        assert_eq!(model.selected_stack(), 0);
+        assert_eq!(marked_device(&model), Some("srl1"));
+    }
+
+    #[test]
+    fn every_device_has_a_row_in_the_order_of_the_devices_list() {
+        let mut model = metrics_view(&["srl3", "srl1", "srl2"]);
+
+        model.apply(Update::Metrics(Ok(peer_samples(1.0))));
+
+        let rows = model.metrics_rows();
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, ["srl3", "srl1", "srl2"]);
+        assert!(rows[0].no_data);
+        assert!(!rows[1].no_data);
+    }
+
+    #[test]
+    fn enter_opens_the_marked_device_on_its_interfaces_tab() {
+        let mut model = metrics_view(&["srl1", "srl2"]);
+        ch(&mut model, 'j');
+        assert!(key_line(&model, 100)[0].contains("Enter open the device"));
+
+        let sent = code(&mut model, KeyCode::Enter);
+
+        assert_eq!(
+            sent,
+            [
+                Command::SelectDevice("srl2".to_string()),
+                Command::OpenTab(Tab::Interfaces)
+            ]
+        );
+        assert_eq!(model.workbench(), Workbench::Devices);
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Interfaces));
+    }
+
+    #[test]
+    fn with_no_row_enter_does_nothing_and_is_not_offered() {
+        let mut filtered_out = metrics_view(&["srl1", "srl2"]);
+        filtered(&mut filtered_out, "nowhere");
+        let mut without_metrics = metrics_view(&["srl1", "srl2"]);
+        without_metrics.apply(Update::Services(
+            0,
+            defined(&["alertmanager"]),
+            Ok(vec![row("alertmanager", RUNNING)]),
+        ));
+        assert_eq!(
+            without_metrics.reach(status::Service::Metrics),
+            Reach::NotInLab
+        );
+
+        for mut model in [filtered_out, without_metrics] {
+            assert!(!key_line(&model, 100)[0].contains("Enter"));
+            assert_eq!(code(&mut model, KeyCode::Enter), []);
+            assert_eq!(model.workbench(), Workbench::Observability);
+        }
+    }
+
+    #[test]
+    fn the_metrics_filter_reads_q_as_a_letter() {
+        let mut model = metrics_view(&["srl1", "srl2"]);
+
+        ch(&mut model, '/');
+        assert!(model.typing());
+        assert_eq!(ch(&mut model, 'q'), []);
+
+        assert!(!model.quit());
+        assert_eq!(model.typed_filter(), Some("q"));
+    }
+
+    #[test]
+    fn the_health_cell_still_says_down_for_a_device_without_values() {
+        let mut model = metrics_view(&["srl1", "srl2"]);
+
+        model.apply(Update::Metrics(Ok(peer_samples(1.0))));
+
+        assert_eq!(model.device_rows()[1].health, devices::Health::Down);
+        assert!(model.metrics_rows()[1].no_data);
     }
 
     #[test]

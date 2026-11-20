@@ -61,6 +61,15 @@ pub struct Row {
     pub differs: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricsRow {
+    pub name: String,
+    pub interfaces: String,
+    pub sessions: String,
+    pub short: bool,
+    pub no_data: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Alert,
@@ -130,6 +139,85 @@ pub fn oper_states(
             Some((session.peer.clone(), value))
         })
         .collect()
+}
+
+pub fn session_states(device: &Device, samples: Option<&[Sample]>) -> Vec<(Session, String)> {
+    let values = samples.map(|samples| oper_states(&device.name, &device.sessions, samples));
+    device
+        .sessions
+        .iter()
+        .map(|session| {
+            let state = match &values {
+                Some(values) => evidence::decode_oper(values.get(&session.peer).copied()),
+                None => UNKNOWN.to_string(),
+            };
+            (session.clone(), state)
+        })
+        .collect()
+}
+
+pub fn sessions_up(states: &[(Session, String)]) -> (usize, usize) {
+    let established = states.iter().filter(|(_, state)| state == "up").count();
+    (established, states.len())
+}
+
+pub fn metrics_row(device: &Device, samples: Option<&[Sample]>) -> MetricsRow {
+    let name = device.name.clone();
+    let Some(samples) = samples else {
+        return MetricsRow {
+            name,
+            interfaces: UNKNOWN.to_string(),
+            sessions: UNKNOWN.to_string(),
+            short: false,
+            no_data: false,
+        };
+    };
+    if !any_series(&device.name, samples) {
+        return MetricsRow {
+            name,
+            interfaces: "no data".to_string(),
+            sessions: String::new(),
+            short: false,
+            no_data: true,
+        };
+    }
+    let interfaces = interfaces_up(&join(
+        &device.name,
+        &device.interfaces,
+        &device.sessions,
+        Some(samples),
+    ));
+    let sessions = sessions_up(&session_states(device, Some(samples)));
+    MetricsRow {
+        name,
+        interfaces: count_text(interfaces),
+        sessions: count_text(sessions),
+        short: interfaces.0 < interfaces.1 || sessions.0 < sessions.1,
+        no_data: false,
+    }
+}
+
+fn interfaces_up(rows: &[Row]) -> (usize, usize) {
+    let wanted: Vec<&Row> = rows
+        .iter()
+        .filter(|row| row.intent == "up" && row.oper != DASH)
+        .collect();
+    let up = wanted.iter().filter(|row| row.oper == "up").count();
+    (up, wanted.len())
+}
+
+fn any_series(device: &str, samples: &[Sample]) -> bool {
+    samples
+        .iter()
+        .any(|sample| label(sample, "device") == Some(device))
+}
+
+fn count_text((up, wanted): (usize, usize)) -> String {
+    if wanted == 0 {
+        DASH.to_string()
+    } else {
+        format!("{up} of {wanted} up")
+    }
 }
 
 pub fn has_bgp_series(device: &str, samples: &[Sample]) -> bool {
@@ -381,4 +469,240 @@ pub fn clock_of(nanoseconds: i64) -> String {
         of_day % 3600 / 60,
         of_day % 60
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEVICE: &str = "nobs-t-srl1";
+
+    fn interface(name: &str, expected_state: Option<&str>) -> Interface {
+        Interface {
+            name: name.to_string(),
+            role: None,
+            address: None,
+            expected_state: expected_state.map(str::to_string),
+        }
+    }
+
+    fn session(peer: &str) -> Session {
+        Session {
+            peer: peer.to_string(),
+            afi_safi: None,
+            expected_state: None,
+            remote_as: None,
+            expected_prefixes: None,
+            reason: None,
+        }
+    }
+
+    fn device(interfaces: Vec<Interface>, sessions: Vec<Session>) -> Device {
+        Device {
+            name: DEVICE.to_string(),
+            kind: None,
+            site: None,
+            role: None,
+            asn: None,
+            maintenance: false,
+            interfaces,
+            sessions,
+        }
+    }
+
+    fn sample(pairs: &[(&str, &str)], value: f64) -> Sample {
+        Sample {
+            labels: pairs
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            value,
+        }
+    }
+
+    fn oper(device: &str, name: &str, value: f64) -> Sample {
+        sample(
+            &[
+                ("__name__", "interface_oper_state"),
+                ("device", device),
+                ("name", name),
+            ],
+            value,
+        )
+    }
+
+    fn peer(address: &str, value: f64) -> Sample {
+        sample(
+            &[
+                ("__name__", "bgp_oper_state"),
+                ("device", DEVICE),
+                ("peer_address", address),
+                ("afi_safi_name", "ipv4-unicast"),
+                ("name", "default"),
+            ],
+            value,
+        )
+    }
+
+    fn row_of(interfaces: Vec<Interface>, samples: &[Sample]) -> MetricsRow {
+        metrics_row(&device(interfaces, Vec::new()), Some(samples))
+    }
+
+    #[test]
+    fn an_interface_wanted_up_and_up_counts_up() {
+        let row = row_of(
+            vec![interface("ethernet-1/1", Some("up"))],
+            &[oper(DEVICE, "ethernet-1/1", 1.0)],
+        );
+
+        assert_eq!(row.interfaces, "1 of 1 up");
+        assert!(!row.short, "{row:?}");
+    }
+
+    #[test]
+    fn an_interface_wanted_up_and_down_counts_wanted_not_up() {
+        let row = row_of(
+            vec![interface("ethernet-1/1", Some("up"))],
+            &[oper(DEVICE, "ethernet-1/1", 2.0)],
+        );
+
+        assert_eq!(row.interfaces, "0 of 1 up");
+        assert!(row.short, "{row:?}");
+    }
+
+    #[test]
+    fn an_interface_wanted_up_and_not_reported_is_not_counted() {
+        let row = row_of(
+            vec![
+                interface("ethernet-1/1", Some("up")),
+                interface("lo0", Some("up")),
+            ],
+            &[oper(DEVICE, "ethernet-1/1", 1.0)],
+        );
+
+        assert_eq!(row.interfaces, "1 of 1 up");
+        assert!(!row.short, "{row:?}");
+    }
+
+    #[test]
+    fn an_interface_wanted_down_is_not_counted() {
+        let row = row_of(
+            vec![interface("ethernet-1/1", Some("down"))],
+            &[oper(DEVICE, "ethernet-1/1", 2.0)],
+        );
+
+        assert_eq!(row.interfaces, "—");
+        assert!(!row.short, "{row:?}");
+    }
+
+    #[test]
+    fn an_interface_without_intent_is_not_counted() {
+        let row = row_of(
+            vec![interface("ethernet-1/1", None)],
+            &[oper(DEVICE, "ethernet-1/1", 2.0)],
+        );
+
+        assert_eq!(row.interfaces, "—");
+        assert!(!row.short, "{row:?}");
+    }
+
+    #[test]
+    fn a_device_without_interfaces_shows_a_dash() {
+        let row = row_of(Vec::new(), &[peer("10.1.2.2", 1.0)]);
+
+        assert_eq!(row.interfaces, "—");
+        assert!(!row.no_data, "{row:?}");
+    }
+
+    #[test]
+    fn an_unknown_state_counts_wanted_not_up() {
+        let row = row_of(
+            vec![interface("ethernet-1/1", Some("up"))],
+            &[oper(DEVICE, "ethernet-1/1", 7.0)],
+        );
+
+        assert_eq!(row.interfaces, "0 of 1 up");
+        assert!(row.short, "{row:?}");
+    }
+
+    #[test]
+    fn wanted_interfaces_none_reported_show_a_dash() {
+        let row = row_of(
+            vec![
+                interface("ethernet-1/1", Some("up")),
+                interface("lo0", Some("up")),
+            ],
+            &[peer("10.1.2.2", 1.0)],
+        );
+
+        assert_eq!(row.interfaces, "—");
+        assert!(!row.no_data, "{row:?}");
+    }
+
+    #[test]
+    fn the_session_words_and_their_count_are_up_of_every_intended_session() {
+        let device = device(
+            Vec::new(),
+            vec![
+                session("10.1.2.2"),
+                session("10.1.7.2"),
+                session("10.1.99.2"),
+            ],
+        );
+        let samples = [peer("10.1.2.2", 1.0), peer("10.1.7.2", 3.0)];
+
+        let states = session_states(&device, Some(&samples));
+        let unanswered = session_states(&device, None);
+
+        let words: Vec<&str> = states.iter().map(|(_, state)| state.as_str()).collect();
+        assert_eq!(words, ["up", "idle", "—"]);
+        assert_eq!(sessions_up(&states), (1, 3));
+        let words: Vec<&str> = unanswered.iter().map(|(_, state)| state.as_str()).collect();
+        assert_eq!(words, ["?", "?", "?"]);
+    }
+
+    #[test]
+    fn the_bgp_cell_of_a_row_counts_the_established_of_the_intended_sessions() {
+        let device = device(
+            Vec::new(),
+            vec![
+                session("10.1.2.2"),
+                session("10.1.7.2"),
+                session("10.1.99.2"),
+            ],
+        );
+        let samples = [peer("10.1.2.2", 1.0), peer("10.1.7.2", 3.0)];
+
+        let row = metrics_row(&device, Some(&samples));
+
+        assert_eq!(row.sessions, "1 of 3 up");
+        assert!(row.short, "{row:?}");
+    }
+
+    #[test]
+    fn a_device_without_values_says_no_data() {
+        let row = row_of(
+            vec![interface("ethernet-1/1", Some("up"))],
+            &[oper("nobs-t-srl2", "ethernet-1/1", 1.0)],
+        );
+
+        assert_eq!(row.interfaces, "no data");
+        assert_eq!(row.sessions, "");
+        assert!(row.no_data, "{row:?}");
+        assert!(!row.short, "{row:?}");
+    }
+
+    #[test]
+    fn a_row_without_an_answer_shows_a_question_mark_in_both_cells() {
+        let row = metrics_row(
+            &device(
+                vec![interface("ethernet-1/1", Some("up"))],
+                vec![session("10.1.2.2")],
+            ),
+            None,
+        );
+
+        assert_eq!((row.interfaces.as_str(), row.sessions.as_str()), ("?", "?"));
+        assert!(!row.no_data && !row.short, "{row:?}");
+    }
 }

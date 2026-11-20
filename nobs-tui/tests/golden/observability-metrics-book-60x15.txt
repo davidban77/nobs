@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ 1 devices  2 services  3 lab  [4 obs]       ? keys  q quit
+╔ alerts 2  logs  METRICS ═════════════════════════════════╗
+║  DEVICE       INTERFACES   BGP SESSIONS                  ║
+║> nobs-t-srl1  1 of 1 up    1 of 1 up                     ║
+║  nobs-t-srl2  0 of 1 up    0 of 1 up                     ║
+║  nobs-t-srl3  no data                                    ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╚ metrics ok  logs —  alerts ok ═══════════════════════════╝
+ run  none                                           o open
+ j/k move  / filter  [ ] view  Enter open the device

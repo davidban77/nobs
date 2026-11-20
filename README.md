@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view and its logs view, and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run sixteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run sixteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -12,7 +12,7 @@ Five words are used in this part:
 
 | Word | Meaning |
 |---|---|
-| workbench | one view of the screen for one kind of work: `1 devices`, `2 services`, in a book lab only `3 lab`, and last `observability`; the number in front of a name is its key, so observability is `3`, or `4` in a book lab; the observability workbench has two views of its own, `alerts` and `logs` |
+| workbench | one view of the screen for one kind of work: `1 devices`, `2 services`, in a book lab only `3 lab`, and last `observability`; the number in front of a name is its key, so observability is `3`, or `4` in a book lab; the observability workbench has three views of its own, `alerts`, `logs` and `metrics` |
 | action | a nobs command that the screen runs for you when you press its key; an action that changes something asks `y/n` first (see [Actions](#actions)) |
 | stack | one group of containers that Docker Compose starts together: a workshop, one chapter of the book lab, or a labcli lab; the row `sonda only` is listed as a stack too, but it has no containers |
 | focus | the part of the screen that gets your keys, the stack list or the tabs, and in the sonda tab also the right panel; in the lab workbench, the chapters, the nodes or the overview; the keys box (`?`) and the box of a timeline entry while they are open; `Tab` moves it; the box that has the focus has a double border (`╔═╗`), and no other box has one |
@@ -312,16 +312,18 @@ When the line comes back later, those minutes have passed. Do the same steps aga
 
 ### The observability workbench
 
-The observability workbench has two views. The alerts view shows every alert of the lab in one table, the newest first. The logs view shows the log lines of every device of the lab in one stream, the newest first. It is workbench `3`, or `4` in a book lab. Every lab has it. `[` and `]` move between the two views. The first time you open the workbench, it shows the alerts view. After that, it opens on the view you left it on. A visit to the workbench does not change the open tab of the other workbenches: when you press `1`, the device is still on the tab it had before. The alerts view shows the alerts that the screen already asks for the devices workbench, in the same order as the alerts box, and it sends no request of its own.
+The observability workbench has three views. The alerts view shows every alert of the lab in one table, the newest first. The logs view shows the log lines of every device of the lab in one stream, the newest first. The metrics view shows one row for each device of the lab, with how many of its interfaces and of its BGP sessions are up. It is workbench `3`, or `4` in a book lab. Every lab has it. `[` and `]` move between the three views. The first time you open the workbench, it shows the alerts view. After that, it opens on the view you left it on. A visit to the workbench does not change the open tab of the other workbenches: when you press `1`, the device is still on the tab it had before. The alerts view shows the alerts that the screen already asks for the devices workbench, in the same order as the alerts box, and it sends no request of its own.
 
 The logs view shows the Loki lines that name a device, without the RCA records. Each row shows the time in UTC, the name of the device and the text. nobs asks for the last 200 lines every 2 seconds, only while the logs view is open and follows. It uses the time window of the timeline tab (see `-` `+` in [Keys](#keys)). The first row says `all devices` and how many lines the view shows, for example `all devices   6 lines`, and at its right end `following` or `paused`. With a kept filter it says how many of the lines the filter shows, for example `all devices   2 of 6 lines`. `f` pauses the view and resumes it. While the view is paused, `>` marks one line, at first the newest. `j` and `k` move the mark, and `Enter` opens the device of the marked line in the devices workbench, on its logs tab. On a line of a device that is not in the lab, the key line does not offer `Enter`, and it does nothing. `/` filters the lines: type the text, then `Enter` keeps the filter and `Esc` clears it. When the lab has no logs service, the view shows the grey sentence `no logs in this lab`, then `to add them, write the address in the lab's .env:` and `  LOGS_URL=http://localhost:3001`. When the stack is down, it shows `the stack is down`. When the logs service does not answer, the view is empty, and the red line `logs: <error>  <n>s ago` shows above the pane.
+
+The metrics view reads the values that the screen already asks for the devices workbench, and it sends no request of its own. It has one row for each device, in the order of the devices list. `INTERFACES` takes the interfaces that the source of truth wants up and says how many of them are up, for example `1 of 2 up`; an interface that the metrics service does not report, such as a loopback, is not counted. `BGP SESSIONS` says how many intended sessions are established, as the overview tab of the device counts them, for example `2 of 3 up`. A dash means there is nothing to count. When nobs does not know yet whether the stack is up, every cell shows a dash. A row with fewer up than wanted is yellow. When the metrics service answers but has no value for a device, its row says `no data`, in grey. `>` marks one device, at first the first row; `j` and `k` move the mark, `/` filters the devices by name, and `Enter` opens the marked device in the devices workbench, on its interfaces tab. When the lab has no metrics service, the view shows the grey sentence `no metrics in this lab`, then `to add them, write the address in the lab's .env:` and `  METRICS_URL=http://localhost:9090`. When the stack is down, it shows `the stack is down`. Before the first answer, the cells show `?`. When the metrics service does not answer, the cells show `?`, and the red line `metrics: <error>  <n>s ago` shows above the pane. When the lab has no device list, the view shows the same grey note as the devices list.
 
 At 60 by 15 it looks like this:
 
 ```
  nobs  autocon5 workshop  sot infrahub             13:42:07
  1 devices  2 services  [3 observability]    ? keys  q quit
-╔ ALERTS 2  logs ══════════════════════════════════════════╗
+╔ ALERTS 2  logs  metrics ═════════════════════════════════╗
 ║  NAME             DEVICE  SEVERITY  STATE      SINCE     ║
 ║> BgpSessionNotUp  srl1    warning   firing     21s       ║
 ║  BgpSessionNotUp  srl1    warning   silenced   1m32s     ║
@@ -331,12 +333,12 @@ At 60 by 15 it looks like this:
 ╠ BgpSessionNotUp  srl1 ═══════════════════════════════════╣
 ║peer 10.1.99.2 is active, expected established            ║
 ║started 13:41:46   severity warning                       ║
-╚ logs ok  alerts ok ══════════════════════════════════════╝
+╚ metrics ok  logs ok  alerts ok ══════════════════════════╝
  run  none                                           o open
  j/k move  / filter  [ ] view  Enter open the device
 ```
 
-The top border names the two views, `alerts` and `logs`, with the open view in capital letters; after `alerts` it says how many alerts the table shows, for example `ALERTS 2  logs`. The bottom border says where the logs and the alerts stand, for example `logs ok  alerts ok`; each is `ok`, `—` or `?`. The table has five columns:
+The top border names the three views, `alerts`, `logs` and `metrics`, with the open view in capital letters; after `alerts` it says how many alerts the table shows, for example `ALERTS 2  logs  metrics`. The bottom border says where the metrics, the logs and the alerts stand, for example `metrics ok  logs ok  alerts ok`; each is `ok`, `—` or `?`. The alerts table has five columns:
 
 | Column | What it shows |
 |---|---|
@@ -363,11 +365,11 @@ When the table is not shown, the key line offers only `[ ] view  r refresh`, and
 
 | Key | What it does |
 |---|---|
-| `j` `k` and the arrow keys | in the alerts view, move the selection, and the lower box follows; in the paused logs view, move the mark |
-| `[` `]` | open the other view, `alerts` or `logs` |
+| `j` `k` and the arrow keys | in the alerts view, move the selection, and the lower box follows; in the paused logs view, move the mark; in the metrics view, move the mark |
+| `[` `]` | open the next or the previous view, `alerts`, `logs` or `metrics` |
 | `f` | in the logs view, pause the view or follow it again |
-| `/` | in the alerts view, filter the alerts by name, device, severity or state; in the logs view, filter the lines; while you type, `Enter` keeps the filter and `Esc` clears it |
-| `Enter` | in the alerts view, on an alert that names a device of the lab, open that device in the devices workbench, on its timeline tab; in the paused logs view, on a line of a device of the lab, open that device in the devices workbench, on its logs tab; on any other alert or line the key line does not offer it, and it does nothing |
+| `/` | in the alerts view, filter the alerts by name, device, severity or state; in the logs view, filter the lines; in the metrics view, filter the devices by name; while you type, `Enter` keeps the filter and `Esc` clears it |
+| `Enter` | in the alerts view, on an alert that names a device of the lab, open that device in the devices workbench, on its timeline tab; in the paused logs view, on a line of a device of the lab, open that device in the devices workbench, on its logs tab; in the metrics view, open the marked device in the devices workbench, on its interfaces tab; on any other alert or line the key line does not offer it, and it does nothing |
 | `Tab` | move the focus to the run pane while it is open |
 | `r` | ask for new data now |
 

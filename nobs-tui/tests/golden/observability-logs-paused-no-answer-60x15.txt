@@ -1,7 +1,7 @@
  nobs  autocon5 workshop  sot infrahub             13:42:07
  1 devices  2 services  [3 observability]    ? keys  q quit
  logs: refused  2s ago
-╔ alerts 2  LOGS ══════════════════════════════════════════╗
+╔ alerts 2  LOGS  metrics ═════════════════════════════════╗
 ║                                                          ║
 ║                                                          ║
 ║                                                          ║
@@ -10,6 +10,6 @@
 ║                                                          ║
 ║                                                          ║
 ║                                                          ║
-╚ logs ?  alerts ok ═══════════════════════════════════════╝
+╚ metrics ok  logs ?  alerts ok ═══════════════════════════╝
  run  none                                           o open
  f follow
