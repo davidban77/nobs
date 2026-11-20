@@ -1,0 +1,30 @@
+ nobs  autocon5 workshop  sot infrahub                                                     13:42:07
+ 1 devices  2 services  [3 observability]                                            ? keys  q quit
+╔ alerts 2  LOGS ══════════════════════════════════════════════════════════════════════════════════╗
+║ all devices   6 lines                                                                  following ║
+║  13:42:05  srl2  interface ethernet-1/1: oper-state up                                           ║
+║  13:42:03  srl9  BGP neighbor 10.1.99.9: state active                                            ║
+║  13:42:01  srl1  BGP neighbor 10.1.99.2: connect retry                                           ║
+║  13:41:58  srl2  interface ethernet-1/1: oper-state down                                         ║
+║  13:41:50  srl1  BGP neighbor 10.1.99.2: state active                                            ║
+║  13:41:45  srl1  system: ntp server 10.0.0.1 is reachable                                        ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+╚ logs ok  alerts ok ══════════════════════════════════════════════════════════════════════════════╝
+ run  none                                                                                   o open
+ f pause  / filter  [ ] view  r refresh

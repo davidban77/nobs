@@ -1,15 +1,15 @@
  nobs  autocon5 workshop  sot infrahub             13:42:07
  1 devices  2 services  [3 observability]    ? keys  q quit
-
   ╔ keys  observability workbench ═══════════════════════╗
   ║1 2 3    switch workbench  o       run pane           ║
   ║Tab      focus             x       dismiss the error  ║
   ║j k ↑ ↓  move              Esc     close/clear/back   ║
-  ║/        filter            ?       close              ║
-  ║Enter    open the device   q       quit; asks in a run║
-  ║r        refresh now       Ctrl-C  stop a run, or quit║
+  ║[ ]      other view        ?       close              ║
+  ║/        filter            q       quit; asks in a run║
+  ║Enter    open the device   Ctrl-C  stop a run, or quit║
+  ║r        refresh now                                  ║
   ║                                                      ║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
   ╚══════════════════════════════════════════════════════╝
 
- j/k move  / filter  Enter open the device  r refresh
+ j/k move  / filter  [ ] view  Enter open the device

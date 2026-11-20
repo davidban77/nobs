@@ -1095,7 +1095,10 @@ fn the_devices_without_a_source_frame_is_pinned() {
 }
 
 fn workshop_down() -> Shell {
-    let mut model = workshop_unpolled();
+    stack_down(workshop_unpolled())
+}
+
+fn stack_down(mut model: Shell) -> Shell {
     let names: Vec<&str> = status::SERVICES.iter().map(|row| row.compose).collect();
     model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
     model
@@ -1964,12 +1967,15 @@ fn observability() -> Shell {
 }
 
 fn observability_none() -> Shell {
-    let model = devices_model_in(
+    after(project_lab(), &[KeyCode::Char('3')])
+}
+
+fn project_lab() -> Shell {
+    devices_model_in(
         PROJECT_LAB,
         "expected/lab_vars.yml",
         "/home/me/nobs-t-project",
-    );
-    after(model, &[KeyCode::Char('3')])
+    )
 }
 
 fn observability_down() -> Shell {
@@ -1989,6 +1995,10 @@ fn observability_no_answer() -> Shell {
 }
 
 fn observability_book() -> Shell {
+    observability_book_named("BgpSessionNotUp")
+}
+
+fn observability_book_named(alertname: &str) -> Shell {
     let mut model = lab_devices_model();
     model.apply(listing(
         0,
@@ -1999,12 +2009,208 @@ fn observability_book() -> Shell {
         alert
             .labels
             .insert("device".to_string(), "nobs-t-srl1".to_string());
+        alert
+            .labels
+            .insert("alertname".to_string(), alertname.to_string());
     }
     observed(model, Update::Alerts(Ok(list)), '4')
 }
 
 fn observability_empty() -> Shell {
     observed(devices_model(), Update::Alerts(Ok(Vec::new())), '3')
+}
+
+fn lab_lines() -> Vec<(BTreeMap<String, String>, LokiLine)> {
+    [
+        (2, "srl2", "interface ethernet-1/1: oper-state up"),
+        (4, "srl9", "BGP neighbor 10.1.99.9: state active"),
+        (6, "srl1", "BGP neighbor 10.1.99.2: connect retry"),
+        (9, "srl2", "interface ethernet-1/1: oper-state down"),
+        (17, "srl1", "BGP neighbor 10.1.99.2: state active"),
+        (22, "srl1", "system: ntp server 10.0.0.1 is reachable"),
+    ]
+    .into_iter()
+    .map(|(before, device, text)| (labels(&[("device", device)]), loki_line(before, 0, text)))
+    .collect()
+}
+
+fn observability_logs() -> Shell {
+    let mut model = observability();
+    model.apply(Update::LabLogs(Ok(lab_lines())));
+    after(model, &[KeyCode::Char(']')])
+}
+
+fn logs_no_answer() -> Shell {
+    let mut model = observability_logs();
+    model.apply(Update::LabLogs(Err("refused".to_string())));
+    model
+}
+
+fn logs_unknown() -> Shell {
+    after(
+        workshop_unpolled(),
+        &[KeyCode::Char('3'), KeyCode::Char(']')],
+    )
+}
+
+fn logs_down() -> Shell {
+    after(workshop_down(), &[KeyCode::Char('3'), KeyCode::Char(']')])
+}
+
+fn logs_none() -> Shell {
+    after(observability_none(), &[KeyCode::Char(']')])
+}
+
+fn paused(model: Shell) -> Shell {
+    after(model, &[KeyCode::Char('f')])
+}
+
+fn logs_answering(mut model: Shell) -> Shell {
+    model.apply(listing(0, ps(&WORKSHOP[2..3])));
+    model.apply(Update::LabLogs(Ok(lab_lines())));
+    after(model, &[KeyCode::Char('3'), KeyCode::Char(']')])
+}
+
+fn unpolled_again(mut model: Shell) -> Shell {
+    model.apply(Update::Services(
+        0,
+        Err("refused".to_string()),
+        Err("refused".to_string()),
+    ));
+    after(model, &[KeyCode::Char('x'), KeyCode::Char('x')])
+}
+
+fn without_logs(mut model: Shell) -> Shell {
+    model.apply(Update::Services(0, defined(&[]), Ok(Vec::new())));
+    model
+}
+
+fn still_paused(model: Shell) -> Shell {
+    assert!(!model.lab_logs().1);
+    model
+}
+
+#[test]
+fn the_logs_view_frames_are_pinned() {
+    golden("observability-logs", observability_logs);
+    golden("observability-logs-paused", || {
+        after(paused(observability_logs()), &[KeyCode::Char('j')])
+    });
+    golden("observability-logs-no-answer", logs_no_answer);
+    golden("observability-logs-unknown", logs_unknown);
+    golden("observability-logs-down", logs_down);
+    golden("observability-logs-none", logs_none);
+    golden("observability-logs-paused-no-answer", || {
+        paused(logs_no_answer())
+    });
+    golden("observability-logs-paused-unknown", || {
+        still_paused(unpolled_again(paused(logs_answering(workshop_unpolled()))))
+    });
+    golden("observability-logs-paused-down", || {
+        still_paused(stack_down(paused(logs_answering(workshop_unpolled()))))
+    });
+    golden("observability-logs-paused-none", || {
+        still_paused(without_logs(paused(logs_answering(project_lab()))))
+    });
+}
+
+fn logs_screen(held: Vec<(BTreeMap<String, String>, LokiLine)>) -> Vec<String> {
+    let mut model = observability();
+    model.apply(Update::LabLogs(Ok(held)));
+    lines(&render(after(model, &[KeyCode::Char(']')]), 100, 30))
+}
+
+#[test]
+fn the_newest_line_is_at_the_top_with_its_device_in_front() {
+    let mut oldest_first = lab_lines();
+    oldest_first.reverse();
+
+    let screen = logs_screen(oldest_first);
+
+    assert!(
+        screen[4].starts_with("║  13:42:05  srl2  interface ethernet-1/1: oper-state up "),
+        "{}",
+        screen[4]
+    );
+    assert!(
+        screen[9].starts_with("║  13:41:45  srl1  system: ntp server"),
+        "{}",
+        screen[9]
+    );
+}
+
+fn logs_header(filter: Option<&str>) -> String {
+    let mut model = observability_logs();
+    if let Some(text) = filter {
+        press(&mut model, KeyCode::Char('/'));
+        for typed in text.chars() {
+            press(&mut model, KeyCode::Char(typed));
+        }
+        press(&mut model, KeyCode::Enter);
+    }
+    lines(&render(model, 100, 30))[3].clone()
+}
+
+#[test]
+fn a_kept_filter_that_keeps_every_line_says_how_many_of_how_many() {
+    let header = logs_header(Some("e"));
+
+    assert!(
+        header.starts_with("║ all devices   6 of 6 lines "),
+        "{header}"
+    );
+}
+
+#[test]
+fn with_no_filter_kept_the_header_says_how_many_lines() {
+    let header = logs_header(None);
+
+    assert!(header.starts_with("║ all devices   6 lines "), "{header}");
+}
+
+#[test]
+fn a_line_without_a_device_does_not_show() {
+    let mut held = lab_lines();
+    held.push((
+        labels(&[("job", "lab")]),
+        loki_line(1, 0, "a line with no device"),
+    ));
+
+    let screen = logs_screen(held).join("\n");
+
+    assert!(!screen.contains("a line with no device"), "{screen}");
+    assert!(screen.contains("║ all devices   6 lines "), "{screen}");
+}
+
+#[test]
+fn a_line_of_another_device_shows_with_its_name() {
+    let screen = logs_screen(lab_lines()).join("\n");
+
+    assert!(
+        screen.contains("║  13:42:03  srl9  BGP neighbor 10.1.99.9: state active "),
+        "{screen}"
+    );
+}
+
+#[test]
+fn the_alerts_table_keeps_one_space_before_the_border() {
+    for name in [
+        "BgpSessionNotUp",
+        "BgpSessionNotUpForAVeryLongTimeOnThisPeer",
+    ] {
+        for width in 60..=100 {
+            let screen = lines(&render(observability_book_named(name), width, 15));
+            let rows: Vec<&String> = screen
+                .iter()
+                .filter(|line| line.contains("SINCE") || line.contains("silenced"))
+                .collect();
+            assert_eq!(rows.len(), 2, "{width}\n{}", screen.join("\n"));
+            for row in rows {
+                let cells: Vec<char> = row.chars().collect();
+                assert_eq!(cells[cells.len() - 2], ' ', "{width}\n{row}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -2038,13 +2244,14 @@ fn both_alert_borders_say_unknown_before_the_first_answer_and_after_x() {
                 .join(" ")
         };
         assert_eq!(border('╔'), "╔ ALERTS ?");
-        assert_eq!(border('╚'), "╚ alerts ?");
+        let bottom = screen.iter().find(|line| line.starts_with('╚')).unwrap();
+        assert!(bottom.starts_with("╚ logs ok  alerts ? ═"), "{bottom}");
     }
 }
 
 #[test]
 fn the_observability_view_names_no_view_kind_or_key_that_is_not_built() {
-    let builds: [fn() -> Shell; 7] = [
+    let builds: [fn() -> Shell; 13] = [
         observability,
         observability_none,
         observability_down,
@@ -2052,11 +2259,17 @@ fn the_observability_view_names_no_view_kind_or_key_that_is_not_built() {
         observability_no_answer,
         observability_book,
         observability_empty,
+        observability_logs,
+        logs_no_answer,
+        logs_unknown,
+        logs_down,
+        logs_none,
+        || paused(observability_logs()),
     ];
     for build in builds {
         for (width, height) in SIZES {
             let screen = lines(&render(build(), width, height)).join("\n");
-            for word in ["logs", "metrics", "Tab view", "[ ]", "Tab focus"] {
+            for word in ["metrics", "Tab view", "Tab focus"] {
                 assert!(!screen.contains(word), "{word}\n{screen}");
             }
         }

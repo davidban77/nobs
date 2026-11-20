@@ -38,6 +38,7 @@ const DEVICE_LOG_LIMIT: u64 = 200;
 const FLOW_RUN_LIMIT: u64 = 100;
 const METRICS_QUERY: &str =
     r#"{__name__=~"bgp_oper_state|interface_admin_state|interface_oper_state"}"#;
+const LAB_QUERY: &str = r#"{device=~".+", ai_rca!="true"}"#;
 const FORWARD_WAIT: Duration = Duration::from_millis(50);
 const SONDA_KEY_ENV: &str = "SONDA_API_KEY";
 
@@ -226,7 +227,7 @@ impl Pollers {
             Command::SelectStack(_) => (&[&self.health, &self.sonda], &[]),
             Command::OpenLogs { .. } | Command::CloseLogs => (&[&self.logs], &[]),
             Command::Follow(_) => (&[&self.logs], &[]),
-            Command::FollowDevice(_) => (&[], &[&self.loki]),
+            Command::FollowDevice(_) | Command::FollowLab(_) => (&[], &[&self.loki]),
             Command::Sonda(_) => (&[&self.sonda], &[]),
             Command::SelectDevice(_) | Command::OpenTab(_) | Command::Window(_) => {
                 (&[], &[&self.loki, &self.prefect])
@@ -439,6 +440,7 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
     let mut tab = Tab::Overview;
     let mut window = WINDOW_MINUTES;
     let mut following = true;
+    let mut lab = false;
     let mut asked = false;
     let mut next = None;
     loop {
@@ -447,6 +449,10 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
             Wake::Timeout | Wake::Command(Command::Refresh) => true,
             Wake::Command(Command::Ask(_, on)) => {
                 asked = on;
+                on
+            }
+            Wake::Command(Command::FollowLab(on)) => {
+                lab = on;
                 on
             }
             Wake::Command(Command::SelectDevice(name)) => {
@@ -468,30 +474,45 @@ fn device_logs(client: &Loki, inbox: &Receiver<Command>, out: &Sender<Update>) -
             Wake::Command(_) => continue,
         };
         let wanted = tab == Tab::Timeline || (tab == Tab::Logs && following);
-        let Some(name) = device.as_deref().filter(|_| polling && asked && wanted) else {
+        let named = device.as_deref().filter(|_| asked && wanted);
+        let lab_wanted = lab && asked;
+        if named.is_none() && !lab_wanted {
             next = None;
             continue;
-        };
-        let now = SystemTime::now();
-        let lines = client
-            .query_range(
-                &format!(r#"{{device="{name}", ai_rca!="true"}}"#),
-                window,
-                DEVICE_LOG_LIMIT,
-                now,
-            )
-            .map_err(|error| error.to_string());
-        if out
-            .send(Update::DeviceLogs(name.to_string(), lines))
-            .is_err()
-        {
-            return true;
         }
-        if tab == Tab::Timeline {
-            let rcas = client
-                .query_range(&rca_selector(Some(name)), window, DEVICE_LOG_LIMIT, now)
+        if !polling {
+            continue;
+        }
+        let now = SystemTime::now();
+        if let Some(name) = named {
+            let lines = client
+                .query_range(
+                    &format!(r#"{{device="{name}", ai_rca!="true"}}"#),
+                    window,
+                    DEVICE_LOG_LIMIT,
+                    now,
+                )
                 .map_err(|error| error.to_string());
-            if out.send(Update::Rcas(name.to_string(), rcas)).is_err() {
+            if out
+                .send(Update::DeviceLogs(name.to_string(), lines))
+                .is_err()
+            {
+                return true;
+            }
+            if tab == Tab::Timeline {
+                let rcas = client
+                    .query_range(&rca_selector(Some(name)), window, DEVICE_LOG_LIMIT, now)
+                    .map_err(|error| error.to_string());
+                if out.send(Update::Rcas(name.to_string(), rcas)).is_err() {
+                    return true;
+                }
+            }
+        }
+        if lab_wanted {
+            let lines = client
+                .query_range_labelled(LAB_QUERY, window, DEVICE_LOG_LIMIT, now)
+                .map_err(|error| error.to_string());
+            if out.send(Update::LabLogs(lines)).is_err() {
                 return true;
             }
         }

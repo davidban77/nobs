@@ -1,0 +1,15 @@
+ nobs  autocon5 workshop  sot infrahub             13:42:07
+ 1 devices  2 services  [3 observability]    ? keys  q quit
+ logs: refused  2s ago
+╔ alerts 2  LOGS ══════════════════════════════════════════╗
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╚ logs ?  alerts ok ═══════════════════════════════════════╝
+ run  none                                           o open
+ f pause  [ ] view  r refresh

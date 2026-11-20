@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run sixteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view and its logs view, and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run sixteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -12,7 +12,7 @@ Five words are used in this part:
 
 | Word | Meaning |
 |---|---|
-| workbench | one view of the screen for one kind of work: `1 devices`, `2 services`, in a book lab only `3 lab`, and last `observability`; the number in front of a name is its key, so observability is `3`, or `4` in a book lab |
+| workbench | one view of the screen for one kind of work: `1 devices`, `2 services`, in a book lab only `3 lab`, and last `observability`; the number in front of a name is its key, so observability is `3`, or `4` in a book lab; the observability workbench has two views of its own, `alerts` and `logs` |
 | action | a nobs command that the screen runs for you when you press its key; an action that changes something asks `y/n` first (see [Actions](#actions)) |
 | stack | one group of containers that Docker Compose starts together: a workshop, one chapter of the book lab, or a labcli lab; the row `sonda only` is listed as a stack too, but it has no containers |
 | focus | the part of the screen that gets your keys, the stack list or the tabs, and in the sonda tab also the right panel; in the lab workbench, the chapters, the nodes or the overview; the keys box (`?`) and the box of a timeline entry while they are open; `Tab` moves it; the box that has the focus has a double border (`╔═╗`), and no other box has one |
@@ -204,6 +204,7 @@ The logs tab shows the log of one service. Press `Enter` or `l` on a service in 
 | the BGP sessions and the interfaces (Prometheus) | every 2 seconds |
 | the alerts (Alertmanager) | every 2 seconds |
 | the log lines of the selected device (Loki) | every 2 seconds, while the timeline tab is open, or while the logs tab is open and follows |
+| the log lines of every device (Loki) | every 2 seconds, while the logs view of the observability workbench is open and follows |
 | the RCA records of the selected device (Loki) | every 2 seconds, while the timeline tab is open |
 | the flow runs (Prefect) | every 5 seconds, while the timeline tab is open |
 | the nodes of a book lab (`docker ps -a`) | every 5 seconds |
@@ -311,14 +312,16 @@ When the line comes back later, those minutes have passed. Do the same steps aga
 
 ### The observability workbench
 
-The observability workbench shows every alert of the lab in one table, the newest first. It is workbench `3`, or `4` in a book lab. Every lab has it. It shows the alerts that the screen already asks for the devices workbench, in the same order as the alerts box, and it sends no request of its own.
+The observability workbench has two views. The alerts view shows every alert of the lab in one table, the newest first. The logs view shows the log lines of every device of the lab in one stream, the newest first. It is workbench `3`, or `4` in a book lab. Every lab has it. `[` and `]` move between the two views. The first time you open the workbench, it shows the alerts view. After that, it opens on the view you left it on. A visit to the workbench does not change the open tab of the other workbenches: when you press `1`, the device is still on the tab it had before. The alerts view shows the alerts that the screen already asks for the devices workbench, in the same order as the alerts box, and it sends no request of its own.
+
+The logs view shows the Loki lines that name a device, without the RCA records. Each row shows the time in UTC, the name of the device and the text. nobs asks for the last 200 lines every 2 seconds, only while the logs view is open and follows. It uses the time window of the timeline tab (see `-` `+` in [Keys](#keys)). The first row says `all devices` and how many lines the view shows, for example `all devices   6 lines`, and at its right end `following` or `paused`. With a kept filter it says how many of the lines the filter shows, for example `all devices   2 of 6 lines`. `f` pauses the view and resumes it. While the view is paused, `>` marks one line, at first the newest. `j` and `k` move the mark, and `Enter` opens the device of the marked line in the devices workbench, on its logs tab. On a line of a device that is not in the lab, the key line does not offer `Enter`, and it does nothing. `/` filters the lines: type the text, then `Enter` keeps the filter and `Esc` clears it. When the lab has no logs service, the view shows the grey sentence `no logs in this lab`, then `to add them, write the address in the lab's .env:` and `  LOGS_URL=http://localhost:3001`. When the stack is down, it shows `the stack is down`. When the logs service does not answer, the view is empty, and the red line `logs: <error>  <n>s ago` shows above the pane.
 
 At 60 by 15 it looks like this:
 
 ```
  nobs  autocon5 workshop  sot infrahub             13:42:07
  1 devices  2 services  [3 observability]    ? keys  q quit
-╔ ALERTS 2 ════════════════════════════════════════════════╗
+╔ ALERTS 2  logs ══════════════════════════════════════════╗
 ║  NAME             DEVICE  SEVERITY  STATE      SINCE     ║
 ║> BgpSessionNotUp  srl1    warning   firing     21s       ║
 ║  BgpSessionNotUp  srl1    warning   silenced   1m32s     ║
@@ -328,12 +331,12 @@ At 60 by 15 it looks like this:
 ╠ BgpSessionNotUp  srl1 ═══════════════════════════════════╣
 ║peer 10.1.99.2 is active, expected established            ║
 ║started 13:41:46   severity warning                       ║
-╚ alerts ok ═══════════════════════════════════════════════╝
+╚ logs ok  alerts ok ══════════════════════════════════════╝
  run  none                                           o open
- j/k move  / filter  Enter open the device  r refresh
+ j/k move  / filter  [ ] view  Enter open the device
 ```
 
-The top border says `ALERTS` and how many alerts the table shows. The bottom border says where the alerts stand: `alerts ok`, `alerts —` or `alerts ?`. The table has five columns:
+The top border names the two views, `alerts` and `logs`, with the open view in capital letters; after `alerts` it says how many alerts the table shows, for example `ALERTS 2  logs`. The bottom border says where the logs and the alerts stand, for example `logs ok  alerts ok`; each is `ok`, `—` or `?`. The table has five columns:
 
 | Column | What it shows |
 |---|---|
@@ -356,13 +359,15 @@ The view follows the state of the alerts service:
 | the service answers with no alert | `ALERTS 0` | a grey `none` |
 | the service does not answer | `ALERTS ?` | nothing; the red line `alerts: <error>  <n>s ago` shows above the pane (see [Errors](#errors)) |
 
-When the table is not shown, the key line offers only `r refresh`, and `Tab focus` while the run pane is open.
+When the table is not shown, the key line offers only `[ ] view  r refresh`, and `Tab focus` while the run pane is open.
 
 | Key | What it does |
 |---|---|
-| `j` `k` and the arrow keys | move the selection; the lower box follows |
-| `/` | filter the alerts by name, device, severity or state; while you type, `Enter` keeps the filter and `Esc` clears it |
-| `Enter` | on an alert that names a device of the lab, open that device in the devices workbench, on its timeline tab; on any other alert the key line does not offer it, and it does nothing |
+| `j` `k` and the arrow keys | in the alerts view, move the selection, and the lower box follows; in the paused logs view, move the mark |
+| `[` `]` | open the other view, `alerts` or `logs` |
+| `f` | in the logs view, pause the view or follow it again |
+| `/` | in the alerts view, filter the alerts by name, device, severity or state; in the logs view, filter the lines; while you type, `Enter` keeps the filter and `Esc` clears it |
+| `Enter` | in the alerts view, on an alert that names a device of the lab, open that device in the devices workbench, on its timeline tab; in the paused logs view, on a line of a device of the lab, open that device in the devices workbench, on its logs tab; on any other alert or line the key line does not offer it, and it does nothing |
 | `Tab` | move the focus to the run pane while it is open |
 | `r` | ask for new data now |
 
@@ -472,14 +477,14 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 |---|---|
 | `1` `2` `3` `4` | open the workbench whose number stands in front of its name; `3` is observability, or the lab workbench in a book lab, where observability is `4` |
 | `Tab` | move the focus between the stack list and the tabs; in the sonda tab, from the stack list to the tabs, then to the right panel, then back to the stack list; in the devices workbench, between the device list and the tabs; in the lab workbench, from the chapters to the nodes, then to the overview, then back to the chapters; in the observability workbench, to the run pane while it is open; while the run pane is open as a box, not only as the one run line, the last stop is the pane |
-| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, the row in the interfaces tab and the row in the timeline tab; in the lab workbench, the chapter or the node; in the observability workbench, the alert in the table; in the overview tab of a device, in the box of a timeline row, in the overview of the lab workbench and in the right panel of the sonda tab, move the text by one line; scroll a paused log and the Config tab; with the focus in the run pane, scroll it by one row |
-| `[` `]` | open the previous or the next tab, when the focus is on the tabs, or on the right panel of the sonda tab; the devices workbench has four tabs, five in a lab with containerlab nodes |
-| `Enter` | in the list, move the focus to the tabs; in the overview tab, open the logs of the selected service; in the chooser, open the row; in the devices workbench, on a device move the focus to the tabs, on an alert select its device and open the timeline tab, and in the timeline tab open the full text of the row; in the observability workbench, on an alert that names a device of the lab, open that device in the devices workbench, on its timeline tab; in a question or a filter, confirm it |
+| `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, the row in the interfaces tab and the row in the timeline tab; in the lab workbench, the chapter or the node; in the observability workbench, the alert in the table, or the mark in the paused logs view; in the overview tab of a device, in the box of a timeline row, in the overview of the lab workbench and in the right panel of the sonda tab, move the text by one line; scroll a paused log and the Config tab; with the focus in the run pane, scroll it by one row |
+| `[` `]` | open the previous or the next tab, when the focus is on the tabs, or on the right panel of the sonda tab; the devices workbench has four tabs, five in a lab with containerlab nodes; in the observability workbench, open the other view, `alerts` or `logs` |
+| `Enter` | in the list, move the focus to the tabs; in the overview tab, open the logs of the selected service; in the chooser, open the row; in the devices workbench, on a device move the focus to the tabs, on an alert select its device and open the timeline tab, and in the timeline tab open the full text of the row; in the observability workbench, on an alert that names a device of the lab, open that device in the devices workbench, on its timeline tab; in the paused logs view, on a line of a device of the lab, open that device in the devices workbench, on its logs tab; in a question or a filter, confirm it |
 | `/` | filter the stacks or the devices by name, the alerts by name, device, severity or state, or the lines of the log or of the Config tab; while you type, `Enter` keeps the filter and `Esc` clears it; when the filter hides the selected stack or device, the selection moves to the first row shown, and the right side follows; when the filter shows no row, the selection stays |
 | `r` | ask for new data now; in the sonda tab, ask the server for the list |
 | `l` | open the logs of the selected service; in the sonda tab, ask for the path of a scenario file |
-| `f` | pause the log, or follow it again; this works in the logs tab of the devices workbench too; with the focus in the run pane, follow the newest line again |
-| `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab uses the same window |
+| `f` | pause the log, or follow it again; this works in the logs tab of the devices workbench and in the logs view of the observability workbench too; with the focus in the run pane, follow the newest line again |
+| `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab and the logs view of the observability workbench use the same window |
 | `u` `d` `X` `R` `p` `s` | in the services workbench, on the selected workshop stack: ask to run `nobs <workshop> up`, `down`, `destroy`, `reset` or `preflight`, or run `status` at once; `down` removes the containers and keeps the volumes (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
 | `m` | ask to set or clear the maintenance flag of the selected device |
 | `g` `s` | in the devices workbench, in a lab with containerlab nodes, on the selected device: ask for a missing login first; then run `nobs device fetch` and open the Config tab, or ask for a command on the key line and run `nobs device run` (see [Actions](#actions)) |

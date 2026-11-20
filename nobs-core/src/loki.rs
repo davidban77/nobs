@@ -18,6 +18,8 @@ const BODY_CUT: usize = 200;
 const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
 const NANOSECONDS_PER_MINUTE: u128 = 60_000_000_000;
 
+type Labels = BTreeMap<String, String>;
+
 pub struct Loki {
     url: String,
     agent: Agent,
@@ -88,6 +90,17 @@ impl Loki {
         limit: u64,
         now: SystemTime,
     ) -> Result<Vec<Line>, Error> {
+        let labelled = self.query_range_labelled(query, minutes, limit, now)?;
+        Ok(labelled.into_iter().map(|(_, line)| line).collect())
+    }
+
+    pub fn query_range_labelled(
+        &self,
+        query: &str,
+        minutes: u64,
+        limit: u64,
+        now: SystemTime,
+    ) -> Result<Vec<(Labels, Line)>, Error> {
         let end = nanoseconds_since_1970(now);
         let window =
             i64::try_from(u128::from(minutes) * NANOSECONDS_PER_MINUTE).unwrap_or(i64::MAX);
@@ -113,7 +126,7 @@ impl Loki {
             });
         }
         let mut lines = parse(&reply.body).map_err(Error::Body)?;
-        lines.sort_by_key(|line| Reverse(line.nanoseconds));
+        lines.sort_by_key(|(_, line)| Reverse(line.nanoseconds));
         lines.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         Ok(lines)
     }
@@ -163,7 +176,7 @@ fn nanoseconds_since_1970(time: SystemTime) -> i64 {
     })
 }
 
-fn parse(body: &str) -> Result<Vec<Line>, String> {
+fn parse(body: &str) -> Result<Vec<(Labels, Line)>, String> {
     let answer: Value =
         serde_json::from_str(body).map_err(|_| "the reply is not JSON".to_string())?;
     let streams = answer
@@ -171,20 +184,24 @@ fn parse(body: &str) -> Result<Vec<Line>, String> {
         .and_then(Value::as_array)
         .ok_or("the reply has no data.result list")?;
     let mut lines = Vec::new();
-    for pair in streams
-        .iter()
-        .flat_map(|stream| stream["values"].as_array().into_iter().flatten())
-    {
-        let (Some(nanoseconds), Some(text)) = (
-            pair[0].as_str().and_then(|text| text.parse().ok()),
-            pair[1].as_str(),
-        ) else {
-            return Err("a line of the reply is not a pair of nanoseconds and text".to_string());
-        };
-        lines.push(Line {
-            nanoseconds,
-            text: text.to_string(),
-        });
+    for stream in streams {
+        let labels: BTreeMap<String, String> =
+            serde_json::from_value(stream["stream"].clone()).unwrap_or_default();
+        for pair in stream["values"].as_array().into_iter().flatten() {
+            let (Some(nanoseconds), Some(text)) = (
+                pair[0].as_str().and_then(|text| text.parse().ok()),
+                pair[1].as_str(),
+            ) else {
+                return Err("a line of the reply is not a pair of nanoseconds and text".to_string());
+            };
+            lines.push((
+                labels.clone(),
+                Line {
+                    nanoseconds,
+                    text: text.to_string(),
+                },
+            ));
+        }
     }
     Ok(lines)
 }
@@ -304,6 +321,60 @@ mod tests {
         assert_eq!(texts(&all), ["b-newest", "a-new", "b-mid", "a-old"]);
         assert_eq!(all[0].nanoseconds, 1_793_960_395_000_000_000);
         assert_eq!(texts(&cut), ["b-newest", "a-new", "b-mid"]);
+    }
+
+    #[test]
+    fn query_range_labelled_gives_each_line_the_labels_of_its_stream_newest_first_and_cut() {
+        let body = r#"{"status":"success","data":{"resultType":"streams","result":[
+            {"stream":{"device":"srl1","level":"err"},"values":[["1793960390000000000","a-new"],["1793960300000000000","a-old"]]},
+            {"stream":{"device":"srl2"},"values":[["1793960395000000000","b-newest"]]},
+            {"stream":{"pipeline":"vector"},"values":[["1793960350000000000","c-mid"]]}
+        ]}}"#;
+        let stub = Stub::start(&[("GET", ROUTE, 200, body), ("GET", ROUTE, 200, body)]);
+        let loki = Loki::new(stub.url());
+        let labels = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect()
+        };
+
+        let all = loki.query_range_labelled("q", 10, 10, now()).unwrap();
+        let cut = loki.query_range_labelled("q", 10, 2, now()).unwrap();
+
+        let seen: Vec<(BTreeMap<String, String>, &str)> = all
+            .iter()
+            .map(|(labels, line)| (labels.clone(), line.text.as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (labels(&[("device", "srl2")]), "b-newest"),
+                (labels(&[("device", "srl1"), ("level", "err")]), "a-new"),
+                (labels(&[("pipeline", "vector")]), "c-mid"),
+                (labels(&[("device", "srl1"), ("level", "err")]), "a-old"),
+            ]
+        );
+        assert_eq!(all[0].1.nanoseconds, 1_793_960_395_000_000_000);
+        assert_eq!(cut, all[..2]);
+    }
+
+    #[test]
+    fn a_stream_without_labels_gives_its_lines_an_empty_label_map() {
+        let stub = Stub::start(&[(
+            "GET",
+            ROUTE,
+            200,
+            r#"{"data":{"result":[{"values":[["1793960390000000000","x"]]}]}}"#,
+        )]);
+
+        let lines = Loki::new(stub.url())
+            .query_range_labelled("q", 10, 20, now())
+            .unwrap();
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].0, BTreeMap::new());
+        assert_eq!(lines[0].1.text, "x");
     }
 
     #[test]
