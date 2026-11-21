@@ -10,4 +10,5 @@ russh.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+nobs-core = { path = "../nobs-core", features = ["fake"] }
 rand = { version = "=0.10.4", features = ["thread_rng"] }
