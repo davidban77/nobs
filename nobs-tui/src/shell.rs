@@ -314,6 +314,8 @@ pub enum Update {
     ActionError(String),
     ActionEnded(run::End),
     Nodes(Result<Vec<book::NodeRow>, String>),
+    TermOutput(u64, Vec<u8>),
+    TermEnded(u64, i32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1123,6 +1125,7 @@ impl Model {
                 self.nodes_ok = false;
                 self.fail("nodes", text);
             }
+            Update::TermOutput(..) | Update::TermEnded(..) => {}
         }
         Vec::new()
     }

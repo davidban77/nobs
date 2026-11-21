@@ -28,12 +28,14 @@ pub mod devices;
 #[cfg_attr(not(test), allow(dead_code))]
 mod keys;
 pub mod poll;
+mod pty;
 pub mod run;
 pub mod screen;
 pub mod shell;
 pub mod view;
 
 pub use poll::Pollers;
+pub use pty::{Ptys, Terminals, Wire};
 pub use run::{End, Launcher, Processes, Running};
 pub use screen::draw;
 pub use shell::{

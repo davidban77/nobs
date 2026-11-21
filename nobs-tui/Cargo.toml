@@ -9,3 +9,6 @@ nobs-core = { path = "../nobs-core" }
 ratatui.workspace = true
 crossterm.workspace = true
 libc.workspace = true
+portable-pty.workspace = true
+vt100.workspace = true
+tui-term.workspace = true
