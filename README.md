@@ -578,6 +578,7 @@ Each `docker` command of labcli and netobs has the same name in nobs, and so doe
 | | | `nobs project deploy` |
 | | | `nobs device fetch` |
 | | | `nobs device run` |
+| | | `nobs device shell` |
 
 In `nobs docker exec`, the words after the service are passed to the container as separate arguments, and a flag meant for the command inside the container goes after `--`.
 
@@ -2752,14 +2753,15 @@ wrote containerlab/configs/nobs-t-srl2.cfg
 
 ## Device
 
-The `nobs device` group logs in to one device of a lab over SSH and prints what the device answers. SSH is the usual way to log in to a network device and run a command on it. This is not `nobs devices`, which lists the devices of a workshop's source of truth.
+The `nobs device` group logs in to one device of a lab over SSH, and prints what the device answers or opens a live shell on it. SSH is the usual way to log in to a network device and run a command on it. A shell is a command line, where you type commands one after another. `nobs device shell` opens the device's own shell. When this section says "set in the shell", it means your own shell, where you run nobs. This is not `nobs devices`, which lists the devices of a workshop's source of truth.
 
 | Command | What it does |
 |---|---|
 | `nobs device fetch NAME` | prints the running configuration of the device, one set line per setting |
 | `nobs device run NAME COMMAND` | runs one command on the device and prints its answer |
+| `nobs device shell NAME` | opens a shell on the device in this terminal, until the shell ends |
 
-On the screen, `g` and `s` on the devices workbench run these two commands for the selected device.
+On the screen, `g` and `s` on the devices workbench run `fetch` and `run` for the selected device.
 
 `NAME` is the node name in the lab's topology file. `COMMAND` is one text: put it in quotes, and nobs hands it to the device with its spaces kept.
 
@@ -2777,6 +2779,10 @@ $ nobs device run srl1 "show nonsense words"
 Parsing error: Unknown token 'nonsense'. Options are [...]
 $ echo $?
 1
+$ nobs device shell srl1
+A:admin@srl1# quit
+$ echo $?
+0
 ```
 
 The commands work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). They do not work in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file and connects to the container name that containerlab gives the node.
@@ -2785,26 +2791,30 @@ nobs logs in with a user and a password, on port 22. It reads the user from `NET
 
 In the screen, `g` and `s` ask on the key line for what is missing: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g` or `s`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
 
-Each command opens one connection: nobs connects, logs in, runs one command and closes the connection. When the device sends nothing for 10 seconds, nobs stops with an error.
+Each command opens one connection. `fetch` and `run` connect, log in, run one command and close the connection. `shell` connects, logs in and keeps the connection until the shell on the device ends. nobs stops with an error when the device sends nothing for 10 seconds at one of these steps: while nobs connects and logs in, while `fetch` or `run` waits for the answer, and while `shell` waits for the device to open the shell. An open shell has no time limit.
+
+`nobs device shell` needs a terminal: its input cannot be a file or a pipe. Until the device opens the shell, `Ctrl-C` ends nobs as usual. From then on, every key goes to the device as you press it, `Ctrl-C` included, and what the device sends goes to the terminal unchanged. nobs asks the device for a terminal of its own, with the size of your terminal and the type from `TERM` (`xterm` when `TERM` is not set, empty or only spaces). nobs checks the size of your terminal at least every 250 ms and gives the device the new size when it changes. End the shell on the device, for SR Linux with `quit`. nobs then exits with the exit status of the device's shell, and your terminal is as it was before.
 
 A host key is the key a device shows so that the client knows it reaches the right device. nobs does not check the host key of a lab device: it accepts it, as containerlab does for its own nodes.
 
-A driver is the part of nobs that knows the commands of one kind of device. Today only SR Linux has a driver (the kinds `nokia_srlinux` and `srl`). Both commands need a driver, so `nobs device run` on a node of another kind also stops with the `no driver` line. For SR Linux, `fetch` runs `info flat` on the device. This is the flat form: one `set / ...` line for each setting, the form that the templates of a nobs project write. A value that holds line breaks, such as a certificate, goes on in further lines, because nobs prints what the device sends and changes nothing. To keep the configuration, redirect it to a file: `nobs device fetch srl1 > srl1.cfg`. The configuration holds password hashes, so do not commit that file.
+A driver is the part of nobs that knows the commands of one kind of device. Today only SR Linux has a driver (the kinds `nokia_srlinux` and `srl`). All three commands need a driver, so `nobs device run` and `nobs device shell` on a node of another kind also stop with the `no driver` line. For SR Linux, `fetch` runs `info flat` on the device. This is the flat form: one `set / ...` line for each setting, the form that the templates of a nobs project write. A value that holds line breaks, such as a certificate, goes on in further lines, because nobs prints what the device sends and changes nothing. To keep the configuration, redirect it to a file: `nobs device fetch srl1 > srl1.cfg`. The configuration holds password hashes, so do not commit that file.
 
-What the device says passes through. Its output goes to the standard output of nobs, its error text to the standard error, and its exit status is the exit code of nobs. nobs's own errors print one line and exit with 1:
+What the device says passes through. For `fetch` and `run`, its output goes to the standard output of nobs and its error text to the standard error. For `shell`, nobs writes both to its standard output. For all three, the exit status of the device is the exit code of nobs. nobs's own errors print one line and exit with 1:
 
 | Line | When |
 |---|---|
 | `nobs: device commands need a lab with containerlab nodes; <dir> is a workshop` | the lab folder is a workshop |
 | `nobs: topology file not found: <path>` | the lab folder has no topology file |
 | `nobs: cannot read topology file: <path>: <error>` | nobs cannot read the topology file, or it is not a topology |
+| `nobs: the shell needs a terminal` | the input of `nobs device shell` is not a terminal |
 | `nobs: ssh <name>: not a node of <topology path>` | the topology file has no node with this name |
 | `nobs: ssh <name>: no driver for the kind <kind> yet` | the node's kind has no driver |
 | `nobs: ssh <name>: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell` | the user or the password is missing, empty or only spaces |
 | `nobs: ssh <name>: cannot reach <container>: <reason>` | the connection fails, for example because the lab does not run; the reason is the system's text |
-| `nobs: ssh <name>: no answer in 10 seconds` | the device sent nothing for 10 seconds |
+| `nobs: ssh <name>: no answer in 10 seconds` | the device sent nothing for 10 seconds; an open shell has no time limit |
 | `nobs: ssh <name>: authentication failed` | the device refused the user or the password |
-| `nobs: ssh <name>: the device sent no exit status` | the device closed the connection without an exit status |
+| `nobs: ssh <name>: the device refused a shell` | the device refused the terminal or the shell that `nobs device shell` asked for |
+| `nobs: ssh <name>: the device sent no exit status` | the device closed the connection without an exit status, or the connection was lost |
 | `nobs: ssh <name>: <reason>` | any other SSH error, with the text of the SSH library |
 
 When nobs finds no lab folder, it prints the line of [Where nobs runs from](#where-nobs-runs-from) and exits with 1. A usage error, such as `nobs device run srl1` without a command, exits with 2.

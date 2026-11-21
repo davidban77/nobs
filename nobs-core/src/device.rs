@@ -1,7 +1,10 @@
 #[cfg(any(test, feature = "fake"))]
 use std::cell::RefCell;
 use std::fmt;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
+#[cfg(any(test, feature = "fake"))]
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::lab;
@@ -46,6 +49,7 @@ pub enum Error {
     NoAnswer,
     AuthenticationFailed,
     NoExitStatus,
+    ShellRefused,
     Library(String),
 }
 
@@ -61,6 +65,7 @@ impl fmt::Display for Error {
             Error::NoAnswer => write!(f, "no answer in {} seconds", ANSWER_LIMIT.as_secs()),
             Error::AuthenticationFailed => f.write_str("authentication failed"),
             Error::NoExitStatus => f.write_str("the device sent no exit status"),
+            Error::ShellRefused => f.write_str("the device refused a shell"),
             Error::Library(text) => f.write_str(text),
         }
     }
@@ -68,6 +73,20 @@ impl fmt::Display for Error {
 
 pub trait Transport {
     fn run(&self, host: &str, credentials: &Credentials, command: &str) -> Result<Output, Error>;
+    fn shell(
+        &self,
+        host: &str,
+        credentials: &Credentials,
+        terminal: &mut dyn Terminal,
+    ) -> Result<i32, Error>;
+}
+
+pub trait Terminal {
+    fn kind(&self) -> String;
+    fn size(&self) -> (u16, u16);
+    /// Taken once, after the device granted the shell.
+    fn keys(&mut self) -> io::Result<Box<dyn Read + Send>>;
+    fn screen(&mut self) -> &mut dyn Write;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +154,46 @@ impl Transport for FakeTransport {
             .push((host.to_string(), command.to_string()));
         self.answer.clone()
     }
+
+    fn shell(
+        &self,
+        host: &str,
+        _credentials: &Credentials,
+        terminal: &mut dyn Terminal,
+    ) -> Result<i32, Error> {
+        self.calls
+            .borrow_mut()
+            .push((host.to_string(), terminal.kind()));
+        let _ = terminal.keys();
+        self.answer.clone().map(|output| output.code)
+    }
+}
+
+#[cfg(any(test, feature = "fake"))]
+pub struct FakeTerminal {
+    pub kind: String,
+    pub size: Arc<Mutex<(u16, u16)>>,
+    pub keys: Option<Box<dyn Read + Send>>,
+    pub screen: Box<dyn Write + Send>,
+}
+
+#[cfg(any(test, feature = "fake"))]
+impl Terminal for FakeTerminal {
+    fn kind(&self) -> String {
+        self.kind.clone()
+    }
+
+    fn size(&self) -> (u16, u16) {
+        *self.size.lock().unwrap()
+    }
+
+    fn keys(&mut self) -> io::Result<Box<dyn Read + Send>> {
+        self.keys.take().ok_or(io::ErrorKind::NotFound.into())
+    }
+
+    fn screen(&mut self) -> &mut dyn Write {
+        &mut self.screen
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +225,7 @@ mod tests {
             (Error::NoAnswer, "no answer in 10 seconds"),
             (Error::AuthenticationFailed, "authentication failed"),
             (Error::NoExitStatus, "the device sent no exit status"),
+            (Error::ShellRefused, "the device refused a shell"),
             (
                 Error::Library("Connection closed by the remote side".to_string()),
                 "Connection closed by the remote side",

@@ -1546,6 +1546,7 @@ name = "nobs-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "crossterm",
  "nobs-core",
  "nobs-ssh",
  "nobs-tui",

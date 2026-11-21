@@ -45,6 +45,11 @@ fn both(name: &str) -> [Vec<&str>; 2] {
     ]
 }
 
+fn three(name: &str) -> [Vec<&str>; 3] {
+    let [fetch, run] = both(name);
+    [fetch, run, vec!["device", "shell", name]]
+}
+
 fn in_dir<'a>(dir: &'a Path, args: &[&'a str]) -> Vec<&'a str> {
     let mut line = vec!["--dir", dir.to_str().unwrap()];
     line.extend(args);
@@ -66,7 +71,7 @@ fn assert_fails_with(output: &Output, line: &str) {
 #[test]
 fn outside_a_lab_the_device_commands_exit_1_with_the_locate_line() {
     let bare = folder("device-no-lab");
-    for args in both("nobs-t-srl1") {
+    for args in three("nobs-t-srl1") {
         assert_fails_with(
             &with_credentials(&bare, &args),
             "nobs: no lab or workshop found from here",
@@ -81,7 +86,7 @@ fn outside_a_lab_the_device_commands_exit_1_with_the_locate_line() {
 #[test]
 fn in_a_workshop_the_device_commands_exit_1_with_the_workshop_line() {
     let workshop = fixture("workshop-one");
-    for args in both("nobs-t-srl1") {
+    for args in three("nobs-t-srl1") {
         assert_fails_with(
             &with_credentials(&workshop, &in_dir(&workshop, &args)),
             &format!(
@@ -239,6 +244,15 @@ fn a_shell_user_of_only_spaces_falls_to_the_dot_env_user() {
 }
 
 #[test]
+fn the_shell_without_a_terminal_exits_1_with_its_line_and_opens_no_connection() {
+    let lab = fixture("device-lab");
+    assert_fails_with(
+        &with_credentials(&lab, &in_dir(&lab, &["device", "shell", "nobs-t-srl1"])),
+        "nobs: the shell needs a terminal",
+    );
+}
+
+#[test]
 fn device_alone_or_a_missing_argument_is_a_usage_error_with_exit_2() {
     let lab = fixture("device-lab");
     for args in [
@@ -246,6 +260,7 @@ fn device_alone_or_a_missing_argument_is_a_usage_error_with_exit_2() {
         &["device", "fetch"][..],
         &["device", "run"][..],
         &["device", "run", "nobs-t-srl1"][..],
+        &["device", "shell"][..],
     ] {
         let output = with_credentials(&lab, &in_dir(&lab, args));
         let stderr = stderr(&output);

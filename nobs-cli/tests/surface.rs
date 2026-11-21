@@ -100,10 +100,10 @@ fn the_help_pages_name_the_sonda_group_and_exactly_its_ten_commands() {
     assert_eq!(commands, SONDA_COMMANDS);
 }
 
-const DEVICE_COMMANDS: [&str; 2] = ["fetch", "run"];
+const DEVICE_COMMANDS: [&str; 3] = ["fetch", "run", "shell"];
 
 #[test]
-fn the_help_pages_name_the_device_group_exactly_its_two_commands_and_their_words() {
+fn the_help_pages_name_the_device_group_exactly_its_three_commands_and_their_words() {
     let root = help(&[]);
     assert!(
         commands_block(&root).iter().any(|word| word == "device"),
@@ -111,7 +111,7 @@ fn the_help_pages_name_the_device_group_exactly_its_two_commands_and_their_words
     );
     assert!(
         root.contains(
-            "Fetch the configuration of a lab device, or run one command on it, over SSH"
+            "Fetch the configuration of a lab device, run one command on it, or open a shell on it, over SSH"
         ),
         "{root}"
     );
@@ -121,6 +121,7 @@ fn the_help_pages_name_the_device_group_exactly_its_two_commands_and_their_words
     for words in [
         "Print the running configuration of a device, one set line per setting",
         "Run one command on a device and print its answer",
+        "Open a shell on a device in this terminal, until the shell ends",
     ] {
         assert!(group.contains(words), "{group}");
     }
@@ -132,6 +133,12 @@ fn the_help_pages_name_the_device_group_exactly_its_two_commands_and_their_words
     ] {
         assert!(run.contains(words), "{run}");
     }
+
+    let shell = help(&["device", "shell"]);
+    assert!(
+        shell.contains("<NAME>  Node name in the lab's topology file"),
+        "{shell}"
+    );
 }
 
 #[test]

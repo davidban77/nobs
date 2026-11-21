@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -12,7 +12,7 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
-use nobs_core::device::{self, Transport};
+use nobs_core::device::{self, Credentials, Terminal, Transport};
 use nobs_core::env::{load_env, read_env};
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
@@ -146,7 +146,7 @@ pub enum Command {
         command: ProjectCommand,
     },
     #[command(
-        about = "Fetch the configuration of a lab device, or run one command on it, over SSH"
+        about = "Fetch the configuration of a lab device, run one command on it, or open a shell on it, over SSH"
     )]
     Device {
         #[command(subcommand)]
@@ -1143,6 +1143,11 @@ pub enum DeviceCommand {
         #[arg(help = "The command, as one quoted text")]
         command: String,
     },
+    #[command(about = "Open a shell on a device in this terminal, until the shell ends")]
+    Shell {
+        #[arg(help = "Node name in the lab's topology file")]
+        name: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1594,7 +1599,7 @@ pub fn run(cli: Cli, runner: &dyn Runner) -> i32 {
         Command::Lab { command } => return run_lab(command, given, runner),
         Command::Utils { command } => return run_utils(command, given),
         Command::Project { flags, command } => return run_project(flags, command, given, runner),
-        Command::Device { command } => return run_device(command, given, &Ssh),
+        Command::Device { command } => return run_device(command, given, &Ssh, local_terminal),
         Command::Sonda { flags, command } => {
             return with_env(Path::new("."), || run_sonda(flags, command))
         }
@@ -2185,20 +2190,39 @@ fn unreadable_topology(topology: &Path, error: impl std::fmt::Display) -> i32 {
     1
 }
 
-fn run_device(command: DeviceCommand, given: Option<&Path>, transport: &dyn Transport) -> i32 {
-    let (name, asked) = match command {
-        DeviceCommand::Fetch { name } => (name, None),
-        DeviceCommand::Run { name, command } => (name, Some(command)),
-    };
+fn run_device(
+    command: DeviceCommand,
+    given: Option<&Path>,
+    transport: &dyn Transport,
+    terminal: impl FnOnce() -> Option<Box<dyn Terminal>>,
+) -> i32 {
     in_lab(given, |located| {
         let (topology, nodes) = match device_nodes(located) {
             Ok(found) => found,
             Err(code) => return code,
         };
-        match device_answer(&name, asked.as_deref(), &topology, &nodes, transport) {
-            Ok(output) => pass_through(&output, &mut std::io::stdout(), &mut std::io::stderr()),
+        let answered = |name: &str, asked: Option<&str>| {
+            device_answer(name, asked, &topology, &nodes, transport)
+                .map(|output| pass_through(&output, &mut io::stdout(), &mut io::stderr()))
+        };
+        let (name, outcome) = match &command {
+            DeviceCommand::Fetch { name } => (name, answered(name, None)),
+            DeviceCommand::Run { name, command } => (name, answered(name, Some(command))),
+            DeviceCommand::Shell { name } => {
+                let Some(terminal) = terminal() else {
+                    eprintln!("nobs: the shell needs a terminal");
+                    return 1;
+                };
+                (
+                    name,
+                    device_shell(name, &topology, &nodes, transport, terminal),
+                )
+            }
+        };
+        match outcome {
+            Ok(code) => code,
             Err(error) => {
-                eprintln!("{}", device::error_line(&name, &error));
+                eprintln!("{}", device::error_line(name, &error));
                 1
             }
         }
@@ -2227,17 +2251,108 @@ fn device_answer(
     nodes: &[TopologyNode],
     transport: &dyn Transport,
 ) -> Result<Output, device::Error> {
+    device_step(name, topology, nodes, |host, login, driver| {
+        transport.run(host, login, asked.unwrap_or(driver.running_config))
+    })
+}
+
+fn device_shell(
+    name: &str,
+    topology: &Path,
+    nodes: &[TopologyNode],
+    transport: &dyn Transport,
+    mut terminal: Box<dyn Terminal>,
+) -> Result<i32, device::Error> {
+    device_step(name, topology, nodes, |host, login, _| {
+        transport.shell(host, login, terminal.as_mut())
+    })
+}
+
+fn device_step<T>(
+    name: &str,
+    topology: &Path,
+    nodes: &[TopologyNode],
+    inside: impl FnOnce(&str, &Credentials, device::Driver) -> Result<T, device::Error>,
+) -> Result<T, device::Error> {
     let node = nodes
         .iter()
         .find(|node| node.name == name)
         .ok_or_else(|| device::Error::NotANode(topology.to_path_buf()))?;
     let driver = device::driver(&node.kind)?;
     let credentials = device::credentials()?;
-    transport.run(
-        &node.container,
-        &credentials,
-        asked.unwrap_or(driver.running_config),
-    )
+    inside(&node.container, &credentials, driver)
+}
+
+struct RawMode<R: FnMut(bool) -> io::Result<()>> {
+    switch: R,
+}
+
+impl<R: FnMut(bool) -> io::Result<()>> RawMode<R> {
+    fn on(mut switch: R) -> io::Result<Self> {
+        switch(true)?;
+        Ok(RawMode { switch })
+    }
+}
+
+impl<R: FnMut(bool) -> io::Result<()>> Drop for RawMode<R> {
+    fn drop(&mut self) {
+        let _ = (self.switch)(false);
+    }
+}
+
+struct LocalTerminal<R: FnMut(bool) -> io::Result<()>> {
+    switch: Option<R>,
+    raw: Option<RawMode<R>>,
+    out: io::Stdout,
+}
+
+impl<R: FnMut(bool) -> io::Result<()>> LocalTerminal<R> {
+    fn new(switch: R) -> Self {
+        LocalTerminal {
+            switch: Some(switch),
+            raw: None,
+            out: io::stdout(),
+        }
+    }
+}
+
+impl<R: FnMut(bool) -> io::Result<()>> Terminal for LocalTerminal<R> {
+    fn kind(&self) -> String {
+        terminal_type(std::env::var("TERM").ok())
+    }
+
+    fn size(&self) -> (u16, u16) {
+        crossterm::terminal::size().unwrap_or((80, 24))
+    }
+
+    fn keys(&mut self) -> io::Result<Box<dyn Read + Send>> {
+        if let Some(switch) = self.switch.take() {
+            self.raw = Some(RawMode::on(switch)?);
+        }
+        Ok(Box::new(io::stdin()))
+    }
+
+    fn screen(&mut self) -> &mut dyn Write {
+        &mut self.out
+    }
+}
+
+fn local_terminal() -> Option<Box<dyn Terminal>> {
+    io::stdin()
+        .is_terminal()
+        .then(|| Box::new(LocalTerminal::new(raw_mode)) as Box<dyn Terminal>)
+}
+
+fn raw_mode(on: bool) -> io::Result<()> {
+    if on {
+        crossterm::terminal::enable_raw_mode()
+    } else {
+        crossterm::terminal::disable_raw_mode()
+    }
+}
+
+fn terminal_type(term: Option<String>) -> String {
+    given(term).unwrap_or_else(|| "xterm".to_string())
 }
 
 fn pass_through(output: &Output, out: &mut impl Write, err: &mut impl Write) -> i32 {
@@ -5505,9 +5620,12 @@ fn network_word(action: NetworkAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nobs_core::device::FakeTransport;
+    use nobs_core::device::{FakeTerminal, FakeTransport};
     use nobs_core::runner::FakeRunner;
+    use std::cell::RefCell;
     use std::net::TcpListener;
+    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     struct Scratch(PathBuf);
 
@@ -6721,6 +6839,7 @@ mod tests {
                 },
                 Some(&lab.0),
                 &transport,
+                || None,
             );
 
             assert_eq!(!transport.calls().is_empty(), screen, "case {case}");
@@ -6741,5 +6860,143 @@ mod tests {
 
         assert_eq!((start.login)(device::USER).as_deref(), Some("nobs-t-x"));
         assert_eq!((start.login)(device::PASSWORD), None);
+    }
+
+    fn fake_terminal() -> Box<dyn Terminal> {
+        Box::new(FakeTerminal {
+            kind: "xterm-256color".to_string(),
+            size: Arc::new(Mutex::new((80, 24))),
+            keys: Some(Box::new(io::empty())),
+            screen: Box::new(io::sink()),
+        })
+    }
+
+    fn shell(name: &str) -> DeviceCommand {
+        DeviceCommand::Shell {
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_shell_refuses_what_run_refuses_with_the_same_error_and_calls_nothing() {
+        let (topology, nodes) = device_lab();
+        for (name, login) in [
+            ("nobs-t-srl9", Some(TEST_PASSWORD)),
+            ("nobs-t-ceos1", Some(TEST_PASSWORD)),
+            ("nobs-t-srl1", None),
+        ] {
+            set_credential(device::USER, Some("nobs-t-x"));
+            set_credential(device::PASSWORD, login);
+            let (ran, shelled) = (
+                FakeTransport::answering(Ok(answer(0, "", ""))),
+                FakeTransport::answering(Ok(answer(0, "", ""))),
+            );
+
+            let run = device_answer(name, Some("show version"), &topology, &nodes, &ran);
+            let shell = device_shell(name, &topology, &nodes, &shelled, fake_terminal());
+
+            assert!(run.is_err(), "{name}");
+            assert_eq!(shell.unwrap_err(), run.unwrap_err(), "{name}");
+            assert!(
+                ran.calls().is_empty() && shelled.calls().is_empty(),
+                "{name}"
+            );
+        }
+
+        set_credentials();
+        let workshop = workshop_scratch("device-shell-workshop", None, None);
+        for command in [
+            DeviceCommand::Run {
+                name: "nobs-t-srl1".to_string(),
+                command: "show version".to_string(),
+            },
+            shell("nobs-t-srl1"),
+        ] {
+            let transport = FakeTransport::answering(Ok(answer(0, "", "")));
+
+            let code = run_device(command, Some(&workshop.0), &transport, || {
+                Some(fake_terminal())
+            });
+
+            assert_eq!(code, 1);
+            assert!(transport.calls().is_empty());
+        }
+    }
+
+    #[test]
+    fn the_shell_without_a_terminal_returns_1_and_calls_nothing() {
+        set_credentials();
+        let lab = login_lab("device-shell-no-terminal", "", "");
+        let transport = FakeTransport::answering(Ok(answer(0, "", "")));
+
+        let code = run_device(shell("nobs-t-srl1"), Some(&lab.0), &transport, || None);
+
+        assert_eq!(code, 1);
+        assert!(transport.calls().is_empty());
+
+        let code = run_device(shell("nobs-t-srl1"), Some(&lab.0), &transport, || {
+            Some(fake_terminal())
+        });
+
+        assert_eq!(code, 0);
+        assert_eq!(
+            transport.calls(),
+            [call("clab-nobs-t-dev-nobs-t-srl1", "xterm-256color")]
+        );
+    }
+
+    #[test]
+    fn the_raw_mode_guard_turns_raw_mode_off_after_an_end_an_error_and_a_panic() {
+        set_credentials();
+        let (topology, nodes) = device_lab();
+        let recording = || {
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let switch = {
+                let log = Rc::clone(&log);
+                move |on| {
+                    log.borrow_mut().push(on);
+                    Ok(())
+                }
+            };
+            (log, Box::new(LocalTerminal::new(switch)))
+        };
+
+        for answered in [Ok(answer(7, "", "")), Err(device::Error::NoExitStatus)] {
+            let (log, terminal) = recording();
+            let transport = FakeTransport::answering(answered.clone());
+
+            let ended = device_shell("nobs-t-srl1", &topology, &nodes, &transport, terminal);
+
+            assert_eq!(*log.borrow(), [true, false], "{ended:?}");
+            assert_eq!(ended, answered.map(|output| output.code));
+        }
+
+        let (log, terminal) = recording();
+        let transport = FakeTransport::answering(Ok(answer(0, "", "")));
+        let refused = device_shell("nobs-t-srl9", &topology, &nodes, &transport, terminal);
+        assert!(refused.is_err());
+        assert!(log.borrow().is_empty());
+
+        let (log, mut terminal) = recording();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _keys = terminal.keys();
+            panic!("nobs-t-panic");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(*log.borrow(), [true, false]);
+    }
+
+    #[test]
+    fn the_terminal_type_is_term_and_xterm_when_none_or_blank() {
+        assert_eq!(
+            terminal_type(Some("xterm-256color".to_string())),
+            "xterm-256color"
+        );
+        for term in [None, Some(String::new()), Some(" \t".to_string())] {
+            assert_eq!(terminal_type(term.clone()), "xterm", "{term:?}");
+        }
+
+        std::env::set_var("TERM", "nobs-t-term");
+        assert_eq!(LocalTerminal::new(|_| Ok(())).kind(), "nobs-t-term");
     }
 }
