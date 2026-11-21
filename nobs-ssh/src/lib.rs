@@ -110,9 +110,9 @@ async fn live_shell(
     let (cols, rows) = size;
     let pty = write.request_pty(true, &kind, cols.into(), rows.into(), 0, 0, &[]);
     within(limit, pty, host).await?;
-    granted(&mut read, limit, host).await?;
+    granted(&mut read, terminal, limit, host).await?;
     within(limit, write.request_shell(true), host).await?;
-    granted(&mut read, limit, host).await?;
+    granted(&mut read, terminal, limit, host).await?;
     let keys = terminal
         .keys()
         .map_err(|error| Error::Library(error.to_string()))?;
@@ -121,11 +121,19 @@ async fn live_shell(
     pump(read, &write, terminal, size).await
 }
 
-async fn granted(read: &mut ChannelReadHalf, limit: Duration, host: &str) -> Result<(), Error> {
+async fn granted(
+    read: &mut ChannelReadHalf,
+    terminal: &mut dyn Terminal,
+    limit: Duration,
+    host: &str,
+) -> Result<(), Error> {
     loop {
         match within(limit, async { Ok(read.wait().await) }, host).await? {
             Some(ChannelMsg::Success) => return Ok(()),
             Some(ChannelMsg::Failure) => return Err(Error::ShellRefused),
+            Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
+                show(terminal, &data)?
+            }
             Some(_) => {}
             None => return Err(Error::NoExitStatus),
         }
@@ -169,11 +177,7 @@ async fn pump(
         if let Ok(message) = tokio::time::timeout(SIZE_CHECK, read.wait()).await {
             match message {
                 Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
-                    let screen = terminal.screen();
-                    screen
-                        .write_all(&data)
-                        .and_then(|()| screen.flush())
-                        .map_err(|error| Error::Library(error.to_string()))?;
+                    show(terminal, &data)?
                 }
                 Some(ChannelMsg::ExitStatus { exit_status }) => status = Some(exit_status as i32),
                 Some(_) => {}
@@ -186,6 +190,14 @@ async fn pump(
             let _ = write.window_change(now.0.into(), now.1.into(), 0, 0).await;
         }
     }
+}
+
+fn show(terminal: &mut dyn Terminal, data: &[u8]) -> Result<(), Error> {
+    let screen = terminal.screen();
+    screen
+        .write_all(data)
+        .and_then(|()| screen.flush())
+        .map_err(|error| Error::Library(error.to_string()))
 }
 
 async fn answer(
@@ -249,6 +261,7 @@ mod tests {
     use super::*;
 
     const LIMIT: Duration = Duration::from_millis(200);
+    const EARLY: &[u8] = b"\x1b[1mnobs-t-early\x00\r\n";
 
     struct Device {
         _channel: Option<Channel<Msg>>,
@@ -344,8 +357,10 @@ mod tests {
             channel: ChannelId,
             session: &mut Session,
         ) -> Result<(), Self::Error> {
-            if self.term == "nobs-t-refuse-shell" {
-                return session.channel_failure(channel);
+            match self.term.as_str() {
+                "nobs-t-refuse-shell" => return session.channel_failure(channel),
+                "nobs-t-early-data" => session.data(channel, EARLY.to_vec())?,
+                _ => {}
             }
             session.channel_success(channel)?;
             let (cols, rows) = self.size;
@@ -564,6 +579,15 @@ mod tests {
         let every_byte: Vec<u8> = (0..=255).collect();
         shell.types(&every_byte);
         shell.screen_shows(&every_byte);
+        shell.types(b"nobs-t-exit");
+        assert_eq!(shell.end(), Ok(7));
+    }
+
+    #[test]
+    fn bytes_the_device_sends_before_it_grants_the_shell_reach_the_screen_first() {
+        let mut shell = shell(device(), "right", "nobs-t-early-data");
+        shell.screen_shows(EARLY);
+        shell.screen_shows(b"nobs-t-early-data 100x30\n");
         shell.types(b"nobs-t-exit");
         assert_eq!(shell.end(), Ok(7));
     }
