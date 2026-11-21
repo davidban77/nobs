@@ -2753,7 +2753,7 @@ wrote containerlab/configs/nobs-t-srl2.cfg
 
 ## Device
 
-The `nobs device` group logs in to one device of a lab over SSH, and prints what the device answers or opens a live shell on it. SSH is the usual way to log in to a network device and run a command on it. This is not `nobs devices`, which lists the devices of a workshop's source of truth.
+The `nobs device` group logs in to one device of a lab over SSH, and prints what the device answers or opens a live shell on it. SSH is the usual way to log in to a network device and run a command on it. A shell is a command line, where you type commands one after another. `nobs device shell` opens the device's own shell. When this section says "set in the shell", it means your own shell, where you run nobs. This is not `nobs devices`, which lists the devices of a workshop's source of truth.
 
 | Command | What it does |
 |---|---|
@@ -2791,15 +2791,15 @@ nobs logs in with a user and a password, on port 22. It reads the user from `NET
 
 In the screen, `g` and `s` ask on the key line for what is missing: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g` or `s`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
 
-Each command opens one connection. `fetch` and `run` connect, log in, run one command and close the connection. `shell` connects, logs in and keeps the connection until the shell on the device ends. When the device sends nothing for 10 seconds while nobs connects and logs in, while `fetch` and `run` wait for the answer, or while `shell` waits for the device to open the shell, nobs stops with an error. An open shell has no time limit.
+Each command opens one connection. `fetch` and `run` connect, log in, run one command and close the connection. `shell` connects, logs in and keeps the connection until the shell on the device ends. nobs stops with an error when the device sends nothing for 10 seconds at one of these steps: while nobs connects and logs in, while `fetch` or `run` waits for the answer, and while `shell` waits for the device to open the shell. An open shell has no time limit.
 
-`nobs device shell` needs a terminal. Until the device opens the shell, `Ctrl-C` ends nobs as usual. From then on, every key goes to the device as you press it, `Ctrl-C` included, and what the device sends goes to the terminal unchanged. nobs gives the device the size of the terminal and the terminal type from `TERM` (`xterm` when it is not set, empty or only spaces). nobs checks the size again every 250 ms and gives the device the new size when it changes. End the shell on the device, for SR Linux with `quit`; nobs then exits with the exit status of the device's shell, and the terminal is as it was before.
+`nobs device shell` needs a terminal: its input cannot be a file or a pipe. Until the device opens the shell, `Ctrl-C` ends nobs as usual. From then on, every key goes to the device as you press it, `Ctrl-C` included, and what the device sends goes to the terminal unchanged. nobs asks the device for a terminal of its own, with the size of your terminal and the type from `TERM` (`xterm` when `TERM` is not set, empty or only spaces). nobs checks the size of your terminal at least every 250 ms and gives the device the new size when it changes. End the shell on the device, for SR Linux with `quit`. nobs then exits with the exit status of the device's shell, and your terminal is as it was before.
 
 A host key is the key a device shows so that the client knows it reaches the right device. nobs does not check the host key of a lab device: it accepts it, as containerlab does for its own nodes.
 
 A driver is the part of nobs that knows the commands of one kind of device. Today only SR Linux has a driver (the kinds `nokia_srlinux` and `srl`). All three commands need a driver, so `nobs device run` and `nobs device shell` on a node of another kind also stop with the `no driver` line. For SR Linux, `fetch` runs `info flat` on the device. This is the flat form: one `set / ...` line for each setting, the form that the templates of a nobs project write. A value that holds line breaks, such as a certificate, goes on in further lines, because nobs prints what the device sends and changes nothing. To keep the configuration, redirect it to a file: `nobs device fetch srl1 > srl1.cfg`. The configuration holds password hashes, so do not commit that file.
 
-What the device says passes through. Its output goes to the standard output of nobs, its error text to the standard error, and its exit status is the exit code of nobs. nobs's own errors print one line and exit with 1:
+What the device says passes through. For `fetch` and `run`, its output goes to the standard output of nobs and its error text to the standard error. For `shell`, nobs writes both to its standard output. For all three, the exit status of the device is the exit code of nobs. nobs's own errors print one line and exit with 1:
 
 | Line | When |
 |---|---|
@@ -2811,9 +2811,9 @@ What the device says passes through. Its output goes to the standard output of n
 | `nobs: ssh <name>: no driver for the kind <kind> yet` | the node's kind has no driver |
 | `nobs: ssh <name>: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell` | the user or the password is missing, empty or only spaces |
 | `nobs: ssh <name>: cannot reach <container>: <reason>` | the connection fails, for example because the lab does not run; the reason is the system's text |
-| `nobs: ssh <name>: no answer in 10 seconds` | the device sent nothing for 10 seconds |
+| `nobs: ssh <name>: no answer in 10 seconds` | the device sent nothing for 10 seconds; an open shell has no time limit |
 | `nobs: ssh <name>: authentication failed` | the device refused the user or the password |
-| `nobs: ssh <name>: the device refused a shell` | the device refused the terminal or the shell of `nobs device shell` |
+| `nobs: ssh <name>: the device refused a shell` | the device refused the terminal or the shell that `nobs device shell` asked for |
 | `nobs: ssh <name>: the device sent no exit status` | the device closed the connection without an exit status, or the connection was lost |
 | `nobs: ssh <name>: <reason>` | any other SSH error, with the text of the SSH library |
 
