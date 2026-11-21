@@ -1,6 +1,6 @@
 use std::time::{Instant, UNIX_EPOCH};
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::line;
 use ratatui::text::{Line, Span};
@@ -8,6 +8,7 @@ use ratatui::widgets::{
     Block, BorderType, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
 };
 use ratatui::Frame;
+use tui_term::widget::{Cursor as TermCursor, PseudoTerminal};
 
 use nobs_core::alertmanager::Alert;
 use nobs_core::count::counted;
@@ -22,6 +23,7 @@ use crate::shell::{
     kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState, StackKind,
     StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
 };
+use crate::terminal::SHELL;
 use crate::view;
 
 const WIDE: u16 = 100;
@@ -30,6 +32,8 @@ const LEFT_WIDE: u16 = 32;
 const LEFT_DEVICES: u16 = 42;
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const CONFIG_HINT: &str = "press g to get the running config";
+const TERMINAL_HINT: &str = "press t to open a shell on";
+const HELP_QUIT_SESSION: &str = "quit; asks in a run or a session";
 const PANE_HINTS: [&str; 4] = ["/ filter", "j/k scroll", "[ ] tab", "Esc back to list"];
 const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
 const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
@@ -276,6 +280,12 @@ pub(crate) fn run_view(model: &Model, area: Rect) -> Option<RunMeasure> {
             .map(|line| wrapped(line, width).len())
             .sum(),
     })
+}
+
+pub(crate) fn terminal_size(model: &Model, area: Rect) -> (u16, u16) {
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, inside] = tab_content(body);
+    (inside.height.max(1), inside.width.max(1))
 }
 
 fn workbench_least(model: &Model) -> u16 {
@@ -671,9 +681,18 @@ fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     } else {
         &SERVICES_TABS
     };
-    let line = tab_line(shown, model.tab(), wide, usize::from(area.width));
+    let word = model
+        .shown_session()
+        .filter(|_| on_devices && model.tab() == Tab::Terminal)
+        .map(|session| session.state.word());
+    let width = usize::from(area.width)
+        .saturating_sub(word.as_ref().map_or(0, |word| word.chars().count() + 2));
+    let line = tab_line(shown, model.tab(), wide, width);
     let room = usize::from(area.width).saturating_sub(line.width() + 2);
     frame.render_widget(Paragraph::new(line), area);
+    if let Some(word) = word {
+        right(frame, area, Line::from(word), 0);
+    }
     let logs = if model.tab() != Tab::Logs {
         None
     } else if on_devices {
@@ -884,6 +903,10 @@ fn tab_content(area: Rect) -> [Rect; 2] {
 
 fn devices(frame: &mut Frame, area: Rect, model: &Model) {
     let wide = area.width >= WIDE;
+    if model.tab() == Tab::Terminal {
+        device_detail(frame, area, model, wide);
+        return;
+    }
     let [left, right] = device_panes(area);
     device_list(frame, left, model, wide);
     device_detail(frame, right, model, wide);
@@ -1039,7 +1062,12 @@ fn device_rows(
     let mut lines = vec![Line::from(header)];
     for (row, index) in rows.iter().zip(visible).skip(start) {
         let selected = cursor == Cursor::Device(*index);
-        let mark = if row.maintenance {
+        let open = model
+            .session_of(&row.name)
+            .is_some_and(|session| session.state.marked());
+        let mark = if open {
+            Span::raw("t")
+        } else if row.maintenance {
             Span::styled("M", Style::new().fg(Color::Yellow))
         } else {
             Span::raw(" ")
@@ -1434,7 +1462,28 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Tab::Logs => device_logs(frame, content, model),
         Tab::Interfaces => device_interfaces(frame, content, model, wide),
         Tab::Config => config_pane(frame, content, model),
-        Tab::Sonda | Tab::Alerts | Tab::Metrics | Tab::Terminal => {}
+        Tab::Terminal => terminal_pane(frame, content, model),
+        Tab::Sonda | Tab::Alerts | Tab::Metrics => {}
+    }
+}
+
+fn terminal_pane(frame: &mut Frame, area: Rect, model: &Model) {
+    let Some(device) = model.selected_device() else {
+        return;
+    };
+    let Some(session) = model.session_of(&device.name) else {
+        let hint = format!("{TERMINAL_HINT} {}", device.name);
+        let line = fitted(vec![(hint, DIM)], usize::from(area.width));
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    };
+    let screen = session.screen.screen();
+    let hidden = TermCursor::default().visibility(false);
+    frame.render_widget(PseudoTerminal::new(screen).cursor(hidden), area);
+    let (row, col) = screen.cursor_position();
+    let at = Position::new(area.x.saturating_add(col), area.y.saturating_add(row));
+    if session.state.typed() && !screen.hide_cursor() && area.contains(at) {
+        frame.set_cursor_position(at);
     }
 }
 
@@ -2255,7 +2304,11 @@ pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
         return entry_line("filter", text, ["Enter keep", "Esc clear"], width);
     }
     if let Some(question) = model.question() {
-        return wrapped(&format!(" {}", question.text()), width);
+        return question
+            .text()
+            .split('\n')
+            .flat_map(|line| wrapped(&format!(" {line}"), width))
+            .collect();
     }
     if let Some(notice) = model.notice() {
         return wrapped(&format!(" {notice}"), width);
@@ -2327,6 +2380,15 @@ fn key_hints(model: &Model) -> Vec<String> {
             log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
         }
         (Workbench::Devices, Focus::Tabs, Tab::Config) => PANE_HINTS.to_vec(),
+        (Workbench::Devices, Focus::Tabs, Tab::Terminal) => {
+            return match model.shown_session() {
+                Some(session) => listed(session.state.keys().to_vec()).collect(),
+                None => vec![
+                    format!("{} {}", SHELL.key, SHELL.hint),
+                    PANE_HINTS[2].to_string(),
+                ],
+            };
+        }
         (Workbench::Services, Focus::Lines, _) | (Workbench::Devices, _, _) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Esc back"]
         }
@@ -2443,11 +2505,20 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
         .filter(|action| action.row != actions::Row::Node || model.lab_with_nodes())
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
+    let terminal = workbench == Workbench::Devices && model.lab_with_nodes();
+    let fixed = fixed.iter().flat_map(|entry| {
+        let typed = (terminal && entry.0 == "[ ]").then(|| (SHELL.key.to_string(), SHELL.hint));
+        std::iter::once(owned(entry)).chain(typed)
+    });
+    let quit = HELP_QUIT.iter().map(|&(key, meaning)| match key {
+        "q" if terminal => (key.to_string(), HELP_QUIT_SESSION),
+        _ => (key.to_string(), meaning),
+    });
     [(switch.join(" "), "switch workbench")]
         .into_iter()
-        .chain(fixed.iter().map(owned))
+        .chain(fixed)
         .chain(actions)
-        .chain(HELP_QUIT.iter().map(owned))
+        .chain(quit)
         .collect()
 }
 

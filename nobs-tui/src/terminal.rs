@@ -36,7 +36,6 @@ pub(crate) enum State {
 }
 
 impl State {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn word(&self) -> String {
         match *self {
             State::Connecting { .. } => "connecting…".to_string(),
@@ -52,7 +51,6 @@ impl State {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn keys(&self) -> &'static [&'static str] {
         match self {
             _ if self.typed() => &["Ctrl-] leave (session stays open)"],

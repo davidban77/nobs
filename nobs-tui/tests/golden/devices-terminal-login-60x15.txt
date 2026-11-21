@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab  4 obs       ? keys  q quit
+╔ nobs-t-srl1 ═════════════════════════════════════════════╗
+║overview  ifaces  config  timeline  logs  TERMINAL        ║
+║press t to open a shell on nobs-t-srl1                    ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+ run  none                                           o open
+ user for the devices:   Enter next  Esc cancel

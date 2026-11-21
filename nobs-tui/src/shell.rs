@@ -1460,12 +1460,15 @@ impl Model {
         self.workbench == Workbench::Devices && self.tab == Tab::Terminal
     }
 
-    fn shown_session(&self) -> Option<&terminal::Session> {
+    pub(crate) fn shown_session(&self) -> Option<&terminal::Session> {
         self.selected_device()
-            .and_then(|device| self.sessions.of(&device.name))
+            .and_then(|device| self.session_of(&device.name))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn session_of(&self, device: &str) -> Option<&terminal::Session> {
+        self.sessions.of(device)
+    }
+
     pub(crate) fn terminal_live(&self) -> bool {
         self.terminal_shown()
             && self
@@ -1473,7 +1476,6 @@ impl Model {
                 .is_some_and(|session| session.state.marked())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_terminal_size(&mut self, size: (u16, u16)) -> Vec<Command> {
         self.sessions.resize(size)
     }

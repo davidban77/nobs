@@ -1,0 +1,30 @@
+ nobs  book-lab book lab  sot lab_vars                                                     13:42:07
+ [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
+╔ nobs-t-srl1 ═════════════════════════════════════════════════════════════════════════════════════╗
+║overview  interfaces  config  timeline  logs  TERMINAL                              closed: exit 1║
+║A:nobs-t-x@nobs-t-srl1# show version                                                              ║
+║Hostname             : nobs-t-srl1                                                                ║
+║Software Version     : v26.3.3                                                                    ║
+║A:nobs-t-x@nobs-t-srl1#                                                                           ║
+║nobs: ssh nobs-t-srl1: the device sent no exit status                                             ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+ run  none                                                                                   o open
+ t connect again  j/k scroll

@@ -19,8 +19,8 @@ use nobs_tui::actions::{Action, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
 use nobs_tui::shell::{stacks, Health, Reach};
 use nobs_tui::{
-    data, draw, handle, settle, view, End, Focus, Shell, SondaTarget, Stack, StackKind, Start,
-    Update, Workbench,
+    data, draw, handle, settle, view, Command, End, Focus, Shell, SondaTarget, Stack, StackKind,
+    Start, Update, Workbench,
 };
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -1094,6 +1094,195 @@ fn the_lab_devices_help_frame_is_pinned() {
     golden("help-devices-lab", || {
         let mut model = lab_devices_model();
         press(&mut model, KeyCode::Char('?'));
+        model
+    });
+}
+
+const PROMPT: &str = "A:nobs-t-x@nobs-t-srl1# ";
+
+fn key(model: &mut Shell, code: KeyCode, modifiers: KeyModifiers) -> Vec<Command> {
+    handle(model, KeyEvent::new(code, modifiers))
+}
+
+fn leave(model: &mut Shell) {
+    key(model, KeyCode::Char(']'), KeyModifiers::CONTROL);
+}
+
+fn opened(model: &mut Shell) -> u64 {
+    key(model, KeyCode::Char('t'), KeyModifiers::NONE)
+        .into_iter()
+        .find_map(|command| match command {
+            Command::TermOpen { id, .. } => Some(id),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn shell_output(model: &mut Shell, id: u64, text: &str) {
+    model.apply(Update::TermOutput(id, text.as_bytes().to_vec()));
+}
+
+fn terminal_with(text: &str) -> (Shell, u64) {
+    let mut model = lab_devices_model();
+    let id = opened(&mut model);
+    shell_output(&mut model, id, text);
+    (model, id)
+}
+
+fn typing() -> (Shell, u64) {
+    terminal_with(&format!(
+        "{PROMPT}show version\r\nHostname             : nobs-t-srl1\r\nSoftware Version     : v26.3.3\r\n{PROMPT}"
+    ))
+}
+
+fn connected() -> Shell {
+    let (mut model, _) = typing();
+    leave(&mut model);
+    model
+}
+
+fn closed_with(code: i32, last: &str) -> Shell {
+    let (mut model, id) = typing();
+    shell_output(&mut model, id, last);
+    model.apply(Update::TermEnded(id, code));
+    model
+}
+
+fn lab_device(name: &str) -> Device {
+    Device {
+        name: name.to_string(),
+        kind: None,
+        site: None,
+        role: None,
+        asn: None,
+        maintenance: false,
+        interfaces: Vec::new(),
+        sessions: Vec::new(),
+    }
+}
+
+fn limited() -> Shell {
+    let mut model = lab_devices_model();
+    let names = (1..=5).map(|index| lab_device(&format!("nobs-t-srl{index}")));
+    model.apply(Update::Devices(Ok(names.collect())));
+    for _ in 0..5 {
+        let id = opened(&mut model);
+        shell_output(&mut model, id, PROMPT);
+        leave(&mut model);
+        press(&mut model, KeyCode::Esc);
+        press(&mut model, KeyCode::Char('j'));
+    }
+    for _ in 0..5 {
+        press(&mut model, KeyCode::Char('k'));
+    }
+    press(&mut model, KeyCode::Enter);
+    for _ in 0..5 {
+        press(&mut model, KeyCode::Char(']'));
+    }
+    model
+}
+
+#[test]
+fn the_terminal_hint_frame_is_pinned() {
+    golden("devices-terminal-hint", || on_lab_tab(5));
+}
+
+#[test]
+fn the_terminal_connecting_frame_is_pinned() {
+    golden("devices-terminal-connecting", || {
+        let mut model = lab_devices_model();
+        opened(&mut model);
+        model
+    });
+}
+
+#[test]
+fn the_terminal_typing_frame_is_pinned() {
+    golden("devices-terminal-typing", || typing().0);
+}
+
+#[test]
+fn the_terminal_connected_frame_is_pinned() {
+    golden("devices-terminal-connected", connected);
+}
+
+#[test]
+fn the_terminal_scrolled_up_frame_is_pinned() {
+    golden("devices-terminal-up", || {
+        let lines: String = (1..=40)
+            .map(|line| format!("nobs-t-line {line:02}\r\n"))
+            .collect();
+        let (mut model, _) = terminal_with(&format!("{lines}{PROMPT}"));
+        leave(&mut model);
+        for _ in 0..3 {
+            press(&mut model, KeyCode::Char('k'));
+        }
+        model
+    });
+}
+
+#[test]
+fn the_terminal_ended_frame_is_pinned() {
+    golden("devices-terminal-ended", || closed_with(0, "quit\r\n"));
+}
+
+#[test]
+fn the_terminal_exit_frame_is_pinned() {
+    golden("devices-terminal-exit", || {
+        closed_with(
+            1,
+            "\r\nnobs: ssh nobs-t-srl1: the device sent no exit status\r\n",
+        )
+    });
+}
+
+#[test]
+fn the_terminal_closed_by_you_frame_is_pinned() {
+    golden("devices-terminal-by-you", || {
+        let mut model = connected();
+        press(&mut model, KeyCode::Char('c'));
+        model
+    });
+}
+
+#[test]
+fn the_terminal_limit_frame_is_pinned() {
+    golden("devices-terminal-limit", limited);
+}
+
+#[test]
+fn the_terminal_quit_question_frame_is_pinned() {
+    golden("devices-terminal-quit", || {
+        let mut model = connected();
+        press(&mut model, KeyCode::Char('q'));
+        model
+    });
+}
+
+#[test]
+fn the_terminal_login_question_frame_is_pinned() {
+    golden("devices-terminal-login", || {
+        let mut model =
+            devices_model_finding(BOOK_LAB, "containerlab/lab_vars.yml", LAB_DIR, |_| None);
+        press(&mut model, KeyCode::Enter);
+        for _ in 0..5 {
+            press(&mut model, KeyCode::Char(']'));
+        }
+        press(&mut model, KeyCode::Char('t'));
+        model
+    });
+}
+
+#[test]
+fn the_mark_frame_is_pinned() {
+    golden("devices-mark", || {
+        let mut model = connected();
+        press(&mut model, KeyCode::Esc);
+        press(&mut model, KeyCode::Char('j'));
+        let id = opened(&mut model);
+        shell_output(&mut model, id, "A:nobs-t-x@nobs-t-srl2# ");
+        model.apply(Update::TermEnded(id, 0));
+        press(&mut model, KeyCode::Esc);
         model
     });
 }
