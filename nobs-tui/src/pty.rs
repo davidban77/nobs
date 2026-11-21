@@ -123,8 +123,10 @@ impl Drop for Pty {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::path::PathBuf;
     use std::sync::mpsc::{self, Receiver};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use nobs_core::device;
@@ -132,6 +134,86 @@ mod tests {
     use super::*;
 
     const WAIT: Duration = Duration::from_secs(5);
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum Call {
+        Open {
+            id: u64,
+            program: PathBuf,
+            args: Vec<OsString>,
+            dir: PathBuf,
+            size: (u16, u16),
+            login: Login,
+        },
+        Write(u64, Vec<u8>),
+        Resize(u64, (u16, u16)),
+        Close(u64),
+    }
+
+    #[derive(Default)]
+    pub(crate) struct FakeTerminals {
+        calls: Arc<Mutex<Vec<Call>>>,
+        sender: Mutex<Option<Sender<Update>>>,
+    }
+
+    struct FakeWire {
+        id: u64,
+        calls: Arc<Mutex<Vec<Call>>>,
+    }
+
+    impl FakeTerminals {
+        pub(crate) fn calls(&self) -> Vec<Call> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        pub(crate) fn sender(&self) -> Option<Sender<Update>> {
+            self.sender.lock().unwrap().clone()
+        }
+    }
+
+    impl Terminals for FakeTerminals {
+        fn open(
+            &self,
+            program: &Path,
+            args: &[OsString],
+            dir: &Path,
+            login: &Login,
+            size: (u16, u16),
+            id: u64,
+            out: Sender<Update>,
+        ) -> io::Result<Box<dyn Wire>> {
+            self.calls.lock().unwrap().push(Call::Open {
+                id,
+                program: program.to_path_buf(),
+                args: args.to_vec(),
+                dir: dir.to_path_buf(),
+                size,
+                login: login.clone(),
+            });
+            *self.sender.lock().unwrap() = Some(out);
+            Ok(Box::new(FakeWire {
+                id,
+                calls: Arc::clone(&self.calls),
+            }))
+        }
+    }
+
+    impl Wire for FakeWire {
+        fn write(&mut self, bytes: &[u8]) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::Write(self.id, bytes.to_vec()));
+        }
+
+        fn resize(&mut self, size: (u16, u16)) {
+            self.calls.lock().unwrap().push(Call::Resize(self.id, size));
+        }
+
+        fn close(&mut self) {
+            self.calls.lock().unwrap().push(Call::Close(self.id));
+        }
+    }
 
     fn open(args: &[&str], size: (u16, u16), login: &Login) -> (Box<dyn Wire>, Receiver<Update>) {
         let (out, updates) = mpsc::channel();

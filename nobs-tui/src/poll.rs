@@ -232,7 +232,12 @@ impl Pollers {
             Command::SelectDevice(_) | Command::OpenTab(_) | Command::Window(_) => {
                 (&[], &[&self.loki, &self.prefect])
             }
-            Command::Run { .. } | Command::Stop => (&[], &[]),
+            Command::Run { .. }
+            | Command::Stop
+            | Command::TermOpen { .. }
+            | Command::TermWrite { .. }
+            | Command::TermResize { .. }
+            | Command::TermClose(_) => (&[], &[]),
             Command::Ask(service, _) => match service {
                 Service::Metrics => (&[&self.health], &[&self.prometheus]),
                 Service::Logs => (&[&self.health], &[&self.loki]),

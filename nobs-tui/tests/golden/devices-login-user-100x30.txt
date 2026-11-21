@@ -1,7 +1,7 @@
  nobs  book-lab book lab  sot lab_vars                                                     13:42:07
  [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
 ╔ devices 2 ═════════════════════════════╗┌ nobs-t-srl1 ───────────────────────────────────────────┐
-║   NAME         KIND  HLTH  SYNC  ALRT  ║│OVERVIEW  interfaces  config  timeline  logs            │
+║   NAME         KIND  HLTH  SYNC  ALRT  ║│OVERVIEW  interfaces  config  timeline  logs  terminal  │
 ║>  nobs-t-srl1  —     —     —        —  ║│kind —   site lab   role edge                           │
 ║   nobs-t-srl2  —     —     —        —  ║│maintenance no   sot lab_vars   seen 2s ago             │
 ║                                        ║│bgp sessions  1 intended  0 established  1 other        │

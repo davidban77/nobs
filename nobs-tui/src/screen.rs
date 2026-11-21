@@ -287,7 +287,7 @@ fn workbench_least(model: &Model) -> u16 {
     let tab_rows = match (model.workbench(), model.tab()) {
         (Workbench::Lab, _) => 1,
         (Workbench::Services, Tab::Overview) | (_, Tab::Timeline | Tab::Config) => 2,
-        (_, Tab::Overview | Tab::Logs | Tab::Alerts | Tab::Metrics) => 1,
+        (_, Tab::Overview | Tab::Logs | Tab::Alerts | Tab::Metrics | Tab::Terminal) => 1,
         (_, Tab::Interfaces) => 3,
         (_, Tab::Sonda) => 6,
     };
@@ -632,6 +632,7 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         | Tab::Alerts
         | Tab::Metrics => overview(frame, content, model, wide),
         Tab::Logs => logs(frame, content, model),
+        Tab::Terminal => {}
         Tab::Sonda => {
             view::draw_in(
                 frame,
@@ -1433,7 +1434,7 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Tab::Logs => device_logs(frame, content, model),
         Tab::Interfaces => device_interfaces(frame, content, model, wide),
         Tab::Config => config_pane(frame, content, model),
-        Tab::Sonda | Tab::Alerts | Tab::Metrics => {}
+        Tab::Sonda | Tab::Alerts | Tab::Metrics | Tab::Terminal => {}
     }
 }
 
@@ -2294,7 +2295,8 @@ fn key_hints(model: &Model) -> Vec<String> {
             | Tab::Config
             | Tab::Timeline
             | Tab::Alerts
-            | Tab::Metrics,
+            | Tab::Metrics
+            | Tab::Terminal,
         ) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Enter logs", "Esc back"]
         }
@@ -2636,8 +2638,9 @@ mod tests {
                 "OVERVIEW  ifaces  config ›",
                 "overview  IFACES  config ›",
                 "overview  ifaces  CONFIG ›",
-                "‹ ifaces  config  TIMELINE  logs",
-                "‹ ifaces  config  timeline  LOGS",
+                "‹ ifaces  config  TIMELINE  logs ›",
+                "‹ ifaces  config  timeline  LOGS ›",
+                "‹ config  timeline  logs  TERMINAL",
             ]
         );
 
@@ -2745,7 +2748,7 @@ mod tests {
         while model.tab() != tab {
             press(model, ']');
         }
-        while model.focus() != Focus::List {
+        while model.focus() != Focus::List && tab != Tab::Terminal {
             handle(model, focus);
         }
     }
@@ -4970,7 +4973,7 @@ mod tests {
                 check(label, tab, width, height, model);
             }
         }
-        assert_eq!(cases, 30);
+        assert_eq!(cases, 32);
     }
 
     #[test]
