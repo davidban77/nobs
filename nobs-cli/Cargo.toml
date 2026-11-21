@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+crossterm.workspace = true
 nobs-core = { path = "../nobs-core" }
 nobs-ssh = { path = "../nobs-ssh" }
 nobs-tui = { path = "../nobs-tui" }
