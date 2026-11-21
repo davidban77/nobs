@@ -25,6 +25,8 @@ pub mod actions;
 pub mod book;
 pub mod data;
 pub mod devices;
+#[cfg_attr(not(test), allow(dead_code))]
+mod keys;
 pub mod poll;
 pub mod run;
 pub mod screen;
