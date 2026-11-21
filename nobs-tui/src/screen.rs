@@ -33,7 +33,8 @@ const LEFT_DEVICES: u16 = 42;
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const CONFIG_HINT: &str = "press g to get the running config";
 const TERMINAL_HINT: &str = "press t to open a shell on";
-const HELP_QUIT_SESSION: &str = "quit; asks in a run or a session";
+const HELP_QUIT_SESSION: &str = "quit; asks if busy";
+const HELP_TERMINAL: &str = "type in terminal";
 const PANE_HINTS: [&str; 4] = ["/ filter", "j/k scroll", "[ ] tab", "Esc back to list"];
 const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
 const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
@@ -98,6 +99,7 @@ const COUNT_WIDTH: usize = 11;
 const HELP_MORE: &str = "j/k more";
 const FOLD: &str = "Esc fold";
 const PANE_LEAST: u16 = 3;
+const TERMINAL_LEAST: u16 = 2;
 const NODES_LEAST: u16 = 4;
 const ALERTS_LEAST: u16 = 2;
 const BORDERS: u16 = 2;
@@ -285,7 +287,10 @@ pub(crate) fn run_view(model: &Model, area: Rect) -> Option<RunMeasure> {
 pub(crate) fn terminal_size(model: &Model, area: Rect) -> (u16, u16) {
     let (_, [_, _, _, body, _, _]) = regions(model, area);
     let [_, inside] = tab_content(body);
-    (inside.height.max(1), inside.width.max(1))
+    (
+        inside.height.max(TERMINAL_LEAST),
+        inside.width.max(TERMINAL_LEAST),
+    )
 }
 
 fn workbench_least(model: &Model) -> u16 {
@@ -2507,7 +2512,7 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
     let terminal = workbench == Workbench::Devices && model.lab_with_nodes();
     let fixed = fixed.iter().flat_map(|entry| {
-        let typed = (terminal && entry.0 == "[ ]").then(|| (SHELL.key.to_string(), SHELL.hint));
+        let typed = (terminal && entry.0 == "[ ]").then(|| (SHELL.key.to_string(), HELP_TERMINAL));
         std::iter::once(owned(entry)).chain(typed)
     });
     let quit = HELP_QUIT.iter().map(|&(key, meaning)| match key {
@@ -2850,6 +2855,33 @@ mod tests {
             state: Some("running".to_string()),
         }])));
         model
+    }
+
+    #[test]
+    fn no_row_of_any_help_is_cut_at_60_columns() {
+        let area = Rect::new(0, 0, 60, 15);
+        let builds: [fn() -> Model; 3] = [|| lab_bench(2), devices_bench, services_bench];
+        let mut cut = Vec::new();
+        for build in builds {
+            for key in ['1', '2', '3', '4'] {
+                let mut model = build();
+                press(&mut model, key);
+                press(&mut model, '?');
+                let (_, [_, _, _, body, bottom, _]) = regions(&model, area);
+                let layout = help_layout(&model, body.union(bottom));
+                let (first, second) = layout.entries.split_at(usize::from(layout.rows));
+                let middle = layout.inner.width / 2;
+                for (entries, width) in [(first, middle), (second, layout.inner.width - middle)] {
+                    for line in help_column(entries).lines() {
+                        if line.chars().count() > usize::from(width) {
+                            cut.push(format!("{:?} {width}: {line}", model.workbench()));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(cut.is_empty(), "{cut:#?}");
     }
 
     fn benches() -> [Bench; 4] {

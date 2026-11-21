@@ -5,7 +5,7 @@
   ║Tab      focus list/tabs   f       follow/pause logs  ║
   ║j k ↑ ↓  move              o       run pane           ║
   ║[ ]      other tab         ?       close              ║
-  ║t        type in the terminm       maintenance        ║
+  ║t        type in terminal  m       maintenance        ║
   ║- +      timeline window   g       get config         ║
   ║x        dismiss the error s       run command        ║
   ║alerts box: Enter picks the device, opens its timeline║

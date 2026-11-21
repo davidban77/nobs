@@ -682,18 +682,21 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_of_no_height_gives_1_by_1_and_no_panic() {
+    fn a_pane_of_no_height_gives_2_by_2_and_output_that_wraps_there_does_not_crash() {
         let mut model = devices_in("book-lab");
         handle(&mut model, ch('t'));
 
         let size = screen::terminal_size(&model, Rect::new(0, 0, 0, 0));
         let resized = model.set_terminal_size(size);
+        for bytes in ["ab", "cde\r\nfgh", "界界界"] {
+            model.apply(Update::TermOutput(1, bytes.as_bytes().to_vec()));
+        }
 
-        assert_eq!(size, (1, 1));
+        assert_eq!(size, (2, 2));
         assert_eq!(resized, [Command::TermResize { id: 1, size }]);
         assert_eq!(
             screen::terminal_size(&model, Rect::new(0, 0, 60, 4)),
-            (1, 58)
+            (2, 58)
         );
     }
 

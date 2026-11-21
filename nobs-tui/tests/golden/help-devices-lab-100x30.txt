@@ -11,10 +11,10 @@
   ║Tab      focus list/tabs                       f       follow/pause logs                      ║
   ║j k ↑ ↓  move                                  o       run pane                               ║
   ║[ ]      other tab                             ?       close                                  ║
-  ║t        type in the terminal                  m       maintenance                            ║
+  ║t        type in terminal                      m       maintenance                            ║
   ║- +      timeline window                       g       get config                             ║
   ║x        dismiss the error                     s       run command                            ║
-  ║Esc      close/clear/back                      q       quit; asks in a run or a session       ║
+  ║Esc      close/clear/back                      q       quit; asks if busy                     ║
   ║Enter    open / pick alert                     Ctrl-C  stop a run, or quit                    ║
   ║/        filter                                                                               ║
   ║                                                                                              ║
