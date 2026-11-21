@@ -450,7 +450,7 @@ mod tests {
         keys: UnixStream,
         screen: UnixStream,
         size: Arc<Mutex<(u16, u16)>>,
-        ended: mpsc::Receiver<Result<i32, Error>>,
+        ended: mpsc::Receiver<(Result<i32, Error>, bool)>,
     }
 
     impl Shell {
@@ -465,6 +465,10 @@ mod tests {
         }
 
         fn end(&self) -> Result<i32, Error> {
+            self.end_and_keys_taken().0
+        }
+
+        fn end_and_keys_taken(&self) -> (Result<i32, Error>, bool) {
             self.ended
                 .recv_timeout(Duration::from_secs(5))
                 .expect("an end within 5 seconds")
@@ -490,13 +494,8 @@ mod tests {
                 user: "admin".to_string(),
                 password: Password::new(password.to_string()),
             };
-            sender.send(shell_at(
-                "127.0.0.1",
-                port,
-                &credentials,
-                &mut terminal,
-                LIMIT,
-            ))
+            let end = shell_at("127.0.0.1", port, &credentials, &mut terminal, LIMIT);
+            sender.send((end, terminal.keys.is_none()))
         });
         Shell {
             keys,
@@ -580,7 +579,7 @@ mod tests {
         shell.types(&every_byte);
         shell.screen_shows(&every_byte);
         shell.types(b"nobs-t-exit");
-        assert_eq!(shell.end(), Ok(7));
+        assert_eq!(shell.end_and_keys_taken(), (Ok(7), true));
     }
 
     #[test]
@@ -639,13 +638,18 @@ mod tests {
             (device(), "right", "nobs-t-silent-pty", Error::NoAnswer),
         ];
         for (case, (port, password, kind, error)) in cases.into_iter().enumerate() {
-            assert_eq!(shell(port, password, kind).end(), Err(error), "case {case}");
+            assert_eq!(
+                shell(port, password, kind).end_and_keys_taken(),
+                (Err(error), false),
+                "case {case}"
+            );
         }
-        let closed = shell(free_port(), "right", "xterm").end();
+        let (closed, keys_taken) = shell(free_port(), "right", "xterm").end_and_keys_taken();
         assert!(
             matches!(&closed, Err(Error::Unreachable { host, .. }) if host == "127.0.0.1"),
             "{closed:?}"
         );
+        assert!(!keys_taken);
     }
 
     #[test]
@@ -662,8 +666,8 @@ mod tests {
     fn a_refused_shell_is_shell_refused() {
         for kind in ["nobs-t-refuse-pty", "nobs-t-refuse-shell"] {
             assert_eq!(
-                shell(device(), "right", kind).end(),
-                Err(Error::ShellRefused),
+                shell(device(), "right", kind).end_and_keys_taken(),
+                (Err(Error::ShellRefused), false),
                 "{kind}"
             );
         }
