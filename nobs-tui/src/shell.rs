@@ -689,6 +689,7 @@ pub struct Model {
     help_overflow: usize,
     run_pane: bool,
     size: (u16, u16),
+    shown: usize,
     now: Instant,
     wall: SystemTime,
     clock: String,
@@ -817,6 +818,7 @@ impl Model {
             help_overflow: 0,
             run_pane: false,
             size: (80, 24),
+            shown: 0,
             now,
             wall: UNIX_EPOCH,
             clock: String::new(),
@@ -882,6 +884,14 @@ impl Model {
         self.wall = wall;
         self.clock = clock(wall);
         self.size = size;
+    }
+
+    pub(crate) fn set_shown(&mut self, rows: usize) {
+        self.shown = rows;
+    }
+
+    pub fn page(&self) -> usize {
+        self.shown.saturating_sub(1).max(1)
     }
 
     pub fn too_small(&self) -> bool {
@@ -5336,6 +5346,16 @@ pub(crate) mod tests {
 
     pub(crate) fn workshop_source() -> Arc<dyn SourceOfTruth> {
         lab_vars_source("workshop-one/lab_vars.yml")
+    }
+
+    #[test]
+    fn a_page_is_one_row_in_a_box_of_one_row_and_before_the_first_frame() {
+        let mut model = Model::new(start(vec![stack("a", &[])]));
+        assert_eq!(model.page(), 1);
+        model.set_shown(1);
+        assert_eq!(model.page(), 1);
+        model.set_shown(10);
+        assert_eq!(model.page(), 9);
     }
 
     pub(crate) fn workshop_located(sot: &str) -> Located {

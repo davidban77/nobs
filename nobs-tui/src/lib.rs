@@ -339,11 +339,7 @@ fn loop_turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
         let inside = screen::terminal_size(model, area);
         send(model.set_terminal_size(inside), actions, wires, pollers);
         terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
-        model.set_help_overflow(screen::help_overflow(model, area));
-        model.set_overview_overflow(screen::overview_overflow(model, area));
-        model.set_popup_overflow(screen::popup_overflow(model, area));
-        model.set_lab_overflow(screen::lab_overflow(model, area));
-        model.set_details_overflow(screen::sonda_overflow(model, area));
+        measure(model, area);
         if let Some(key) = next_key(pace(model).1)? {
             send(handle(model, key), actions, wires, pollers);
             send(model.ask_changes(), actions, wires, pollers);
@@ -357,6 +353,15 @@ fn loop_turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
 pub fn settle(model: &mut Model, area: Rect) {
     let measure = screen::run_view(model, area);
     model.set_run_view(measure);
+}
+
+pub fn measure(model: &mut Model, area: Rect) {
+    model.set_help_overflow(screen::help_overflow(model, area));
+    model.set_overview_overflow(screen::overview_overflow(model, area));
+    model.set_popup_overflow(screen::popup_overflow(model, area));
+    model.set_lab_overflow(screen::lab_overflow(model, area));
+    model.set_details_overflow(screen::sonda_overflow(model, area));
+    model.set_shown(screen::shown_rows(model, area));
 }
 
 fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, pollers: &Pollers) {
@@ -3518,5 +3523,17 @@ mod tests {
         pollers.send(Command::Quit);
 
         assert_eq!(health(&model), Some("ok".to_string()));
+    }
+
+    #[test]
+    fn the_loop_measure_gives_the_page_of_the_drawn_box() {
+        let mut model = devices_model();
+        assert_eq!(model.focus(), Focus::List);
+
+        measure(&mut model, Rect::new(0, 0, 60, 15));
+        assert_eq!(model.page(), 4);
+
+        measure(&mut model, Rect::new(0, 0, 100, 30));
+        assert_eq!(model.page(), 15);
     }
 }
