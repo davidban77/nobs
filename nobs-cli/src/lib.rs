@@ -9,7 +9,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::cascade;
 use nobs_core::compose::{network_args, Compose, NetworkAction};
-use nobs_core::containerlab::{env_names, Containerlab};
+use nobs_core::containerlab::{env_names, sudo_refused_line, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
 use nobs_core::device::{self, Credentials, Terminal, Transport};
@@ -2794,10 +2794,7 @@ impl<'a> LabRun<'a, Topology> {
             self.runner
                 .output_quiet(Containerlab::SUDO, &os_strings(&["-n", "true"])),
         ) {
-            eprintln!(
-                "nobs: lab {}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again",
-                self.command
-            );
+            eprintln!("{}", sudo_refused_line(self.command));
             return Err(1);
         }
         Ok(())

@@ -91,6 +91,12 @@ impl Containerlab {
     }
 }
 
+pub fn sudo_refused_line(command: &str) -> String {
+    format!(
+        "nobs: lab {command}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again"
+    )
+}
+
 pub fn env_names(topology_text: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
     for (index, _) in topology_text.match_indices("${") {
