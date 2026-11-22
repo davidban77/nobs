@@ -2131,6 +2131,39 @@ mod tests {
     }
 
     #[test]
+    fn a_sudo_that_ends_with_any_code_but_0_shows_not_run_and_starts_nothing() {
+        if !is_child() {
+            return passed_in_a_terminal(
+                "tests::a_sudo_that_ends_with_any_code_but_0_shows_not_run_and_starts_nothing",
+            );
+        }
+        for code in [1, 130] {
+            let (mut model, mut actions, launcher) = refused_destroy(asker(code));
+            let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+
+            turns(
+                &mut terminal(80, 24),
+                &mut bare_screen(),
+                &mut model,
+                &pollers,
+                &updates,
+                &mut actions,
+                &mut wires(),
+                |_| Err(PAUSED.to_string()),
+            )
+            .unwrap_err();
+
+            assert_eq!(run_state(&model), RunState::NotRun, "{code}");
+            assert_eq!(
+                model.run().unwrap().lines,
+                ["nobs: lab destroy: sudo got no password; nothing ran"],
+                "{code}"
+            );
+            assert_eq!(launcher.calls().len(), 1, "{code}");
+        }
+    }
+
+    #[test]
     fn a_raw_mode_that_fails_on_the_way_back_ends_the_screen_and_restores_the_terminal() {
         if !is_child() {
             return passed_in_a_terminal(
