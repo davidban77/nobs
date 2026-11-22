@@ -284,11 +284,14 @@ pub const ACTIONS: [Action; 21] = [
 ];
 
 pub(crate) fn fits(action: &Action, model: &Model) -> bool {
-    action.row.needs().is_none_or(|needs| {
-        model
-            .nodes_from()
-            .is_some_and(|nodes| needs.contains(&nodes))
-    })
+    fits_nodes(action, model.nodes_from())
+}
+
+fn fits_nodes(action: &Action, nodes: Option<Nodes>) -> bool {
+    action
+        .row
+        .needs()
+        .is_none_or(|needs| nodes.is_some_and(|nodes| needs.contains(&nodes)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,13 +462,10 @@ mod tests {
             let fixed = fixed_keys(workbench);
             for lab in labs {
                 let mut seen = Vec::new();
-                for action in ACTIONS.iter().filter(|action| {
-                    action.workbench == workbench
-                        && action
-                            .row
-                            .needs()
-                            .is_none_or(|needs| lab.is_some_and(|lab| needs.contains(&lab)))
-                }) {
+                for action in ACTIONS
+                    .iter()
+                    .filter(|action| action.workbench == workbench && fits_nodes(action, lab))
+                {
                     assert!(
                         !seen.contains(&action.key),
                         "{workbench:?} in {lab:?} has two actions on {}",

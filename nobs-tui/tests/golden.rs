@@ -45,10 +45,6 @@ const PROJECT_LAB: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../tests/fixtures/project-two-node"
 );
-const LABCLI_EXAMPLE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../tests/fixtures/labcli-example"
-);
 const LONG_LAB_DIR: &str = "/home/me/labs/network-observability/book-lab";
 const ALREADY_EXIST: &str = "nobs: lab deploy: node containers already exist (clab-nobs-t-book-nobs-t-srl1, clab-nobs-t-book-nobs-t-srl2); run nobs lab destroy first";
 const LONG_DIR: &str = "/Users/netpanda/projects/nobs/target/slice-21-workshops/workshops/packt";
@@ -157,6 +153,8 @@ fn clock() -> SystemTime {
 
 fn begin(lab: Option<Located>, stacks: Vec<Stack>, home: Workbench) -> Start {
     Start {
+        nodes: lab.as_ref().and_then(Located::nodes),
+        topology: lab.as_ref().map(Located::topology),
         lab,
         stacks,
         sonda: SondaTarget {
@@ -1687,17 +1685,29 @@ fn project_bench() -> Shell {
     bench_in(Path::new(PROJECT_LAB))
 }
 
-fn topology_bench(name: &str) -> Shell {
-    let root = std::env::temp_dir().join(format!("nobs-golden-{name}-{}", std::process::id()));
-    let dir = root.join("hand-written");
-    fs::create_dir_all(dir.join("containerlab")).unwrap();
-    fs::copy(
-        Path::new(LABCLI_EXAMPLE).join("containerlab/lab.clab.yml"),
-        dir.join("containerlab/lab.clab.yml"),
-    )
-    .unwrap();
-    let model = bench_in(&dir);
-    fs::remove_dir_all(&root).unwrap();
+fn topology_bench() -> Shell {
+    let dir = PathBuf::from("/home/me/hand-written");
+    let topology = dir.join("containerlab/lab.clab.yml");
+    let stack = Stack {
+        name: "hand-written".to_string(),
+        kind: StackKind::Lab,
+        compose: dir.join("docker-compose.yml"),
+        path: dir.clone(),
+        project: None,
+        env: Vec::new(),
+        shows_sonda: false,
+    };
+    let lab = Located {
+        dir,
+        kind: Kind::LabcliLab(None),
+    };
+    let mut model = Shell::new(Start {
+        chooser: false,
+        nodes: Some(Nodes::Topology),
+        topology: Some(topology),
+        ..begin(Some(lab), vec![stack], Workbench::Lab)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
     model
 }
 
@@ -1760,11 +1770,36 @@ fn the_lab_frames_of_a_project_folder_are_pinned() {
 fn the_lab_frame_of_a_folder_with_only_a_topology_is_pinned() {
     use KeyCode::Char;
     golden("lab-topology", || {
-        let mut model = topology_bench("frame");
+        let mut model = topology_bench();
         model.apply(two_nodes(None));
         let deployed = [two_nodes(None), two_nodes(Some("running"))];
         acted(model, &[Char('D'), Char('y')], 30, deployed)
     });
+}
+
+#[test]
+fn a_folder_with_only_a_topology_has_services_without_a_compose_file_and_its_devices() {
+    let mut services = topology_bench();
+    services.apply(Update::Services(0, defined(&[]), Ok(Vec::new())));
+    press(&mut services, KeyCode::Char('2'));
+    let mut devices = topology_bench();
+    press(&mut devices, KeyCode::Char('1'));
+
+    let services = lines(&render(services, 100, 30));
+    let devices = lines(&render(devices, 100, 30));
+
+    let shown = services.join("\n");
+    assert!(
+        services[1].starts_with(" 1 devices  [2 services]  3 lab  4 observability"),
+        "{shown}"
+    );
+    assert!(shown.contains("no services in this lab"), "{shown}");
+    let shown = devices.join("\n");
+    assert!(
+        devices[1].starts_with(" [1 devices]  2 services  3 lab  4 observability"),
+        "{shown}"
+    );
+    assert!(shown.contains(" devices 0 "), "{shown}");
 }
 
 #[test]
@@ -2225,7 +2260,7 @@ fn asked(action: &Action) -> Shell {
         Row::Device | Row::Node => maintenance_model(false),
         Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => lab_model(),
         Row::Lab([Nodes::Project, ..]) => project_bench(),
-        Row::Lab(_) => topology_bench("asked"),
+        Row::Lab(_) => topology_bench(),
     };
     press(&mut model, KeyCode::Char(action.key));
     model

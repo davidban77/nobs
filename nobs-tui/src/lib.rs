@@ -100,7 +100,10 @@ fn started(
         .clone()
         .map(|source| (source, start.source_service));
     let urls = start.lab.is_some().then(|| start.urls.clone());
-    let lab = start.lab.as_ref().and_then(LabFiles::of);
+    let lab = start
+        .lab
+        .as_ref()
+        .and_then(|lab| LabFiles::of(lab, start.nodes, start.topology.clone()));
     let model = Model::new(start);
     let (pollers, updates) = Pollers::start(
         runner,
@@ -652,6 +655,8 @@ mod tests {
             kind: Kind::BookLab(None),
         });
         Start {
+            nodes: lab.as_ref().and_then(Located::nodes),
+            topology: lab.as_ref().map(Located::topology),
             lab,
             stacks,
             sonda: target(),
@@ -1763,6 +1768,8 @@ mod tests {
     fn devices_finding(folder: &str, login: shell::Lookup) -> Model {
         let dir = fixture(folder);
         let mut model = Model::new(Start {
+            nodes: locate(&dir, Some(&dir)).unwrap().nodes(),
+            topology: Some(locate(&dir, Some(&dir)).unwrap().topology()),
             lab: Some(locate(&dir, Some(&dir)).unwrap()),
             source: Some(Arc::new(Holding)),
             home: Workbench::Devices,
@@ -1783,6 +1790,8 @@ mod tests {
         let located = locate(&dir, Some(&dir)).unwrap();
         let chapters = shell::stacks(Some(&located), Vec::new()).unwrap();
         Model::new(Start {
+            nodes: located.nodes(),
+            topology: Some(located.topology()),
             lab: Some(located),
             home: Workbench::Lab,
             ..start(chapters, false)
@@ -1861,6 +1870,8 @@ mod tests {
         let located = locate(&dir, Some(&dir)).unwrap();
         let chapters = shell::stacks(Some(&located), Vec::new()).unwrap();
         Start {
+            nodes: located.nodes(),
+            topology: Some(located.topology()),
             lab: Some(located),
             home: Workbench::Lab,
             ..start(chapters, false)
@@ -3232,6 +3243,8 @@ mod tests {
                 dir: PathBuf::from("/ws"),
                 kind: Kind::LabcliLab(None),
             }),
+            nodes: None,
+            topology: None,
             urls: at(&counter.url, Vec::new()),
             ..start(vec![stack(&[(alerts, counter.url.as_str())])], false)
         };

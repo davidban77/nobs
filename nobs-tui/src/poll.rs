@@ -69,10 +69,10 @@ pub struct LabFiles {
 }
 
 impl LabFiles {
-    pub fn of(lab: &Located) -> Option<LabFiles> {
-        let nodes = lab.nodes()?;
+    pub fn of(lab: &Located, nodes: Option<Nodes>, topology: Option<PathBuf>) -> Option<LabFiles> {
+        let nodes = nodes?;
         Some(LabFiles {
-            topology: lab.topology(),
+            topology: topology?,
             project: (nodes == Nodes::Project).then(|| lab.dir.clone()),
         })
     }

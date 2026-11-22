@@ -25,6 +25,8 @@ fn fixture(name: &str) -> PathBuf {
 
 fn model(lab: Located, stacks: Vec<Stack>) -> Shell {
     Shell::new(Start {
+        nodes: lab.nodes(),
+        topology: Some(lab.topology()),
         lab: Some(lab),
         stacks,
         sonda: SondaTarget {

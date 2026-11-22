@@ -2163,7 +2163,7 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
     let chapters = model.chapters();
     let [top, bottom] = lab_panes(model, left);
     node_list(frame, top, model, wide);
-    if model.nodes_from() == Some(Nodes::Chapters) {
+    if model.has_chapters_box() {
         let selected = model.selected_chapter();
         let block = Block::bordered()
             .border_type(border_of(model, Holder::Chapters))
@@ -2182,7 +2182,7 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn lab_panes(model: &Model, left: Rect) -> [Rect; 2] {
-    let chapters_height = if model.nodes_from() == Some(Nodes::Chapters) {
+    let chapters_height = if model.has_chapters_box() {
         u16::try_from(model.chapters().len() + 2).unwrap_or(u16::MAX)
     } else {
         0
@@ -2275,7 +2275,7 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
 fn overview_title(model: &Model) -> Option<String> {
     match model.selected_chapter() {
         Some(chapter) => Some(model.stacks()[chapter].name.clone()),
-        None if model.nodes_from() == Some(Nodes::Chapters) => None,
+        None if model.has_chapters_box() => None,
         None => model.lab_name(),
     }
 }
@@ -2304,13 +2304,14 @@ fn files_text(files: Option<&Rendered>) -> String {
 fn lab_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
     let chapter = model.selected_chapter();
     let lab = model.located();
-    let topology = lab.map_or("—".to_string(), |lab| {
-        let path = lab.topology();
-        path.strip_prefix(&lab.dir)
-            .unwrap_or(&path)
-            .display()
-            .to_string()
-    });
+    let topology = lab
+        .zip(model.topology())
+        .map_or("—".to_string(), |(lab, path)| {
+            path.strip_prefix(&lab.dir)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        });
     let nodes = model.nodes();
     let running = nodes
         .iter()
@@ -2922,6 +2923,8 @@ mod tests {
             })
             .collect();
         let mut model = Model::new(Start {
+            nodes: located.nodes(),
+            topology: Some(located.topology()),
             lab: Some(located),
             home: Workbench::Lab,
             chooser: false,
@@ -4454,6 +4457,8 @@ mod tests {
             })
             .collect();
         let mut model = Model::new(Start {
+            nodes: located.nodes(),
+            topology: Some(located.topology()),
             lab: Some(located),
             home: Workbench::Devices,
             ..start(chapters)

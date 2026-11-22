@@ -5284,8 +5284,10 @@ fn screen_start_with(
                 Kind::LabcliLab(_) if path.exists() => (lab_vars_source(&path), None),
                 Kind::LabcliLab(_) => ((None, None), None),
             };
+            let nodes = located.nodes();
+            let topology = Some(located.topology());
             let home = match located.kind {
-                _ if located.nodes().is_some() => nobs_tui::Workbench::Lab,
+                _ if nodes.is_some() => nobs_tui::Workbench::Lab,
                 Kind::Workshop(_) => nobs_tui::Workbench::Devices,
                 Kind::LabcliLab(_) if source.is_some() => nobs_tui::Workbench::Devices,
                 _ => home,
@@ -5302,6 +5304,8 @@ fn screen_start_with(
             Ok(nobs_tui::Start {
                 stacks,
                 lab: Some(located),
+                nodes,
+                topology,
                 sonda,
                 home,
                 source,
@@ -5319,6 +5323,8 @@ fn screen_start_with(
             stacks.push(nobs_tui::shell::sonda_only(here)?);
             Ok(nobs_tui::Start {
                 lab: None,
+                nodes: None,
+                topology: None,
                 stacks,
                 sonda,
                 home,
@@ -5333,6 +5339,8 @@ fn screen_start_with(
         }
         Err(LocateError::NotFound) => Ok(nobs_tui::Start {
             lab: None,
+            nodes: None,
+            topology: None,
             stacks: vec![nobs_tui::shell::sonda_only(here)?],
             sonda,
             home,

@@ -62,6 +62,8 @@ type Labels = BTreeMap<String, String>;
 #[derive(Clone)]
 pub struct Start {
     pub lab: Option<Located>,
+    pub nodes: Option<Nodes>,
+    pub topology: Option<PathBuf>,
     pub stacks: Vec<Stack>,
     pub sonda: SondaTarget,
     pub home: Workbench,
@@ -78,6 +80,8 @@ impl fmt::Debug for Start {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Start")
             .field("lab", &self.lab)
+            .field("nodes", &self.nodes)
+            .field("topology", &self.topology)
             .field("stacks", &self.stacks)
             .field("sonda", &self.sonda)
             .field("home", &self.home)
@@ -668,6 +672,7 @@ impl LogsState {
 pub struct Model {
     lab: Option<Located>,
     nodes_from: Option<Nodes>,
+    topology: Option<PathBuf>,
     files: Option<Rendered>,
     stacks: Vec<Stack>,
     states: Vec<StackState>,
@@ -757,6 +762,8 @@ impl Model {
     pub fn new(start: Start) -> Model {
         let Start {
             lab,
+            nodes,
+            topology,
             stacks,
             sonda,
             home,
@@ -789,7 +796,8 @@ impl Model {
             .into_iter()
             .collect();
         let mut model = Model {
-            nodes_from: lab.as_ref().and_then(Located::nodes),
+            nodes_from: nodes,
+            topology,
             files: None,
             lab,
             states: vec![StackState::Unknown; stacks.len()],
@@ -890,7 +898,7 @@ impl Model {
     }
 
     fn first_focus(&self) -> Focus {
-        if self.workbench == Workbench::Lab && self.nodes_from != Some(Nodes::Chapters) {
+        if self.workbench == Workbench::Lab && !self.has_chapters_box() {
             Focus::Tabs
         } else {
             Focus::List
@@ -2456,6 +2464,14 @@ impl Model {
         self.nodes_from
     }
 
+    pub(crate) fn topology(&self) -> Option<&Path> {
+        self.topology.as_deref()
+    }
+
+    pub(crate) fn has_chapters_box(&self) -> bool {
+        self.nodes_from == Some(Nodes::Chapters)
+    }
+
     pub fn files(&self) -> Option<&Rendered> {
         self.files.as_ref()
     }
@@ -3679,6 +3695,8 @@ pub(crate) mod tests {
     pub(crate) fn start(stacks: Vec<Stack>) -> Start {
         Start {
             lab: None,
+            nodes: None,
+            topology: None,
             stacks,
             sonda: target(None),
             home: Workbench::Services,
@@ -5366,6 +5384,8 @@ pub(crate) mod tests {
         let dir = fixture("workshop-one");
         let located = locate(&dir, Some(&dir)).unwrap();
         let model = Model::new(Start {
+            nodes: located.nodes(),
+            topology: Some(located.topology()),
             lab: Some(located),
             chooser: false,
             ..start(vec![ws])
@@ -5375,6 +5395,8 @@ pub(crate) mod tests {
         let mut own = stack("one", &[("INFRAHUB_ADDRESS", "http://i:8000")]);
         own.path = fixture("workshop-one");
         let mut model = Model::new(Start {
+            nodes: locate(&dir, Some(&dir)).unwrap().nodes(),
+            topology: Some(locate(&dir, Some(&dir)).unwrap().topology()),
             lab: Some(locate(&dir, Some(&dir)).unwrap()),
             chooser: false,
             ..start(vec![own, stack("other", &[])])
@@ -5387,6 +5409,8 @@ pub(crate) mod tests {
         plain.path = fixture("book-lab");
         let book = fixture("book-lab");
         let model = Model::new(Start {
+            nodes: locate(&book, Some(&book)).unwrap().nodes(),
+            topology: Some(locate(&book, Some(&book)).unwrap().topology()),
             lab: Some(locate(&book, Some(&book)).unwrap()),
             source: Some(lab_vars_source("book-lab/containerlab/lab_vars.yml")),
             chooser: false,
@@ -5409,6 +5433,8 @@ pub(crate) mod tests {
         let mut second = stack("two", &[]);
         second.path = one.clone();
         let model = Model::new(Start {
+            nodes: locate(&one, Some(&one)).unwrap().nodes(),
+            topology: Some(locate(&one, Some(&one)).unwrap().topology()),
             lab: Some(locate(&one, Some(&one)).unwrap()),
             chooser: false,
             ..start(vec![stack("one", &[]), second])
@@ -5496,6 +5522,8 @@ pub(crate) mod tests {
     pub(crate) fn devices_model(lab: Located) -> Model {
         let source = workshop_source();
         let mut model = Model::new(Start {
+            nodes: lab.nodes(),
+            topology: Some(lab.topology()),
             lab: Some(lab),
             source: Some(source.clone()),
             home: Workbench::Devices,
@@ -5524,6 +5552,8 @@ pub(crate) mod tests {
         let dir = fixture(folder);
         let source = lab_vars_source(lab_vars);
         let mut model = Model::new(Start {
+            nodes: locate(&dir, Some(&dir)).unwrap().nodes(),
+            topology: Some(locate(&dir, Some(&dir)).unwrap().topology()),
             lab: Some(locate(&dir, Some(&dir)).unwrap()),
             source: Some(source.clone()),
             home: Workbench::Devices,
@@ -5711,6 +5741,8 @@ pub(crate) mod tests {
     fn the_sot_word_comes_from_the_workshop_setting_and_is_lab_vars_in_the_book_lab() {
         let header = |located: Located, source: Option<Arc<dyn SourceOfTruth>>| {
             Model::new(Start {
+                nodes: located.nodes(),
+                topology: Some(located.topology()),
                 lab: Some(located),
                 source,
                 chooser: false,
@@ -6786,6 +6818,8 @@ pub(crate) mod tests {
         let located = locate(&dir, Some(&dir)).unwrap();
         let stacks = stacks(Some(&located), vec![]).unwrap();
         Model::new(Start {
+            nodes: located.nodes(),
+            topology: Some(located.topology()),
             lab: Some(located),
             home: Workbench::Lab,
             chooser: false,
@@ -7146,6 +7180,8 @@ pub(crate) mod tests {
         let located = locate(dir, Some(dir)).unwrap();
         let stacks = stacks(Some(&located), vec![]).unwrap();
         Model::new(Start {
+            nodes: located.nodes(),
+            topology: Some(located.topology()),
             lab: Some(located),
             home: Workbench::Lab,
             chooser: false,
@@ -7199,6 +7235,8 @@ pub(crate) mod tests {
         for (dir, nodes) in cases {
             let located = locate(&dir, Some(&dir)).unwrap();
             let model = Model::new(Start {
+                nodes: located.nodes(),
+                topology: Some(located.topology()),
                 lab: Some(located),
                 chooser: false,
                 ..start(vec![stack("a", &[])])
