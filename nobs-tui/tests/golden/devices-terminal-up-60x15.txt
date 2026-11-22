@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab  4 obs       ? keys  q quit
+╔ nobs-t-srl1 ═════════════════════════════════════════════╗
+║‹ ifaces  config  timeline  logs  TERMINAL      3 lines up║
+║nobs-t-line 15                                            ║
+║nobs-t-line 16                                            ║
+║nobs-t-line 17                                            ║
+║nobs-t-line 18                                            ║
+║nobs-t-line 19                                            ║
+║nobs-t-line 20                                            ║
+║nobs-t-line 21                                            ║
+║nobs-t-line 22                                            ║
+╚══════════════════════════════════════════════════════════╝
+ run  none                                           o open
+ t type in the terminal  j/k scroll  c close session

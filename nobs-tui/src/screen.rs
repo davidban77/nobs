@@ -1,6 +1,6 @@
 use std::time::{Instant, UNIX_EPOCH};
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::line;
 use ratatui::text::{Line, Span};
@@ -8,6 +8,7 @@ use ratatui::widgets::{
     Block, BorderType, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
 };
 use ratatui::Frame;
+use tui_term::widget::{Cursor as TermCursor, PseudoTerminal};
 
 use nobs_core::alertmanager::Alert;
 use nobs_core::count::counted;
@@ -19,9 +20,10 @@ use crate::actions::{self, arguments, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState, StackKind,
-    StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
+    absent, kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState,
+    StackKind, StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
 };
+use crate::terminal::SHELL;
 use crate::view;
 
 const WIDE: u16 = 100;
@@ -30,6 +32,9 @@ const LEFT_WIDE: u16 = 32;
 const LEFT_DEVICES: u16 = 42;
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const CONFIG_HINT: &str = "press g to get the running config";
+const TERMINAL_HINT: &str = "press t to open a shell on";
+const HELP_QUIT_SESSION: &str = "quit; asks if busy";
+const HELP_TERMINAL: &str = "type in terminal";
 const PANE_HINTS: [&str; 4] = ["/ filter", "j/k scroll", "[ ] tab", "Esc back to list"];
 const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
 const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
@@ -94,6 +99,7 @@ const COUNT_WIDTH: usize = 11;
 const HELP_MORE: &str = "j/k more";
 const FOLD: &str = "Esc fold";
 const PANE_LEAST: u16 = 3;
+const TERMINAL_LEAST: u16 = 2;
 const NODES_LEAST: u16 = 4;
 const ALERTS_LEAST: u16 = 2;
 const BORDERS: u16 = 2;
@@ -278,6 +284,15 @@ pub(crate) fn run_view(model: &Model, area: Rect) -> Option<RunMeasure> {
     })
 }
 
+pub(crate) fn terminal_size(model: &Model, area: Rect) -> (u16, u16) {
+    let (_, [_, _, _, body, _, _]) = regions(model, area);
+    let [_, inside] = tab_content(body);
+    (
+        inside.height.max(TERMINAL_LEAST),
+        inside.width.max(TERMINAL_LEAST),
+    )
+}
+
 fn workbench_least(model: &Model) -> u16 {
     let list = match model.workbench() {
         Workbench::Devices | Workbench::Observability => BORDERS + 3 + ALERTS_LEAST,
@@ -287,7 +302,7 @@ fn workbench_least(model: &Model) -> u16 {
     let tab_rows = match (model.workbench(), model.tab()) {
         (Workbench::Lab, _) => 1,
         (Workbench::Services, Tab::Overview) | (_, Tab::Timeline | Tab::Config) => 2,
-        (_, Tab::Overview | Tab::Logs | Tab::Alerts | Tab::Metrics) => 1,
+        (_, Tab::Overview | Tab::Logs | Tab::Alerts | Tab::Metrics | Tab::Terminal) => 1,
         (_, Tab::Interfaces) => 3,
         (_, Tab::Sonda) => 6,
     };
@@ -632,6 +647,7 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         | Tab::Alerts
         | Tab::Metrics => overview(frame, content, model, wide),
         Tab::Logs => logs(frame, content, model),
+        Tab::Terminal => {}
         Tab::Sonda => {
             view::draw_in(
                 frame,
@@ -643,7 +659,7 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
                     _ => None,
                 },
             );
-            if let Some(sentence) = absent_of(model, Service::Sonda) {
+            if let Some(sentence) = model.absent_sentence(Service::Sonda) {
                 let top_row = Rect {
                     height: content.height.min(1),
                     ..content
@@ -670,9 +686,15 @@ fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     } else {
         &SERVICES_TABS
     };
-    let line = tab_line(shown, model.tab(), wide, usize::from(area.width));
+    let word = model.drawn_session().map(|session| session.state.word());
+    let width = usize::from(area.width)
+        .saturating_sub(word.as_ref().map_or(0, |word| word.chars().count() + 2));
+    let line = tab_line(shown, model.tab(), wide, width);
     let room = usize::from(area.width).saturating_sub(line.width() + 2);
     frame.render_widget(Paragraph::new(line), area);
+    if let Some(word) = word {
+        right(frame, area, Line::from(word), 0);
+    }
     let logs = if model.tab() != Tab::Logs {
         None
     } else if on_devices {
@@ -883,6 +905,10 @@ fn tab_content(area: Rect) -> [Rect; 2] {
 
 fn devices(frame: &mut Frame, area: Rect, model: &Model) {
     let wide = area.width >= WIDE;
+    if model.tab() == Tab::Terminal {
+        device_detail(frame, area, model, wide);
+        return;
+    }
     let [left, right] = device_panes(area);
     device_list(frame, left, model, wide);
     device_detail(frame, right, model, wide);
@@ -903,7 +929,7 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Constraint::Length(alerts_height),
     ])
     .areas(inner);
-    let first = match device_note(model) {
+    let first = match model.device_note() {
         Some(note) => {
             dim_line(frame, list, note);
             None
@@ -938,31 +964,12 @@ fn answer_cell(reach: Reach, answered: bool, shown: &str) -> String {
     }
 }
 
-fn absent(reach: Reach, word: &str) -> Option<String> {
-    match reach {
-        Reach::NotInLab => Some(format!("no {word} in this lab")),
-        Reach::StackDown => Some("the stack is down".to_string()),
-        Reach::Unknown | Reach::Answers | Reach::NoAnswer => None,
-    }
-}
-
-fn absent_of(model: &Model, service: Service) -> Option<String> {
-    absent(model.reach(service), row(service).word)
-}
-
 fn cell(reach: Reach, shown: &str) -> &str {
     match reach {
         Reach::Answers => shown,
         Reach::NoAnswer => "?",
         Reach::Unknown | Reach::NotInLab | Reach::StackDown => "—",
     }
-}
-
-fn device_note(model: &Model) -> Option<String> {
-    model
-        .source_service()
-        .and_then(|service| absent_of(model, service))
-        .or_else(|| model.source_note().map(str::to_string))
 }
 
 fn dim_line(frame: &mut Frame, area: Rect, text: String) {
@@ -1038,7 +1045,12 @@ fn device_rows(
     let mut lines = vec![Line::from(header)];
     for (row, index) in rows.iter().zip(visible).skip(start) {
         let selected = cursor == Cursor::Device(*index);
-        let mark = if row.maintenance {
+        let open = model
+            .session_of(&row.name)
+            .is_some_and(|session| session.state.marked());
+        let mark = if open {
+            Span::raw("t")
+        } else if row.maintenance {
             Span::styled("M", Style::new().fg(Color::Yellow))
         } else {
             Span::raw(" ")
@@ -1179,7 +1191,7 @@ fn metrics_view(frame: &mut Frame, area: Rect, model: &Model) {
         dim_lines(frame, area, absent_lines(reach, sentence, Service::Metrics));
         return;
     }
-    if let Some(note) = device_note(model).filter(|_| !model.metrics_listed()) {
+    if let Some(note) = model.device_note().filter(|_| !model.metrics_listed()) {
         dim_line(frame, area, note);
         return;
     }
@@ -1423,7 +1435,7 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
-    if let Some(note) = device_note(model) {
+    if let Some(note) = model.device_note() {
         dim_line(frame, content, note);
         return;
     }
@@ -1433,7 +1445,28 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Tab::Logs => device_logs(frame, content, model),
         Tab::Interfaces => device_interfaces(frame, content, model, wide),
         Tab::Config => config_pane(frame, content, model),
+        Tab::Terminal => terminal_pane(frame, content, model),
         Tab::Sonda | Tab::Alerts | Tab::Metrics => {}
+    }
+}
+
+fn terminal_pane(frame: &mut Frame, area: Rect, model: &Model) {
+    let Some(device) = model.selected_device() else {
+        return;
+    };
+    let Some(session) = model.drawn_session() else {
+        let hint = format!("{TERMINAL_HINT} {}", device.name);
+        let line = fitted(vec![(hint, DIM)], usize::from(area.width));
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    };
+    let screen = session.screen.screen();
+    let hidden = TermCursor::default().visibility(false);
+    frame.render_widget(PseudoTerminal::new(screen).cursor(hidden), area);
+    let (row, col) = screen.cursor_position();
+    let at = Position::new(area.x.saturating_add(col), area.y.saturating_add(row));
+    if session.state.typed() && !screen.hide_cursor() && area.contains(at) {
+        frame.set_cursor_position(at);
     }
 }
 
@@ -1653,7 +1686,7 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
     let mut notes: Vec<String> = Vec::new();
     for sentence in [Service::Alerts, Service::Logs, Service::Flows]
         .into_iter()
-        .filter_map(|service| absent_of(model, service))
+        .filter_map(|service| model.absent_sentence(service))
     {
         if !notes.contains(&sentence) {
             notes.push(sentence);
@@ -2254,7 +2287,11 @@ pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
         return entry_line("filter", text, ["Enter keep", "Esc clear"], width);
     }
     if let Some(question) = model.question() {
-        return wrapped(&format!(" {}", question.text()), width);
+        return question
+            .text()
+            .split('\n')
+            .flat_map(|line| wrapped(&format!(" {line}"), width))
+            .collect();
     }
     if let Some(notice) = model.notice() {
         return wrapped(&format!(" {notice}"), width);
@@ -2294,7 +2331,8 @@ fn key_hints(model: &Model) -> Vec<String> {
             | Tab::Config
             | Tab::Timeline
             | Tab::Alerts
-            | Tab::Metrics,
+            | Tab::Metrics
+            | Tab::Terminal,
         ) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Enter logs", "Esc back"]
         }
@@ -2325,6 +2363,15 @@ fn key_hints(model: &Model) -> Vec<String> {
             log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
         }
         (Workbench::Devices, Focus::Tabs, Tab::Config) => PANE_HINTS.to_vec(),
+        (Workbench::Devices, Focus::Tabs, Tab::Terminal) => {
+            return match model.drawn_session() {
+                Some(session) => listed(session.state.keys().to_vec()).collect(),
+                None => vec![
+                    format!("{} {}", SHELL.key, SHELL.hint),
+                    PANE_HINTS[2].to_string(),
+                ],
+            };
+        }
         (Workbench::Services, Focus::Lines, _) | (Workbench::Devices, _, _) => {
             vec!["Tab focus", "j/k move", "[ ] tab", "Esc back"]
         }
@@ -2441,11 +2488,20 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
         .filter(|action| action.row != actions::Row::Node || model.lab_with_nodes())
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
+    let terminal = workbench == Workbench::Devices && model.lab_with_nodes();
+    let fixed = fixed.iter().flat_map(|entry| {
+        let typed = (terminal && entry.0 == "[ ]").then(|| (SHELL.key.to_string(), HELP_TERMINAL));
+        std::iter::once(owned(entry)).chain(typed)
+    });
+    let quit = HELP_QUIT.iter().map(|&(key, meaning)| match key {
+        "q" if model.lab_with_nodes() => (key.to_string(), HELP_QUIT_SESSION),
+        _ => (key.to_string(), meaning),
+    });
     [(switch.join(" "), "switch workbench")]
         .into_iter()
-        .chain(fixed.iter().map(owned))
+        .chain(fixed)
         .chain(actions)
-        .chain(HELP_QUIT.iter().map(owned))
+        .chain(quit)
         .collect()
 }
 
@@ -2636,8 +2692,9 @@ mod tests {
                 "OVERVIEW  ifaces  config ›",
                 "overview  IFACES  config ›",
                 "overview  ifaces  CONFIG ›",
-                "‹ ifaces  config  TIMELINE  logs",
-                "‹ ifaces  config  timeline  LOGS",
+                "‹ ifaces  config  TIMELINE  logs ›",
+                "‹ ifaces  config  timeline  LOGS ›",
+                "‹ config  timeline  logs  TERMINAL",
             ]
         );
 
@@ -2745,7 +2802,7 @@ mod tests {
         while model.tab() != tab {
             press(model, ']');
         }
-        while model.focus() != Focus::List {
+        while model.focus() != Focus::List && tab != Tab::Terminal {
             handle(model, focus);
         }
     }
@@ -2776,6 +2833,72 @@ mod tests {
             state: Some("running".to_string()),
         }])));
         model
+    }
+
+    #[test]
+    fn no_row_of_any_help_is_cut_at_60_columns() {
+        let area = Rect::new(0, 0, 60, 15);
+        let builds: [fn() -> Model; 3] = [|| lab_bench(2), devices_bench, services_bench];
+        let mut cut = Vec::new();
+        for build in builds {
+            for key in ['1', '2', '3', '4'] {
+                let mut model = build();
+                press(&mut model, key);
+                press(&mut model, '?');
+                let (_, [_, _, _, body, bottom, _]) = regions(&model, area);
+                let layout = help_layout(&model, body.union(bottom));
+                let (first, second) = layout.entries.split_at(usize::from(layout.rows));
+                let middle = layout.inner.width / 2;
+                for (entries, width) in [(first, middle), (second, layout.inner.width - middle)] {
+                    for line in help_column(entries).lines() {
+                        if line.chars().count() > usize::from(width) {
+                            cut.push(format!("{:?} {width}: {line}", model.workbench()));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(cut.is_empty(), "{cut:#?}");
+    }
+
+    #[test]
+    fn q_asks_if_busy_in_every_help_of_a_lab_with_nodes_and_asks_in_a_run_elsewhere() {
+        let builds: [fn() -> Model; 3] = [|| lab_bench(2), devices_bench, services_bench];
+        let mut seen = Vec::new();
+        for build in builds {
+            for key in ['1', '2', '3', '4'] {
+                let mut model = build();
+                press(&mut model, key);
+                let quit = help_entries(&model)
+                    .into_iter()
+                    .find(|(key, _)| key == "q")
+                    .map(|(_, meaning)| meaning);
+                seen.push((model.lab_with_nodes(), model.workbench(), quit));
+            }
+        }
+
+        let wanted: Vec<_> = seen
+            .iter()
+            .map(|&(nodes, workbench, _)| {
+                let words = if nodes {
+                    "quit; asks if busy"
+                } else {
+                    "quit; asks in a run"
+                };
+                (nodes, workbench, Some(words))
+            })
+            .collect();
+        assert_eq!(seen, wanted);
+        let mut with_nodes: Vec<String> = seen
+            .iter()
+            .filter(|seen| seen.0)
+            .map(|seen| format!("{:?}", seen.1))
+            .collect();
+        with_nodes.sort();
+        with_nodes.dedup();
+        assert_eq!(with_nodes, ["Devices", "Lab", "Observability", "Services"]);
+        assert!(seen.iter().any(|seen| !seen.0));
     }
 
     fn benches() -> [Bench; 4] {
@@ -4970,7 +5093,7 @@ mod tests {
                 check(label, tab, width, height, model);
             }
         }
-        assert_eq!(cases, 30);
+        assert_eq!(cases, 32);
     }
 
     #[test]

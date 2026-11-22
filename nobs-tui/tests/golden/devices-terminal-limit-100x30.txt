@@ -1,0 +1,30 @@
+ nobs  book-lab book lab  sot lab_vars                                                     13:42:07
+ [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
+╔ nobs-t-srl1 ═════════════════════════════════════════════════════════════════════════════════════╗
+║overview  interfaces  config  timeline  logs  TERMINAL                   closed: the limit of four║
+║A:nobs-t-x@nobs-t-srl1#                                                                           ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+║                                                                                                  ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+ run  none                                                                                   o open
+ t connect again  j/k scroll

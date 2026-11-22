@@ -26,19 +26,21 @@ use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
 use crate::run::{self, End};
+use crate::terminal::{self, Closed, Sessions, SHELL};
 
-const LOG_LINES: usize = 2000;
+pub(crate) const LOG_LINES: usize = 2000;
 pub const WINDOW_MINUTES: u64 = 30;
 const WINDOW_MIN: u64 = 1;
 const WINDOW_MAX: u64 = 1440;
 pub(crate) const SERVICES_TABS: [Tab; 3] = [Tab::Overview, Tab::Logs, Tab::Sonda];
 pub(crate) const DEVICE_TABS: [Tab; 4] = [Tab::Overview, Tab::Interfaces, Tab::Timeline, Tab::Logs];
-const LAB_DEVICE_TABS: [Tab; 5] = [
+const LAB_DEVICE_TABS: [Tab; 6] = [
     Tab::Overview,
     Tab::Interfaces,
     Tab::Config,
     Tab::Timeline,
     Tab::Logs,
+    Tab::Terminal,
 ];
 pub(crate) const OBSERVABILITY_TABS: [Tab; 3] = [Tab::Alerts, Tab::Logs, Tab::Metrics];
 const MIN_SIZE: (u16, u16) = (60, 15);
@@ -153,6 +155,7 @@ pub enum Tab {
     Sonda,
     Alerts,
     Metrics,
+    Terminal,
 }
 
 impl Tab {
@@ -167,6 +170,7 @@ impl Tab {
             Tab::Sonda => "sonda",
             Tab::Alerts => "alerts",
             Tab::Metrics => "metrics",
+            Tab::Terminal => "terminal",
         }
     }
 }
@@ -276,6 +280,14 @@ pub enum Reach {
     NoAnswer,
 }
 
+pub(crate) fn absent(reach: Reach, word: &str) -> Option<String> {
+    match reach {
+        Reach::NotInLab => Some(format!("no {word} in this lab")),
+        Reach::StackDown => Some("the stack is down".to_string()),
+        Reach::Unknown | Reach::Answers | Reach::NoAnswer => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     pub name: String,
@@ -314,6 +326,8 @@ pub enum Update {
     ActionError(String),
     ActionEnded(run::End),
     Nodes(Result<Vec<book::NodeRow>, String>),
+    TermOutput(u64, Vec<u8>),
+    TermEnded(u64, i32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,6 +354,23 @@ pub enum Command {
     },
     Stop,
     Ask(status::Service, bool),
+    TermOpen {
+        id: u64,
+        program: PathBuf,
+        args: Vec<OsString>,
+        dir: PathBuf,
+        size: (u16, u16),
+        login: Login,
+    },
+    TermWrite {
+        id: u64,
+        bytes: Vec<u8>,
+    },
+    TermResize {
+        id: u64,
+        size: (u16, u16),
+    },
+    TermClose(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,7 +431,10 @@ pub enum Question {
         target: Target,
         saying: Option<&'static str>,
     },
-    Quit,
+    Quit {
+        sessions: Vec<String>,
+        action: bool,
+    },
 }
 
 impl Question {
@@ -414,7 +448,21 @@ impl Question {
                 saying: Some(saying),
                 ..
             } => format!("run nobs {}? It {saying}. y/n", joined(args)),
-            Question::Quit => "an action is running: stop it and quit? y/n".to_string(),
+            Question::Quit { sessions, .. } if sessions.is_empty() => {
+                "an action is running: stop it and quit? y/n".to_string()
+            }
+            Question::Quit { sessions, action } => {
+                let open = match sessions.len() {
+                    1 => "1 terminal session is open".to_string(),
+                    count => format!("{count} terminal sessions are open"),
+                };
+                let names = sessions.join(", ");
+                if *action {
+                    format!("an action is running and {open}: {names}\nstop it, close them and quit?   y / n")
+                } else {
+                    format!("{open}: {names}\nquit and close them?   y / n")
+                }
+            }
         }
     }
 }
@@ -497,12 +545,27 @@ enum Step {
     Command,
 }
 
+#[derive(Clone, Copy)]
+enum Then {
+    Act(&'static Action),
+    Terminal,
+}
+
+impl Then {
+    fn login(self) -> bool {
+        match self {
+            Then::Act(action) => action.login,
+            Then::Terminal => SHELL.login,
+        }
+    }
+}
+
 struct Asked {
     args: Vec<Vec<OsString>>,
     target: Target,
     text: Filter,
     step: Step,
-    action: &'static Action,
+    then: Then,
     typed: Login,
 }
 
@@ -676,6 +739,8 @@ pub struct Model {
     quitting: bool,
     login: Login,
     lookup: Lookup,
+    sessions: Sessions,
+    kept_tab: Tab,
 }
 
 impl Model {
@@ -802,6 +867,8 @@ impl Model {
             quitting: false,
             login: Login::default(),
             lookup: login,
+            sessions: Sessions::new(),
+            kept_tab: Tab::Overview,
         }
     }
 
@@ -1019,9 +1086,13 @@ impl Model {
                 self.devices = list;
                 self.devices_at = Some(self.now);
                 let last = self.devices.len().saturating_sub(1);
-                self.device = self.device.min(last);
+                let typed = self
+                    .sessions
+                    .typed()
+                    .and_then(|session| self.device_index(&session.device));
+                self.device = typed.unwrap_or(self.device.min(last));
                 if let Cursor::Device(at) = self.cursor {
-                    self.cursor = Cursor::Device(at.min(last));
+                    self.cursor = Cursor::Device(typed.unwrap_or(at.min(last)));
                 }
                 self.clear_error(error_source(status::Service::Sot));
                 return self.show_cursor();
@@ -1123,6 +1194,8 @@ impl Model {
                 self.nodes_ok = false;
                 self.fail("nodes", text);
             }
+            Update::TermOutput(id, bytes) => self.sessions.output(id, &bytes),
+            Update::TermEnded(id, code) => self.sessions.ended(id, code),
         }
         Vec::new()
     }
@@ -1188,16 +1261,32 @@ impl Model {
                 self.notice = Some(format!("not run: {}", words(&args)));
                 Vec::new()
             }
-            Question::Quit if yes && self.active().is_some() => {
+            Question::Quit { .. } if yes && self.active().is_some() => {
                 self.quitting = true;
-                self.stop()
+                let mut commands = self.sessions.close_live();
+                commands.extend(self.stop());
+                commands
             }
-            Question::Quit if yes => {
+            Question::Quit { .. } if yes => {
                 self.quit = true;
-                vec![Command::Quit]
+                self.quit_commands()
             }
-            Question::Quit => Vec::new(),
+            Question::Quit { .. } => Vec::new(),
         }
+    }
+
+    fn quit_commands(&mut self) -> Vec<Command> {
+        let mut commands = self.sessions.close_live();
+        commands.push(Command::Quit);
+        commands
+    }
+
+    fn keep_login(&mut self, login: &Login) -> bool {
+        let typed = *login != Login::default();
+        if typed {
+            self.login = login.clone();
+        }
+        typed
     }
 
     fn start_run(
@@ -1207,10 +1296,7 @@ impl Model {
         keeps: bool,
         login: Login,
     ) -> Vec<Command> {
-        let typed = login != Login::default();
-        if typed {
-            self.login = login.clone();
-        }
+        let typed = self.keep_login(&login);
         self.run = Some(Run {
             words: words(&args),
             command: joined(&args),
@@ -1258,7 +1344,7 @@ impl Model {
             Ask::Yes => None,
             Ask::Saying(saying) => Some(saying),
             Ask::Text => {
-                self.ask(action, args, target, Step::Command, login);
+                self.ask(Then::Act(action), args, target, Step::Command, login);
                 return Vec::new();
             }
         };
@@ -1272,7 +1358,7 @@ impl Model {
 
     fn ask(
         &mut self,
-        action: &'static Action,
+        then: Then,
         args: Vec<Vec<OsString>>,
         target: Target,
         step: Step,
@@ -1285,9 +1371,184 @@ impl Model {
             target,
             text,
             step,
-            action,
+            then,
             typed,
         });
+    }
+
+    fn ask_login_then(
+        &mut self,
+        then: Then,
+        args: Vec<Vec<OsString>>,
+        target: Target,
+    ) -> Vec<Command> {
+        let login = self.login.clone();
+        let step = if then.login() {
+            self.asked_step(&login)
+        } else {
+            None
+        };
+        match step {
+            Some(step) => {
+                self.ask(then, args, target, step, login);
+                Vec::new()
+            }
+            None => self.proceed(then, args, target, login),
+        }
+    }
+
+    fn proceed(
+        &mut self,
+        then: Then,
+        args: Vec<Vec<OsString>>,
+        target: Target,
+        login: Login,
+    ) -> Vec<Command> {
+        match then {
+            Then::Act(action) => self.act(action, args, target, login),
+            Then::Terminal => self.open_terminal(args, target, login),
+        }
+    }
+
+    fn open_terminal(
+        &mut self,
+        args: Vec<Vec<OsString>>,
+        target: Target,
+        login: Login,
+    ) -> Vec<Command> {
+        let (Target::Device(device), Some(dir)) =
+            (target, self.lab.as_ref().map(|lab| lab.dir.clone()))
+        else {
+            return Vec::new();
+        };
+        self.keep_login(&login);
+        let (id, limited) = self.sessions.open(&device);
+        let mut commands = Vec::new();
+        if let Some((close, name)) = limited {
+            self.notice = Some(format!(
+                "closed the terminal session of {name}: the limit of four"
+            ));
+            commands.push(close);
+        }
+        commands.extend(self.show_terminal());
+        commands.push(Command::TermOpen {
+            id,
+            program: self.program.clone(),
+            args: flat(&args),
+            dir,
+            size: self.sessions.size(),
+            login,
+        });
+        commands
+    }
+
+    fn type_in_terminal(&mut self) -> Vec<Command> {
+        let Some(target) = self.action_target(SHELL.row) else {
+            return Vec::new();
+        };
+        let Target::Device(device) = &target else {
+            return Vec::new();
+        };
+        if self.sessions.resume(device) {
+            return self.show_terminal();
+        }
+        match pieces(&SHELL, &target, self) {
+            Some(args) => self.ask_login_then(Then::Terminal, args, target),
+            None => Vec::new(),
+        }
+    }
+
+    fn show_terminal(&mut self) -> Vec<Command> {
+        self.focus = Focus::Tabs;
+        if self.tab == Tab::Terminal {
+            return Vec::new();
+        }
+        self.kept_tab = self.tab;
+        self.tab = Tab::Terminal;
+        vec![Command::OpenTab(Tab::Terminal)]
+    }
+
+    fn terminal_shown(&self) -> bool {
+        self.workbench == Workbench::Devices && self.tab == Tab::Terminal
+    }
+
+    pub(crate) fn drawn_session(&self) -> Option<&terminal::Session> {
+        if !self.terminal_shown() || self.device_note().is_some() {
+            return None;
+        }
+        self.selected_device()
+            .and_then(|device| self.session_of(&device.name))
+    }
+
+    pub(crate) fn device_note(&self) -> Option<String> {
+        self.source_service
+            .and_then(|service| self.absent_sentence(service))
+            .or_else(|| self.source_note().map(str::to_string))
+    }
+
+    pub(crate) fn absent_sentence(&self, service: status::Service) -> Option<String> {
+        absent(self.reach(service), status::row(service).word)
+    }
+
+    pub(crate) fn session_of(&self, device: &str) -> Option<&terminal::Session> {
+        self.sessions.of(device)
+    }
+
+    pub(crate) fn terminal_live(&self) -> bool {
+        self.drawn_session()
+            .is_some_and(|session| session.state.marked())
+    }
+
+    pub(crate) fn set_terminal_size(&mut self, size: (u16, u16)) -> Vec<Command> {
+        self.sessions.resize(size)
+    }
+
+    fn terminal_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let Some((id, device)) = self
+            .drawn_session()
+            .map(|session| (session.id, session.device.clone()))
+        else {
+            return Vec::new();
+        };
+        let rows = usize::from(self.sessions.size().0);
+        match code {
+            KeyCode::Char('c') => {
+                return self.sessions.close(id, Closed::ByYou).into_iter().collect();
+            }
+            KeyCode::Char('k') | KeyCode::Up => self.sessions.scroll(&device, true, 1),
+            KeyCode::Char('j') | KeyCode::Down => self.sessions.scroll(&device, false, 1),
+            KeyCode::PageUp => self.sessions.scroll(&device, true, rows),
+            KeyCode::PageDown => self.sessions.scroll(&device, false, rows),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn typed_key(&mut self, key: KeyEvent) -> Vec<Command> {
+        let leaves = key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char(']' | '5'));
+        let drawn = self
+            .drawn_session()
+            .is_some_and(|session| session.state.typed());
+        if leaves || !drawn {
+            self.sessions.leave();
+            return Vec::new();
+        }
+        if self.too_small() {
+            return Vec::new();
+        }
+        self.drawn_session()
+            .and_then(|session| session.write(key))
+            .into_iter()
+            .collect()
+    }
+
+    fn step_aside(&mut self) -> Vec<Command> {
+        if !(self.terminal_shown() && self.focus == Focus::List) {
+            return Vec::new();
+        }
+        self.tab = self.kept_tab;
+        vec![Command::OpenTab(self.tab)]
     }
 
     fn asked_step(&self, typed: &Login) -> Option<Step> {
@@ -1337,16 +1598,7 @@ impl Model {
             }
             Some(args) => {
                 self.notice = None;
-                let login = self.login.clone();
-                let step = if action.login {
-                    self.asked_step(&login)
-                } else {
-                    None
-                };
-                match step {
-                    Some(step) => self.ask(action, args, target, step, login),
-                    None => return Some(self.act(action, args, target, login)),
-                }
+                return Some(self.ask_login_then(Then::Act(action), args, target));
             }
             None if action.row == Row::Stack => {
                 let mut notice = format!("{} {} is for a workshop", action.key, action.hint);
@@ -1506,7 +1758,7 @@ impl Model {
     pub(crate) fn login_entry(&self) -> Option<LoginEntry<'_>> {
         let asked = self.asked.as_ref()?;
         let text = asked.text.text.as_deref().unwrap_or_default();
-        let command_follows = asked.action.ask == Ask::Text;
+        let command_follows = matches!(asked.then, Then::Act(action) if action.ask == Ask::Text);
         let hint = |next: bool| if next { "Enter next" } else { "Enter run" };
         match &asked.step {
             Step::User { then_password } => Some(LoginEntry::User {
@@ -1732,10 +1984,6 @@ impl Model {
         } else {
             Some("no devices")
         }
-    }
-
-    pub(crate) fn source_service(&self) -> Option<status::Service> {
-        self.source_service
     }
 
     pub fn devices_at(&self) -> Option<Instant> {
@@ -2291,10 +2539,10 @@ impl Model {
             }
             return match self.asked_step(&asked.typed) {
                 Some(step) => {
-                    self.ask(asked.action, asked.args, asked.target, step, asked.typed);
+                    self.ask(asked.then, asked.args, asked.target, step, asked.typed);
                     Vec::new()
                 }
-                None => self.act(asked.action, asked.args, asked.target, asked.typed),
+                None => self.proceed(asked.then, asked.args, asked.target, asked.typed),
             };
         }
         if self.filter.typing {
@@ -2354,6 +2602,13 @@ impl Model {
             KeyCode::Char('x') => self.dismiss_error(),
             KeyCode::Char('o') if self.run_pane => self.fold_pane(),
             KeyCode::Char('o') => self.run_pane = true,
+            KeyCode::Tab if self.terminal_shown() => {
+                self.focus = if self.focus == Focus::Tabs && self.run_view.drawn {
+                    Focus::Run
+                } else {
+                    Focus::Tabs
+                };
+            }
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::List if self.workbench != Workbench::Observability => Focus::Tabs,
@@ -2368,6 +2623,13 @@ impl Model {
                 if self.focus == Focus::Run =>
             {
                 return self.run_key(key.code)
+            }
+            KeyCode::Char(typed)
+                if typed == SHELL.key
+                    && self.workbench == Workbench::Devices
+                    && self.focus != Focus::Run =>
+            {
+                return self.type_in_terminal()
             }
             _ if self.focus == Focus::Run => {}
             _ if self.workbench == Workbench::Services => return self.services_key(key),
@@ -2477,7 +2739,8 @@ impl Model {
                 | Tab::Config
                 | Tab::Timeline
                 | Tab::Alerts
-                | Tab::Metrics,
+                | Tab::Metrics
+                | Tab::Terminal,
             ) => self.overview_key(key.code),
             (Focus::Tabs, Tab::Logs) => self.logs_key(key.code),
             (Focus::Tabs, Tab::Sonda) => self.sonda_key(key),
@@ -2509,12 +2772,17 @@ impl Model {
             Tab::Timeline => self.timeline_key(key.code),
             Tab::Logs => self.device_logs_key(key.code),
             Tab::Config => self.config_key(key.code),
+            Tab::Terminal => self.terminal_key(key.code),
             _ => Vec::new(),
         }
     }
 
     fn open_device_tab(&mut self, forward: bool) -> Vec<Command> {
-        self.tab = step(self.device_tabs(), self.tab, forward);
+        let next = step(self.device_tabs(), self.tab, forward);
+        if next == Tab::Terminal {
+            self.kept_tab = self.tab;
+        }
+        self.tab = next;
         let mut commands: Vec<Command> = self
             .selected_device()
             .map(|device| Command::SelectDevice(device.name.clone()))
@@ -2908,7 +3176,8 @@ impl Model {
 }
 
 pub fn handle(model: &mut Model, key: KeyEvent) -> Vec<Command> {
-    let commands = take_key(model, key);
+    let mut commands = take_key(model, key);
+    commands.extend(model.step_aside());
     model.keep_alert();
     model.keep_marked_device();
     model.keep_mark();
@@ -2920,6 +3189,9 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         return Vec::new();
     }
     model.notice = None;
+    if model.sessions.typed().is_some() {
+        return model.typed_key(key);
+    }
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let quit = match key.code {
@@ -2936,14 +3208,20 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
             return model.answer(question, key);
         }
     }
-    if quit && model.active().is_some() {
-        model.question = Some(Question::Quit);
+    let sessions: Vec<String> = model
+        .sessions
+        .live()
+        .map(|session| session.device.clone())
+        .collect();
+    let action = model.active().is_some();
+    if quit && (action || (!ctrl_c && !sessions.is_empty())) {
+        model.question = Some(Question::Quit { sessions, action });
         return Vec::new();
     }
     if quit {
         model.quit = true;
         model.exit_code = i32::from(model.chooser);
-        return vec![Command::Quit];
+        return model.quit_commands();
     }
     if control || alt || model.too_small() {
         return Vec::new();
@@ -3166,9 +3444,14 @@ pub(crate) mod tests {
     use nobs_core::locate::locate;
     use nobs_core::sot::Fixed;
 
+    use std::sync::mpsc::{self, Sender};
+
     use super::*;
     use crate::actions::{arguments, Action};
+    use crate::pty::tests::{Call, FakeTerminals};
+    use crate::pty::{Terminals, Wire};
     use crate::screen::{help_entries, key_line};
+    use crate::terminal::State;
 
     const TWO: &str = r#"{"scenarios":[{"id":"a1","name":"cpu","state":"running"},{"id":"b2","name":"mem","state":"paused"}]}"#;
 
@@ -6991,7 +7274,13 @@ pub(crate) mod tests {
         running(&mut model);
 
         assert_eq!(ch(&mut model, 'q'), []);
-        assert_eq!(model.question(), Some(&Question::Quit));
+        assert_eq!(
+            model.question(),
+            Some(&Question::Quit {
+                sessions: Vec::new(),
+                action: true
+            })
+        );
         assert_eq!(
             model.question().unwrap().text(),
             "an action is running: stop it and quit? y/n"
@@ -8879,5 +9168,737 @@ pub(crate) mod tests {
 
         assert_eq!(ch(&mut model, 'r'), [Command::Refresh]);
         assert_eq!((model.focus(), model.tab()), (Focus::Run, Tab::Sonda));
+    }
+
+    const SRL1: &str = "nobs-t-srl1";
+    const SRL2: &str = "nobs-t-srl2";
+
+    fn opened_id(commands: &[Command]) -> Option<u64> {
+        commands.iter().find_map(|command| match command {
+            Command::TermOpen { id, .. } => Some(*id),
+            _ => None,
+        })
+    }
+
+    fn state_of(model: &Model, device: &str) -> Option<State> {
+        model.sessions.of(device).map(|session| session.state)
+    }
+
+    fn connecting(typing: bool) -> State {
+        State::Connecting { typing }
+    }
+
+    fn leave(model: &mut Model) -> Vec<Command> {
+        handle(model, with(KeyCode::Char(']'), KeyModifiers::CONTROL))
+    }
+
+    fn typing_in_srl1() -> (Model, u64) {
+        let mut model = lab_devices_model();
+        let id = opened_id(&ch(&mut model, 't')).unwrap();
+        (model, id)
+    }
+
+    fn terminal_snapshot(model: &Model) -> String {
+        format!(
+            "{} {:?} {:?} {:?} {:?}",
+            snapshot(model),
+            model.question(),
+            model.notice(),
+            state_of(model, SRL1),
+            state_of(model, SRL2)
+        )
+    }
+
+    fn with_devices(names: &[&str]) -> Model {
+        let mut model = lab_devices_model();
+        let devices = names
+            .iter()
+            .map(|name| Device {
+                name: name.to_string(),
+                kind: None,
+                site: None,
+                role: None,
+                asn: None,
+                maintenance: false,
+                interfaces: Vec::new(),
+                sessions: Vec::new(),
+            })
+            .collect();
+        model.apply(Update::Devices(Ok(devices)));
+        model
+    }
+
+    fn wire_up(
+        terminals: &FakeTerminals,
+        wires: &mut BTreeMap<u64, Box<dyn Wire>>,
+        out: &Sender<Update>,
+        commands: Vec<Command>,
+    ) {
+        for command in commands {
+            match command {
+                Command::TermOpen {
+                    id,
+                    program,
+                    args,
+                    dir,
+                    size,
+                    login,
+                } => {
+                    let wire = terminals
+                        .open(&program, &args, &dir, &login, size, id, out.clone())
+                        .unwrap();
+                    wires.insert(id, wire);
+                }
+                Command::TermWrite { id, bytes } => wires.get_mut(&id).unwrap().write(&bytes),
+                Command::TermResize { id, size } => wires.get_mut(&id).unwrap().resize(size),
+                Command::TermClose(id) => wires.get_mut(&id).unwrap().close(),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn t_from_the_list_and_from_each_device_tab_opens_the_terminal_and_types_in_it() {
+        let tabs = lab_devices_model().device_tabs();
+        for from in [None].into_iter().chain(tabs.iter().copied().map(Some)) {
+            let mut model = lab_devices_model();
+            if let Some(tab) = from {
+                code(&mut model, KeyCode::Enter);
+                while model.tab() != tab {
+                    ch(&mut model, ']');
+                }
+            }
+
+            let commands = ch(&mut model, 't');
+
+            assert!(opened_id(&commands).is_some(), "{from:?} {commands:?}");
+            assert_eq!(
+                (model.tab(), model.focus()),
+                (Tab::Terminal, Focus::Tabs),
+                "{from:?}"
+            );
+            assert_eq!(
+                state_of(&model, SRL1),
+                Some(State::Connecting { typing: true }),
+                "{from:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_state_follows_the_keys_and_the_updates() {
+        let (mut model, id) = typing_in_srl1();
+        let scrolled = |model: &Model| model.drawn_session().unwrap().screen.screen().scrollback();
+        assert_eq!(leave(&mut model), []);
+        assert_eq!(state_of(&model, SRL1), Some(connecting(false)));
+        assert_eq!(ch(&mut model, 't'), []);
+        assert_eq!(state_of(&model, SRL1), Some(connecting(true)));
+
+        let lines: String = (1..=60).map(|line| format!("line {line}\r\n")).collect();
+        model.apply(Update::TermOutput(id, lines.into_bytes()));
+        assert_eq!(state_of(&model, SRL1), Some(State::Typing));
+        let ctrl_5 = with(KeyCode::Char('5'), KeyModifiers::CONTROL);
+        assert_eq!(handle(&mut model, ctrl_5), []);
+        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 0 }));
+
+        for _ in 0..3 {
+            ch(&mut model, 'k');
+        }
+        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 3 }));
+        assert_eq!(scrolled(&model), 3);
+        code(&mut model, KeyCode::Down);
+        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 2 }));
+        code(&mut model, KeyCode::PageUp);
+        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 26 }));
+        code(&mut model, KeyCode::PageDown);
+        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 2 }));
+
+        assert_eq!(ch(&mut model, 't'), []);
+        assert_eq!(state_of(&model, SRL1), Some(State::Typing));
+        assert_eq!(scrolled(&model), 0);
+
+        model.apply(Update::TermEnded(id, 0));
+        assert_eq!(
+            state_of(&model, SRL1),
+            Some(State::Closed {
+                why: Closed::ShellEnded,
+                up: 0
+            })
+        );
+        assert_eq!(ch(&mut model, 'k'), []);
+    }
+
+    #[test]
+    fn every_key_typed_reaches_the_session_as_its_bytes_and_nothing_else() {
+        let (mut model, id) = typing_in_srl1();
+        let keys: [(KeyEvent, &[u8]); 14] = [
+            (key(KeyCode::Char('q')), b"q"),
+            (key(KeyCode::Char('?')), b"?"),
+            (key(KeyCode::Char('1')), b"1"),
+            (key(KeyCode::Tab), b"\t"),
+            (key(KeyCode::Esc), b"\x1b"),
+            (key(KeyCode::Char('c')), b"c"),
+            (key(KeyCode::Char('t')), b"t"),
+            (key(KeyCode::Char('j')), b"j"),
+            (key(KeyCode::Enter), b"\r"),
+            (key(KeyCode::Up), b"\x1b[A"),
+            (key(KeyCode::F(5)), b"\x1b[15~"),
+            (with(KeyCode::Char('c'), KeyModifiers::CONTROL), b"\x03"),
+            (with(KeyCode::Char('x'), KeyModifiers::ALT), b"\x1bx"),
+            (with(KeyCode::Char(']'), KeyModifiers::ALT), b"\x1b]"),
+        ];
+        let before = terminal_snapshot(&model);
+
+        for (typed, bytes) in keys {
+            assert_eq!(
+                handle(&mut model, typed),
+                [Command::TermWrite {
+                    id,
+                    bytes: bytes.to_vec()
+                }],
+                "{typed:?}"
+            );
+            assert_eq!(terminal_snapshot(&model), before, "{typed:?}");
+        }
+        assert_eq!(code(&mut model, KeyCode::F(13)), []);
+        assert_eq!(terminal_snapshot(&model), before);
+
+        model.apply(Update::TermOutput(id, b"\x1b[?1h".to_vec()));
+        assert_eq!(
+            code(&mut model, KeyCode::Up),
+            [Command::TermWrite {
+                id,
+                bytes: b"\x1bOA".to_vec()
+            }]
+        );
+    }
+
+    fn drawn(model: &Model) -> Option<(u64, String, &'static [&'static str])> {
+        model
+            .drawn_session()
+            .map(|session| (session.id, session.state.word(), session.state.keys()))
+    }
+
+    fn written_to(commands: &[Command]) -> Vec<u64> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::TermWrite { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_refresh_that_moves_the_rows_keeps_typing_and_the_picture_on_the_typed_session() {
+        let typing: &[&str] = &["Ctrl-] leave (session stays open)"];
+        let mut model = with_devices(&[SRL2, SRL1]);
+        opened_id(&ch(&mut model, 't')).unwrap();
+        leave(&mut model);
+        model.apply(named(&[SRL1, SRL2]));
+        let srl1 = opened_id(&ch(&mut model, 't')).unwrap();
+        let picture = Some((srl1, "connecting…".to_string(), typing));
+        assert_eq!(drawn(&model), picture);
+
+        for rows in [&[SRL2, SRL1][..], &[SRL1]] {
+            model.apply(named(rows));
+
+            assert_eq!(drawn(&model), picture, "{rows:?}");
+            assert_eq!(
+                model.selected_device().map(|device| device.name.as_str()),
+                Some(SRL1)
+            );
+            assert_eq!(
+                model.cursor(),
+                Cursor::Device(model.device_index(SRL1).unwrap()),
+                "{rows:?}"
+            );
+            assert_eq!(written_to(&ch(&mut model, 'x')), [srl1], "{rows:?}");
+            assert_eq!(state_of(&model, SRL1), Some(connecting(true)));
+        }
+    }
+
+    #[test]
+    fn the_key_that_finds_the_typed_device_gone_only_ends_typing() {
+        for typed in ['s', 'q'] {
+            let (mut model, _) = typing_in_srl1();
+            model.apply(named(&[SRL2]));
+
+            let commands = ch(&mut model, typed);
+
+            assert_eq!(commands, [], "{typed}");
+            assert_eq!(model.question(), None, "{typed}");
+            assert_eq!(model.entry(), None, "{typed}");
+            assert!(model.login_entry().is_none(), "{typed}");
+            assert!(!model.quit(), "{typed}");
+            assert_eq!(state_of(&model, SRL1), Some(connecting(false)), "{typed}");
+        }
+    }
+
+    #[test]
+    fn while_the_window_is_too_small_only_ctrl_close_bracket_and_ctrl_5_act_on_typing() {
+        for leaving in [']', '5'] {
+            let (mut model, id) = typing_in_srl1();
+            model.apply(Update::TermOutput(id, b"$ ".to_vec()));
+            small(&mut model, 59, 15);
+            let keys = [
+                key(KeyCode::Char('x')),
+                key(KeyCode::Char('q')),
+                key(KeyCode::Enter),
+                key(KeyCode::Esc),
+                with(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            ];
+            for typed in keys {
+                assert_eq!(handle(&mut model, typed), [], "{typed:?}");
+                assert_eq!(state_of(&model, SRL1), Some(State::Typing), "{typed:?}");
+            }
+            assert!(!model.quit());
+
+            small(&mut model, 60, 15);
+            assert_eq!(written_to(&ch(&mut model, 'x')), [id]);
+
+            small(&mut model, 60, 14);
+            let key = with(KeyCode::Char(leaving), KeyModifiers::CONTROL);
+            assert_eq!(handle(&mut model, key), [], "{leaving}");
+            assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 0 }));
+        }
+    }
+
+    #[test]
+    fn ctrl_close_bracket_and_ctrl_5_leave_typing() {
+        for leaving in ['5', ']'] {
+            let (mut model, _) = typing_in_srl1();
+
+            let key = with(KeyCode::Char(leaving), KeyModifiers::CONTROL);
+
+            assert_eq!(handle(&mut model, key), [], "{leaving}");
+            assert_eq!(state_of(&model, SRL1), Some(connecting(false)), "{leaving}");
+        }
+    }
+
+    #[test]
+    fn no_key_reaches_a_session_not_typed_in() {
+        let keys = [
+            key(KeyCode::Char('x')),
+            key(KeyCode::Char('j')),
+            key(KeyCode::Char('?')),
+            key(KeyCode::Esc),
+            key(KeyCode::Char('t')),
+            key(KeyCode::Char('q')),
+            key(KeyCode::Enter),
+            key(KeyCode::Tab),
+            with(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        ];
+        for typed in keys {
+            let (mut model, id) = typing_in_srl1();
+            model.apply(Update::TermOutput(id, b"$ ".to_vec()));
+            leave(&mut model);
+
+            let commands = handle(&mut model, typed);
+
+            let written = commands
+                .iter()
+                .any(|command| matches!(command, Command::TermWrite { .. }));
+            assert!(!written, "{typed:?} {commands:?}");
+        }
+    }
+
+    #[test]
+    fn the_mark_follows_the_state_of_each_device() {
+        let marked = |model: &Model, device: &str| {
+            model
+                .sessions
+                .of(device)
+                .is_some_and(|session| session.state.marked())
+        };
+        let (mut model, id) = typing_in_srl1();
+        assert!(marked(&model, SRL1));
+        assert!(!marked(&model, SRL2));
+        leave(&mut model);
+        assert!(marked(&model, SRL1));
+        model.apply(Update::TermOutput(id, b"$ ".to_vec()));
+        assert!(marked(&model, SRL1));
+
+        model.apply(Update::TermEnded(id, 1));
+
+        assert!(!marked(&model, SRL1));
+    }
+
+    #[test]
+    fn the_fifth_session_closes_the_one_left_longest_ago_with_a_notice_the_next_key_clears() {
+        let mut model = with_devices(&[
+            "nobs-t-n1",
+            "nobs-t-n2",
+            "nobs-t-n3",
+            "nobs-t-n4",
+            "nobs-t-n5",
+        ]);
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            ids.push(opened_id(&ch(&mut model, 't')).unwrap());
+            leave(&mut model);
+            code(&mut model, KeyCode::Esc);
+            ch(&mut model, 'j');
+        }
+
+        let commands = ch(&mut model, 't');
+
+        let id = opened_id(&commands).unwrap();
+        assert_eq!(commands.first(), Some(&Command::TermClose(ids[0])));
+        assert_eq!(
+            model.notice(),
+            Some("closed the terminal session of nobs-t-n1: the limit of four")
+        );
+        assert_eq!(
+            state_of(&model, "nobs-t-n1"),
+            Some(State::Closed {
+                why: Closed::Limit,
+                up: 0
+            })
+        );
+        assert_eq!(model.sessions.live().count(), 4);
+        assert_eq!(
+            ch(&mut model, 'x'),
+            [Command::TermWrite {
+                id,
+                bytes: b"x".to_vec()
+            }]
+        );
+        assert_eq!(model.notice(), None);
+    }
+
+    #[test]
+    fn q_asks_only_with_a_session_open_y_closes_all_n_none() {
+        let mut none = lab_devices_model();
+        assert_eq!(ch(&mut none, 'q'), [Command::Quit]);
+
+        let (mut one, id) = typing_in_srl1();
+        leave(&mut one);
+        assert_eq!(ch(&mut one, 'q'), []);
+        assert_eq!(
+            one.question().unwrap().text(),
+            "1 terminal session is open: nobs-t-srl1\nquit and close them?   y / n"
+        );
+        assert_eq!(ch(&mut one, 'n'), []);
+        assert!(!one.quit());
+        assert_eq!(state_of(&one, SRL1), Some(connecting(false)));
+        ch(&mut one, 'q');
+        assert_eq!(ch(&mut one, 'y'), [Command::TermClose(id), Command::Quit]);
+        assert!(one.quit());
+
+        let (mut two, first) = typing_in_srl1();
+        leave(&mut two);
+        code(&mut two, KeyCode::Esc);
+        ch(&mut two, 'j');
+        let second = opened_id(&ch(&mut two, 't')).unwrap();
+        leave(&mut two);
+        ch(&mut two, 'q');
+        assert_eq!(
+            two.question().unwrap().text(),
+            "2 terminal sessions are open: nobs-t-srl1, nobs-t-srl2\nquit and close them?   y / n"
+        );
+        assert_eq!(
+            ch(&mut two, 'y'),
+            [
+                Command::TermClose(first),
+                Command::TermClose(second),
+                Command::Quit
+            ]
+        );
+
+        let (mut ended, id) = typing_in_srl1();
+        model_ends(&mut ended, id);
+        assert_eq!(ch(&mut ended, 'q'), [Command::Quit]);
+
+        let mut acting = lab_devices_model();
+        ch(&mut acting, 'g');
+        let id = opened_id(&ch(&mut acting, 't')).unwrap();
+        leave(&mut acting);
+        ch(&mut acting, 'q');
+        assert_eq!(
+            acting.question().unwrap().text(),
+            "an action is running and 1 terminal session is open: nobs-t-srl1\nstop it, close them and quit?   y / n"
+        );
+        assert_eq!(
+            ch(&mut acting, 'y'),
+            [Command::TermClose(id), Command::Stop]
+        );
+    }
+
+    fn model_ends(model: &mut Model, id: u64) {
+        model.apply(Update::TermEnded(id, 0));
+    }
+
+    #[test]
+    fn ctrl_c_with_a_session_open_and_not_typed_in_closes_it_and_quits() {
+        let (mut model, id) = typing_in_srl1();
+        leave(&mut model);
+
+        let commands = handle(&mut model, with(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+        assert_eq!(commands, [Command::TermClose(id), Command::Quit]);
+        assert!(model.quit());
+    }
+
+    #[test]
+    fn c_closes_at_once_and_only_when_not_typing() {
+        let (mut model, id) = typing_in_srl1();
+        assert_eq!(
+            ch(&mut model, 'c'),
+            [Command::TermWrite {
+                id,
+                bytes: b"c".to_vec()
+            }]
+        );
+        assert_eq!(state_of(&model, SRL1), Some(connecting(true)));
+        leave(&mut model);
+
+        assert_eq!(ch(&mut model, 'c'), [Command::TermClose(id)]);
+        assert_eq!(model.question(), None);
+        assert_eq!(
+            state_of(&model, SRL1),
+            Some(State::Closed {
+                why: Closed::ByYou,
+                up: 0
+            })
+        );
+        model.apply(Update::TermEnded(id, 1));
+        assert_eq!(state_of(&model, SRL1).unwrap().word(), "closed: by you");
+        assert_eq!(ch(&mut model, 'c'), []);
+    }
+
+    #[test]
+    fn t_on_a_closed_session_connects_again_with_a_cleared_screen() {
+        let (mut model, old) = typing_in_srl1();
+        model.apply(Update::TermOutput(old, b"nobs-t-old\r\n".to_vec()));
+        model.apply(Update::TermEnded(old, 1));
+        assert_eq!(state_of(&model, SRL1).unwrap().word(), "closed: exit 1");
+
+        let new = opened_id(&ch(&mut model, 't')).unwrap();
+        model.apply(Update::TermOutput(old, b"nobs-t-late".to_vec()));
+        model.apply(Update::TermEnded(old, 0));
+
+        assert_ne!(new, old);
+        assert_eq!(state_of(&model, SRL1), Some(connecting(true)));
+        let contents = model.drawn_session().unwrap().screen.screen().contents();
+        assert!(!contents.contains("nobs-t-old"), "{contents:?}");
+        assert!(!contents.contains("nobs-t-late"), "{contents:?}");
+    }
+
+    #[test]
+    fn a_workshop_has_no_terminal_tab_and_t_does_nothing() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        assert!(!model.device_tabs().contains(&Tab::Terminal));
+        let before = terminal_snapshot(&model);
+        assert_eq!(ch(&mut model, 't'), []);
+        assert_eq!(terminal_snapshot(&model), before);
+
+        code(&mut model, KeyCode::Enter);
+        let before = terminal_snapshot(&model);
+        assert_eq!(ch(&mut model, 't'), []);
+        assert_eq!(terminal_snapshot(&model), before);
+        assert!(model.sessions.live().next().is_none());
+    }
+
+    #[test]
+    fn the_tab_runs_nobs_device_shell_in_the_lab_folder() {
+        let mut model = lab_devices_model();
+        let dir = model.located().unwrap().dir.clone();
+
+        let commands = ch(&mut model, 't');
+
+        let id = opened_id(&commands).unwrap();
+        let args: Vec<OsString> = ["--dir".into(), dir.clone().into_os_string()]
+            .into_iter()
+            .chain(["device", "shell", SRL1].map(OsString::from))
+            .collect();
+        assert_eq!(
+            commands.last(),
+            Some(&Command::TermOpen {
+                id,
+                program: PathBuf::from("/bin/nobs"),
+                args,
+                dir: dir.clone(),
+                size: model.sessions.size(),
+                login: Login::default(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_typed_login_reaches_the_open_of_the_terminal_and_no_argument() {
+        let mut model = lab_model_finding(
+            "book-lab",
+            "book-lab/containerlab/lab_vars.yml",
+            finding(None, None),
+        );
+        let terminals = FakeTerminals::default();
+        let mut wires = BTreeMap::new();
+        let (out, updates) = mpsc::channel();
+        let login = Login {
+            user: Some(USER.to_string()),
+            password: Some(Password::new(SECRET.to_string())),
+        };
+
+        assert_eq!(ch(&mut model, 't'), []);
+        typed(&mut model, USER);
+        code(&mut model, KeyCode::Enter);
+        typed(&mut model, SECRET);
+        let commands = code(&mut model, KeyCode::Enter);
+        let id = opened_id(&commands).unwrap();
+        wire_up(&terminals, &mut wires, &out, commands);
+        wire_up(&terminals, &mut wires, &out, ch(&mut model, 'x'));
+
+        let calls = terminals.calls();
+        let Some(Call::Open {
+            login: given, args, ..
+        }) = calls.first()
+        else {
+            panic!("{calls:?}");
+        };
+        assert_eq!(given, &login);
+        assert!(args
+            .iter()
+            .all(|arg| arg != USER && arg != SECRET && !arg.to_string_lossy().contains(SECRET)));
+        assert_eq!(calls.get(1), Some(&Call::Write(id, b"x".to_vec())));
+        terminals
+            .sender()
+            .unwrap()
+            .send(Update::TermOutput(id, b"$ ".to_vec()))
+            .unwrap();
+        model.apply(updates.recv().unwrap());
+        assert_eq!(state_of(&model, SRL1), Some(State::Typing));
+
+        leave(&mut model);
+        code(&mut model, KeyCode::Esc);
+        let fetch = ch(&mut model, 'g');
+        assert!(
+            matches!(fetch.first(), Some(Command::Run { login: kept, .. }) if *kept == login),
+            "{fetch:?}"
+        );
+    }
+
+    #[test]
+    fn t_with_a_missing_login_asks_through_the_step_of_g_and_s_and_esc_opens_none() {
+        let missing = || {
+            lab_model_finding(
+                "book-lab",
+                "book-lab/containerlab/lab_vars.yml",
+                finding(None, None),
+            )
+        };
+        let mut fetch = missing();
+        ch(&mut fetch, 'g');
+        let mut model = missing();
+
+        assert_eq!(ch(&mut model, 't'), []);
+        assert!(matches!(model.login_entry(), Some(LoginEntry::User { .. })));
+        assert_eq!(key_line(&model, 60), key_line(&fetch, 60));
+        assert_eq!(code(&mut model, KeyCode::Esc), []);
+        assert!(!model.typing());
+        assert_eq!(state_of(&model, SRL1), None);
+        assert_eq!(model.tab(), Tab::Overview);
+
+        ch(&mut model, 't');
+        typed(&mut model, USER);
+        code(&mut model, KeyCode::Enter);
+        assert!(matches!(
+            model.login_entry(),
+            Some(LoginEntry::Password { .. })
+        ));
+        typed(&mut model, SECRET);
+        let commands = code(&mut model, KeyCode::Enter);
+
+        assert!(opened_id(&commands).is_some(), "{commands:?}");
+        assert_eq!(model.tab(), Tab::Terminal);
+    }
+
+    #[test]
+    fn a_new_size_reaches_every_live_session_once() {
+        let (mut model, first) = typing_in_srl1();
+        leave(&mut model);
+        code(&mut model, KeyCode::Esc);
+        ch(&mut model, 'j');
+        let second = opened_id(&ch(&mut model, 't')).unwrap();
+        model.apply(Update::TermEnded(second, 0));
+        let terminals = FakeTerminals::default();
+        let mut wires = BTreeMap::new();
+        let (out, _updates) = mpsc::channel();
+        wire_up(
+            &terminals,
+            &mut wires,
+            &out,
+            vec![Command::TermOpen {
+                id: first,
+                program: PathBuf::from("/bin/nobs"),
+                args: Vec::new(),
+                dir: PathBuf::from("/"),
+                size: (24, 80),
+                login: Login::default(),
+            }],
+        );
+
+        let commands = model.set_terminal_size((13, 78));
+        wire_up(&terminals, &mut wires, &out, commands.clone());
+
+        assert_eq!(
+            commands,
+            [Command::TermResize {
+                id: first,
+                size: (13, 78)
+            }]
+        );
+        assert_eq!(
+            terminals.calls().last(),
+            Some(&Call::Resize(first, (13, 78)))
+        );
+        assert_eq!(model.set_terminal_size((13, 78)), []);
+        for device in [SRL1, SRL2] {
+            let session = model.sessions.of(device).unwrap();
+            assert_eq!(session.screen.screen().size(), (13, 78), "{device}");
+        }
+        let close = vec![Command::TermClose(first)];
+        wire_up(&terminals, &mut wires, &out, close);
+        assert_eq!(terminals.calls().last(), Some(&Call::Close(first)));
+    }
+
+    #[test]
+    fn esc_on_the_terminal_tab_goes_back_to_the_list_with_the_tab_open_before() {
+        let mut model = lab_devices_model();
+        code(&mut model, KeyCode::Enter);
+        while model.tab() != Tab::Timeline {
+            ch(&mut model, ']');
+        }
+        ch(&mut model, 't');
+        leave(&mut model);
+        code(&mut model, KeyCode::Tab);
+        assert_eq!((model.tab(), model.focus()), (Tab::Terminal, Focus::Tabs));
+
+        let commands = code(&mut model, KeyCode::Esc);
+
+        assert_eq!((model.tab(), model.focus()), (Tab::Timeline, Focus::List));
+        assert_eq!(commands, [Command::OpenTab(Tab::Timeline)]);
+
+        code(&mut model, KeyCode::Enter);
+        while model.tab() != Tab::Terminal {
+            ch(&mut model, ']');
+        }
+        code(&mut model, KeyCode::Esc);
+        assert_eq!((model.tab(), model.focus()), (Tab::Logs, Focus::List));
+    }
+
+    #[test]
+    fn the_terminal_is_live_only_while_shown_with_its_session_connecting_or_open() {
+        let mut model = lab_devices_model();
+        assert!(!model.terminal_live());
+        let id = opened_id(&ch(&mut model, 't')).unwrap();
+        assert!(model.terminal_live());
+        leave(&mut model);
+        assert!(model.terminal_live());
+        code(&mut model, KeyCode::Esc);
+        assert!(!model.terminal_live());
+        ch(&mut model, 't');
+        model.apply(Update::TermEnded(id, 0));
+        assert!(!model.terminal_live());
     }
 }

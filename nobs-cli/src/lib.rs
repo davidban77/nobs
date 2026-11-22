@@ -5359,7 +5359,12 @@ fn open_screen(given_dir: Option<&Path>, flags: SondaFlags, chooser: bool) -> i3
             }
         };
         let runner = std::sync::Arc::new(nobs_core::runner::CapturedRunner);
-        match nobs_tui::run(start, runner, std::sync::Arc::new(nobs_tui::Processes)) {
+        match nobs_tui::run(
+            start,
+            runner,
+            std::sync::Arc::new(nobs_tui::Processes),
+            std::sync::Arc::new(nobs_tui::Ptys),
+        ) {
             Ok(1) => {
                 eprintln!("nobs: {}", LocateError::NotFound);
                 1

@@ -71,14 +71,8 @@ fn launch(
     out: Sender<Update>,
     probe: fn(u32) -> io::Result<()>,
 ) -> io::Result<Box<dyn Running>> {
-    let mut command = Command::new(program);
-    if let Some(user) = &login.user {
-        command.env(device::USER, user);
-    }
-    if let Some(password) = &login.password {
-        command.env(device::PASSWORD, password.expose());
-    }
-    let mut child = command
+    let mut child = Command::new(program)
+        .envs(login_vars(login))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -102,6 +96,17 @@ fn launch(
     let watched = Arc::clone(&state);
     thread::spawn(move || watch(child, readers, &watched, &out, probe));
     Ok(Box::new(Process { group, state }))
+}
+
+pub(crate) fn login_vars(login: &Login) -> Vec<(&'static str, &str)> {
+    let mut vars = Vec::new();
+    if let Some(user) = &login.user {
+        vars.push((device::USER, user.as_str()));
+    }
+    if let Some(password) = &login.password {
+        vars.push((device::PASSWORD, password.expose()));
+    }
+    vars
 }
 
 impl Running for Process {

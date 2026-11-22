@@ -1,0 +1,30 @@
+ nobs  book-lab book lab  sot lab_vars                                                     13:42:07
+ [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
+╔ nobs-t-srl1 ═════════════════════════════════════════════════════════════════════════════════════╗
+║overview  interfaces  config  timeline  logs  TERMINAL                                  3 lines up║
+║nobs-t-line 15                                                                                    ║
+║nobs-t-line 16                                                                                    ║
+║nobs-t-line 17                                                                                    ║
+║nobs-t-line 18                                                                                    ║
+║nobs-t-line 19                                                                                    ║
+║nobs-t-line 20                                                                                    ║
+║nobs-t-line 21                                                                                    ║
+║nobs-t-line 22                                                                                    ║
+║nobs-t-line 23                                                                                    ║
+║nobs-t-line 24                                                                                    ║
+║nobs-t-line 25                                                                                    ║
+║nobs-t-line 26                                                                                    ║
+║nobs-t-line 27                                                                                    ║
+║nobs-t-line 28                                                                                    ║
+║nobs-t-line 29                                                                                    ║
+║nobs-t-line 30                                                                                    ║
+║nobs-t-line 31                                                                                    ║
+║nobs-t-line 32                                                                                    ║
+║nobs-t-line 33                                                                                    ║
+║nobs-t-line 34                                                                                    ║
+║nobs-t-line 35                                                                                    ║
+║nobs-t-line 36                                                                                    ║
+║nobs-t-line 37                                                                                    ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+ run  none                                                                                   o open
+ t type in the terminal  j/k scroll  c close session

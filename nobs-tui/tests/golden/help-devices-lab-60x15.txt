@@ -5,11 +5,11 @@
   ║Tab      focus list/tabs   f       follow/pause logs  ║
   ║j k ↑ ↓  move              o       run pane           ║
   ║[ ]      other tab         ?       close              ║
-  ║- +      timeline window   m       maintenance        ║
-  ║x        dismiss the error g       get config         ║
-  ║Esc      close/clear/back  s       run command        ║
+  ║t        type in terminal  m       maintenance        ║
+  ║- +      timeline window   g       get config         ║
+  ║x        dismiss the error s       run command        ║
   ║alerts box: Enter picks the device, opens its timeline║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
   ║j/k more                                              ║
-  ╚═════════════════════════════════════════════════ ↓2 ═╝
+  ╚═════════════════════════════════════════════════ ↓3 ═╝
  Tab focus  j/k move  / filter  Enter open  r refresh

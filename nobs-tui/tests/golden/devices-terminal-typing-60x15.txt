@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab  4 obs       ? keys  q quit
+╔ nobs-t-srl1 ═════════════════════════════════════════════╗
+║overview  ifaces  config  timeline  logs  TERMINAL  typing║
+║A:nobs-t-x@nobs-t-srl1# show version                      ║
+║Hostname             : nobs-t-srl1                        ║
+║Software Version     : v26.3.3                            ║
+║A:nobs-t-x@nobs-t-srl1#                                   ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+ run  none                                           o open
+ Ctrl-] leave (session stays open)

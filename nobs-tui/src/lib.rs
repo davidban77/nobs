@@ -25,13 +25,17 @@ pub mod actions;
 pub mod book;
 pub mod data;
 pub mod devices;
+mod keys;
 pub mod poll;
+mod pty;
 pub mod run;
 pub mod screen;
 pub mod shell;
+mod terminal;
 pub mod view;
 
 pub use poll::Pollers;
+pub use pty::{Ptys, Terminals, Wire};
 pub use run::{End, Launcher, Processes, Running};
 pub use screen::draw;
 pub use shell::{
@@ -42,11 +46,14 @@ pub use shell::{
 const PERIOD: Duration = Duration::from_secs(1);
 const KEY_WAIT: Duration = Duration::from_millis(100);
 const DRAIN_LIMIT: Duration = Duration::from_millis(50);
+const TYPE_WAIT: Duration = Duration::from_millis(20);
+const TYPE_DRAIN: Duration = Duration::from_millis(10);
 
 pub fn run(
     start: Start,
     runner: Arc<dyn Runner + Send + Sync>,
     launcher: Arc<dyn Launcher>,
+    terminals: Arc<dyn Terminals>,
 ) -> Result<i32, String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the screen needs a terminal".to_string());
@@ -75,6 +82,7 @@ pub fn run(
         topology,
     );
     let mut actions = Actions::new(launcher);
+    let mut wires = Wires::new(terminals);
     let result = Terminal::new(CrosstermBackend::new(io::stdout()))
         .map_err(failed)
         .and_then(|mut terminal| {
@@ -84,6 +92,7 @@ pub fn run(
                 &pollers,
                 &updates,
                 &mut actions,
+                &mut wires,
                 read_key,
             )
         });
@@ -117,9 +126,7 @@ impl Actions {
         {
             Ok(running) => self.running = Some(running),
             Err(error) => {
-                let _ = self.sender.send(Update::ActionLine(format!(
-                    "nobs: cannot run nobs: {error}"
-                )));
+                let _ = self.sender.send(Update::ActionLine(cannot_run(error)));
                 let _ = self.sender.send(Update::ActionEnded(End::Exited(1)));
             }
         }
@@ -134,18 +141,16 @@ impl Actions {
     fn drain_until_quit(
         &mut self,
         model: &mut Model,
+        wires: &mut Wires,
         pollers: &Pollers,
         until: Instant,
     ) -> Option<End> {
-        while Instant::now() < until {
-            let Ok(update) = self.updates.try_recv() else {
-                return None;
-            };
+        while let Ok(update) = next_before(&self.updates, until) {
             let ended = match update {
                 Update::ActionEnded(end) => Some(end),
                 _ => None,
             };
-            send(model.apply(update), self, pollers);
+            send(model.apply(update), self, wires, pollers);
             if let Some(end) = ended {
                 self.running = None;
                 pollers.send(Command::Refresh);
@@ -155,6 +160,101 @@ impl Actions {
             }
         }
         None
+    }
+}
+
+fn cannot_run(error: io::Error) -> String {
+    format!("nobs: cannot run nobs: {error}")
+}
+
+struct Wires {
+    terminals: Arc<dyn Terminals>,
+    sender: Sender<Update>,
+    updates: Receiver<Update>,
+    open: Vec<(u64, Box<dyn Wire>)>,
+}
+
+impl Wires {
+    fn new(terminals: Arc<dyn Terminals>) -> Wires {
+        let (sender, updates) = mpsc::channel();
+        Wires {
+            terminals,
+            sender,
+            updates,
+            open: Vec::new(),
+        }
+    }
+
+    fn open(
+        &mut self,
+        id: u64,
+        program: &Path,
+        args: &[OsString],
+        dir: &Path,
+        login: &Login,
+        size: (u16, u16),
+    ) {
+        let opened = self
+            .terminals
+            .open(program, args, dir, login, size, id, self.sender.clone());
+        match opened {
+            Ok(wire) => self.open.push((id, wire)),
+            Err(error) => {
+                let line = cannot_run(error).into_bytes();
+                let _ = self.sender.send(Update::TermOutput(id, line));
+                let _ = self.sender.send(Update::TermEnded(id, 1));
+            }
+        }
+    }
+
+    fn wire(&mut self, id: u64) -> Option<&mut Box<dyn Wire>> {
+        self.open
+            .iter_mut()
+            .find(|(open, _)| *open == id)
+            .map(|(_, wire)| wire)
+    }
+
+    fn close(&mut self, id: u64) {
+        if let Some(wire) = self.wire(id) {
+            wire.close();
+        }
+        self.open.retain(|(open, _)| *open != id);
+    }
+
+    fn close_all(&mut self) {
+        for (_, wire) in &mut self.open {
+            wire.close();
+        }
+        self.open.clear();
+    }
+
+    fn drain_until(
+        &mut self,
+        model: &mut Model,
+        actions: &mut Actions,
+        pollers: &Pollers,
+        until: Instant,
+    ) {
+        while let Ok(update) = next_before(&self.updates, until) {
+            if let Update::TermEnded(id, _) = update {
+                self.open.retain(|(open, _)| *open != id);
+            }
+            send(model.apply(update), actions, self, pollers);
+        }
+    }
+}
+
+impl Drop for Wires {
+    fn drop(&mut self) {
+        self.close_all();
+    }
+}
+
+fn pace(model: &Model) -> (Duration, Duration) {
+    if model.terminal_live() {
+        (TYPE_DRAIN, TYPE_WAIT)
+    } else {
+        (DRAIN_LIMIT, KEY_WAIT)
     }
 }
 
@@ -175,33 +275,51 @@ fn turns<B: Backend>(
     pollers: &Pollers,
     updates: &Receiver<Update>,
     actions: &mut Actions,
+    wires: &mut Wires,
+    next_key: impl FnMut(Duration) -> Result<Option<KeyEvent>, String>,
+) -> Result<i32, String> {
+    let result = loop_turns(terminal, model, pollers, updates, actions, wires, next_key);
+    wires.close_all();
+    result
+}
+
+fn loop_turns<B: Backend>(
+    terminal: &mut Terminal<B>,
+    model: &mut Model,
+    pollers: &Pollers,
+    updates: &Receiver<Update>,
+    actions: &mut Actions,
+    wires: &mut Wires,
     mut next_key: impl FnMut(Duration) -> Result<Option<KeyEvent>, String>,
 ) -> Result<i32, String> {
     let mut gone = false;
-    send(model.ask_changes(), actions, pollers);
+    send(model.ask_changes(), actions, wires, pollers);
     loop {
-        let until = Instant::now() + DRAIN_LIMIT;
-        drain(updates, model, &mut gone, actions, pollers);
-        match actions.drain_until_quit(model, pollers, until) {
+        let until = Instant::now() + pace(model).0;
+        drain(updates, model, &mut gone, actions, wires, pollers);
+        match actions.drain_until_quit(model, wires, pollers, until) {
             Some(End::NotStopped { group }) => {
                 return Err(shell::not_stopped(group));
             }
             Some(_) => return Ok(model.exit_code()),
             None => {}
         }
+        wires.drain_until(model, actions, pollers, until);
         let size = terminal.size().map_err(failed)?;
         model.tick(Instant::now(), SystemTime::now(), (size.width, size.height));
         let area = Rect::new(0, 0, size.width, size.height);
         settle(model, area);
+        let inside = screen::terminal_size(model, area);
+        send(model.set_terminal_size(inside), actions, wires, pollers);
         terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         model.set_help_overflow(screen::help_overflow(model, area));
         model.set_overview_overflow(screen::overview_overflow(model, area));
         model.set_popup_overflow(screen::popup_overflow(model, area));
         model.set_lab_overflow(screen::lab_overflow(model, area));
         model.set_details_overflow(screen::sonda_overflow(model, area));
-        if let Some(key) = next_key(KEY_WAIT)? {
-            send(handle(model, key), actions, pollers);
-            send(model.ask_changes(), actions, pollers);
+        if let Some(key) = next_key(pace(model).1)? {
+            send(handle(model, key), actions, wires, pollers);
+            send(model.ask_changes(), actions, wires, pollers);
         }
         if model.quit() {
             return Ok(model.exit_code());
@@ -214,7 +332,7 @@ pub fn settle(model: &mut Model, area: Rect) {
     model.set_run_view(measure);
 }
 
-fn send(commands: Vec<Command>, actions: &mut Actions, pollers: &Pollers) {
+fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, pollers: &Pollers) {
     for command in commands {
         match &command {
             Command::Run {
@@ -223,6 +341,25 @@ fn send(commands: Vec<Command>, actions: &mut Actions, pollers: &Pollers) {
                 login,
             } => actions.start(program, args, login),
             Command::Stop => actions.stop(),
+            Command::TermOpen {
+                id,
+                program,
+                args,
+                dir,
+                size,
+                login,
+            } => wires.open(*id, program, args, dir, login, *size),
+            Command::TermWrite { id, bytes } => {
+                if let Some(wire) = wires.wire(*id) {
+                    wire.write(bytes);
+                }
+            }
+            Command::TermResize { id, size } => {
+                if let Some(wire) = wires.wire(*id) {
+                    wire.resize(*size);
+                }
+            }
+            Command::TermClose(id) => wires.close(*id),
             _ => {}
         }
         pollers.send(command);
@@ -234,22 +371,32 @@ fn drain(
     model: &mut Model,
     gone: &mut bool,
     actions: &mut Actions,
+    wires: &mut Wires,
     pollers: &Pollers,
 ) {
-    let until = Instant::now() + DRAIN_LIMIT;
-    while !*gone && Instant::now() < until {
-        match updates.try_recv() {
-            Ok(update) => send(model.apply(update), actions, pollers),
+    let until = Instant::now() + pace(model).0;
+    while !*gone {
+        match next_before(updates, until) {
+            Ok(update) => send(model.apply(update), actions, wires, pollers),
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 *gone = true;
                 send(
                     model.apply(Update::Stopped("poll".to_string())),
                     actions,
+                    wires,
                     pollers,
                 );
             }
         }
+    }
+}
+
+fn next_before(updates: &Receiver<Update>, until: Instant) -> Result<Update, TryRecvError> {
+    if Instant::now() < until {
+        updates.try_recv()
+    } else {
+        Err(TryRecvError::Empty)
     }
 }
 
@@ -319,10 +466,12 @@ mod tests {
     use nobs_core::sot::{self, Device, Maintenance, SourceOfTruth};
     use nobs_core::status::{Service, Urls, SERVICES};
     use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
 
     use super::*;
     use crate::book::NodeRow;
     use crate::data::stub::Stub;
+    use crate::pty::tests::{Call, FakeTerminals};
     use crate::run::tests::FakeLauncher;
     use crate::shell::tests::{defined, every_service_up, finding, listing, SECRET, USER};
     use crate::shell::RunState;
@@ -470,6 +619,315 @@ mod tests {
         Actions::new(Arc::new(FakeLauncher::new()))
     }
 
+    fn wires() -> Wires {
+        Wires::new(Arc::new(FakeTerminals::default()))
+    }
+
+    fn ctrl(typed: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(typed), KeyModifiers::CONTROL)
+    }
+
+    fn opens(calls: &[Call]) -> Vec<(u64, (u16, u16))> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Call::Open { id, size, .. } => Some((*id, *size)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn closes(calls: &[Call]) -> Vec<u64> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Call::Close(id) => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn terminal_turns(
+        model: &mut Model,
+        wires: &mut Wires,
+        (width, height): (u16, u16),
+        keys: &[KeyEvent],
+    ) -> Result<i32, String> {
+        let (pollers, updates) = launch(&scripted(Vec::new()), model);
+        let mut keys = keys.iter().copied();
+        turns(
+            &mut terminal(width, height),
+            model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            wires,
+            |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
+        )
+    }
+
+    #[test]
+    fn the_first_size_is_the_inside_of_the_pane() {
+        for (size, inside) in [
+            ((60, 15), (8, 58)),
+            ((100, 30), (23, 98)),
+            ((80, 20), (13, 78)),
+        ] {
+            let fake = Arc::new(FakeTerminals::default());
+            let mut model = devices_in("book-lab");
+
+            terminal_turns(&mut model, &mut Wires::new(fake.clone()), size, &[ch('t')])
+                .unwrap_err();
+
+            assert_eq!(opens(&fake.calls()), [(1, inside)], "{size:?}");
+        }
+    }
+
+    #[test]
+    fn a_pane_of_no_height_gives_2_by_2_and_output_that_wraps_there_does_not_crash() {
+        let mut model = devices_in("book-lab");
+        handle(&mut model, ch('t'));
+
+        let size = screen::terminal_size(&model, Rect::new(0, 0, 0, 0));
+        let resized = model.set_terminal_size(size);
+        for bytes in ["ab", "cde\r\nfgh", "界界界"] {
+            model.apply(Update::TermOutput(1, bytes.as_bytes().to_vec()));
+        }
+
+        assert_eq!(size, (2, 2));
+        assert_eq!(resized, [Command::TermResize { id: 1, size }]);
+        assert_eq!(
+            screen::terminal_size(&model, Rect::new(0, 0, 60, 4)),
+            (2, 58)
+        );
+    }
+
+    #[test]
+    fn a_new_window_size_reaches_the_session_through_the_loop() {
+        let fake = Arc::new(FakeTerminals::default());
+        let mut wires = Wires::new(fake.clone());
+        let mut model = devices_in("book-lab");
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        for (size, keys) in [((100, 30), vec![ch('t')]), ((80, 20), Vec::new())] {
+            let mut keys = keys.into_iter();
+            loop_turns(
+                &mut terminal(size.0, size.1),
+                &mut model,
+                &pollers,
+                &updates,
+                &mut actions(),
+                &mut wires,
+                |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
+            )
+            .unwrap_err();
+        }
+
+        assert_eq!(opens(&fake.calls()), [(1, (23, 98))]);
+        assert!(
+            fake.calls().contains(&Call::Resize(1, (13, 78))),
+            "{:?}",
+            fake.calls()
+        );
+    }
+
+    #[test]
+    fn every_open_wire_is_closed_once_when_the_loop_returns_and_on_an_error() {
+        let ways: [&[KeyEvent]; 2] = [&[ch('t')], &[ch('t'), ctrl(']'), q(), ch('y')]];
+        for keys in ways {
+            let fake = Arc::new(FakeTerminals::default());
+            let mut wires = Wires::new(fake.clone());
+            let mut model = devices_in("book-lab");
+
+            let result = terminal_turns(&mut model, &mut wires, (60, 15), keys);
+
+            assert_eq!(result.is_ok(), keys.len() > 1, "{result:?}");
+            assert_eq!(closes(&fake.calls()), [1], "{keys:?}");
+            assert!(wires.open.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_holder_that_is_dropped_closes_every_wire() {
+        let fake = Arc::new(FakeTerminals::default());
+        let mut wires = Wires::new(fake.clone());
+        for id in [1, 2] {
+            wires.open(
+                id,
+                Path::new("nobs"),
+                &[],
+                Path::new("/"),
+                &Login::default(),
+                (8, 58),
+            );
+        }
+
+        drop(wires);
+
+        assert_eq!(closes(&fake.calls()), [1, 2]);
+    }
+
+    #[test]
+    fn term_close_closes_only_that_wire_and_drops_it_from_the_holder() {
+        let fake = Arc::new(FakeTerminals::default());
+        let mut wires = Wires::new(fake.clone());
+        for id in [1, 2] {
+            wires.open(
+                id,
+                Path::new("nobs-t-shell"),
+                &[],
+                Path::new("/"),
+                &Login::default(),
+                (8, 58),
+            );
+        }
+        let model = devices_in("book-lab");
+        let (pollers, _updates) = launch(&scripted(Vec::new()), &model);
+
+        send(
+            vec![Command::TermClose(1)],
+            &mut actions(),
+            &mut wires,
+            &pollers,
+        );
+
+        assert_eq!(closes(&fake.calls()), [1]);
+        let held: Vec<u64> = wires.open.iter().map(|(id, _)| *id).collect();
+        assert_eq!(held, [2]);
+    }
+
+    fn pids(wires: &Wires, count: usize) -> Vec<libc::pid_t> {
+        let mut seen = std::collections::BTreeMap::<u64, String>::new();
+        let found = |seen: &std::collections::BTreeMap<u64, String>| -> Vec<libc::pid_t> {
+            seen.values()
+                .filter_map(|text| {
+                    text.split("pid=")
+                        .nth(1)?
+                        .split_whitespace()
+                        .next()?
+                        .parse()
+                        .ok()
+                })
+                .collect()
+        };
+        while found(&seen).len() < count {
+            match wires.updates.recv_timeout(Duration::from_secs(5)) {
+                Ok(Update::TermOutput(id, bytes)) => seen
+                    .entry(id)
+                    .or_default()
+                    .push_str(&String::from_utf8_lossy(&bytes)),
+                other => panic!("{other:?} after {seen:?}"),
+            }
+        }
+        found(&seen)
+    }
+
+    fn open_sleeper(wires: &mut Wires, id: u64) {
+        wires.open(
+            id,
+            Path::new("/bin/sh"),
+            &args(&["-c", "echo pid=$$; exec sleep 10"]),
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            &Login::default(),
+            (24, 80),
+        );
+    }
+
+    fn gone(pid: libc::pid_t) -> bool {
+        let killed = unsafe { libc::kill(pid, 0) };
+        killed == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+
+    #[test]
+    fn real_shells_in_the_holder_are_gone_after_close_all_and_after_a_panic() {
+        let mut wires = Wires::new(Arc::new(Ptys));
+        open_sleeper(&mut wires, 1);
+        open_sleeper(&mut wires, 2);
+        let two = pids(&wires, 2);
+
+        wires.close_all();
+
+        let (sender, pid) = mpsc::channel();
+        let panicked = thread::spawn(move || {
+            let mut wires = Wires::new(Arc::new(Ptys));
+            open_sleeper(&mut wires, 3);
+            sender.send(pids(&wires, 1)[0]).unwrap();
+            panic!("nobs-t-boom");
+        })
+        .join();
+        let third = pid.recv().unwrap();
+
+        assert_eq!(two.len(), 2);
+        assert!(two.iter().all(|pid| gone(*pid)), "{two:?}");
+        assert!(panicked.is_err());
+        assert!(gone(third), "{third}");
+    }
+
+    #[test]
+    fn the_cursor_of_the_device_shows_only_while_typing() {
+        let mut model = devices_in("book-lab");
+        model.tick(Instant::now(), SystemTime::now(), (60, 15));
+        handle(&mut model, ch('t'));
+        model.apply(Update::TermOutput(1, b"nobs-t-x> ".to_vec()));
+        let mut cursors = Vec::new();
+
+        for pressed in [None, Some(ctrl(']'))] {
+            if let Some(pressed) = pressed {
+                handle(&mut model, pressed);
+            }
+            let mut terminal = terminal(60, 15);
+            terminal.draw(|frame| draw(frame, &model)).unwrap();
+            cursors.push(terminal.get_cursor_position().unwrap());
+        }
+
+        assert_eq!(cursors, [Position::new(11, 4), Position::new(0, 0)]);
+    }
+
+    #[test]
+    fn the_pace_is_fast_only_while_a_live_session_is_shown() {
+        let slow = (DRAIN_LIMIT, KEY_WAIT);
+        let fast = (Duration::from_millis(10), Duration::from_millis(20));
+        let mut model = devices_in("book-lab");
+        let mut seen = vec![pace(&model)];
+        for pressed in [ch('t'), ctrl(']'), ch('['), ch(']'), ch('c')] {
+            handle(&mut model, pressed);
+            seen.push(pace(&model));
+        }
+
+        assert_eq!(seen, [slow, fast, fast, slow, fast, slow]);
+    }
+
+    #[test]
+    fn each_turn_waits_20_ms_while_the_terminal_is_live() {
+        let mut model = devices_in("book-lab");
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let mut waits = Vec::new();
+
+        turns(
+            &mut terminal(60, 15),
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions(),
+            &mut wires(),
+            |wait| {
+                waits.push(wait);
+                match waits.len() {
+                    1 => Ok(Some(ch('t'))),
+                    2 => Ok(None),
+                    _ => Err(PAUSED.to_string()),
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            waits,
+            [100, 20, 20].map(Duration::from_millis),
+            "{:?}",
+            model.tab()
+        );
+    }
+
     fn terminal(width: u16, height: u16) -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(width, height)).unwrap()
     }
@@ -514,6 +972,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions(),
+            &mut wires(),
             |wait| {
                 waits.push(wait);
                 Ok((waits.len() == 2).then(q))
@@ -538,6 +997,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions(),
+            &mut wires(),
             |_| {
                 turn += 1;
                 if turn == 1 {
@@ -590,6 +1050,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions(),
+            &mut wires(),
             |_| Ok(Some(q())),
         );
         let elapsed = started.elapsed();
@@ -674,6 +1135,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions(),
+            &mut wires(),
             |_| Ok(Some(keys.next().unwrap_or_else(q))),
         );
         let elapsed = started.elapsed();
@@ -713,7 +1175,14 @@ mod tests {
             ])))
             .unwrap();
 
-        drain(&updates, &mut model, &mut false, &mut actions(), &pollers);
+        drain(
+            &updates,
+            &mut model,
+            &mut false,
+            &mut actions(),
+            &mut wires(),
+            &pollers,
+        );
 
         let asked = || {
             stub.requests()
@@ -756,7 +1225,14 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while model.error().is_none_or(|(source, ..)| source != "ps") && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
-            drain(&updates, &mut model, &mut gone, &mut actions(), &pollers);
+            drain(
+                &updates,
+                &mut model,
+                &mut gone,
+                &mut actions(),
+                &mut wires(),
+                &pollers,
+            );
         }
 
         turns(
@@ -765,6 +1241,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions(),
+            &mut wires(),
             |_| Ok(Some(q())),
         )
         .unwrap();
@@ -984,6 +1461,7 @@ mod tests {
                 &pollers,
                 &updates,
                 &mut actions(),
+                &mut wires(),
                 |_| Ok(Some(q())),
             );
 
@@ -1037,6 +1515,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions(),
+            &mut wires(),
             |_| {
                 turn += 1;
                 Ok(Some(match turn {
@@ -1064,6 +1543,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions(),
+            &mut wires(),
             |_| Ok(Some(q())),
         )
         .unwrap();
@@ -1092,6 +1572,7 @@ mod tests {
             &pollers,
             &updates,
             actions,
+            &mut wires(),
             |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
         )
     }
@@ -1269,6 +1750,7 @@ mod tests {
             &pollers,
             &quiet,
             &mut actions,
+            &mut wires(),
             |_| Err(PAUSED.to_string()),
         )
         .unwrap_err();
@@ -1366,6 +1848,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions,
+            &mut wires(),
             |_| {
                 let key = keys.next().ok_or_else(|| PAUSED.to_string())?;
                 if key == ch('y') {
@@ -1414,6 +1897,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions,
+            &mut wires(),
             |_| {
                 if let Some(at) = sent {
                     gaps.push(at.elapsed());
@@ -1571,6 +2055,7 @@ mod tests {
             &pollers,
             &updates,
             &mut actions(),
+            &mut wires(),
             |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
         )
         .unwrap_err();
@@ -1633,6 +2118,7 @@ mod tests {
             pollers,
             updates,
             &mut actions(),
+            &mut wires(),
             |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
         )
         .unwrap_err();
@@ -2096,6 +2582,7 @@ mod tests {
                 pollers,
                 updates,
                 &mut actions,
+                &mut wires(),
                 |_| {
                     thread::sleep(Duration::from_millis(20));
                     Err(PAUSED.to_string())
