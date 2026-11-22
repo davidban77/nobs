@@ -766,6 +766,35 @@ mod tests {
         assert_eq!(closes(&fake.calls()), [1, 2]);
     }
 
+    #[test]
+    fn term_close_closes_only_that_wire_and_drops_it_from_the_holder() {
+        let fake = Arc::new(FakeTerminals::default());
+        let mut wires = Wires::new(fake.clone());
+        for id in [1, 2] {
+            wires.open(
+                id,
+                Path::new("nobs-t-shell"),
+                &[],
+                Path::new("/"),
+                &Login::default(),
+                (8, 58),
+            );
+        }
+        let model = devices_in("book-lab");
+        let (pollers, _updates) = launch(&scripted(Vec::new()), &model);
+
+        send(
+            vec![Command::TermClose(1)],
+            &mut actions(),
+            &mut wires,
+            &pollers,
+        );
+
+        assert_eq!(closes(&fake.calls()), [1]);
+        let held: Vec<u64> = wires.open.iter().map(|(id, _)| *id).collect();
+        assert_eq!(held, [2]);
+    }
+
     fn pids(wires: &Wires, count: usize) -> Vec<libc::pid_t> {
         let mut seen = std::collections::BTreeMap::<u64, String>::new();
         let found = |seen: &std::collections::BTreeMap<u64, String>| -> Vec<libc::pid_t> {
