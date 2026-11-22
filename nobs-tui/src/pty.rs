@@ -59,7 +59,7 @@ impl Terminals for Ptys {
             .openpty(pty_size(size))
             .map_err(io::Error::other)?;
         let mut output = pair.master.try_clone_reader().map_err(io::Error::other)?;
-        let mut input = pair.master.take_writer().map_err(io::Error::other)?;
+        let input = pair.master.take_writer().map_err(io::Error::other)?;
         let mut command = CommandBuilder::new(program);
         command.args(args);
         command.cwd(dir);
@@ -97,18 +97,7 @@ impl Terminals for Ptys {
             };
             let _ = out.send(Update::TermEnded(id, code));
         });
-        let (writes, queue) = mpsc::channel::<Vec<u8>>();
-        let writer = thread::spawn(move || {
-            for bytes in queue {
-                if input
-                    .write_all(&bytes)
-                    .and_then(|()| input.flush())
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        });
+        let (writes, writer) = spawn_writer(input);
         Ok(Box::new(Pty {
             master: pair.master,
             writes: Some(writes),
@@ -118,6 +107,22 @@ impl Terminals for Ptys {
             writer: Some(writer),
         }))
     }
+}
+
+fn spawn_writer(mut input: Box<dyn Write + Send>) -> (Sender<Vec<u8>>, JoinHandle<()>) {
+    let (writes, queue) = mpsc::channel::<Vec<u8>>();
+    let writer = thread::spawn(move || {
+        for bytes in queue {
+            if input
+                .write_all(&bytes)
+                .and_then(|()| input.flush())
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    (writes, writer)
 }
 
 fn pty_size((rows, cols): (u16, u16)) -> PtySize {
@@ -164,6 +169,7 @@ impl Drop for Pty {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -389,6 +395,78 @@ pub(crate) mod tests {
             updates.try_recv(),
             Err(mpsc::TryRecvError::Disconnected)
         ));
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct Killer(Arc<AtomicUsize>);
+
+    impl ChildKiller for Killer {
+        fn kill(&mut self) -> io::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    struct Slow(Arc<AtomicBool>);
+
+    impl Write for Slow {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            thread::sleep(Duration::from_millis(200));
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for Slow {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn bare(killer: Killer, reaped: bool, input: Box<dyn Write + Send>) -> Pty {
+        let pair = native_pty_system().openpty(pty_size((24, 80))).unwrap();
+        let (writes, writer) = spawn_writer(input);
+        Pty {
+            master: pair.master,
+            writes: Some(writes),
+            killer: Box::new(killer),
+            reaped: Arc::new(Mutex::new(reaped)),
+            reader: None,
+            writer: Some(writer),
+        }
+    }
+
+    #[test]
+    fn close_signals_a_child_not_yet_reaped_and_never_one_already_reaped() {
+        let mut kills = Vec::new();
+        for reaped in [false, true] {
+            let killer = Killer::default();
+            let mut pty = bare(killer.clone(), reaped, Box::new(io::sink()));
+
+            pty.close();
+
+            kills.push(killer.0.load(Ordering::SeqCst));
+        }
+
+        assert_eq!(kills, [1, 0]);
+    }
+
+    #[test]
+    fn dropping_the_wire_waits_for_its_writer_to_end() {
+        let ended = Arc::new(AtomicBool::new(false));
+        let mut pty = bare(Killer::default(), true, Box::new(Slow(Arc::clone(&ended))));
+
+        pty.write(b"nobs-t-x");
+        drop(pty);
+
+        assert!(ended.load(Ordering::SeqCst));
     }
 
     #[test]

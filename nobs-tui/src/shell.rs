@@ -1086,9 +1086,13 @@ impl Model {
                 self.devices = list;
                 self.devices_at = Some(self.now);
                 let last = self.devices.len().saturating_sub(1);
-                self.device = self.device.min(last);
+                let typed = self
+                    .sessions
+                    .typed()
+                    .and_then(|session| self.device_index(&session.device));
+                self.device = typed.unwrap_or(self.device.min(last));
                 if let Cursor::Device(at) = self.cursor {
-                    self.cursor = Cursor::Device(at.min(last));
+                    self.cursor = Cursor::Device(typed.unwrap_or(at.min(last)));
                 }
                 self.clear_error(error_source(status::Service::Sot));
                 return self.show_cursor();
@@ -1478,8 +1482,12 @@ impl Model {
 
     pub(crate) fn device_note(&self) -> Option<String> {
         self.source_service
-            .and_then(|service| absent(self.reach(service), status::row(service).word))
+            .and_then(|service| self.absent_sentence(service))
             .or_else(|| self.source_note().map(str::to_string))
+    }
+
+    pub(crate) fn absent_sentence(&self, service: status::Service) -> Option<String> {
+        absent(self.reach(service), status::row(service).word)
     }
 
     pub(crate) fn session_of(&self, device: &str) -> Option<&terminal::Session> {
@@ -1496,18 +1504,16 @@ impl Model {
     }
 
     fn terminal_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let Some(device) = self.selected_device().map(|device| device.name.clone()) else {
+        let Some((id, device)) = self
+            .drawn_session()
+            .map(|session| (session.id, session.device.clone()))
+        else {
             return Vec::new();
         };
         let rows = usize::from(self.sessions.size().0);
         match code {
             KeyCode::Char('c') => {
-                return self
-                    .drawn_session()
-                    .map(|session| session.id)
-                    .and_then(|id| self.sessions.close(id, Closed::ByYou))
-                    .into_iter()
-                    .collect();
+                return self.sessions.close(id, Closed::ByYou).into_iter().collect();
             }
             KeyCode::Char('k') | KeyCode::Up => self.sessions.scroll(&device, true, 1),
             KeyCode::Char('j') | KeyCode::Down => self.sessions.scroll(&device, false, 1),
@@ -1521,7 +1527,10 @@ impl Model {
     fn typed_key(&mut self, key: KeyEvent) -> Vec<Command> {
         let leaves = key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char(']' | '5'));
-        if leaves {
+        let drawn = self
+            .drawn_session()
+            .is_some_and(|session| session.state.typed());
+        if leaves || !drawn {
             self.sessions.leave();
             return Vec::new();
         }
@@ -3180,14 +3189,8 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         return Vec::new();
     }
     model.notice = None;
-    if model
-        .drawn_session()
-        .is_some_and(|session| session.state.typed())
-    {
-        return model.typed_key(key);
-    }
     if model.sessions.typed().is_some() {
-        model.sessions.leave();
+        return model.typed_key(key);
     }
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -9387,41 +9390,44 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn keys_and_the_picture_follow_one_lookup_when_the_device_list_moves_under_typing() {
-        let open: &[&str] = &["t type in the terminal", "j/k scroll", "c close session"];
+    fn a_refresh_that_moves_the_rows_keeps_typing_and_the_picture_on_the_typed_session() {
         let typing: &[&str] = &["Ctrl-] leave (session stays open)"];
         let mut model = with_devices(&[SRL2, SRL1]);
-        let srl2 = opened_id(&ch(&mut model, 't')).unwrap();
+        opened_id(&ch(&mut model, 't')).unwrap();
         leave(&mut model);
         model.apply(named(&[SRL1, SRL2]));
         let srl1 = opened_id(&ch(&mut model, 't')).unwrap();
-        assert_eq!(
-            drawn(&model),
-            Some((srl1, "connecting…".to_string(), typing))
-        );
-        assert_eq!(written_to(&ch(&mut model, 'x')), [srl1]);
+        let picture = Some((srl1, "connecting…".to_string(), typing));
+        assert_eq!(drawn(&model), picture);
 
-        model.apply(named(&[SRL2, SRL1]));
-        assert_eq!(drawn(&model), Some((srl2, "connecting…".to_string(), open)));
-        assert!(written_to(&ch(&mut model, 'x')).is_empty());
-        assert_eq!(state_of(&model, SRL1), Some(connecting(false)));
-        assert_eq!(drawn(&model), Some((srl2, "connecting…".to_string(), open)));
+        for rows in [&[SRL2, SRL1][..], &[SRL1]] {
+            model.apply(named(rows));
 
-        assert_eq!(ch(&mut model, 't'), []);
-        assert_eq!(
-            drawn(&model),
-            Some((srl2, "connecting…".to_string(), typing))
-        );
-        model.apply(named(&[SRL1]));
-        assert_eq!(drawn(&model), Some((srl1, "connecting…".to_string(), open)));
-        assert!(written_to(&ch(&mut model, 'x')).is_empty());
-        assert_eq!(state_of(&model, SRL2), Some(connecting(false)));
+            assert_eq!(drawn(&model), picture, "{rows:?}");
+            assert_eq!(
+                model.selected_device().map(|device| device.name.as_str()),
+                Some(SRL1)
+            );
+            assert_eq!(written_to(&ch(&mut model, 'x')), [srl1], "{rows:?}");
+            assert_eq!(state_of(&model, SRL1), Some(connecting(true)));
+        }
+    }
 
-        assert_eq!(ch(&mut model, 't'), []);
-        model.apply(Update::Devices(Ok(Vec::new())));
-        assert_eq!(drawn(&model), None);
-        assert!(written_to(&ch(&mut model, 'x')).is_empty());
-        assert_eq!(state_of(&model, SRL1), Some(connecting(false)));
+    #[test]
+    fn the_key_that_finds_the_typed_device_gone_only_ends_typing() {
+        for typed in ['s', 'q'] {
+            let (mut model, _) = typing_in_srl1();
+            model.apply(named(&[SRL2]));
+
+            let commands = ch(&mut model, typed);
+
+            assert_eq!(commands, [], "{typed}");
+            assert_eq!(model.question(), None, "{typed}");
+            assert_eq!(model.entry(), None, "{typed}");
+            assert!(model.login_entry().is_none(), "{typed}");
+            assert!(!model.quit(), "{typed}");
+            assert_eq!(state_of(&model, SRL1), Some(connecting(false)), "{typed}");
+        }
     }
 
     #[test]

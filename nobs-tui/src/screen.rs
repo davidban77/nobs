@@ -659,7 +659,7 @@ fn detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
                     _ => None,
                 },
             );
-            if let Some(sentence) = absent_of(model, Service::Sonda) {
+            if let Some(sentence) = model.absent_sentence(Service::Sonda) {
                 let top_row = Rect {
                     height: content.height.min(1),
                     ..content
@@ -962,10 +962,6 @@ fn answer_cell(reach: Reach, answered: bool, shown: &str) -> String {
     } else {
         cell(reach, "?").to_string()
     }
-}
-
-fn absent_of(model: &Model, service: Service) -> Option<String> {
-    absent(model.reach(service), row(service).word)
 }
 
 fn cell(reach: Reach, shown: &str) -> &str {
@@ -1690,7 +1686,7 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
     let mut notes: Vec<String> = Vec::new();
     for sentence in [Service::Alerts, Service::Logs, Service::Flows]
         .into_iter()
-        .filter_map(|service| absent_of(model, service))
+        .filter_map(|service| model.absent_sentence(service))
     {
         if !notes.contains(&sentence) {
             notes.push(sentence);
