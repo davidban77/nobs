@@ -4403,6 +4403,182 @@ mod tests {
         }
     }
 
+    fn rich(pane: Option<bool>) -> Model {
+        let dir = fixture("book-lab");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        let mut first = stacks(Some(&located), Vec::new()).unwrap().remove(0);
+        first.env.push((
+            "SONDA_SERVER_URL".to_string(),
+            "http://localhost:8085".to_string(),
+        ));
+        let chapters = (1..=12)
+            .map(|index| Stack {
+                name: format!("ch{index}"),
+                ..first.clone()
+            })
+            .collect();
+        let mut model = Model::new(Start {
+            lab: Some(located),
+            home: Workbench::Devices,
+            ..start(chapters)
+        });
+        let template = devices_model(workshop_located("infrahub")).devices()[0].clone();
+        let devices = (1..=40)
+            .map(|index| {
+                let mut device = template.clone();
+                device.name = format!("d{index:02}");
+                device.interfaces = vec![template.interfaces[0].clone(); 30];
+                device.sessions = vec![template.sessions[0].clone(); 12];
+                device
+            })
+            .collect();
+        let alerts = (0..20)
+            .map(|index| alert("d01", &format!("a{index:02}"), "2026-11-09T13:53:32Z"))
+            .collect();
+        let text: Vec<String> = (1..=12).map(|index| format!("text {index:02}")).collect();
+        let lines = std::iter::once(log_line(41, &text.join("\n")))
+            .chain((1..=40).map(|index| log_line(index, &format!("line {index:02}"))))
+            .collect();
+        let nodes = (1..=30)
+            .map(|index| NodeRow {
+                name: format!("n{index:02}"),
+                kind: "nokia_srlinux".to_string(),
+                state: Some("running".to_string()),
+            })
+            .collect();
+        model.apply(every_service_up(0));
+        model.apply(Update::Devices(Ok(devices)));
+        model.apply(Update::Alerts(Ok(alerts)));
+        model.apply(Update::DeviceLogs("d01".to_string(), Ok(lines)));
+        model.apply(Update::Nodes(Ok(nodes)));
+        model.apply(Update::Logs(
+            0,
+            "loki".to_string(),
+            Err(LONG_ERROR.to_string()),
+        ));
+        let Some(pane) = pane else {
+            return model;
+        };
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        model.apply(Update::Sonda(data::Update {
+            at: Instant::now(),
+            list: Ok(scenarios(20)),
+            selected: None,
+        }));
+        "sx".chars().for_each(|typed| press(&mut model, typed));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        for line in numbered(40) {
+            model.apply(Update::ActionLine(line));
+        }
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        if !pane {
+            press(&mut model, 'o');
+        }
+        model
+    }
+
+    #[test]
+    fn wherever_j_moves_a_page_key_moves_as_j_pressed_page_times() {
+        let area = Rect::new(0, 0, 60, 15);
+        let pressed = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let row = |typed| pressed(KeyCode::Char(typed));
+        let reach = |(pane, path): &(Option<bool>, Vec<KeyEvent>), moves: &[KeyEvent]| {
+            let mut model = rich(*pane);
+            let turn = |model: &mut Model| {
+                crate::settle(model, area);
+                model.set_terminal_size(terminal_size(model, area));
+                crate::measure(model, area);
+            };
+            for key in path {
+                turn(&mut model);
+                handle(&mut model, *key);
+            }
+            turn(&mut model);
+            moves.iter().for_each(|key| drop(handle(&mut model, *key)));
+            turn(&mut model);
+            model
+        };
+        let mut states = vec![(None, vec![]), (None, vec![row('?')])];
+        for pane in [false, true] {
+            for digit in ['1', '2', '3', '4'] {
+                for tabs in 0..4 {
+                    for turns in 0..7 {
+                        for enter in [false, true] {
+                            for help in [false, true] {
+                                let mut path = vec![row(digit)];
+                                path.extend(std::iter::repeat_n(pressed(KeyCode::Tab), tabs));
+                                path.extend(std::iter::repeat_n(row(']'), turns));
+                                path.extend(enter.then(|| pressed(KeyCode::Enter)));
+                                path.extend(help.then(|| row('?')));
+                                states.push((Some(pane), path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let bottom = vec![row('j'); 80];
+        let top: Vec<KeyEvent> = bottom.iter().copied().chain(vec![row('k'); 80]).collect();
+        let mut frames = Vec::new();
+        let mut compared = Vec::new();
+        for state in states {
+            let base = drawn(&mut reach(&state, &[]), 60, 15);
+            let moves = |typed| drawn(&mut reach(&state, &[row(typed)]), 60, 15) != base;
+            if frames.contains(&base) || !(moves('j') || moves('k')) {
+                continue;
+            }
+            frames.push(base);
+            for edge in [&[][..], &bottom, &top] {
+                for (page, typed) in [(KeyCode::PageDown, 'j'), (KeyCode::PageUp, 'k')] {
+                    let mut paged = reach(&state, edge);
+                    compared.push(match holder(&paged) {
+                        Holder::Pane => format!("Pane {:?}", paged.tab()),
+                        other => format!("{other:?}"),
+                    });
+                    handle(&mut paged, pressed(page));
+                    let mut rowed = reach(&state, edge);
+                    let presses = vec![row(typed); rowed.page()];
+                    presses
+                        .iter()
+                        .for_each(|key| drop(handle(&mut rowed, *key)));
+                    assert_eq!(
+                        drawn(&mut paged, 60, 15),
+                        drawn(&mut rowed, 60, 15),
+                        "{state:?} {} {page:?}",
+                        edge.len()
+                    );
+                }
+            }
+        }
+        compared.sort();
+        compared.dedup();
+        assert_eq!(
+            compared,
+            [
+                "Alerts",
+                "Chapters",
+                "Chooser",
+                "Devices",
+                "Entry",
+                "Keys",
+                "Nodes",
+                "Overview",
+                "Pane Interfaces",
+                "Pane Overview",
+                "Pane Timeline",
+                "Run",
+                "Sonda(Scenarios)",
+                "Stacks"
+            ]
+        );
+    }
+
     fn log_line(seconds: i64, text: &str) -> nobs_core::loki::Line {
         nobs_core::loki::Line {
             nanoseconds: seconds * 1_000_000_000,

@@ -3528,12 +3528,18 @@ mod tests {
     #[test]
     fn the_loop_measure_gives_the_page_of_the_drawn_box() {
         let mut model = devices_model();
+        let names = (1..=40).map(|index| device(&format!("d{index:02}")));
+        model.apply(Update::Devices(Ok(names.collect())));
         assert_eq!(model.focus(), Focus::List);
 
         measure(&mut model, Rect::new(0, 0, 60, 15));
         assert_eq!(model.page(), 4);
+        handle(&mut model, key(KeyCode::PageDown));
+        assert_eq!(model.cursor(), shell::Cursor::Device(4));
 
         measure(&mut model, Rect::new(0, 0, 100, 30));
         assert_eq!(model.page(), 15);
+        handle(&mut model, key(KeyCode::PageDown));
+        assert_eq!(model.cursor(), shell::Cursor::Device(19));
     }
 }

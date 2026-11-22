@@ -890,7 +890,7 @@ impl Model {
         self.shown = rows;
     }
 
-    pub fn page(&self) -> usize {
+    pub(crate) fn page(&self) -> usize {
         self.shown.saturating_sub(1).max(1)
     }
 
@@ -1590,15 +1590,12 @@ impl Model {
         else {
             return Vec::new();
         };
-        let rows = usize::from(self.sessions.size().0);
         match code {
             KeyCode::Char('c') => {
                 return self.sessions.close(id, Closed::ByYou).into_iter().collect();
             }
             KeyCode::Char('k') | KeyCode::Up => self.sessions.scroll(&device, true, 1),
             KeyCode::Char('j') | KeyCode::Down => self.sessions.scroll(&device, false, 1),
-            KeyCode::PageUp => self.sessions.scroll(&device, true, rows),
-            KeyCode::PageDown => self.sessions.scroll(&device, false, rows),
             _ => {}
         }
         Vec::new()
@@ -3306,6 +3303,11 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     if control || alt || model.too_small() {
         return Vec::new();
     }
+    if let Some(press) = row_press(key.code).filter(|_| !model.types_q()) {
+        return (0..model.page())
+            .flat_map(|_| take_key(model, press))
+            .collect();
+    }
     if model.help {
         match key.code {
             KeyCode::Char('?') | KeyCode::Esc => model.help = false,
@@ -3321,6 +3323,15 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         return model.chooser_key(key.code);
     }
     model.workbench_key(key)
+}
+
+fn row_press(code: KeyCode) -> Option<KeyEvent> {
+    let row = match code {
+        KeyCode::PageDown => 'j',
+        KeyCode::PageUp => 'k',
+        _ => return None,
+    };
+    Some(KeyEvent::new(KeyCode::Char(row), KeyModifiers::NONE))
 }
 
 pub fn stacks(
@@ -9557,8 +9568,9 @@ pub(crate) mod tests {
         assert_eq!(scrolled(&model), 3);
         code(&mut model, KeyCode::Down);
         assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 2 }));
+        model.set_shown(24);
         code(&mut model, KeyCode::PageUp);
-        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 26 }));
+        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 25 }));
         code(&mut model, KeyCode::PageDown);
         assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 2 }));
 
@@ -9575,6 +9587,118 @@ pub(crate) mod tests {
             })
         );
         assert_eq!(ch(&mut model, 'k'), []);
+    }
+
+    #[test]
+    fn the_terminal_tab_pages_by_its_rows_less_one() {
+        let (mut model, id) = typing_in_srl1();
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        model.set_terminal_size(crate::screen::terminal_size(&model, area));
+        let lines: String = (1..=80).map(|line| format!("line {line}\r\n")).collect();
+        model.apply(Update::TermOutput(id, lines.into_bytes()));
+        leave(&mut model);
+        crate::measure(&mut model, area);
+
+        for (page, up) in [
+            (KeyCode::PageUp, 22),
+            (KeyCode::PageUp, 44),
+            (KeyCode::PageDown, 22),
+        ] {
+            code(&mut model, page);
+            assert_eq!(state_of(&model, SRL1), Some(State::Connected { up }));
+        }
+    }
+
+    #[test]
+    fn a_page_key_changes_nothing_where_j_is_text() {
+        let reach = |build: fn() -> Model, keys: &[KeyEvent]| {
+            let mut model = build();
+            keys.iter()
+                .for_each(|typed| drop(handle(&mut model, *typed)));
+            model.set_shown(10);
+            model
+        };
+        let service_log: fn() -> Model = || {
+            let mut model = opened(&["a"]);
+            with_services(&mut model, &["grafana"]);
+            ch(&mut model, 'l');
+            model
+        };
+        let observed: fn() -> Model = || {
+            let mut model = observability_model(three_alerts());
+            let line = labelled(&[("device", "srl1")], 1, "bgp up");
+            model.apply(Update::LabLogs(Ok(vec![line])));
+            model
+        };
+        let mut contexts = Vec::new();
+        for build in [lab_devices_model, service_log, observed] {
+            for digit in ['1', '2', '3', '4'] {
+                for tabs in 0..2 {
+                    for turns in 0..7 {
+                        let mut keys = vec![key(KeyCode::Char(digit))];
+                        keys.extend(std::iter::repeat_n(key(KeyCode::Tab), tabs));
+                        keys.extend(std::iter::repeat_n(key(KeyCode::Char(']')), turns));
+                        keys.push(key(KeyCode::Char('/')));
+                        if reach(build, &keys).typing() {
+                            contexts.push((build, keys));
+                        }
+                    }
+                }
+            }
+        }
+        let filters = |model: &Model| {
+            [
+                model.filter.typing,
+                model.device_filter.typing,
+                model.device_logs.filter.typing,
+                model.lab_logs.filter.typing,
+                model.config_filter.typing,
+                model.alert_filter.typing,
+                model.metrics_filter.typing,
+                model.logs.as_ref().is_some_and(|logs| logs.filter.typing),
+            ]
+        };
+        let seen = contexts.iter().fold([false; 8], |seen, (build, keys)| {
+            let typing = filters(&reach(*build, keys));
+            std::array::from_fn(|at| seen[at] || typing[at])
+        });
+        assert_eq!(seen, [true; 8]);
+        contexts.extend([
+            (
+                lab_devices_model as fn() -> Model,
+                vec![key(KeyCode::Char('s'))],
+            ),
+            (|| asking(None, None), vec![key(KeyCode::Char('g'))]),
+            (|| opened(&["a"]), vec![key(KeyCode::Char('u'))]),
+            (sonda_tab, vec![key(KeyCode::Char('l'))]),
+        ]);
+
+        for (build, keys) in &contexts {
+            let before = reach(*build, keys);
+            assert!(before.types_q() || before.question().is_some(), "{keys:?}");
+            let after = |typed: KeyCode| {
+                let mut model = reach(*build, keys);
+                (code(&mut model, typed), frame(&model))
+            };
+            for page in [KeyCode::PageDown, KeyCode::PageUp] {
+                assert_eq!(after(page), after(KeyCode::F(13)), "{keys:?} {page:?}");
+            }
+        }
+        let (mut model, id) = typing_in_srl1();
+        model.set_shown(10);
+        for (page, bytes) in [
+            (KeyCode::PageDown, b"\x1b[6~"),
+            (KeyCode::PageUp, b"\x1b[5~"),
+        ] {
+            let sent = code(&mut model, page);
+            assert_eq!(
+                sent,
+                [Command::TermWrite {
+                    id,
+                    bytes: bytes.to_vec()
+                }]
+            );
+        }
     }
 
     #[test]
