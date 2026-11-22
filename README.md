@@ -303,11 +303,13 @@ nobs: lab destroy runs containerlab with sudo;
 Password:
 ```
 
-nobs never sees your password. After a good password the screen comes back and the action runs. `sudo` then remembers the password in this terminal for a few minutes, by default, so the next action does not ask.
+The last line is the prompt of `sudo` itself. This is the Mac prompt; on Linux it is `[sudo] password for <user>:`.
+
+nobs never sees your password. After a good password the screen comes back and the action runs. By default, `sudo` remembers the password in this terminal for a few minutes, so the next action usually does not ask.
 
 When `sudo` gets no good password (three wrong tries, or `Ctrl-C` or `Ctrl-\` at its prompt), the screen comes back and nothing runs. The run pane says `not run` with the line `nobs: lab destroy: sudo got no password; nothing ran`, and the chapter row gets no `!`. When `sudo` cannot run at all, the line is `nobs: lab <command>: cannot run sudo: <error>; nothing ran`. Press the key again to try again. The lines on your terminal stay there and show again after you quit.
 
-If `sudo` is set never to remember a password, the action then ends with `exit 1` and the line of the command typed by hand.
+If `sudo` is set never to remember a password, the action still cannot run. It ends with `exit 1`, the chapter row gets `!`, and the run pane shows the line `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again`. The screen does not step aside a second time.
 
 When you type `nobs lab <command> --sudo-no-prompt` yourself and `sudo` needs a password, nobs fails at once with `exit 1`:
 
