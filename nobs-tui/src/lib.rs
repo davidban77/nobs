@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::fmt::Display;
 use std::io::{self, IsTerminal, Write};
 use std::panic::{self, PanicHookInfo};
@@ -20,7 +19,8 @@ use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use aside::ask_aside;
-use shell::{Login, Model};
+use run::Invocation;
+use shell::Model;
 
 pub mod actions;
 mod aside;
@@ -128,11 +128,8 @@ impl Actions {
         }
     }
 
-    fn start(&mut self, program: &Path, args: &[OsString], login: &Login) {
-        match self
-            .launcher
-            .start(program, args, login, self.sender.clone())
-        {
+    fn start(&mut self, child: Invocation<'_>) {
+        match self.launcher.start(child, self.sender.clone()) {
             Ok(running) => self.running = Some(running),
             Err(error) => {
                 let _ = self.sender.send(Update::ActionLine(cannot_run(error)));
@@ -197,18 +194,10 @@ impl Wires {
         }
     }
 
-    fn open(
-        &mut self,
-        id: u64,
-        program: &Path,
-        args: &[OsString],
-        dir: &Path,
-        login: &Login,
-        size: (u16, u16),
-    ) {
+    fn open(&mut self, id: u64, child: Invocation<'_>, dir: &Path, size: (u16, u16)) {
         let opened = self
             .terminals
-            .open(program, args, dir, login, size, id, self.sender.clone());
+            .open(child, dir, size, id, self.sender.clone());
         match opened {
             Ok(wire) => self.open.push((id, wire)),
             Err(error) => {
@@ -366,7 +355,11 @@ fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, poller
                 program,
                 args,
                 login,
-            } => actions.start(program, args, login),
+            } => actions.start(Invocation {
+                program,
+                args,
+                login,
+            }),
             Command::Stop => actions.stop(),
             Command::AskSudo(lines) => actions.asking = Some(lines.clone()),
             Command::TermOpen {
@@ -376,7 +369,16 @@ fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, poller
                 dir,
                 size,
                 login,
-            } => wires.open(*id, program, args, dir, login, *size),
+            } => wires.open(
+                *id,
+                Invocation {
+                    program,
+                    args,
+                    login,
+                },
+                dir,
+                *size,
+            ),
             Command::TermWrite { id, bytes } => {
                 if let Some(wire) = wires.wire(*id) {
                     wire.write(bytes);
@@ -514,7 +516,7 @@ mod tests {
     use crate::pty::tests::{Call, FakeTerminals};
     use crate::run::tests::FakeLauncher;
     use crate::shell::tests::{defined, every_service_up, finding, listing, SECRET, USER};
-    use crate::shell::RunState;
+    use crate::shell::{Login, RunState};
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");
     const TWO: &str = "{\"Service\":\"grafana\",\"State\":\"running\"}\n{\"Service\":\"loki\",\"State\":\"exited\"}\n";
@@ -821,10 +823,12 @@ mod tests {
         for id in [1, 2] {
             wires.open(
                 id,
-                Path::new("nobs"),
-                &[],
+                Invocation {
+                    program: Path::new("nobs"),
+                    args: &[],
+                    login: &Login::default(),
+                },
                 Path::new("/"),
-                &Login::default(),
                 (8, 58),
             );
         }
@@ -841,10 +845,12 @@ mod tests {
         for id in [1, 2] {
             wires.open(
                 id,
-                Path::new("nobs-t-shell"),
-                &[],
+                Invocation {
+                    program: Path::new("nobs-t-shell"),
+                    args: &[],
+                    login: &Login::default(),
+                },
                 Path::new("/"),
-                &Login::default(),
                 (8, 58),
             );
         }
@@ -892,10 +898,12 @@ mod tests {
     fn open_sleeper(wires: &mut Wires, id: u64) {
         wires.open(
             id,
-            Path::new("/bin/sh"),
-            &args(&["-c", "echo pid=$$; exec sleep 10"]),
+            Invocation {
+                program: Path::new("/bin/sh"),
+                args: &args(&["-c", "echo pid=$$; exec sleep 10"]),
+                login: &Login::default(),
+            },
             Path::new(env!("CARGO_MANIFEST_DIR")),
-            &Login::default(),
             (24, 80),
         );
     }

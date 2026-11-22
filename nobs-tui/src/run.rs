@@ -18,14 +18,14 @@ const PIPES_GRACE: Duration = Duration::from_secs(1);
 const KILL_AFTER: Duration = Duration::from_secs(5);
 const KILL_GRACE: Duration = Duration::from_secs(2);
 
+pub struct Invocation<'a> {
+    pub program: &'a Path,
+    pub args: &'a [OsString],
+    pub login: &'a Login,
+}
+
 pub trait Launcher: Send + Sync {
-    fn start(
-        &self,
-        program: &Path,
-        args: &[OsString],
-        login: &Login,
-        out: Sender<Update>,
-    ) -> io::Result<Box<dyn Running>>;
+    fn start(&self, child: Invocation<'_>, out: Sender<Update>) -> io::Result<Box<dyn Running>>;
 }
 
 pub trait Running: Send {
@@ -53,14 +53,10 @@ struct Process {
 }
 
 impl Launcher for Processes {
-    fn start(
-        &self,
-        program: &Path,
-        args: &[OsString],
-        login: &Login,
-        out: Sender<Update>,
-    ) -> io::Result<Box<dyn Running>> {
-        launch(program, args, login, out, |group| signal(group, 0))
+    fn start(&self, child: Invocation<'_>, out: Sender<Update>) -> io::Result<Box<dyn Running>> {
+        launch(child.program, child.args, child.login, out, |group| {
+            signal(group, 0)
+        })
     }
 }
 
@@ -258,16 +254,14 @@ pub(crate) mod tests {
     impl Launcher for FakeLauncher {
         fn start(
             &self,
-            program: &Path,
-            args: &[OsString],
-            login: &Login,
+            child: Invocation<'_>,
             out: Sender<Update>,
         ) -> io::Result<Box<dyn Running>> {
             self.calls
                 .lock()
                 .unwrap()
-                .push((program.to_path_buf(), args.to_vec()));
-            self.logins.lock().unwrap().push(login.clone());
+                .push((child.program.to_path_buf(), child.args.to_vec()));
+            self.logins.lock().unwrap().push(child.login.clone());
             if self.failing {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -293,7 +287,14 @@ pub(crate) mod tests {
         let (out, updates) = mpsc::channel();
         let args = ["-c", script].map(OsString::from);
         let running = Processes
-            .start(Path::new("sh"), &args, &Login::default(), out)
+            .start(
+                Invocation {
+                    program: Path::new("sh"),
+                    args: &args,
+                    login: &Login::default(),
+                },
+                out,
+            )
             .unwrap();
         (running, updates)
     }
@@ -301,7 +302,14 @@ pub(crate) mod tests {
     fn environment(login: &Login) -> Vec<String> {
         let (out, updates) = mpsc::channel();
         let _running = Processes
-            .start(Path::new("/usr/bin/env"), &[], login, out)
+            .start(
+                Invocation {
+                    program: Path::new("/usr/bin/env"),
+                    args: &[],
+                    login,
+                },
+                out,
+            )
             .unwrap();
         let mut lines = Vec::new();
         loop {

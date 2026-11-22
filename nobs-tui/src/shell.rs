@@ -9464,7 +9464,17 @@ pub(crate) mod tests {
                     login,
                 } => {
                     let wire = terminals
-                        .open(&program, &args, &dir, &login, size, id, out.clone())
+                        .open(
+                            crate::run::Invocation {
+                                program: &program,
+                                args: &args,
+                                login: &login,
+                            },
+                            &dir,
+                            size,
+                            id,
+                            out.clone(),
+                        )
                         .unwrap();
                     wires.insert(id, wire);
                 }

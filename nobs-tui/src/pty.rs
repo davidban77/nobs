@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
@@ -8,19 +7,16 @@ use std::time::Duration;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
-use crate::run::login_vars;
-use crate::shell::{Login, Update};
+use crate::run::{login_vars, Invocation};
+use crate::shell::Update;
 
 const REAP_PAUSE: Duration = Duration::from_millis(5);
 
 pub trait Terminals: Send + Sync {
-    #[allow(clippy::too_many_arguments)]
     fn open(
         &self,
-        program: &Path,
-        args: &[OsString],
+        child: Invocation<'_>,
         dir: &Path,
-        login: &Login,
         size: (u16, u16),
         id: u64,
         out: Sender<Update>,
@@ -47,10 +43,8 @@ struct Pty {
 impl Terminals for Ptys {
     fn open(
         &self,
-        program: &Path,
-        args: &[OsString],
+        child: Invocation<'_>,
         dir: &Path,
-        login: &Login,
         size: (u16, u16),
         id: u64,
         out: Sender<Update>,
@@ -60,11 +54,11 @@ impl Terminals for Ptys {
             .map_err(io::Error::other)?;
         let mut output = pair.master.try_clone_reader().map_err(io::Error::other)?;
         let input = pair.master.take_writer().map_err(io::Error::other)?;
-        let mut command = CommandBuilder::new(program);
-        command.args(args);
+        let mut command = CommandBuilder::new(child.program);
+        command.args(child.args);
         command.cwd(dir);
         command.env("TERM", "xterm");
-        for (name, value) in login_vars(login) {
+        for (name, value) in login_vars(child.login) {
             command.env(name, value);
         }
         let mut child = pair
@@ -168,6 +162,7 @@ impl Drop for Pty {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::ffi::OsString;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver};
@@ -177,6 +172,7 @@ pub(crate) mod tests {
     use nobs_core::device;
 
     use super::*;
+    use crate::shell::Login;
 
     const WAIT: Duration = Duration::from_secs(5);
 
@@ -219,21 +215,19 @@ pub(crate) mod tests {
     impl Terminals for FakeTerminals {
         fn open(
             &self,
-            program: &Path,
-            args: &[OsString],
+            child: Invocation<'_>,
             dir: &Path,
-            login: &Login,
             size: (u16, u16),
             id: u64,
             out: Sender<Update>,
         ) -> io::Result<Box<dyn Wire>> {
             self.calls.lock().unwrap().push(Call::Open {
                 id,
-                program: program.to_path_buf(),
-                args: args.to_vec(),
+                program: child.program.to_path_buf(),
+                args: child.args.to_vec(),
                 dir: dir.to_path_buf(),
                 size,
-                login: login.clone(),
+                login: child.login.clone(),
             });
             *self.sender.lock().unwrap() = Some(out);
             Ok(Box::new(FakeWire {
@@ -265,10 +259,12 @@ pub(crate) mod tests {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
         let wire = Ptys
             .open(
-                Path::new("/bin/sh"),
-                &args,
+                Invocation {
+                    program: Path::new("/bin/sh"),
+                    args: &args,
+                    login,
+                },
                 Path::new(env!("CARGO_MANIFEST_DIR")),
-                login,
                 size,
                 7,
                 out,

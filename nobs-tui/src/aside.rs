@@ -107,10 +107,12 @@ pub(crate) mod tests {
                 .to_vec();
             let wire = Ptys
                 .open(
-                    &std::env::current_exe().unwrap(),
-                    &args,
+                    crate::run::Invocation {
+                        program: &std::env::current_exe().unwrap(),
+                        args: &args,
+                        login: &Login::default(),
+                    },
                     Path::new(env!("CARGO_MANIFEST_DIR")),
-                    &Login::default(),
                     (24, 80),
                     1,
                     out,
