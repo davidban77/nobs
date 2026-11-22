@@ -1698,6 +1698,16 @@ mod tests {
         key(KeyCode::Char(typed))
     }
 
+    fn login_keys(first: char) -> Vec<KeyEvent> {
+        [ch(first)]
+            .into_iter()
+            .chain(USER.chars().map(ch))
+            .chain([key(KeyCode::Enter)])
+            .chain(SECRET.chars().map(ch))
+            .chain([key(KeyCode::Enter)])
+            .collect()
+    }
+
     fn acting(launcher: &Arc<FakeLauncher>) -> (Model, Actions) {
         let model = Model::new(start(vec![stack(&[CLOSED])], false));
         (model, Actions::new(launcher.clone(), asker(1)))
@@ -1841,13 +1851,7 @@ mod tests {
         let launcher = Arc::new(FakeLauncher::new());
         let mut actions = Actions::new(launcher.clone(), asker(1));
         let mut model = devices_finding("book-lab", finding(None, None));
-        let keys: Vec<KeyEvent> = [ch('g')]
-            .into_iter()
-            .chain(USER.chars().map(ch))
-            .chain([key(KeyCode::Enter)])
-            .chain(SECRET.chars().map(ch))
-            .chain([key(KeyCode::Enter)])
-            .collect();
+        let keys = login_keys('g');
 
         press(&mut model, &mut actions, &keys).unwrap_err();
 
@@ -1859,6 +1863,40 @@ mod tests {
         let calls = launcher.calls();
         assert_eq!(calls.len(), 1);
         assert!(!format!("{calls:?}").contains(SECRET), "{calls:?}");
+    }
+
+    #[test]
+    fn t_with_a_typed_login_opens_the_terminal_the_model_built_and_no_argument_holds_the_password()
+    {
+        let fake = Arc::new(FakeTerminals::default());
+        let mut model = devices_finding("book-lab", finding(None, None));
+        let book = fixture("book-lab");
+        let keys = login_keys('t');
+
+        terminal_turns(&mut model, &mut Wires::new(fake.clone()), (80, 20), &keys).unwrap_err();
+
+        let calls = fake.calls();
+        let Some(Call::Open { args: given, .. }) = calls.first() else {
+            panic!("{calls:?}");
+        };
+        assert!(!format!("{given:?}").contains(SECRET), "{given:?}");
+        assert_eq!(
+            calls.first(),
+            Some(&Call::Open {
+                id: 1,
+                program: PathBuf::from("nobs"),
+                args: [OsString::from("--dir"), book.clone().into_os_string()]
+                    .into_iter()
+                    .chain(args(&["device", "shell", "srl1"]))
+                    .collect(),
+                dir: book,
+                size: (13, 78),
+                login: Login {
+                    user: Some(USER.to_string()),
+                    password: Some(Password::new(SECRET.to_string())),
+                },
+            })
+        );
     }
 
     #[test]
