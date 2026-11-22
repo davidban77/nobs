@@ -689,6 +689,7 @@ pub struct Model {
     help_overflow: usize,
     run_pane: bool,
     size: (u16, u16),
+    shown: usize,
     now: Instant,
     wall: SystemTime,
     clock: String,
@@ -817,6 +818,7 @@ impl Model {
             help_overflow: 0,
             run_pane: false,
             size: (80, 24),
+            shown: 0,
             now,
             wall: UNIX_EPOCH,
             clock: String::new(),
@@ -882,6 +884,14 @@ impl Model {
         self.wall = wall;
         self.clock = clock(wall);
         self.size = size;
+    }
+
+    pub(crate) fn set_shown(&mut self, rows: usize) {
+        self.shown = rows;
+    }
+
+    pub(crate) fn page(&self) -> usize {
+        self.shown.saturating_sub(1).max(1)
     }
 
     pub fn too_small(&self) -> bool {
@@ -1580,15 +1590,12 @@ impl Model {
         else {
             return Vec::new();
         };
-        let rows = usize::from(self.sessions.size().0);
         match code {
             KeyCode::Char('c') => {
                 return self.sessions.close(id, Closed::ByYou).into_iter().collect();
             }
             KeyCode::Char('k') | KeyCode::Up => self.sessions.scroll(&device, true, 1),
             KeyCode::Char('j') | KeyCode::Down => self.sessions.scroll(&device, false, 1),
-            KeyCode::PageUp => self.sessions.scroll(&device, true, rows),
-            KeyCode::PageDown => self.sessions.scroll(&device, false, rows),
             _ => {}
         }
         Vec::new()
@@ -2974,6 +2981,16 @@ impl Model {
     }
 
     fn lab_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let following = self.lab_logs.following;
+        let lines = if self.lab_lines_shown() {
+            self.lab_logs.shown().len()
+        } else {
+            0
+        };
+        if let Some(commands) = self.leave_newest(code, true, following, lines, Model::lab_logs_key)
+        {
+            return commands;
+        }
         match code {
             KeyCode::Char('f') if self.lab_can_pause() => {
                 self.lab_logs.toggle();
@@ -3114,6 +3131,13 @@ impl Model {
     }
 
     fn device_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let following = self.device_logs.following;
+        let lines = self.shown_device_logs().len();
+        if let Some(commands) =
+            self.leave_newest(code, true, following, lines, Model::device_logs_key)
+        {
+            return commands;
+        }
         match code {
             KeyCode::Char('f') => {
                 let following = self.device_logs.toggle();
@@ -3185,7 +3209,35 @@ impl Model {
         Vec::new()
     }
 
+    fn leave_newest(
+        &mut self,
+        code: KeyCode,
+        newest_first: bool,
+        following: bool,
+        lines: usize,
+        keys: fn(&mut Model, KeyCode) -> Vec<Command>,
+    ) -> Option<Vec<Command>> {
+        let away = if newest_first {
+            matches!(code, KeyCode::Char('j') | KeyCode::Down)
+        } else {
+            matches!(code, KeyCode::Char('k') | KeyCode::Up)
+        };
+        if !(away && following && lines > 1) {
+            return None;
+        }
+        let mut commands = keys(self, KeyCode::Char('f'));
+        commands.extend(keys(self, code));
+        Some(commands)
+    }
+
     fn logs_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let (following, lines) = self
+            .logs
+            .as_ref()
+            .map_or((false, 0), |logs| (logs.following, logs.shown()));
+        if let Some(commands) = self.leave_newest(code, false, following, lines, Model::logs_key) {
+            return commands;
+        }
         let Some(logs) = self.logs.as_mut() else {
             return Vec::new();
         };
@@ -3296,6 +3348,11 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     if control || alt || model.too_small() {
         return Vec::new();
     }
+    if let Some(press) = row_press(key.code).filter(|_| !model.types_q()) {
+        return (0..model.page())
+            .flat_map(|_| take_key(model, press))
+            .collect();
+    }
     if model.help {
         match key.code {
             KeyCode::Char('?') | KeyCode::Esc => model.help = false,
@@ -3311,6 +3368,15 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         return model.chooser_key(key.code);
     }
     model.workbench_key(key)
+}
+
+fn row_press(code: KeyCode) -> Option<KeyEvent> {
+    let row = match code {
+        KeyCode::PageDown => 'j',
+        KeyCode::PageUp => 'k',
+        _ => return None,
+    };
+    Some(KeyEvent::new(KeyCode::Char(row), KeyModifiers::NONE))
 }
 
 pub fn stacks(
@@ -5079,7 +5145,7 @@ pub(crate) mod tests {
         let mut model = logs_open("grafana");
         let lines: Vec<String> = (0..5).map(|n| format!("t n{n}")).collect();
         model.apply(Update::Logs(0, "grafana".to_string(), Ok(lines)));
-        assert_eq!(ch(&mut model, 'k'), []);
+        assert_eq!(ch(&mut model, 'j'), []);
         assert_eq!(model.logs().unwrap().3, 0);
 
         assert_eq!(ch(&mut model, 'f'), [Command::Follow(false)]);
@@ -5336,6 +5402,16 @@ pub(crate) mod tests {
 
     pub(crate) fn workshop_source() -> Arc<dyn SourceOfTruth> {
         lab_vars_source("workshop-one/lab_vars.yml")
+    }
+
+    #[test]
+    fn a_page_is_one_row_in_a_box_of_one_row_and_before_the_first_frame() {
+        let mut model = Model::new(start(vec![stack("a", &[])]));
+        assert_eq!(model.page(), 1);
+        model.set_shown(1);
+        assert_eq!(model.page(), 1);
+        model.set_shown(10);
+        assert_eq!(model.page(), 9);
     }
 
     pub(crate) fn workshop_located(sot: &str) -> Located {
@@ -5951,7 +6027,7 @@ pub(crate) mod tests {
     #[test]
     fn following_shows_no_marker() {
         let mut model = logs_view();
-        ch(&mut model, 'j');
+        ch(&mut model, 'k');
         assert_eq!(marked(&model), None);
         ch(&mut model, 'f');
         ch(&mut model, 'j');
@@ -9537,8 +9613,9 @@ pub(crate) mod tests {
         assert_eq!(scrolled(&model), 3);
         code(&mut model, KeyCode::Down);
         assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 2 }));
+        model.set_shown(24);
         code(&mut model, KeyCode::PageUp);
-        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 26 }));
+        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 25 }));
         code(&mut model, KeyCode::PageDown);
         assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 2 }));
 
@@ -9555,6 +9632,118 @@ pub(crate) mod tests {
             })
         );
         assert_eq!(ch(&mut model, 'k'), []);
+    }
+
+    #[test]
+    fn the_terminal_tab_pages_by_its_rows_less_one() {
+        let (mut model, id) = typing_in_srl1();
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        model.set_terminal_size(crate::screen::terminal_size(&model, area));
+        let lines: String = (1..=80).map(|line| format!("line {line}\r\n")).collect();
+        model.apply(Update::TermOutput(id, lines.into_bytes()));
+        leave(&mut model);
+        crate::measure(&mut model, area);
+
+        for (page, up) in [
+            (KeyCode::PageUp, 22),
+            (KeyCode::PageUp, 44),
+            (KeyCode::PageDown, 22),
+        ] {
+            code(&mut model, page);
+            assert_eq!(state_of(&model, SRL1), Some(State::Connected { up }));
+        }
+    }
+
+    #[test]
+    fn a_page_key_changes_nothing_where_j_is_text() {
+        let reach = |build: fn() -> Model, keys: &[KeyEvent]| {
+            let mut model = build();
+            keys.iter()
+                .for_each(|typed| drop(handle(&mut model, *typed)));
+            model.set_shown(10);
+            model
+        };
+        let service_log: fn() -> Model = || {
+            let mut model = opened(&["a"]);
+            with_services(&mut model, &["grafana"]);
+            ch(&mut model, 'l');
+            model
+        };
+        let observed: fn() -> Model = || {
+            let mut model = observability_model(three_alerts());
+            let line = labelled(&[("device", "srl1")], 1, "bgp up");
+            model.apply(Update::LabLogs(Ok(vec![line])));
+            model
+        };
+        let mut contexts = Vec::new();
+        for build in [lab_devices_model, service_log, observed] {
+            for digit in ['1', '2', '3', '4'] {
+                for tabs in 0..2 {
+                    for turns in 0..7 {
+                        let mut keys = vec![key(KeyCode::Char(digit))];
+                        keys.extend(std::iter::repeat_n(key(KeyCode::Tab), tabs));
+                        keys.extend(std::iter::repeat_n(key(KeyCode::Char(']')), turns));
+                        keys.push(key(KeyCode::Char('/')));
+                        if reach(build, &keys).typing() {
+                            contexts.push((build, keys));
+                        }
+                    }
+                }
+            }
+        }
+        let filters = |model: &Model| {
+            [
+                model.filter.typing,
+                model.device_filter.typing,
+                model.device_logs.filter.typing,
+                model.lab_logs.filter.typing,
+                model.config_filter.typing,
+                model.alert_filter.typing,
+                model.metrics_filter.typing,
+                model.logs.as_ref().is_some_and(|logs| logs.filter.typing),
+            ]
+        };
+        let seen = contexts.iter().fold([false; 8], |seen, (build, keys)| {
+            let typing = filters(&reach(*build, keys));
+            std::array::from_fn(|at| seen[at] || typing[at])
+        });
+        assert_eq!(seen, [true; 8]);
+        contexts.extend([
+            (
+                lab_devices_model as fn() -> Model,
+                vec![key(KeyCode::Char('s'))],
+            ),
+            (|| asking(None, None), vec![key(KeyCode::Char('g'))]),
+            (|| opened(&["a"]), vec![key(KeyCode::Char('u'))]),
+            (sonda_tab, vec![key(KeyCode::Char('l'))]),
+        ]);
+
+        for (build, keys) in &contexts {
+            let before = reach(*build, keys);
+            assert!(before.types_q() || before.question().is_some(), "{keys:?}");
+            let after = |typed: KeyCode| {
+                let mut model = reach(*build, keys);
+                (code(&mut model, typed), frame(&model))
+            };
+            for page in [KeyCode::PageDown, KeyCode::PageUp] {
+                assert_eq!(after(page), after(KeyCode::F(13)), "{keys:?} {page:?}");
+            }
+        }
+        let (mut model, id) = typing_in_srl1();
+        model.set_shown(10);
+        for (page, bytes) in [
+            (KeyCode::PageDown, b"\x1b[6~"),
+            (KeyCode::PageUp, b"\x1b[5~"),
+        ] {
+            let sent = code(&mut model, page);
+            assert_eq!(
+                sent,
+                [Command::TermWrite {
+                    id,
+                    bytes: bytes.to_vec()
+                }]
+            );
+        }
     }
 
     #[test]

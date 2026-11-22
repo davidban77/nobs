@@ -18,10 +18,10 @@
   ║o        run pane                              Ctrl-C  stop a run, or quit                    ║
   ║x        dismiss the error                                                                    ║
   ║                                                                                              ║
+  ║PgUp PgDn  move a page where j and k move                                                     ║
   ║sonda tab: Tab details  l load  d delete  r refresh                                           ║
   ║↑3 ↓13   3 rows hidden above, 13 below                                                        ║
   ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
-
 
 
 

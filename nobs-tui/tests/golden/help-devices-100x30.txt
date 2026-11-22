@@ -6,7 +6,6 @@
 
 
 
-
   ╔ keys  devices workbench ═════════════════════════════════════════════════════════════════════╗
   ║1 2 3    switch workbench                      /       filter                                 ║
   ║Tab      focus list/tabs                       r       refresh now                            ║
@@ -17,6 +16,7 @@
   ║Esc      close/clear/back                      q       quit; asks in a run                    ║
   ║Enter    open / pick alert                     Ctrl-C  stop a run, or quit                    ║
   ║                                                                                              ║
+  ║PgUp PgDn  move a page where j and k move                                                     ║
   ║alerts box: Enter picks the device, opens its timeline                                        ║
   ║↑3 ↓13   3 rows hidden above, 13 below                                                        ║
   ╚══════════════════════════════════════════════════════════════════════════════════════════════╝

@@ -6,7 +6,6 @@
 
 
 
-
   ╔ keys  lab workbench ═════════════════════════════════════════════════════════════════════════╗
   ║1 2 3 4  switch workbench                      X       destroy                                ║
   ║Tab      focus next pane                       P       purge                                  ║
@@ -18,6 +17,7 @@
   ║Esc      close/fold/back                       Ctrl-C  stop a run, or quit                    ║
   ║D        deploy                                                                               ║
   ║                                                                                              ║
+  ║PgUp PgDn  move a page where j and k move                                                     ║
   ║↑3 ↓13   3 rows hidden above, 13 below                                                        ║
   ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
 

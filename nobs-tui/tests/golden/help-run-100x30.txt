@@ -4,7 +4,6 @@
 
 
 
-
   ╔ keys  services workbench ════════════════════════════════════════════════════════════════════╗
   ║1 2 3    switch workbench                      ?       close                                  ║
   ║Tab      focus list/tabs                       Esc     close/clear/back                       ║
@@ -18,6 +17,7 @@
   ║o        run pane                              Ctrl-C  stop a run, or quit                    ║
   ║x        dismiss the error                                                                    ║
   ║                                                                                              ║
+  ║PgUp PgDn  move a page where j and k move                                                     ║
   ║sonda tab: Tab details  l load  d delete  r refresh                                           ║
   ║run pane, after Tab: j/k scroll  f follow  Esc fold                                           ║
   ║↑3 ↓13   3 rows hidden above, 13 below                                                        ║

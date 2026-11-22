@@ -40,6 +40,7 @@ const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its t
 const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
 const HELP_RUN: &str = "run pane, after Tab: j/k scroll  f follow  Esc fold";
 const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
+const HELP_PAGE: &str = "PgUp PgDn  move a page where j and k move";
 const HELP_QUIT: [(&str, &str); 2] = [
     ("q", "quit; asks in a run"),
     ("Ctrl-C", "stop a run, or quit"),
@@ -293,6 +294,58 @@ pub(crate) fn terminal_size(model: &Model, area: Rect) -> (u16, u16) {
     )
 }
 
+pub(crate) fn shown_rows(model: &Model, area: Rect) -> usize {
+    let (_, [_, _, _, body, bottom, _]) = regions(model, area);
+    let inside = |area: Rect| usize::from(Block::bordered().inner(area).height);
+    match holder(model) {
+        Holder::Chooser => inside(body),
+        Holder::Keys => usize::from(help_layout(model, body.union(bottom)).room),
+        Holder::Entry => inside(popup_area(device_content(body))),
+        Holder::Stacks => inside(service_panes(body)[0]),
+        Holder::Chapters => inside(lab_panes(model, device_panes(body)[0])[1]),
+        Holder::Nodes => {
+            let [nodes, _] = lab_panes(model, device_panes(body)[0]);
+            table_room(Block::bordered().inner(nodes))
+        }
+        Holder::Overview => usize::from(device_content(body).height),
+        Holder::Pane => {
+            let services = model.workbench() == Workbench::Services;
+            let content = if services {
+                service_content(body)
+            } else {
+                device_content(body)
+            };
+            match model.tab() {
+                Tab::Overview if services => table_room(content),
+                Tab::Overview | Tab::Logs => usize::from(content.height),
+                Tab::Timeline => usize::from(timeline_layout(model, content).1[1].height),
+                Tab::Interfaces => table_room(table_and_footer(content)[0]),
+                Tab::Config => usize::from(header_and_rows(content)[1].height),
+                Tab::Terminal => usize::from(terminal_size(model, area).0),
+                Tab::Sonda | Tab::Alerts | Tab::Metrics => 0,
+            }
+        }
+        Holder::Devices => {
+            let [list, _, alerts] = list_and_box(Block::bordered().inner(device_panes(body)[0]));
+            match model.cursor() {
+                Cursor::Device(_) => table_room(list),
+                Cursor::Alert(_) => usize::from(alerts.height),
+            }
+        }
+        Holder::Sonda(part) => view::shown_rows(service_content(body), part),
+        Holder::Run => inside(bottom),
+        Holder::Alerts => {
+            let inner = Block::bordered().inner(body);
+            match model.tab() {
+                Tab::Logs => usize::from(header_and_rows(inner)[1].height),
+                Tab::Metrics => table_room(inner),
+                _ if model.selected_alert().is_some() => table_room(list_and_box(inner)[0]),
+                _ => table_room(inner),
+            }
+        }
+    }
+}
+
 fn workbench_least(model: &Model) -> u16 {
     let list = match model.workbench() {
         Workbench::Devices | Workbench::Observability => BORDERS + 3 + ALERTS_LEAST,
@@ -531,9 +584,13 @@ fn service_panes(area: Rect) -> [Rect; 2] {
 
 pub(crate) fn sonda_overflow(model: &Model, area: Rect) -> usize {
     let (_, [_, _, _, body, _, _]) = regions(model, area);
+    view::details_overflow(model.sonda(), service_content(body))
+}
+
+fn service_content(body: Rect) -> Rect {
     let [_, right] = service_panes(body);
     let [_, content] = tab_content(right);
-    view::details_overflow(model.sonda(), content)
+    content
 }
 
 fn stacks(frame: &mut Frame, area: Rect, model: &Model) {
@@ -815,7 +872,7 @@ fn overview(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         .highlight_spacing(HighlightSpacing::Always)
         .highlight_symbol(if on_tabs { ">" } else { " " })
         .row_highlight_style(if on_tabs { REVERSE } else { Style::new() });
-    let room = usize::from(area.height).saturating_sub(1);
+    let room = table_room(area);
     let first = first_row(selected.unwrap_or(0), room);
     let mut state = TableState::default()
         .with_selected(selected)
@@ -844,6 +901,10 @@ fn logs(frame: &mut Frame, area: Rect, model: &Model) {
 
 pub(crate) fn first_row(selected: usize, room: usize) -> usize {
     (selected + 1).saturating_sub(room)
+}
+
+pub(crate) fn table_room(area: Rect) -> usize {
+    usize::from(area.height).saturating_sub(1)
 }
 
 pub(crate) fn border_below(inner: Rect) -> Rect {
@@ -903,6 +964,12 @@ fn tab_content(area: Rect) -> [Rect; 2] {
         .areas(Block::bordered().inner(area))
 }
 
+fn device_content(body: Rect) -> Rect {
+    let [_, right] = device_panes(body);
+    let [_, content] = tab_content(right);
+    content
+}
+
 fn devices(frame: &mut Frame, area: Rect, model: &Model) {
     let wide = area.width >= WIDE;
     if model.tab() == Tab::Terminal {
@@ -922,13 +989,7 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         .title_top(format!(" devices {} ", visible.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let alerts_height = (inner.height / 4).max(ALERTS_LEAST);
-    let [list, separator, alerts] = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(1),
-        Constraint::Length(alerts_height),
-    ])
-    .areas(inner);
+    let [list, separator, alerts] = list_and_box(inner);
     let first = match model.device_note() {
         Some(note) => {
             dim_line(frame, list, note);
@@ -938,10 +999,20 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     };
     let count = alerts_cell(model, &model.alerts().len().to_string());
     let row = Rect::new(area.x, separator.y, area.width, 1);
-    let room = usize::from(list.height).saturating_sub(1);
+    let room = table_room(list);
     let window = first.map(|first| (first, room, visible.len()));
     alerts_separator(frame, row, &count, window, border);
     alert_rows(frame, alerts, model, wide);
+}
+
+fn list_and_box(inner: Rect) -> [Rect; 3] {
+    let box_height = (inner.height / 4).max(ALERTS_LEAST);
+    Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(box_height),
+    ])
+    .areas(inner)
 }
 
 fn alerts_answer(model: &Model) -> bool {
@@ -1041,7 +1112,7 @@ fn device_rows(
         .iter()
         .position(|index| cursor == Cursor::Device(*index))
         .unwrap_or(0);
-    let start = first_row(at, usize::from(area.height).saturating_sub(1));
+    let start = first_row(at, table_room(area));
     let mut lines = vec![Line::from(header)];
     for (row, index) in rows.iter().zip(visible).skip(start) {
         let selected = cursor == Cursor::Device(*index);
@@ -1233,8 +1304,7 @@ fn logs_view(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     }
     let (lines, following, marked, held) = model.lab_logs();
-    let [header, rows_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let [header, rows_area] = header_and_rows(area);
     let count = match held {
         Some(held) => format!("{} of {}", lines.len(), counted(held, "line")),
         None => counted(lines.len(), "line"),
@@ -1291,15 +1361,9 @@ fn alerts_view(
         alert_table(frame, inner, model, visible);
         return;
     };
-    let box_height = (inner.height / 4).max(ALERTS_LEAST);
-    let [table, separator, lower] = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(1),
-        Constraint::Length(box_height),
-    ])
-    .areas(inner);
+    let [table, separator, lower] = list_and_box(inner);
     let first = alert_table(frame, table, model, visible);
-    let room = usize::from(table.height).saturating_sub(1);
+    let room = table_room(table);
     let title = cut_whole(
         &[label(selected, "alertname"), label(selected, "device")],
         "  ",
@@ -1395,8 +1459,7 @@ fn marked_table<'a>(
         .highlight_spacing(HighlightSpacing::Always)
         .highlight_symbol("> ")
         .row_highlight_style(REVERSE);
-    let room = usize::from(area.height).saturating_sub(1);
-    let first = first_row(at.unwrap_or(0), room);
+    let first = first_row(at.unwrap_or(0), table_room(area));
     let mut state = TableState::default().with_selected(at).with_offset(first);
     frame.render_stateful_widget(table, area, &mut state);
     first
@@ -1518,8 +1581,8 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
             .collect();
         fitted(parts, width)
     };
-    let [table, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    let room = usize::from(table.height).saturating_sub(1);
+    let [table, footer] = table_and_footer(area);
+    let room = table_room(table);
     let on_tabs = model.focus() == Focus::Tabs;
     let selected = model.interface_row();
     let first = first_row(selected, room);
@@ -1546,10 +1609,13 @@ fn device_interfaces(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
 }
 
+fn table_and_footer(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area)
+}
+
 pub(crate) fn overview_overflow(model: &Model, area: Rect) -> usize {
     let (_, [_, _, _, body, _, _]) = regions(model, area);
-    let [_, right] = device_panes(body);
-    let [_, content] = tab_content(right);
+    let content = device_content(body);
     overview_lines(model, usize::from(content.width))
         .len()
         .saturating_sub(usize::from(content.height))
@@ -1681,8 +1747,7 @@ fn kind_style(kind: devices::Kind) -> Style {
     }
 }
 
-fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
-    let entries = model.timeline();
+fn timeline_layout(model: &Model, area: Rect) -> (Vec<String>, [Rect; 3]) {
     let mut notes: Vec<String> = Vec::new();
     for sentence in [Service::Alerts, Service::Logs, Service::Flows]
         .into_iter()
@@ -1692,12 +1757,18 @@ fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
             notes.push(sentence);
         }
     }
-    let [counts, rows, absent_rows] = Layout::vertical([
+    let parts = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(u16::try_from(notes.len()).unwrap_or(u16::MAX)),
     ])
     .areas(area);
+    (notes, parts)
+}
+
+fn timeline(frame: &mut Frame, area: Rect, model: &Model) {
+    let entries = model.timeline();
+    let (notes, [counts, rows, absent_rows]) = timeline_layout(model, area);
     let width = usize::from(absent_rows.width);
     let notes: Vec<Line> = notes
         .into_iter()
@@ -1785,9 +1856,7 @@ pub(crate) fn popup_overflow(model: &Model, area: Rect) -> usize {
         return 0;
     };
     let (_, [_, _, _, body, _, _]) = regions(model, area);
-    let [_, right] = device_panes(body);
-    let [_, content] = tab_content(right);
-    let inner = Block::bordered().inner(popup_area(content));
+    let inner = Block::bordered().inner(popup_area(device_content(body)));
     popup_lines(entry, inner.width)
         .len()
         .saturating_sub(usize::from(inner.height))
@@ -1859,8 +1928,7 @@ fn config_pane(frame: &mut Frame, area: Rect, model: &Model) {
         frame.render_widget(Paragraph::new(hint), area);
         return;
     };
-    let [header, rows_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let [header, rows_area] = header_and_rows(area);
     let fetched = format!(
         "fetched {}  {}",
         kept.fetched,
@@ -1869,6 +1937,10 @@ fn config_pane(frame: &mut Frame, area: Rect, model: &Model) {
     frame.render_widget(Paragraph::new(Line::from(fit(&fetched, width))), header);
     let rows = lines.iter().map(|line| Line::from(fit(line, width)));
     pane_rows(frame, rows_area, rows, scroll, lines.len());
+}
+
+fn header_and_rows(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area)
 }
 
 fn pane_rows<'a>(
@@ -2088,12 +2160,7 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
     let wide = area.width >= WIDE;
     let [left, right] = device_panes(area);
     let chapters = model.chapters();
-    let chapters_height = u16::try_from(chapters.len() + 2).unwrap_or(u16::MAX);
-    let [top, bottom] = Layout::vertical([
-        Constraint::Min(NODES_LEAST),
-        Constraint::Length(chapters_height),
-    ])
-    .areas(left);
+    let [top, bottom] = lab_panes(model, left);
     node_list(frame, top, model, wide);
     let selected = model.selected_chapter();
     let block = Block::bordered()
@@ -2109,6 +2176,15 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
         Target::Chapter,
     );
     lab_overview(frame, right, model);
+}
+
+fn lab_panes(model: &Model, left: Rect) -> [Rect; 2] {
+    let chapters_height = u16::try_from(model.chapters().len() + 2).unwrap_or(u16::MAX);
+    Layout::vertical([
+        Constraint::Min(NODES_LEAST),
+        Constraint::Length(chapters_height),
+    ])
+    .areas(left)
 }
 
 fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
@@ -2154,7 +2230,7 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         parts.push((state.0.to_string(), state.1));
         fitted(parts, usize::from(inner.width))
     };
-    let room = usize::from(inner.height).saturating_sub(1);
+    let room = table_room(inner);
     let on_tabs = model.focus() == Focus::Tabs;
     let selected = model.node_row();
     let first = first_row(selected, room);
@@ -2195,8 +2271,7 @@ pub(crate) fn lab_overflow(model: &Model, area: Rect) -> usize {
         return 0;
     };
     let (_, [_, _, _, body, _, _]) = regions(model, area);
-    let [_, right] = device_panes(body);
-    let [_, content] = tab_content(right);
+    let content = device_content(body);
     lab_lines(model, chapter, usize::from(content.width))
         .len()
         .saturating_sub(usize::from(content.height))
@@ -2525,6 +2600,7 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
         Workbench::Services => vec![HELP_SONDA],
         Workbench::Lab | Workbench::Observability => vec![],
     };
+    notes.insert(0, HELP_PAGE);
     if model.run_drawn() {
         notes.push(HELP_RUN);
     }
@@ -3550,7 +3626,7 @@ mod tests {
                 .unwrap()
                 .clone()
         };
-        for mark in ["↓5", "↑1 ↓4", "↑2 ↓3"] {
+        for mark in ["↓6", "↑1 ↓5", "↑2 ↓4"] {
             let rows = drawn(&mut model, 60, 15);
             model.set_help_overflow(help_overflow(&model, Rect::new(0, 0, 60, 15)));
             let screen = rows.join("\n");
@@ -4191,6 +4267,501 @@ mod tests {
                 shown,
                 "{key} {times}: {line}\n{screen}"
             );
+        }
+    }
+
+    fn tabbed(mut model: Model, times: usize) -> Model {
+        for _ in 0..times {
+            focus_tabs(&mut model);
+        }
+        model
+    }
+
+    fn on_view(tab: Tab) -> Model {
+        let mut model = moved(devices_bench(), '3', 1);
+        while model.tab() != tab {
+            press(&mut model, ']');
+        }
+        model
+    }
+
+    #[test]
+    fn the_rows_of_each_box_at_60x15_and_100x30() {
+        let boxes: [(&str, Holder, Build, usize, usize); 24] = [
+            (
+                "chooser",
+                Holder::Chooser,
+                || Model::new(start(many_stacks(4))),
+                10,
+                25,
+            ),
+            (
+                "keys",
+                Holder::Keys,
+                || moved(devices_bench(), '?', 1),
+                6,
+                8,
+            ),
+            ("entry", Holder::Entry, boxed_entry, 4, 19),
+            ("stacks", Holder::Stacks, services_bench, 9, 24),
+            ("chapters", Holder::Chapters, || lab_bench(2), 2, 2),
+            ("nodes", Holder::Nodes, || tabbed(lab_bench(2), 1), 4, 19),
+            (
+                "lab overview",
+                Holder::Overview,
+                || tabbed(lab_bench(2), 2),
+                8,
+                23,
+            ),
+            (
+                "services overview",
+                Holder::Pane,
+                || tabbed(services_bench(), 1),
+                7,
+                22,
+            ),
+            (
+                "service log",
+                Holder::Pane,
+                || services_log_of(forty_lines()),
+                8,
+                23,
+            ),
+            (
+                "device overview",
+                Holder::Pane,
+                || tabbed(devices_bench(), 1),
+                8,
+                23,
+            ),
+            ("interfaces", Holder::Pane, || interfaces_of(4), 6, 21),
+            ("timeline", Holder::Pane, || timeline_of(2), 7, 22),
+            ("config", Holder::Pane, config_tab, 3, 14),
+            ("device log", Holder::Pane, || device_log_of(2), 8, 23),
+            (
+                "terminal",
+                Holder::Pane,
+                || {
+                    let mut model = lab_devices_model();
+                    open_tab(&mut model, Tab::Terminal);
+                    model
+                },
+                8,
+                23,
+            ),
+            ("device list", Holder::Devices, devices_bench, 5, 16),
+            ("alerts box", Holder::Devices, || alerts_of(2), 2, 6),
+            (
+                "scenarios",
+                Holder::Sonda(view::Part::Scenarios),
+                || sonda_of(1),
+                3,
+                18,
+            ),
+            (
+                "details",
+                Holder::Sonda(view::Part::Details),
+                || tabbed(sonda_of(1), 1),
+                4,
+                19,
+            ),
+            (
+                "run pane",
+                Holder::Run,
+                || {
+                    let mut model = answered(&numbered(40));
+                    tab_to_run(&mut model, 60, 15);
+                    model
+                },
+                10,
+                25,
+            ),
+            (
+                "alerts view",
+                Holder::Alerts,
+                || on_view(Tab::Alerts),
+                5,
+                16,
+            ),
+            (
+                "alerts view with a selected alert",
+                Holder::Alerts,
+                || moved(alerts_of(20), '3', 1),
+                5,
+                16,
+            ),
+            ("logs view", Holder::Alerts, || on_view(Tab::Logs), 8, 23),
+            (
+                "metrics view",
+                Holder::Alerts,
+                || on_view(Tab::Metrics),
+                8,
+                23,
+            ),
+        ];
+        for (label, box_holder, build, small, large) in boxes {
+            for (width, height, rows) in [(60, 15, small), (100, 30, large)] {
+                let model = build();
+
+                assert_eq!(holder(&model), box_holder, "{label}");
+                assert_eq!(
+                    shown_rows(&model, Rect::new(0, 0, width, height)),
+                    rows,
+                    "{label} {width}x{height}"
+                );
+            }
+        }
+    }
+
+    fn rich(pane: Option<bool>) -> Model {
+        let dir = fixture("book-lab");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        let mut first = stacks(Some(&located), Vec::new()).unwrap().remove(0);
+        first.env.push((
+            "SONDA_SERVER_URL".to_string(),
+            "http://localhost:8085".to_string(),
+        ));
+        let chapters = (1..=12)
+            .map(|index| Stack {
+                name: format!("ch{index}"),
+                ..first.clone()
+            })
+            .collect();
+        let mut model = Model::new(Start {
+            lab: Some(located),
+            home: Workbench::Devices,
+            ..start(chapters)
+        });
+        let template = devices_model(workshop_located("infrahub")).devices()[0].clone();
+        let devices = (1..=40)
+            .map(|index| {
+                let mut device = template.clone();
+                device.name = format!("d{index:02}");
+                device.interfaces = vec![template.interfaces[0].clone(); 30];
+                device.sessions = vec![template.sessions[0].clone(); 12];
+                device
+            })
+            .collect();
+        let alerts = (0..20)
+            .map(|index| alert("d01", &format!("a{index:02}"), "2026-11-09T13:53:32Z"))
+            .collect();
+        let text: Vec<String> = (1..=12).map(|index| format!("text {index:02}")).collect();
+        let lines = std::iter::once(log_line(41, &text.join("\n")))
+            .chain((1..=40).map(|index| log_line(index, &format!("line {index:02}"))))
+            .collect();
+        let nodes = (1..=30)
+            .map(|index| NodeRow {
+                name: format!("n{index:02}"),
+                kind: "nokia_srlinux".to_string(),
+                state: Some("running".to_string()),
+            })
+            .collect();
+        model.apply(every_service_up(0));
+        model.apply(Update::Devices(Ok(devices)));
+        model.apply(Update::Alerts(Ok(alerts)));
+        model.apply(Update::DeviceLogs("d01".to_string(), Ok(lines)));
+        model.apply(Update::Nodes(Ok(nodes)));
+        model.apply(Update::Logs(
+            0,
+            "loki".to_string(),
+            Err(LONG_ERROR.to_string()),
+        ));
+        let Some(pane) = pane else {
+            return model;
+        };
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        model.apply(Update::Sonda(data::Update {
+            at: Instant::now(),
+            list: Ok(scenarios(20)),
+            selected: None,
+        }));
+        "sx".chars().for_each(|typed| press(&mut model, typed));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        for line in numbered(40) {
+            model.apply(Update::ActionLine(line));
+        }
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        model.apply(lab_lines("d01", 40));
+        if !pane {
+            press(&mut model, 'o');
+        }
+        model
+    }
+
+    fn lab_lines(device: &str, count: i64) -> Update {
+        Update::LabLogs(Ok((1..=count)
+            .map(|index| {
+                (
+                    [("device".to_string(), device.to_string())].into(),
+                    log_line(index, &format!("lab {index:02}")),
+                )
+            })
+            .collect()))
+    }
+
+    fn lab_logs_of(count: i64) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(lab_lines("srl1", count));
+        press(&mut model, '3');
+        press(&mut model, ']');
+        model
+    }
+
+    fn looped(model: &mut Model, area: Rect) {
+        crate::settle(model, area);
+        model.set_terminal_size(terminal_size(model, area));
+        crate::measure(model, area);
+    }
+
+    fn long_details() -> Model {
+        let fields: Vec<String> = (1..=30)
+            .map(|index| format!(r#""f{index:02}":1"#))
+            .collect();
+        let show = format!("{{{}}}", fields.join(","));
+        tabbed(sonda_details(r#"{"state":"running"}"#, &show), 1)
+    }
+
+    fn services_box() -> Model {
+        let mut model = opened("a");
+        let rows = vec![row("grafana", "running"), row("loki", "running")];
+        model.apply(listing(0, Ok(rows)));
+        tabbed(model, 1)
+    }
+
+    fn config_tab() -> Model {
+        let mut model = lab_devices_model();
+        press(&mut model, 'g');
+        for line in numbered(60) {
+            model.apply(Update::ActionLine(line));
+        }
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        open_tab(&mut model, Tab::Config);
+        focus_tabs(&mut model);
+        model
+    }
+
+    #[test]
+    fn wherever_j_moves_a_page_key_moves_as_j_pressed_page_times() {
+        let area = Rect::new(0, 0, 60, 15);
+        let pressed = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let row = |typed| pressed(KeyCode::Char(typed));
+        let reach = |(build, path): &(Build, Vec<KeyEvent>), moves: &[KeyEvent]| {
+            let mut model = build();
+            for key in path {
+                looped(&mut model, area);
+                handle(&mut model, *key);
+            }
+            looped(&mut model, area);
+            moves.iter().for_each(|key| drop(handle(&mut model, *key)));
+            looped(&mut model, area);
+            model
+        };
+        let bare: Build = || rich(None);
+        let mut states = vec![
+            (bare, vec![]),
+            (bare, vec![row('?')]),
+            (long_details, vec![]),
+            (services_box, vec![]),
+            (|| services_log_of(forty_lines()), vec![]),
+            (config_tab, vec![]),
+        ];
+        let panes: [Build; 2] = [|| rich(Some(false)), || rich(Some(true))];
+        for pane in panes {
+            for digit in ['1', '2', '3', '4'] {
+                for tabs in 0..4 {
+                    for turns in 0..7 {
+                        for enter in [false, true] {
+                            for help in [false, true] {
+                                let mut path = vec![row(digit)];
+                                path.extend(std::iter::repeat_n(pressed(KeyCode::Tab), tabs));
+                                path.extend(std::iter::repeat_n(row(']'), turns));
+                                path.extend(enter.then(|| pressed(KeyCode::Enter)));
+                                path.extend(help.then(|| row('?')));
+                                states.push((pane, path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let place_of = |model: &Model| {
+            let (bench, tab) = (model.workbench(), model.tab());
+            let following = match (bench, tab) {
+                (Workbench::Services, Tab::Logs) => model.logs().map(|logs| logs.2),
+                (Workbench::Devices, Tab::Logs) => model.device_logs().map(|logs| logs.2),
+                (Workbench::Observability, Tab::Logs) => Some(model.lab_logs().1),
+                _ => None,
+            };
+            let state = match following {
+                Some(true) => " following",
+                Some(false) => " paused",
+                None => "",
+            };
+            match holder(model) {
+                Holder::Pane | Holder::Alerts => format!("{bench:?} {tab:?}{state}"),
+                other => format!("{other:?}"),
+            }
+        };
+        let bottom = vec![row('j'); 80];
+        let top: Vec<KeyEvent> = bottom.iter().copied().chain(vec![row('k'); 80]).collect();
+        let mut frames = Vec::new();
+        let mut compared = Vec::new();
+        for state in states {
+            let base = drawn(&mut reach(&state, &[]), 60, 15);
+            let moves = |typed| drawn(&mut reach(&state, &[row(typed)]), 60, 15) != base;
+            if frames.contains(&base) || !(moves('j') || moves('k')) {
+                continue;
+            }
+            frames.push(base);
+            for edge in [&[][..], &bottom, &top] {
+                for (page, typed) in [(KeyCode::PageDown, 'j'), (KeyCode::PageUp, 'k')] {
+                    let mut paged = reach(&state, edge);
+                    let place = place_of(&paged);
+                    handle(&mut paged, pressed(page));
+                    let mut rowed = reach(&state, edge);
+                    let presses = vec![row(typed); rowed.page()];
+                    presses
+                        .iter()
+                        .for_each(|key| drop(handle(&mut rowed, *key)));
+                    assert_eq!(
+                        drawn(&mut paged, 60, 15),
+                        drawn(&mut rowed, 60, 15),
+                        "{place} {:?} {} {page:?}",
+                        state.1,
+                        edge.len()
+                    );
+                    compared.push(place);
+                }
+            }
+        }
+        compared.sort();
+        compared.dedup();
+        assert_eq!(
+            compared,
+            [
+                "Chapters",
+                "Chooser",
+                "Devices",
+                "Devices Config",
+                "Devices Interfaces",
+                "Devices Logs following",
+                "Devices Logs paused",
+                "Devices Overview",
+                "Devices Timeline",
+                "Entry",
+                "Keys",
+                "Nodes",
+                "Observability Alerts",
+                "Observability Logs following",
+                "Observability Logs paused",
+                "Observability Metrics",
+                "Overview",
+                "Run",
+                "Services Logs following",
+                "Services Logs paused",
+                "Services Overview",
+                "Sonda(Details)",
+                "Sonda(Scenarios)",
+                "Stacks"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_move_away_from_the_newest_line_pauses_a_following_log_and_moves() {
+        type Seen = fn(&Model) -> (bool, usize);
+        type Follow = fn(bool) -> Vec<Command>;
+        type OfLines = fn(i64) -> Model;
+        let area = Rect::new(0, 0, 100, 30);
+        let pressed = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let frame = |model: &mut Model| drawn(model, 100, 30).join("\n");
+        let logs: [(OfLines, char, Seen, Follow, &str); 4] = [
+            (
+                |count| services_log_of((0..count).map(|index| format!("l{index}")).collect()),
+                'k',
+                |model| model.logs().map(|logs| (logs.2, logs.3)).unwrap(),
+                |on| vec![Command::Follow(on)],
+                "paused",
+            ),
+            (
+                device_log_of,
+                'j',
+                |model| model.device_logs().map(|logs| (logs.2, logs.3)).unwrap(),
+                |on| vec![Command::FollowDevice(on)],
+                "paused",
+            ),
+            (
+                lab_logs_of,
+                'j',
+                |model| (model.lab_logs().1, model.lab_logs().2.unwrap_or(0)),
+                |_| Vec::new(),
+                "paused",
+            ),
+            (
+                |count| {
+                    let mut model = answered(&numbered(count as usize));
+                    tab_to_run(&mut model, 100, 30);
+                    model
+                },
+                'k',
+                |model| {
+                    let back = model.run_overflow() - model.run_scroll();
+                    (back == 0, back)
+                },
+                |_| Vec::new(),
+                "f follow",
+            ),
+        ];
+        for (index, (build, away, seen, follow, word)) in logs.into_iter().enumerate() {
+            let (toward, away_page, toward_page) = match away {
+                'k' => ('j', KeyCode::PageUp, KeyCode::PageDown),
+                _ => ('k', KeyCode::PageDown, KeyCode::PageUp),
+            };
+            for (key, paged) in [(KeyCode::Char(away), false), (away_page, true)] {
+                let mut model = build(100);
+                looped(&mut model, area);
+                assert_eq!(seen(&model), (true, 0), "{index} {key:?}");
+                let rows = if paged { model.page() } else { 1 };
+                assert!(!paged || rows > 1, "{index}");
+
+                let commands = handle(&mut model, pressed(key));
+                assert_eq!(commands, follow(false), "{index} {key:?}");
+                looped(&mut model, area);
+                assert_eq!(seen(&model), (false, rows), "{index} {key:?}");
+                assert!(frame(&mut model).contains(word), "{index} {key:?}");
+
+                let commands = handle(&mut model, pressed(KeyCode::Char('f')));
+                assert_eq!(commands, follow(true), "{index} {key:?} f");
+                looped(&mut model, area);
+                assert_eq!(seen(&model), (true, 0), "{index} {key:?} f");
+                assert!(!frame(&mut model).contains(word), "{index} {key:?} f");
+            }
+            for key in [KeyCode::Char(toward), toward_page] {
+                let mut model = build(100);
+                looped(&mut model, area);
+                let before = frame(&mut model);
+
+                assert_eq!(handle(&mut model, pressed(key)), [], "{index} {key:?}");
+                looped(&mut model, area);
+                assert_eq!(seen(&model), (true, 0), "{index} {key:?}");
+                assert_eq!(frame(&mut model), before, "{index} {key:?}");
+            }
+            if word == "paused" {
+                for key in [KeyCode::Char(away), away_page] {
+                    let mut model = build(1);
+                    looped(&mut model, area);
+
+                    let commands = handle(&mut model, pressed(key));
+                    assert_eq!(commands, [], "{index} one line {key:?}");
+                    assert_eq!(seen(&model), (true, 0), "{index} one line {key:?}");
+                }
+            }
         }
     }
 

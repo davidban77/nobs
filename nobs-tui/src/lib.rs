@@ -339,11 +339,7 @@ fn loop_turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
         let inside = screen::terminal_size(model, area);
         send(model.set_terminal_size(inside), actions, wires, pollers);
         terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
-        model.set_help_overflow(screen::help_overflow(model, area));
-        model.set_overview_overflow(screen::overview_overflow(model, area));
-        model.set_popup_overflow(screen::popup_overflow(model, area));
-        model.set_lab_overflow(screen::lab_overflow(model, area));
-        model.set_details_overflow(screen::sonda_overflow(model, area));
+        measure(model, area);
         if let Some(key) = next_key(pace(model).1)? {
             send(handle(model, key), actions, wires, pollers);
             send(model.ask_changes(), actions, wires, pollers);
@@ -357,6 +353,15 @@ fn loop_turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
 pub fn settle(model: &mut Model, area: Rect) {
     let measure = screen::run_view(model, area);
     model.set_run_view(measure);
+}
+
+pub fn measure(model: &mut Model, area: Rect) {
+    model.set_help_overflow(screen::help_overflow(model, area));
+    model.set_overview_overflow(screen::overview_overflow(model, area));
+    model.set_popup_overflow(screen::popup_overflow(model, area));
+    model.set_lab_overflow(screen::lab_overflow(model, area));
+    model.set_details_overflow(screen::sonda_overflow(model, area));
+    model.set_shown(screen::shown_rows(model, area));
 }
 
 fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, pollers: &Pollers) {
@@ -2540,7 +2545,7 @@ mod tests {
             .map(String::from_iter)
             .skip_while(|row| !row.contains("╔ keys"))
             .skip(1)
-            .take_while(|row| !row.contains("sonda tab"))
+            .take_while(|row| !row.contains("PgUp PgDn"))
             .collect()
     }
 
@@ -2876,7 +2881,7 @@ mod tests {
         let scrolled = help_turn(
             &mut lab_model(),
             (60, 15),
-            &[ch('o'), ch('?'), ch('j'), ch('j')],
+            &[ch('o'), ch('?'), ch('j'), ch('j'), ch('j')],
         );
 
         let entries = screen::help_entries(&model);
@@ -2893,7 +2898,7 @@ mod tests {
             );
         }
         assert!(rows.iter().any(|row| row.contains("j/k more")), "{screen}");
-        assert!(rows[13].contains("═ ↓2 ═╝"), "{screen}");
+        assert!(rows[13].contains("═ ↓3 ═╝"), "{screen}");
     }
 
     #[test]
@@ -3518,5 +3523,56 @@ mod tests {
         pollers.send(Command::Quit);
 
         assert_eq!(health(&model), Some("ok".to_string()));
+    }
+
+    #[test]
+    fn the_loop_measure_gives_the_page_of_the_drawn_box() {
+        let mut model = devices_model();
+        let names = (1..=40).map(|index| device(&format!("d{index:02}")));
+        model.apply(Update::Devices(Ok(names.collect())));
+        assert_eq!(model.focus(), Focus::List);
+
+        measure(&mut model, Rect::new(0, 0, 60, 15));
+        assert_eq!(model.page(), 4);
+        handle(&mut model, key(KeyCode::PageDown));
+        assert_eq!(model.cursor(), shell::Cursor::Device(4));
+
+        measure(&mut model, Rect::new(0, 0, 100, 30));
+        assert_eq!(model.page(), 15);
+        handle(&mut model, key(KeyCode::PageDown));
+        assert_eq!(model.cursor(), shell::Cursor::Device(19));
+    }
+
+    #[test]
+    fn a_turn_measures_the_drawn_box_before_the_next_key() {
+        let mut model = devices_model();
+        let names = (1..=40).map(|index| device(&format!("d{index:02}")));
+        model.apply(Update::Devices(Ok(names.collect())));
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let mut terminal = terminal(100, 30);
+        let mut pressed = [key(KeyCode::PageDown), q()].into_iter();
+
+        turns(
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
+            &mut model,
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
+            |_| Ok(pressed.next()),
+        )
+        .unwrap();
+        let drawn = text(&terminal);
+        let shown = (1..=40)
+            .filter(|index| drawn.contains(&format!("d{index:02} ")))
+            .count();
+
+        assert_eq!(model.page(), shown - 1);
+        assert_eq!(model.cursor(), shell::Cursor::Device(model.page()));
     }
 }

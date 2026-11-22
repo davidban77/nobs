@@ -9,7 +9,8 @@ use ratatui::Frame;
 
 use crate::data::{Model, Prompt};
 use crate::screen::{
-    border, border_below, cut_words, first_row, fit, rows_mark, whole_hints, widest, wrapped, Keep,
+    border, border_below, cut_words, first_row, fit, rows_mark, table_room, whole_hints, widest,
+    wrapped, Keep,
 };
 
 const SELECT: &str = "j/k select";
@@ -33,7 +34,7 @@ pub fn draw_in(frame: &mut Frame, area: Rect, model: &Model, now: Instant, focus
         top,
     );
     let rows = Block::bordered().inner(left);
-    let room = usize::from(rows.height).saturating_sub(1);
+    let room = table_room(rows);
     let first = first_row(model.selected_index().unwrap_or(0), room);
     let mut state = TableState::default()
         .with_selected(model.selected_index())
@@ -82,6 +83,14 @@ pub(crate) fn details_overflow(model: &Model, area: Rect) -> usize {
     details_lines(model, inner.width)
         .len()
         .saturating_sub(usize::from(inner.height))
+}
+
+pub(crate) fn shown_rows(area: Rect, part: Part) -> usize {
+    let [_, left, right, _] = panes(area);
+    match part {
+        Part::Scenarios => table_room(Block::bordered().inner(left)),
+        Part::Details => usize::from(Block::bordered().inner(right).height),
+    }
 }
 
 fn top_line(model: &Model, now: Instant, width: usize) -> Line<'static> {
