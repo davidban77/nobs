@@ -309,7 +309,7 @@ nobs never sees your password. After a good password the screen comes back and t
 
 When `sudo` gets no good password (three wrong tries, or `Ctrl-C` or `Ctrl-\` at its prompt), the screen comes back and nothing runs. The run pane says `not run` with the line `nobs: lab destroy: sudo got no password; nothing ran`, and the chapter row gets no `!`. When `sudo` cannot run at all, the line is `nobs: lab <command>: cannot run sudo: <error>; nothing ran`. Press the key again to try again. The lines on your terminal stay there and show again after you quit.
 
-If `sudo` is set never to remember a password, the action still cannot run. It ends with `exit 1`, the chapter row gets `!`, and the run pane shows the line `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again`. The screen does not step aside a second time.
+If `sudo` is set never to remember a password, the action still cannot run. It ends with `exit 1` and gets the `!` mark like any action that fails (see [Actions](#actions)), and the run pane shows the line `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again`. The screen does not step aside a second time.
 
 When you type `nobs lab <command> --sudo-no-prompt` yourself and `sudo` needs a password, nobs fails at once with `exit 1`:
 
