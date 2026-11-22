@@ -54,22 +54,18 @@ struct Process {
 
 impl Launcher for Processes {
     fn start(&self, child: Invocation<'_>, out: Sender<Update>) -> io::Result<Box<dyn Running>> {
-        launch(child.program, child.args, child.login, out, |group| {
-            signal(group, 0)
-        })
+        launch(child, out, |group| signal(group, 0))
     }
 }
 
 fn launch(
-    program: &Path,
-    args: &[OsString],
-    login: &Login,
+    invocation: Invocation<'_>,
     out: Sender<Update>,
     probe: fn(u32) -> io::Result<()>,
 ) -> io::Result<Box<dyn Running>> {
-    let mut child = Command::new(program)
-        .envs(login_vars(login))
-        .args(args)
+    let mut child = Command::new(invocation.program)
+        .envs(login_vars(invocation.login))
+        .args(invocation.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -443,9 +439,15 @@ pub(crate) mod tests {
     fn a_group_the_probe_never_sees_gone_ends_not_stopped_with_its_group() {
         let (out, updates) = mpsc::channel();
         let args = ["-c", "echo $$; sleep 300"].map(OsString::from);
-        let mut running = launch(Path::new("sh"), &args, &Login::default(), out, |_| {
-            Err(io::Error::from_raw_os_error(libc::EPERM))
-        })
+        let mut running = launch(
+            Invocation {
+                program: Path::new("sh"),
+                args: &args,
+                login: &Login::default(),
+            },
+            out,
+            |_| Err(io::Error::from_raw_os_error(libc::EPERM)),
+        )
         .unwrap();
         let printed = updates.recv_timeout(Duration::from_secs(5)).unwrap();
         let Update::ActionLine(group) = &printed else {

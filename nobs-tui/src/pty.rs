@@ -61,12 +61,12 @@ impl Terminals for Ptys {
         for (name, value) in login_vars(child.login) {
             command.env(name, value);
         }
-        let mut child = pair
+        let mut process = pair
             .slave
             .spawn_command(command)
             .map_err(io::Error::other)?;
         drop(pair.slave);
-        let killer = child.clone_killer();
+        let killer = process.clone_killer();
         let reaped = Arc::new(Mutex::new(false));
         let reaping = Arc::clone(&reaped);
         let reader = thread::spawn(move || {
@@ -76,7 +76,7 @@ impl Terminals for Ptys {
             }
             let code = loop {
                 let mut reaped = reaping.lock().unwrap_or_else(PoisonError::into_inner);
-                match child.try_wait() {
+                match process.try_wait() {
                     Ok(None) => {}
                     waited => {
                         *reaped = true;
