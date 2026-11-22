@@ -4287,7 +4287,7 @@ mod tests {
 
     #[test]
     fn the_rows_of_each_box_at_60x15_and_100x30() {
-        let boxes: [(&str, Holder, Build, usize, usize); 22] = [
+        let boxes: [(&str, Holder, Build, usize, usize); 24] = [
             (
                 "chooser",
                 Holder::Chooser,
@@ -4336,6 +4336,7 @@ mod tests {
             ),
             ("interfaces", Holder::Pane, || interfaces_of(4), 6, 21),
             ("timeline", Holder::Pane, || timeline_of(2), 7, 22),
+            ("config", Holder::Pane, config_tab, 3, 14),
             ("device log", Holder::Pane, || device_log_of(2), 8, 23),
             (
                 "terminal",
@@ -4379,6 +4380,13 @@ mod tests {
                 "alerts view",
                 Holder::Alerts,
                 || on_view(Tab::Alerts),
+                5,
+                16,
+            ),
+            (
+                "alerts view with a selected alert",
+                Holder::Alerts,
+                || moved(alerts_of(20), '3', 1),
                 5,
                 16,
             ),

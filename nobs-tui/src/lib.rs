@@ -3542,4 +3542,37 @@ mod tests {
         handle(&mut model, key(KeyCode::PageDown));
         assert_eq!(model.cursor(), shell::Cursor::Device(19));
     }
+
+    #[test]
+    fn a_turn_measures_the_drawn_box_before_the_next_key() {
+        let mut model = devices_model();
+        let names = (1..=40).map(|index| device(&format!("d{index:02}")));
+        model.apply(Update::Devices(Ok(names.collect())));
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let mut terminal = terminal(100, 30);
+        let mut pressed = [key(KeyCode::PageDown), q()].into_iter();
+
+        turns(
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
+            &mut model,
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
+            |_| Ok(pressed.next()),
+        )
+        .unwrap();
+        let drawn = text(&terminal);
+        let shown = (1..=40)
+            .filter(|index| drawn.contains(&format!("d{index:02} ")))
+            .count();
+
+        assert_eq!(model.page(), shown - 1);
+        assert_eq!(model.cursor(), shell::Cursor::Device(model.page()));
+    }
 }
