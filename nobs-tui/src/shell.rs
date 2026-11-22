@@ -9,6 +9,7 @@ use std::vec::Drain;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::alertmanager::Alert;
+use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
 use nobs_core::lab;
@@ -328,6 +329,7 @@ pub enum Update {
     Nodes(Result<Vec<book::NodeRow>, String>),
     TermOutput(u64, Vec<u8>),
     TermEnded(u64, i32),
+    Asked(Result<bool, String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -371,6 +373,7 @@ pub enum Command {
         size: (u16, u16),
     },
     TermClose(u64),
+    AskSudo(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,6 +381,7 @@ pub enum RunState {
     Running,
     Stopping,
     Ended(End),
+    NotRun,
 }
 
 #[derive(Debug)]
@@ -391,6 +395,7 @@ pub struct Run {
     pub ended: Option<Instant>,
     pub state: RunState,
     pub(crate) typed: bool,
+    pub(crate) asked: bool,
 }
 
 struct RunView {
@@ -1182,7 +1187,8 @@ impl Model {
                     push_line(run, &mut self.run_view, line);
                 }
             }
-            Update::ActionEnded(end) => self.end_run(end),
+            Update::ActionEnded(end) => return self.action_ended(end),
+            Update::Asked(answer) => return self.sudo_answered(answer),
             Update::Nodes(Ok(mut rows)) => {
                 rows.sort_by(|one, other| one.name.cmp(&other.name));
                 self.nodes = rows;
@@ -1196,6 +1202,72 @@ impl Model {
             }
             Update::TermOutput(id, bytes) => self.sessions.output(id, &bytes),
             Update::TermEnded(id, code) => self.sessions.ended(id, code),
+        }
+        Vec::new()
+    }
+
+    fn action_ended(&mut self, end: End) -> Vec<Command> {
+        let Some(word) = self.refused_sudo(end) else {
+            self.end_run(end);
+            return Vec::new();
+        };
+        if let Some(run) = self.run.as_mut() {
+            run.asked = true;
+        }
+        self.sessions.leave();
+        vec![Command::AskSudo(vec![
+            format!("nobs: lab {word} runs containerlab with sudo;"),
+            "      sudo asks for your password, nobs never sees it".to_string(),
+        ])]
+    }
+
+    fn refused_sudo(&self, end: End) -> Option<&'static str> {
+        let run = self
+            .run
+            .as_ref()
+            .filter(|run| end == End::Exited(1) && run.state == RunState::Running && !run.asked)?;
+        let (_, word, _) = self.sudo_action(run)?;
+        run.lines.contains(&sudo_refused_line(word)).then_some(word)
+    }
+
+    fn sudo_action(
+        &self,
+        run: &Run,
+    ) -> Option<(&'static Action, &'static str, Vec<Vec<OsString>>)> {
+        ACTIONS
+            .iter()
+            .filter(|action| action.sudo)
+            .find_map(|action| {
+                let word = action.words.last()?;
+                pieces(action, &run.target, self)
+                    .filter(|args| joined(args) == run.command)
+                    .map(|args| (action, *word, args))
+            })
+    }
+
+    fn sudo_answered(&mut self, answer: Result<bool, String>) -> Vec<Command> {
+        let Some(run) = self.run.as_ref() else {
+            return Vec::new();
+        };
+        let target = run.target.clone();
+        let Some((action, word, args)) = self.sudo_action(run) else {
+            return Vec::new();
+        };
+        let line = match answer {
+            Ok(true) => {
+                let commands = self.start_run(args, target, action.keeps, Login::default());
+                if let Some(run) = self.run.as_mut() {
+                    run.asked = true;
+                }
+                return commands;
+            }
+            Ok(false) => format!("nobs: lab {word}: sudo got no password; nothing ran"),
+            Err(error) => format!("nobs: lab {word}: cannot run sudo: {error}; nothing ran"),
+        };
+        if let Some(run) = self.run.as_mut() {
+            run.state = RunState::NotRun;
+            run.lines = vec![line];
+            run.ended = Some(self.now);
         }
         Vec::new()
     }
@@ -1237,7 +1309,7 @@ impl Model {
     fn active(&self) -> Option<&Run> {
         self.run
             .as_ref()
-            .filter(|run| !matches!(run.state, RunState::Ended(_)))
+            .filter(|run| matches!(run.state, RunState::Running | RunState::Stopping))
     }
 
     fn stop(&mut self) -> Vec<Command> {
@@ -1307,6 +1379,7 @@ impl Model {
             ended: None,
             state: RunState::Running,
             typed,
+            asked: false,
         });
         self.run_view = RunView {
             drawn: self.run_view.drawn,
@@ -7302,6 +7375,155 @@ pub(crate) mod tests {
         model.apply(Update::ActionEnded(End::Exited(0)));
         assert_eq!(ch(&mut model, 'y'), [Command::Quit]);
         assert!(model.quit());
+    }
+
+    const SUDO_ACTIONS: [(char, &str); 5] = [
+        ('D', "deploy"),
+        ('X', "destroy"),
+        ('P', "purge"),
+        ('R', "prepare"),
+        ('S', "show"),
+    ];
+
+    fn sudo_started(key: char) -> (Model, Vec<Command>) {
+        let mut model = book_model();
+        let mut commands = ch(&mut model, key);
+        if key != 'S' {
+            commands = ch(&mut model, 'y');
+        }
+        (model, commands)
+    }
+
+    fn refuse_sudo(model: &mut Model, word: &str) -> Vec<Command> {
+        model.apply(Update::ActionError(
+            "sudo: a password is required".to_string(),
+        ));
+        model.apply(Update::ActionError(sudo_refused_line(word)));
+        model.apply(Update::ActionEnded(End::Exited(1)))
+    }
+
+    fn ask_sudo(word: &str) -> Command {
+        Command::AskSudo(vec![
+            format!("nobs: lab {word} runs containerlab with sudo;"),
+            "      sudo asks for your password, nobs never sees it".to_string(),
+        ])
+    }
+
+    #[test]
+    fn a_sudo_refusal_of_each_lab_action_asks_once_and_a_good_end_starts_it_once_more() {
+        for (key, word) in SUDO_ACTIONS {
+            let (mut model, started) = sudo_started(key);
+            assert!(matches!(started[..], [Command::Run { .. }]), "{key}");
+
+            assert_eq!(refuse_sudo(&mut model, word), [ask_sudo(word)], "{key}");
+            assert_eq!(model.apply(Update::Asked(Ok(true))), started, "{key}");
+            let run = model.run().unwrap();
+            assert_eq!(
+                (run.state, run.asked, run.lines.len()),
+                (RunState::Running, true, 0),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sudo_without_a_password_runs_nothing_and_leaves_the_row_unmarked() {
+        let (mut model, _) = sudo_started('X');
+        refuse_sudo(&mut model, "destroy");
+
+        assert_eq!(model.apply(Update::Asked(Ok(false))), []);
+
+        let run = model.run().unwrap();
+        assert_eq!(run.state, RunState::NotRun);
+        assert_eq!(
+            run.lines,
+            ["nobs: lab destroy: sudo got no password; nothing ran"]
+        );
+        assert!(run.ended.is_some());
+        assert!(!model.failed(&Target::Chapter(0)));
+        assert_eq!(ch(&mut model, 'X'), []);
+        assert!(model.question().is_some());
+    }
+
+    #[test]
+    fn a_second_refusal_after_the_password_ends_as_today_and_asks_no_more() {
+        let (mut model, _) = sudo_started('X');
+        refuse_sudo(&mut model, "destroy");
+        model.apply(Update::Asked(Ok(true)));
+
+        assert_eq!(refuse_sudo(&mut model, "destroy"), []);
+
+        assert_eq!(state(&model), RunState::Ended(End::Exited(1)));
+        assert!(model.failed(&Target::Chapter(0)));
+    }
+
+    #[test]
+    fn a_refusal_of_a_run_being_stopped_ends_as_today_and_quits_as_asked() {
+        let (mut model, _) = sudo_started('X');
+        ch(&mut model, 'q');
+        assert_eq!(ch(&mut model, 'y'), [Command::Stop]);
+
+        assert_eq!(refuse_sudo(&mut model, "destroy"), []);
+
+        assert_eq!(state(&model), RunState::Ended(End::Exited(1)));
+        assert!(model.failed(&Target::Chapter(0)));
+        assert!(model.quit());
+    }
+
+    #[test]
+    fn exit_1_without_the_refusal_of_its_own_command_ends_as_today() {
+        for line in [
+            "nobs: lab destroy: node containers already exist".to_string(),
+            sudo_refused_line("deploy"),
+        ] {
+            let (mut model, _) = sudo_started('X');
+            model.apply(Update::ActionError(line.clone()));
+
+            assert_eq!(
+                model.apply(Update::ActionEnded(End::Exited(1))),
+                [],
+                "{line}"
+            );
+
+            assert_eq!(state(&model), RunState::Ended(End::Exited(1)), "{line}");
+            assert!(model.failed(&Target::Chapter(0)), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_sudo_that_cannot_start_runs_nothing_and_says_why() {
+        let (mut model, _) = sudo_started('S');
+        refuse_sudo(&mut model, "show");
+
+        let error = "No such file or directory (os error 2)".to_string();
+        assert_eq!(model.apply(Update::Asked(Err(error))), []);
+
+        let run = model.run().unwrap();
+        assert_eq!(run.state, RunState::NotRun);
+        assert_eq!(
+            run.lines,
+            ["nobs: lab show: cannot run sudo: No such file or directory (os error 2); nothing ran"]
+        );
+        assert!(!model.failed(&Target::Chapter(0)));
+    }
+
+    #[test]
+    fn a_refusal_leaves_the_typed_session_open_with_its_lines_and_closes_none() {
+        let mut model = lab_devices_model();
+        ch(&mut model, '3');
+        ch(&mut model, 'P');
+        ch(&mut model, 'y');
+        ch(&mut model, '1');
+        let id = opened_id(&ch(&mut model, 't')).unwrap();
+        model.apply(Update::TermOutput(id, b"kept line".to_vec()));
+        assert_eq!(state_of(&model, SRL1), Some(State::Typing));
+
+        assert_eq!(refuse_sudo(&mut model, "purge"), [ask_sudo("purge")]);
+
+        assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 0 }));
+        assert!(model.sessions.typed().is_none());
+        let session = model.sessions.of(SRL1).unwrap();
+        assert!(session.screen.screen().contents().contains("kept line"));
     }
 
     #[test]
