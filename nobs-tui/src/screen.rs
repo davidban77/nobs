@@ -40,6 +40,7 @@ const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its t
 const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
 const HELP_RUN: &str = "run pane, after Tab: j/k scroll  f follow  Esc fold";
 const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
+const HELP_PAGE: &str = "PgUp PgDn  move a page where j and k move";
 const HELP_QUIT: [(&str, &str); 2] = [
     ("q", "quit; asks in a run"),
     ("Ctrl-C", "stop a run, or quit"),
@@ -2599,6 +2600,7 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
         Workbench::Services => vec![HELP_SONDA],
         Workbench::Lab | Workbench::Observability => vec![],
     };
+    notes.insert(0, HELP_PAGE);
     if model.run_drawn() {
         notes.push(HELP_RUN);
     }
@@ -3624,7 +3626,7 @@ mod tests {
                 .unwrap()
                 .clone()
         };
-        for mark in ["↓5", "↑1 ↓4", "↑2 ↓3"] {
+        for mark in ["↓6", "↑1 ↓5", "↑2 ↓4"] {
             let rows = drawn(&mut model, 60, 15);
             model.set_help_overflow(help_overflow(&model, Rect::new(0, 0, 60, 15)));
             let screen = rows.join("\n");
@@ -4297,7 +4299,7 @@ mod tests {
                 "keys",
                 Holder::Keys,
                 || moved(devices_bench(), '?', 1),
-                8,
+                6,
                 8,
             ),
             ("entry", Holder::Entry, boxed_entry, 4, 19),

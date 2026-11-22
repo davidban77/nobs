@@ -2545,7 +2545,7 @@ mod tests {
             .map(String::from_iter)
             .skip_while(|row| !row.contains("╔ keys"))
             .skip(1)
-            .take_while(|row| !row.contains("sonda tab"))
+            .take_while(|row| !row.contains("PgUp PgDn"))
             .collect()
     }
 
@@ -2881,7 +2881,7 @@ mod tests {
         let scrolled = help_turn(
             &mut lab_model(),
             (60, 15),
-            &[ch('o'), ch('?'), ch('j'), ch('j')],
+            &[ch('o'), ch('?'), ch('j'), ch('j'), ch('j')],
         );
 
         let entries = screen::help_entries(&model);
@@ -2898,7 +2898,7 @@ mod tests {
             );
         }
         assert!(rows.iter().any(|row| row.contains("j/k more")), "{screen}");
-        assert!(rows[13].contains("═ ↓2 ═╝"), "{screen}");
+        assert!(rows[13].contains("═ ↓3 ═╝"), "{screen}");
     }
 
     #[test]

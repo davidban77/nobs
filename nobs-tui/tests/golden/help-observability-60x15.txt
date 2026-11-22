@@ -9,7 +9,7 @@
   ║Enter    open the device   Ctrl-C  stop a run, or quit║
   ║r        refresh now                                  ║
   ║                                                      ║
+  ║PgUp PgDn  move a page where j and k move             ║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
   ╚══════════════════════════════════════════════════════╝
-
  j/k move  / filter  [ ] view  Enter open the device
