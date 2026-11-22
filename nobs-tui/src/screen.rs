@@ -1966,6 +1966,7 @@ fn run_end(run: &Run) -> (String, Style) {
         RunState::Ended(End::NotStopped { .. }) => {
             ("not stopped".to_string(), Style::new().fg(Color::Red))
         }
+        RunState::NotRun => ("not run".to_string(), Style::new().fg(Color::Yellow)),
     }
 }
 
@@ -1975,7 +1976,7 @@ fn run_title(model: &Model, before_hint: usize) -> Vec<Span<'static>> {
     };
     let (end, style) = run_end(run);
     let state = match (run.state, run.ended) {
-        (RunState::Stopping, _) => end,
+        (RunState::Stopping | RunState::NotRun, _) => end,
         (_, Some(ended)) => {
             let took = ended.saturating_duration_since(run.started).as_secs();
             format!("{end}  {took}s")
@@ -3898,6 +3899,7 @@ mod tests {
             ended: None,
             state: RunState::Running,
             typed: false,
+            asked: false,
         };
         let command = command_rows(&run, 58);
         let refusal = wrapped(REFUSAL, 58);
@@ -3931,6 +3933,7 @@ mod tests {
             ended: None,
             state,
             typed: false,
+            asked: false,
         };
         let refused = run(vec![REFUSAL.to_string()], RunState::Ended(End::Exited(1)));
         let running = run(

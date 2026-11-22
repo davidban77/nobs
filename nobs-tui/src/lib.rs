@@ -19,9 +19,11 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
+use aside::ask_aside;
 use shell::{Login, Model};
 
 pub mod actions;
+mod aside;
 pub mod book;
 pub mod data;
 pub mod devices;
@@ -34,6 +36,7 @@ pub mod shell;
 mod terminal;
 pub mod view;
 
+pub use aside::Asker;
 pub use poll::Pollers;
 pub use pty::{Ptys, Terminals, Wire};
 pub use run::{End, Launcher, Processes, Running};
@@ -54,6 +57,7 @@ pub fn run(
     runner: Arc<dyn Runner + Send + Sync>,
     launcher: Arc<dyn Launcher>,
     terminals: Arc<dyn Terminals>,
+    asker: Arc<dyn Asker>,
 ) -> Result<i32, String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the screen needs a terminal".to_string());
@@ -71,7 +75,7 @@ pub fn run(
         .map(Located::topology);
     let mut model = Model::new(start);
     panic::set_hook(panic_hook(thread::current().id(), panic::take_hook()));
-    let screen = Screen::open(io::stdout(), raw_mode)?;
+    let mut screen = Screen::open(io::stdout(), raw_mode)?;
     let (pollers, updates) = Pollers::start(
         runner,
         model.stacks().to_vec(),
@@ -81,13 +85,14 @@ pub fn run(
         urls,
         topology,
     );
-    let mut actions = Actions::new(launcher);
+    let mut actions = Actions::new(launcher, asker);
     let mut wires = Wires::new(terminals);
     let result = Terminal::new(CrosstermBackend::new(io::stdout()))
         .map_err(failed)
         .and_then(|mut terminal| {
             turns(
                 &mut terminal,
+                &mut screen,
                 &mut model,
                 &pollers,
                 &updates,
@@ -106,16 +111,20 @@ struct Actions {
     sender: Sender<Update>,
     updates: Receiver<Update>,
     running: Option<Box<dyn Running>>,
+    asker: Arc<dyn Asker>,
+    asking: Option<Vec<String>>,
 }
 
 impl Actions {
-    fn new(launcher: Arc<dyn Launcher>) -> Actions {
+    fn new(launcher: Arc<dyn Launcher>, asker: Arc<dyn Asker>) -> Actions {
         let (sender, updates) = mpsc::channel();
         Actions {
             launcher,
             sender,
             updates,
             running: None,
+            asker,
+            asking: None,
         }
     }
 
@@ -153,6 +162,9 @@ impl Actions {
             send(model.apply(update), self, wires, pollers);
             if let Some(end) = ended {
                 self.running = None;
+                if self.asking.is_some() {
+                    return None;
+                }
                 pollers.send(Command::Refresh);
                 if model.quit() {
                     return Some(end);
@@ -269,8 +281,10 @@ fn panic_hook(main: ThreadId, previous: Hook) -> Hook {
     })
 }
 
-fn turns<B: Backend>(
+#[allow(clippy::too_many_arguments)]
+fn turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
     terminal: &mut Terminal<B>,
+    screen: &mut Screen<W, R>,
     model: &mut Model,
     pollers: &Pollers,
     updates: &Receiver<Update>,
@@ -278,13 +292,17 @@ fn turns<B: Backend>(
     wires: &mut Wires,
     next_key: impl FnMut(Duration) -> Result<Option<KeyEvent>, String>,
 ) -> Result<i32, String> {
-    let result = loop_turns(terminal, model, pollers, updates, actions, wires, next_key);
+    let result = loop_turns(
+        terminal, screen, model, pollers, updates, actions, wires, next_key,
+    );
     wires.close_all();
     result
 }
 
-fn loop_turns<B: Backend>(
+#[allow(clippy::too_many_arguments)]
+fn loop_turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
     terminal: &mut Terminal<B>,
+    screen: &mut Screen<W, R>,
     model: &mut Model,
     pollers: &Pollers,
     updates: &Receiver<Update>,
@@ -303,6 +321,15 @@ fn loop_turns<B: Backend>(
             }
             Some(_) => return Ok(model.exit_code()),
             None => {}
+        }
+        if let Some(lines) = actions.asking.take() {
+            let answer = match screen.ask(&lines, actions.asker.as_ref())? {
+                Ok(code) => Ok(code == 0),
+                Err(error) => Err(error.to_string()),
+            };
+            terminal.clear().map_err(failed)?;
+            send(model.apply(Update::Asked(answer)), actions, wires, pollers);
+            pollers.send(Command::Refresh);
         }
         wires.drain_until(model, actions, pollers, until);
         let size = terminal.size().map_err(failed)?;
@@ -341,6 +368,7 @@ fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, poller
                 login,
             } => actions.start(program, args, login),
             Command::Stop => actions.stop(),
+            Command::AskSudo(lines) => actions.asking = Some(lines.clone()),
             Command::TermOpen {
                 id,
                 program,
@@ -422,9 +450,13 @@ fn raw_mode(on: bool) -> io::Result<()> {
     }
 }
 
+fn leave(out: &mut impl Write, raw: &mut impl FnMut(bool) -> io::Result<()>) -> io::Result<()> {
+    let left = execute!(out, LeaveAlternateScreen, cursor::Show);
+    raw(false).and(left)
+}
+
 fn restore(out: &mut impl Write, raw: &mut impl FnMut(bool) -> io::Result<()>) {
-    let _ = execute!(out, LeaveAlternateScreen, cursor::Show);
-    let _ = raw(false);
+    let _ = leave(out, raw);
 }
 
 struct Screen<W: Write, R: FnMut(bool) -> io::Result<()>> {
@@ -438,6 +470,10 @@ impl<W: Write, R: FnMut(bool) -> io::Result<()>> Screen<W, R> {
         let mut screen = Screen { out, raw };
         execute!(screen.out, EnterAlternateScreen).map_err(failed)?;
         Ok(screen)
+    }
+
+    fn ask(&mut self, lines: &[String], asker: &dyn Asker) -> Result<io::Result<i32>, String> {
+        ask_aside(&mut self.out, &mut self.raw, lines, asker).map_err(failed)
     }
 }
 
@@ -457,8 +493,11 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::Mutex;
 
+    use std::{mem, ptr};
+
     use crossterm::event::{KeyCode, KeyModifiers};
     use nobs_core::compose::Compose;
+    use nobs_core::containerlab::sudo_refused_line;
     use nobs_core::device::Password;
     use nobs_core::lab;
     use nobs_core::locate::{locate, Kind, Located};
@@ -469,6 +508,7 @@ mod tests {
     use ratatui::layout::Position;
 
     use super::*;
+    use crate::aside::tests::{is_child, Child};
     use crate::book::NodeRow;
     use crate::data::stub::Stub;
     use crate::pty::tests::{Call, FakeTerminals};
@@ -616,7 +656,33 @@ mod tests {
     }
 
     fn actions() -> Actions {
-        Actions::new(Arc::new(FakeLauncher::new()))
+        Actions::new(Arc::new(FakeLauncher::new()), asker(1))
+    }
+
+    struct FakeAsker {
+        code: i32,
+        asked: AtomicUsize,
+    }
+
+    impl Asker for FakeAsker {
+        fn ask(&self) -> io::Result<i32> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            Ok(self.code)
+        }
+    }
+
+    fn asker(code: i32) -> Arc<FakeAsker> {
+        Arc::new(FakeAsker {
+            code,
+            asked: AtomicUsize::new(0),
+        })
+    }
+
+    fn bare_screen() -> Screen<Vec<u8>, impl FnMut(bool) -> io::Result<()>> {
+        Screen {
+            out: Vec::new(),
+            raw: |_| Ok(()),
+        }
     }
 
     fn wires() -> Wires {
@@ -657,6 +723,7 @@ mod tests {
         let mut keys = keys.iter().copied();
         turns(
             &mut terminal(width, height),
+            &mut bare_screen(),
             model,
             &pollers,
             &updates,
@@ -712,6 +779,7 @@ mod tests {
             let mut keys = keys.into_iter();
             loop_turns(
                 &mut terminal(size.0, size.1),
+                &mut bare_screen(),
                 &mut model,
                 &pollers,
                 &updates,
@@ -904,6 +972,7 @@ mod tests {
 
         turns(
             &mut terminal(60, 15),
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -968,6 +1037,7 @@ mod tests {
 
         turns(
             &mut terminal(80, 24),
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -993,6 +1063,7 @@ mod tests {
 
         turns(
             &mut terminal,
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -1046,6 +1117,7 @@ mod tests {
 
         let result = turns(
             &mut terminal,
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -1131,6 +1203,7 @@ mod tests {
 
         let result = turns(
             &mut terminal,
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -1237,6 +1310,7 @@ mod tests {
 
         turns(
             &mut terminal,
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -1457,6 +1531,7 @@ mod tests {
 
             let result = turns(
                 &mut terminal(80, 24),
+                &mut bare_screen(),
                 &mut model,
                 &pollers,
                 &updates,
@@ -1511,6 +1586,7 @@ mod tests {
 
         turns(
             &mut terminal,
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -1539,6 +1615,7 @@ mod tests {
 
         turns(
             &mut terminal(80, 24),
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -1560,7 +1637,7 @@ mod tests {
 
     fn acting(launcher: &Arc<FakeLauncher>) -> (Model, Actions) {
         let model = Model::new(start(vec![stack(&[CLOSED])], false));
-        (model, Actions::new(launcher.clone()))
+        (model, Actions::new(launcher.clone(), asker(1)))
     }
 
     fn press(model: &mut Model, actions: &mut Actions, keys: &[KeyEvent]) -> Result<i32, String> {
@@ -1568,6 +1645,7 @@ mod tests {
         let mut keys = keys.iter().copied();
         turns(
             &mut terminal(80, 24),
+            &mut bare_screen(),
             model,
             &pollers,
             &updates,
@@ -1678,7 +1756,7 @@ mod tests {
 
         for (mut model, typed, words) in cases {
             let launcher = Arc::new(FakeLauncher::new());
-            let mut actions = Actions::new(launcher.clone());
+            let mut actions = Actions::new(launcher.clone(), asker(1));
             let result = press(&mut model, &mut actions, &[ch(typed), ch('y')]);
             seen.push((typed, result, launcher.calls()));
             wanted.push((
@@ -1694,7 +1772,7 @@ mod tests {
     #[test]
     fn a_typed_login_reaches_the_launcher_and_none_of_its_arguments() {
         let launcher = Arc::new(FakeLauncher::new());
-        let mut actions = Actions::new(launcher.clone());
+        let mut actions = Actions::new(launcher.clone(), asker(1));
         let mut model = devices_finding("book-lab", finding(None, None));
         let keys: Vec<KeyEvent> = [ch('g')]
             .into_iter()
@@ -1746,6 +1824,7 @@ mod tests {
 
         turns(
             &mut terminal(80, 24),
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &quiet,
@@ -1799,7 +1878,7 @@ mod tests {
     fn ctrl_c_stops_a_get_and_a_later_get_fills_the_tab() {
         let config = "set / acl acl-filter cpm type ipv4 statistics-per-entry true";
         let launcher = Arc::new(FakeLauncher::new());
-        let mut actions = Actions::new(launcher.clone());
+        let mut actions = Actions::new(launcher.clone(), asker(1));
         let mut model = devices_in("book-lab");
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 
@@ -1844,6 +1923,7 @@ mod tests {
 
         let result = turns(
             &mut terminal(80, 24),
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -1893,6 +1973,7 @@ mod tests {
 
         let result = turns(
             &mut terminal(80, 24),
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -1947,6 +2028,262 @@ mod tests {
             String::from_utf8_lossy(&written)
         );
         assert_eq!(raw, [true, false]);
+    }
+
+    fn refused_destroy(asker: Arc<dyn Asker>) -> (Model, Actions, Arc<FakeLauncher>) {
+        let launcher = Arc::new(FakeLauncher::new());
+        let mut model = lab_model();
+        let mut actions = Actions::new(launcher.clone(), asker);
+        press(&mut model, &mut actions, &[ch('X'), ch('y')]).unwrap_err();
+        let sender = launcher.sender().unwrap();
+        for line in [
+            "sudo: a password is required".to_string(),
+            sudo_refused_line("destroy"),
+        ] {
+            sender.send(Update::ActionError(line)).unwrap();
+        }
+        sender.send(Update::ActionEnded(End::Exited(1))).unwrap();
+        (model, actions, launcher)
+    }
+
+    fn position(bytes: &[u8], part: &[u8]) -> usize {
+        bytes
+            .windows(part.len())
+            .position(|window| window == part)
+            .unwrap_or_else(|| panic!("{:?}", String::from_utf8_lossy(part)))
+    }
+
+    fn handlers() -> Vec<libc::sighandler_t> {
+        [libc::SIGINT, libc::SIGQUIT]
+            .map(|signal| {
+                let mut current: libc::sigaction = unsafe { mem::zeroed() };
+                unsafe { libc::sigaction(signal, ptr::null(), &mut current) };
+                current.sa_sigaction
+            })
+            .to_vec()
+    }
+
+    fn passed_in_a_terminal(test: &str) {
+        let (seen, code) = Child::start(test).end();
+        assert_eq!(code, 0, "{seen}");
+        assert!(seen.contains("1 passed"), "{seen}");
+    }
+
+    #[test]
+    fn a_sudo_refusal_steps_aside_once_and_the_answer_reaches_the_model_before_the_next_frame() {
+        if !is_child() {
+            return passed_in_a_terminal(
+                "tests::a_sudo_refusal_steps_aside_once_and_the_answer_reaches_the_model_before_the_next_frame",
+            );
+        }
+        let fake = asker(0);
+        let (mut model, mut actions, launcher) = refused_destroy(fake.clone());
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let mut terminal = terminal(80, 24);
+        let mut raw = Vec::new();
+        let mut screen = Screen {
+            out: Vec::new(),
+            raw: |on| {
+                raw.push(on);
+                Ok(())
+            },
+        };
+        let mut frames = Vec::new();
+        let before = handlers();
+
+        for _ in 0..2 {
+            turns(
+                &mut terminal,
+                &mut screen,
+                &mut model,
+                &pollers,
+                &updates,
+                &mut actions,
+                &mut wires(),
+                |_| Err(PAUSED.to_string()),
+            )
+            .unwrap_err();
+            frames.push((
+                fake.asked.load(Ordering::SeqCst),
+                launcher.calls().len(),
+                text(&terminal).contains("password is required"),
+            ));
+        }
+        let after = handlers();
+        let out = mem::take(&mut screen.out);
+        drop(screen);
+
+        assert_eq!(frames, [(1, 2, false), (1, 2, false)]);
+        assert_eq!(after, before);
+        assert_eq!(raw, [false, true, false]);
+        let (mut leave, mut show, mut enter) = (Vec::new(), Vec::new(), Vec::new());
+        execute!(leave, LeaveAlternateScreen).unwrap();
+        execute!(show, cursor::Show).unwrap();
+        execute!(enter, EnterAlternateScreen).unwrap();
+        let first = position(&out, b"nobs: lab destroy runs containerlab with sudo;");
+        let second = position(
+            &out,
+            b"      sudo asks for your password, nobs never sees it",
+        );
+        let shown = position(&out, &show);
+        assert!(position(&out, &leave) < shown && shown < first, "{out:?}");
+        assert!(first < second && second < position(&out, &enter), "{out:?}");
+    }
+
+    #[test]
+    fn a_sudo_that_ends_with_any_code_but_0_shows_not_run_and_starts_nothing() {
+        if !is_child() {
+            return passed_in_a_terminal(
+                "tests::a_sudo_that_ends_with_any_code_but_0_shows_not_run_and_starts_nothing",
+            );
+        }
+        for code in [1, 130] {
+            let (mut model, mut actions, launcher) = refused_destroy(asker(code));
+            let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+
+            turns(
+                &mut terminal(80, 24),
+                &mut bare_screen(),
+                &mut model,
+                &pollers,
+                &updates,
+                &mut actions,
+                &mut wires(),
+                |_| Err(PAUSED.to_string()),
+            )
+            .unwrap_err();
+
+            assert_eq!(run_state(&model), RunState::NotRun, "{code}");
+            assert_eq!(
+                model.run().unwrap().lines,
+                ["nobs: lab destroy: sudo got no password; nothing ran"],
+                "{code}"
+            );
+            assert_eq!(launcher.calls().len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_raw_mode_that_fails_on_the_way_back_ends_the_screen_and_restores_the_terminal() {
+        if !is_child() {
+            return passed_in_a_terminal(
+                "tests::a_raw_mode_that_fails_on_the_way_back_ends_the_screen_and_restores_the_terminal",
+            );
+        }
+        let (mut model, mut actions, _launcher) = refused_destroy(asker(0));
+        let (pollers, updates) = launch(&scripted(Vec::new()), &model);
+        let before = handlers();
+        let mut raw = Vec::new();
+        let mut screen = Screen {
+            out: Vec::new(),
+            raw: |on| {
+                raw.push(on);
+                if on {
+                    Err(io::Error::other("nobs-t-no-raw"))
+                } else {
+                    Ok(())
+                }
+            },
+        };
+
+        let result = turns(
+            &mut terminal(80, 24),
+            &mut screen,
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions,
+            &mut wires(),
+            |_| Err(PAUSED.to_string()),
+        );
+        let after = handlers();
+        drop(screen);
+
+        assert_eq!(result, Err("the screen failed: nobs-t-no-raw".to_string()));
+        assert_eq!(after, before);
+        assert_eq!(raw, [false, true, false]);
+    }
+
+    struct Waiting {
+        runner: Arc<Scripted>,
+        sonda: Stub,
+        calls: Mutex<Vec<(usize, usize)>>,
+    }
+
+    impl Waiting {
+        fn count(&self) -> (usize, usize) {
+            (self.runner.calls().len(), self.sonda.requests().len())
+        }
+    }
+
+    impl Asker for Waiting {
+        fn ask(&self) -> io::Result<i32> {
+            let before = self.count();
+            thread::sleep(poll::PS_PERIOD + Duration::from_millis(500));
+            let after = self.count();
+            self.calls.lock().unwrap().extend([before, after]);
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn the_pollers_start_no_call_while_the_screen_is_aside_and_start_again_after() {
+        if !is_child() {
+            return passed_in_a_terminal(
+                "tests::the_pollers_start_no_call_while_the_screen_is_aside_and_start_again_after",
+            );
+        }
+        let runner = scripted(Vec::new());
+        let waiting = Arc::new(Waiting {
+            runner: runner.clone(),
+            sonda: Stub::start(&[("GET", "/scenarios", 200, r#"{"scenarios":[]}"#)]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let (mut model, mut actions, _launcher) = refused_destroy(waiting.clone());
+        let (pollers, updates) = Pollers::start(
+            runner.clone(),
+            model.stacks().to_vec(),
+            model.selected_stack(),
+            SondaTarget {
+                server: Some(waiting.sonda.url().to_string()),
+                api_key: None,
+            },
+            None,
+            None,
+            None,
+        );
+        pollers.send(Command::Ask(Service::Sonda, true));
+        let _ = services(&updates);
+        let end = Instant::now() + Duration::from_secs(5);
+        while waiting.count().1 == 0 && Instant::now() < end {
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        turns(
+            &mut terminal(80, 24),
+            &mut bare_screen(),
+            &mut model,
+            &pollers,
+            &updates,
+            &mut actions,
+            &mut wires(),
+            |_| Err(PAUSED.to_string()),
+        )
+        .unwrap_err();
+        let aside = waiting.calls.lock().unwrap().clone();
+        let _ = services(&updates);
+        let end = Instant::now() + Duration::from_secs(5);
+        while waiting.count().1 == aside[1].1 && Instant::now() < end {
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(aside[0].1 > 0, "{aside:?}");
+        assert_eq!(aside[0], aside[1]);
+        let again = waiting.count();
+        assert!(
+            again.0 > aside[1].0 && again.1 > aside[1].1,
+            "{again:?} {aside:?}"
+        );
     }
 
     #[test]
@@ -2051,6 +2388,7 @@ mod tests {
             .chain(back.then(|| ch('k')));
         turns(
             &mut terminal,
+            &mut bare_screen(),
             &mut model,
             &pollers,
             &updates,
@@ -2114,6 +2452,7 @@ mod tests {
         let mut keys = keys.iter().copied();
         turns(
             &mut terminal,
+            &mut bare_screen(),
             model,
             pollers,
             updates,
@@ -2578,6 +2917,7 @@ mod tests {
         loop {
             turns(
                 &mut terminal(100, 30),
+                &mut bare_screen(),
                 model,
                 pollers,
                 updates,

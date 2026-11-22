@@ -37,6 +37,7 @@ pub enum Command {
     Select(String),
     Load(String),
     Delete(String),
+    Pause,
     Stop,
 }
 
@@ -298,9 +299,10 @@ fn poll(
         if updates.send(update).is_err() {
             return;
         }
-        let next = Instant::now() + period;
+        let mut next = Some(Instant::now() + period);
         loop {
-            match inbox.recv_timeout(next.saturating_duration_since(Instant::now())) {
+            match receive(inbox, next) {
+                Ok(Command::Pause) => next = None,
                 Ok(Command::Select(id)) => selected = Some(id),
                 Ok(Command::Load(path)) => send_note(notes, load(sonda, &path)),
                 Ok(Command::Delete(id)) => send_note(notes, note_text(sonda.delete(&id))),
@@ -308,6 +310,16 @@ fn poll(
                 Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => return,
             }
         }
+    }
+}
+
+pub(crate) fn receive<C>(
+    inbox: &Receiver<C>,
+    until: Option<Instant>,
+) -> Result<C, RecvTimeoutError> {
+    match until {
+        Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
+        None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
     }
 }
 

@@ -293,24 +293,32 @@ At 100 columns the key line is `Tab focus  j/k move  D deploy  X destroy  P purg
 
 The lab runs one chapter at a time. So `D`, `U`, `B` and `X` take the services of the other chapters down. `R` and `P` take every chapter down. Their questions say "scenario". In the book lab, a scenario is a chapter: the folder under `chapters/` that holds its compose file (see [Book lab](#book-lab)). It is not a Sonda scenario.
 
-`D`, `X`, `P`, `R` and `S` always add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). When `LAB_SUDO` is on, they run `sudo containerlab`. The screen cannot ask for a password, so with the flag, when sudo is on (`--sudo` or `LAB_SUDO`), nobs fails instead of asking for a password. `U` and `B` do not run containerlab, so they never run `sudo`.
+`D`, `X`, `P`, `R` and `S` always add `--sudo-no-prompt` (see [Flags and variables](#flags-and-variables)). When `LAB_SUDO` is on, they run `sudo containerlab`. `U` and `B` do not run containerlab, so they never run `sudo`.
 
-When `sudo` needs a password, the action ends at once with `exit 1`. For `X`, the run pane shows:
+When `sudo` needs a password, the screen steps aside after the `y/n` question (`S` has no question) and `sudo` asks on your terminal. For `X` you see:
+
+```
+nobs: lab destroy runs containerlab with sudo;
+      sudo asks for your password, nobs never sees it
+Password:
+```
+
+The last line is the prompt of `sudo` itself. This is the Mac prompt; on Linux it is `[sudo] password for <user>:`.
+
+nobs never sees your password. After a good password the screen comes back and the action runs. By default, `sudo` remembers the password in this terminal for a few minutes, so the next action usually does not ask.
+
+When `sudo` gets no good password (three wrong tries, or `Ctrl-C` or `Ctrl-\` at its prompt), the screen comes back and nothing runs. The run pane says `not run` with the line `nobs: lab destroy: sudo got no password; nothing ran`, and the chapter row gets no `!`. When `sudo` cannot run at all, the line is `nobs: lab <command>: cannot run sudo: <error>; nothing ran`. Press the key again to try again. The lines on your terminal stay there and show again after you quit.
+
+If `sudo` is set never to remember a password, the action still cannot run. It ends with `exit 1` and gets the `!` mark like any action that fails (see [Actions](#actions)), and the run pane shows the line `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again`. The screen does not step aside a second time.
+
+When you type `nobs lab <command> --sudo-no-prompt` yourself and `sudo` needs a password, nobs fails at once with `exit 1`:
 
 ```
 sudo: a password is required
 nobs: lab destroy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again
 ```
 
-The `sudo:` line comes from `sudo` itself. For the other keys, the last line names their command, for example `lab deploy` for `D`. Nothing has changed. The chapter row gets the mark `!`, except after `P`, which acts on the whole lab.
-
-To go on:
-
-1. Press `q` to close the screen. `sudo -v` must run in the terminal that the screen uses.
-2. Run `sudo -v`. It asks for your password once. By default, `sudo` then remembers it in that terminal for a few minutes.
-3. Start `nobs` again, select the chapter and press the key again.
-
-When the line comes back later, those minutes have passed. Do the same steps again. To avoid the line, run `sudo -v` before you start `nobs`.
+Run `sudo -v`, then the command again.
 
 ### The observability workbench
 

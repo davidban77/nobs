@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nobs_core::alertmanager::Alert;
+use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::device::{PASSWORD, USER};
 use nobs_core::lab::{services, Service};
 use nobs_core::lab_vars;
@@ -1937,6 +1938,32 @@ fn a_long_refusal_wraps_whole_into_the_run_pane_and_is_red_on_every_row() {
             (start..x + 5).all(|x| buffer[(x, y)].fg == Color::Red),
             "{needle}"
         );
+    }
+}
+
+fn not_run() -> Shell {
+    let mut model = lab_model();
+    press(&mut model, KeyCode::Char('X'));
+    press(&mut model, KeyCode::Char('y'));
+    model.apply(Update::ActionError(
+        "sudo: a password is required".to_string(),
+    ));
+    model.apply(Update::ActionError(sudo_refused_line("destroy")));
+    later(&mut model, 2);
+    model.apply(Update::ActionEnded(End::Exited(1)));
+    model.apply(Update::Asked(Ok(false)));
+    model
+}
+
+#[test]
+fn a_sudo_without_a_password_shows_not_run_in_yellow_with_no_time() {
+    golden("run-not-run", not_run);
+
+    let buffer = render(not_run(), 100, 30);
+
+    for anchor in [" run  lab destroy --sudo-no-prompt -s ch1", " last "] {
+        let (x, y) = position(&buffer, anchor, "not run");
+        assert_eq!(buffer[(x, y)].fg, Color::Yellow, "{anchor}");
     }
 }
 
