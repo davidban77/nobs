@@ -6494,6 +6494,39 @@ mod tests {
     }
 
     #[test]
+    fn the_screen_gets_the_nodes_and_the_topology_file_the_typed_commands_use() {
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures");
+        let alone = Scratch::new("screen-start-topology");
+        fs::create_dir_all(alone.0.join("containerlab")).unwrap();
+        fs::copy(
+            fixtures.join("labcli-example/containerlab/lab.clab.yml"),
+            alone.0.join("containerlab/lab.clab.yml"),
+        )
+        .unwrap();
+        let project = fixtures.join("project-two-node");
+        let start = |dir: &Path| {
+            let start = screen_start_with(dir, None, flags(None), false, &|_| None).unwrap();
+            (start.nodes, start.topology)
+        };
+
+        assert_eq!(
+            start(&project),
+            (
+                Some(nobs_core::locate::Nodes::Project),
+                Some(project.join("containerlab/lab.clab.yml"))
+            )
+        );
+        assert_eq!(
+            start(&alone.0),
+            (
+                Some(nobs_core::locate::Nodes::Topology),
+                Some(alone.0.join("containerlab/lab.clab.yml"))
+            )
+        );
+        assert_eq!(start(&fixtures.join("one-service")).0, None);
+    }
+
+    #[test]
     fn the_screen_takes_the_metrics_address_from_the_first_place_then_the_new_name() {
         type Case = (
             &'static str,

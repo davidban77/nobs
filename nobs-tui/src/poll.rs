@@ -782,6 +782,30 @@ mod tests {
     use crate::shell::tests::stack;
 
     #[test]
+    fn lab_files_name_the_project_folder_only_for_a_project() {
+        let dir = PathBuf::from("/lab");
+        let file = dir.join("containerlab/lab.clab.yml");
+        let lab = Located {
+            dir: dir.clone(),
+            kind: nobs_core::locate::Kind::LabcliLab(None),
+        };
+        let of = |nodes: Option<Nodes>, topology: Option<PathBuf>| {
+            LabFiles::of(&lab, nodes, topology).map(|files| (files.topology, files.project))
+        };
+
+        assert_eq!(
+            of(Some(Nodes::Project), Some(file.clone())),
+            Some((file.clone(), Some(dir)))
+        );
+        assert_eq!(
+            of(Some(Nodes::Topology), Some(file.clone())),
+            Some((file.clone(), None))
+        );
+        assert_eq!(of(None, Some(file)), None);
+        assert_eq!(of(Some(Nodes::Project), None), None);
+    }
+
+    #[test]
     fn the_poller_takes_the_shells_old_name_over_the_new_name_in_the_stacks_file() {
         let stack = stack("ws", &[("METRICS_URL", "http://127.0.0.1:19091")]);
         let shell =
