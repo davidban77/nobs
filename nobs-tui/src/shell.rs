@@ -280,6 +280,14 @@ pub enum Reach {
     NoAnswer,
 }
 
+pub(crate) fn absent(reach: Reach, word: &str) -> Option<String> {
+    match reach {
+        Reach::NotInLab => Some(format!("no {word} in this lab")),
+        Reach::StackDown => Some("the stack is down".to_string()),
+        Reach::Unknown | Reach::Answers | Reach::NoAnswer => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     pub name: String,
@@ -1460,9 +1468,18 @@ impl Model {
         self.workbench == Workbench::Devices && self.tab == Tab::Terminal
     }
 
-    pub(crate) fn shown_session(&self) -> Option<&terminal::Session> {
+    pub(crate) fn drawn_session(&self) -> Option<&terminal::Session> {
+        if !self.terminal_shown() || self.device_note().is_some() {
+            return None;
+        }
         self.selected_device()
             .and_then(|device| self.session_of(&device.name))
+    }
+
+    pub(crate) fn device_note(&self) -> Option<String> {
+        self.source_service
+            .and_then(|service| absent(self.reach(service), status::row(service).word))
+            .or_else(|| self.source_note().map(str::to_string))
     }
 
     pub(crate) fn session_of(&self, device: &str) -> Option<&terminal::Session> {
@@ -1470,10 +1487,8 @@ impl Model {
     }
 
     pub(crate) fn terminal_live(&self) -> bool {
-        self.terminal_shown()
-            && self
-                .shown_session()
-                .is_some_and(|session| session.state.marked())
+        self.drawn_session()
+            .is_some_and(|session| session.state.marked())
     }
 
     pub(crate) fn set_terminal_size(&mut self, size: (u16, u16)) -> Vec<Command> {
@@ -1488,7 +1503,7 @@ impl Model {
         match code {
             KeyCode::Char('c') => {
                 return self
-                    .shown_session()
+                    .drawn_session()
                     .map(|session| session.id)
                     .and_then(|id| self.sessions.close(id, Closed::ByYou))
                     .into_iter()
@@ -1510,7 +1525,13 @@ impl Model {
             self.sessions.leave();
             return Vec::new();
         }
-        self.sessions.write(key).into_iter().collect()
+        if self.too_small() {
+            return Vec::new();
+        }
+        self.drawn_session()
+            .and_then(|session| session.write(key))
+            .into_iter()
+            .collect()
     }
 
     fn step_aside(&mut self) -> Vec<Command> {
@@ -1954,10 +1975,6 @@ impl Model {
         } else {
             Some("no devices")
         }
-    }
-
-    pub(crate) fn source_service(&self) -> Option<status::Service> {
-        self.source_service
     }
 
     pub fn devices_at(&self) -> Option<Instant> {
@@ -2598,8 +2615,10 @@ impl Model {
             {
                 return self.run_key(key.code)
             }
-            KeyCode::Char('t')
-                if self.workbench == Workbench::Devices && self.focus != Focus::Run =>
+            KeyCode::Char(typed)
+                if typed == SHELL.key
+                    && self.workbench == Workbench::Devices
+                    && self.focus != Focus::Run =>
             {
                 return self.type_in_terminal()
             }
@@ -3161,8 +3180,14 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         return Vec::new();
     }
     model.notice = None;
-    if model.sessions.typed().is_some() {
+    if model
+        .drawn_session()
+        .is_some_and(|session| session.state.typed())
+    {
         return model.typed_key(key);
+    }
+    if model.sessions.typed().is_some() {
+        model.sessions.leave();
     }
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -9260,7 +9285,7 @@ pub(crate) mod tests {
     #[test]
     fn the_state_follows_the_keys_and_the_updates() {
         let (mut model, id) = typing_in_srl1();
-        let scrolled = |model: &Model| model.shown_session().unwrap().screen.screen().scrollback();
+        let scrolled = |model: &Model| model.drawn_session().unwrap().screen.screen().scrollback();
         assert_eq!(leave(&mut model), []);
         assert_eq!(state_of(&model, SRL1), Some(connecting(false)));
         assert_eq!(ch(&mut model, 't'), []);
@@ -9343,6 +9368,89 @@ pub(crate) mod tests {
                 bytes: b"\x1bOA".to_vec()
             }]
         );
+    }
+
+    fn drawn(model: &Model) -> Option<(u64, String, &'static [&'static str])> {
+        model
+            .drawn_session()
+            .map(|session| (session.id, session.state.word(), session.state.keys()))
+    }
+
+    fn written_to(commands: &[Command]) -> Vec<u64> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::TermWrite { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn keys_and_the_picture_follow_one_lookup_when_the_device_list_moves_under_typing() {
+        let open: &[&str] = &["t type in the terminal", "j/k scroll", "c close session"];
+        let typing: &[&str] = &["Ctrl-] leave (session stays open)"];
+        let mut model = with_devices(&[SRL2, SRL1]);
+        let srl2 = opened_id(&ch(&mut model, 't')).unwrap();
+        leave(&mut model);
+        model.apply(named(&[SRL1, SRL2]));
+        let srl1 = opened_id(&ch(&mut model, 't')).unwrap();
+        assert_eq!(
+            drawn(&model),
+            Some((srl1, "connecting…".to_string(), typing))
+        );
+        assert_eq!(written_to(&ch(&mut model, 'x')), [srl1]);
+
+        model.apply(named(&[SRL2, SRL1]));
+        assert_eq!(drawn(&model), Some((srl2, "connecting…".to_string(), open)));
+        assert!(written_to(&ch(&mut model, 'x')).is_empty());
+        assert_eq!(state_of(&model, SRL1), Some(connecting(false)));
+        assert_eq!(drawn(&model), Some((srl2, "connecting…".to_string(), open)));
+
+        assert_eq!(ch(&mut model, 't'), []);
+        assert_eq!(
+            drawn(&model),
+            Some((srl2, "connecting…".to_string(), typing))
+        );
+        model.apply(named(&[SRL1]));
+        assert_eq!(drawn(&model), Some((srl1, "connecting…".to_string(), open)));
+        assert!(written_to(&ch(&mut model, 'x')).is_empty());
+        assert_eq!(state_of(&model, SRL2), Some(connecting(false)));
+
+        assert_eq!(ch(&mut model, 't'), []);
+        model.apply(Update::Devices(Ok(Vec::new())));
+        assert_eq!(drawn(&model), None);
+        assert!(written_to(&ch(&mut model, 'x')).is_empty());
+        assert_eq!(state_of(&model, SRL1), Some(connecting(false)));
+    }
+
+    #[test]
+    fn while_the_window_is_too_small_only_ctrl_close_bracket_and_ctrl_5_act_on_typing() {
+        for leaving in [']', '5'] {
+            let (mut model, id) = typing_in_srl1();
+            model.apply(Update::TermOutput(id, b"$ ".to_vec()));
+            small(&mut model, 59, 15);
+            let keys = [
+                key(KeyCode::Char('x')),
+                key(KeyCode::Char('q')),
+                key(KeyCode::Enter),
+                key(KeyCode::Esc),
+                with(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            ];
+            for typed in keys {
+                assert_eq!(handle(&mut model, typed), [], "{typed:?}");
+                assert_eq!(state_of(&model, SRL1), Some(State::Typing), "{typed:?}");
+            }
+            assert!(!model.quit());
+
+            small(&mut model, 60, 15);
+            assert_eq!(written_to(&ch(&mut model, 'x')), [id]);
+
+            small(&mut model, 60, 14);
+            let key = with(KeyCode::Char(leaving), KeyModifiers::CONTROL);
+            assert_eq!(handle(&mut model, key), [], "{leaving}");
+            assert_eq!(state_of(&model, SRL1), Some(State::Connected { up: 0 }));
+        }
     }
 
     #[test]
@@ -9561,7 +9669,7 @@ pub(crate) mod tests {
 
         assert_ne!(new, old);
         assert_eq!(state_of(&model, SRL1), Some(connecting(true)));
-        let contents = model.shown_session().unwrap().screen.screen().contents();
+        let contents = model.drawn_session().unwrap().screen.screen().contents();
         assert!(!contents.contains("nobs-t-old"), "{contents:?}");
         assert!(!contents.contains("nobs-t-late"), "{contents:?}");
     }

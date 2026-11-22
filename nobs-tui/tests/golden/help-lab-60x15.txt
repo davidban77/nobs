@@ -7,7 +7,7 @@
   ║r        refresh now       U       update             ║
   ║o        run pane          B       rebuild            ║
   ║x        dismiss the error S       show               ║
-  ║?        close             q       quit; asks in a run║
+  ║?        close             q       quit; asks if busy ║
   ║Esc      close/fold/back   Ctrl-C  stop a run, or quit║
   ║D        deploy                                       ║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║

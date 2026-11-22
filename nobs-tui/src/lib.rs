@@ -145,10 +145,7 @@ impl Actions {
         pollers: &Pollers,
         until: Instant,
     ) -> Option<End> {
-        while Instant::now() < until {
-            let Ok(update) = self.updates.try_recv() else {
-                return None;
-            };
+        while let Ok(update) = next_before(&self.updates, until) {
             let ended = match update {
                 Update::ActionEnded(end) => Some(end),
                 _ => None,
@@ -238,10 +235,7 @@ impl Wires {
         pollers: &Pollers,
         until: Instant,
     ) {
-        while Instant::now() < until {
-            let Ok(update) = self.updates.try_recv() else {
-                return;
-            };
+        while let Ok(update) = next_before(&self.updates, until) {
             if let Update::TermEnded(id, _) = update {
                 self.open.retain(|(open, _)| *open != id);
             }
@@ -381,8 +375,8 @@ fn drain(
     pollers: &Pollers,
 ) {
     let until = Instant::now() + pace(model).0;
-    while !*gone && Instant::now() < until {
-        match updates.try_recv() {
+    while !*gone {
+        match next_before(updates, until) {
             Ok(update) => send(model.apply(update), actions, wires, pollers),
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
@@ -395,6 +389,14 @@ fn drain(
                 );
             }
         }
+    }
+}
+
+fn next_before(updates: &Receiver<Update>, until: Instant) -> Result<Update, TryRecvError> {
+    if Instant::now() < until {
+        updates.try_recv()
+    } else {
+        Err(TryRecvError::Empty)
     }
 }
 

@@ -20,8 +20,8 @@ use crate::actions::{self, arguments, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState, StackKind,
-    StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
+    absent, kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState,
+    StackKind, StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
 };
 use crate::terminal::SHELL;
 use crate::view;
@@ -686,10 +686,7 @@ fn tabs(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     } else {
         &SERVICES_TABS
     };
-    let word = model
-        .shown_session()
-        .filter(|_| on_devices && model.tab() == Tab::Terminal)
-        .map(|session| session.state.word());
+    let word = model.drawn_session().map(|session| session.state.word());
     let width = usize::from(area.width)
         .saturating_sub(word.as_ref().map_or(0, |word| word.chars().count() + 2));
     let line = tab_line(shown, model.tab(), wide, width);
@@ -932,7 +929,7 @@ fn device_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
         Constraint::Length(alerts_height),
     ])
     .areas(inner);
-    let first = match device_note(model) {
+    let first = match model.device_note() {
         Some(note) => {
             dim_line(frame, list, note);
             None
@@ -967,14 +964,6 @@ fn answer_cell(reach: Reach, answered: bool, shown: &str) -> String {
     }
 }
 
-fn absent(reach: Reach, word: &str) -> Option<String> {
-    match reach {
-        Reach::NotInLab => Some(format!("no {word} in this lab")),
-        Reach::StackDown => Some("the stack is down".to_string()),
-        Reach::Unknown | Reach::Answers | Reach::NoAnswer => None,
-    }
-}
-
 fn absent_of(model: &Model, service: Service) -> Option<String> {
     absent(model.reach(service), row(service).word)
 }
@@ -985,13 +974,6 @@ fn cell(reach: Reach, shown: &str) -> &str {
         Reach::NoAnswer => "?",
         Reach::Unknown | Reach::NotInLab | Reach::StackDown => "—",
     }
-}
-
-fn device_note(model: &Model) -> Option<String> {
-    model
-        .source_service()
-        .and_then(|service| absent_of(model, service))
-        .or_else(|| model.source_note().map(str::to_string))
 }
 
 fn dim_line(frame: &mut Frame, area: Rect, text: String) {
@@ -1213,7 +1195,7 @@ fn metrics_view(frame: &mut Frame, area: Rect, model: &Model) {
         dim_lines(frame, area, absent_lines(reach, sentence, Service::Metrics));
         return;
     }
-    if let Some(note) = device_note(model).filter(|_| !model.metrics_listed()) {
+    if let Some(note) = model.device_note().filter(|_| !model.metrics_listed()) {
         dim_line(frame, area, note);
         return;
     }
@@ -1457,7 +1439,7 @@ fn device_detail(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
     );
     let [tab_row, content] = tab_content(area);
     tabs(frame, tab_row, model, wide);
-    if let Some(note) = device_note(model) {
+    if let Some(note) = model.device_note() {
         dim_line(frame, content, note);
         return;
     }
@@ -1476,7 +1458,7 @@ fn terminal_pane(frame: &mut Frame, area: Rect, model: &Model) {
     let Some(device) = model.selected_device() else {
         return;
     };
-    let Some(session) = model.session_of(&device.name) else {
+    let Some(session) = model.drawn_session() else {
         let hint = format!("{TERMINAL_HINT} {}", device.name);
         let line = fitted(vec![(hint, DIM)], usize::from(area.width));
         frame.render_widget(Paragraph::new(line), area);
@@ -2386,7 +2368,7 @@ fn key_hints(model: &Model) -> Vec<String> {
         }
         (Workbench::Devices, Focus::Tabs, Tab::Config) => PANE_HINTS.to_vec(),
         (Workbench::Devices, Focus::Tabs, Tab::Terminal) => {
-            return match model.shown_session() {
+            return match model.drawn_session() {
                 Some(session) => listed(session.state.keys().to_vec()).collect(),
                 None => vec![
                     format!("{} {}", SHELL.key, SHELL.hint),
@@ -2516,7 +2498,7 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
         std::iter::once(owned(entry)).chain(typed)
     });
     let quit = HELP_QUIT.iter().map(|&(key, meaning)| match key {
-        "q" if terminal => (key.to_string(), HELP_QUIT_SESSION),
+        "q" if model.lab_with_nodes() => (key.to_string(), HELP_QUIT_SESSION),
         _ => (key.to_string(), meaning),
     });
     [(switch.join(" "), "switch workbench")]
@@ -2882,6 +2864,45 @@ mod tests {
         }
 
         assert!(cut.is_empty(), "{cut:#?}");
+    }
+
+    #[test]
+    fn q_asks_if_busy_in_every_help_of_a_lab_with_nodes_and_asks_in_a_run_elsewhere() {
+        let builds: [fn() -> Model; 3] = [|| lab_bench(2), devices_bench, services_bench];
+        let mut seen = Vec::new();
+        for build in builds {
+            for key in ['1', '2', '3', '4'] {
+                let mut model = build();
+                press(&mut model, key);
+                let quit = help_entries(&model)
+                    .into_iter()
+                    .find(|(key, _)| key == "q")
+                    .map(|(_, meaning)| meaning);
+                seen.push((model.lab_with_nodes(), model.workbench(), quit));
+            }
+        }
+
+        let wanted: Vec<_> = seen
+            .iter()
+            .map(|&(nodes, workbench, _)| {
+                let words = if nodes {
+                    "quit; asks if busy"
+                } else {
+                    "quit; asks in a run"
+                };
+                (nodes, workbench, Some(words))
+            })
+            .collect();
+        assert_eq!(seen, wanted);
+        let mut with_nodes: Vec<String> = seen
+            .iter()
+            .filter(|seen| seen.0)
+            .map(|seen| format!("{:?}", seen.1))
+            .collect();
+        with_nodes.sort();
+        with_nodes.dedup();
+        assert_eq!(with_nodes, ["Devices", "Lab", "Observability", "Services"]);
+        assert!(seen.iter().any(|seen| !seen.0));
     }
 
     fn benches() -> [Bench; 4] {

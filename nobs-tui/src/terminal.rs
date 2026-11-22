@@ -74,6 +74,14 @@ pub(crate) struct Session {
     pub(crate) state: State,
     pub(crate) screen: vt100::Parser,
     left: u64,
+    ended: u64,
+}
+
+impl Session {
+    pub(crate) fn write(&self, key: KeyEvent) -> Option<Command> {
+        let bytes = keys::bytes(key, self.screen.screen().application_cursor())?;
+        Some(Command::TermWrite { id: self.id, bytes })
+    }
 }
 
 pub(crate) struct Sessions {
@@ -137,22 +145,7 @@ impl Sessions {
 
     pub(crate) fn open(&mut self, device: &str) -> (u64, Option<(Command, String)>) {
         self.list.retain(|session| session.device != device);
-        let mut limited = None;
-        if self.list.len() >= LIMIT {
-            if let Some(at) = self.list.iter().position(|session| !session.state.marked()) {
-                self.list.remove(at);
-            }
-        }
-        if self.live().count() >= LIMIT {
-            let oldest = self
-                .live()
-                .filter(|session| !session.state.typed())
-                .min_by_key(|session| session.left)
-                .map(|session| (session.id, session.device.clone()));
-            if let Some((id, name)) = oldest {
-                limited = self.close(id, Closed::Limit).map(|command| (command, name));
-            }
-        }
+        let limited = self.make_room();
         let id = self.stamp();
         let (rows, cols) = self.size;
         self.list.push(Session {
@@ -161,17 +154,33 @@ impl Sessions {
             state: State::Connecting { typing: true },
             screen: vt100::Parser::new(rows, cols, LOG_LINES),
             left: id,
+            ended: 0,
         });
         (id, limited)
     }
 
-    pub(crate) fn write(&self, key: KeyEvent) -> Option<Command> {
-        let session = self.typed()?;
-        let bytes = keys::bytes(key, session.screen.screen().application_cursor())?;
-        Some(Command::TermWrite {
-            id: session.id,
-            bytes,
-        })
+    fn make_room(&mut self) -> Option<(Command, String)> {
+        if self.list.len() >= LIMIT {
+            let closed_first = self
+                .list
+                .iter()
+                .enumerate()
+                .filter(|(_, session)| !session.state.marked())
+                .min_by_key(|(_, session)| session.ended)
+                .map(|(at, _)| at);
+            if let Some(at) = closed_first {
+                self.list.remove(at);
+            }
+        }
+        if self.live().count() < LIMIT {
+            return None;
+        }
+        let (id, name) = self
+            .live()
+            .filter(|session| !session.state.typed())
+            .min_by_key(|session| session.left)
+            .map(|session| (session.id, session.device.clone()))?;
+        self.close(id, Closed::Limit).map(|command| (command, name))
     }
 
     pub(crate) fn leave(&mut self) {
@@ -204,6 +213,7 @@ impl Sessions {
     }
 
     fn end(&mut self, id: u64, why: Closed) -> bool {
+        let ended = self.stamp();
         let Some(session) = self.by_id(id).filter(|session| session.state.marked()) else {
             return false;
         };
@@ -212,6 +222,7 @@ impl Sessions {
             _ => 0,
         };
         session.state = State::Closed { why, up };
+        session.ended = ended;
         true
     }
 
@@ -383,6 +394,25 @@ mod tests {
             .map(|session| session.device.as_str())
             .collect();
         assert_eq!(live, ["nobs-t-a", "nobs-t-d", "nobs-t-f", "nobs-t-g"]);
+    }
+
+    #[test]
+    fn a_place_is_made_by_dropping_the_session_closed_longest_ago_not_the_one_opened_first() {
+        let mut sessions = Sessions::new();
+        for device in ["nobs-t-a", "nobs-t-b", "nobs-t-c", "nobs-t-d"] {
+            opened(&mut sessions, device);
+            sessions.leave();
+        }
+        sessions.ended(id_of(&sessions, "nobs-t-b"), 0);
+        sessions.ended(id_of(&sessions, "nobs-t-a"), 0);
+
+        assert_eq!(opened(&mut sessions, "nobs-t-e"), None);
+
+        assert_eq!(state_of(&sessions, "nobs-t-b"), None);
+        assert_eq!(
+            state_of(&sessions, "nobs-t-a"),
+            Some(ended(Closed::ShellEnded))
+        );
     }
 
     #[test]

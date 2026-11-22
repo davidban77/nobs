@@ -1,13 +1,17 @@
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::run::login_vars;
 use crate::shell::{Login, Update};
+
+const REAP_PAUSE: Duration = Duration::from_millis(5);
 
 pub trait Terminals: Send + Sync {
     #[allow(clippy::too_many_arguments)]
@@ -33,9 +37,11 @@ pub struct Ptys;
 
 struct Pty {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writes: Option<Sender<Vec<u8>>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    reaped: Arc<Mutex<bool>>,
     reader: Option<JoinHandle<()>>,
+    writer: Option<JoinHandle<()>>,
 }
 
 impl Terminals for Ptys {
@@ -53,7 +59,7 @@ impl Terminals for Ptys {
             .openpty(pty_size(size))
             .map_err(io::Error::other)?;
         let mut output = pair.master.try_clone_reader().map_err(io::Error::other)?;
-        let writer = pair.master.take_writer().map_err(io::Error::other)?;
+        let mut input = pair.master.take_writer().map_err(io::Error::other)?;
         let mut command = CommandBuilder::new(program);
         command.args(args);
         command.cwd(dir);
@@ -67,19 +73,49 @@ impl Terminals for Ptys {
             .map_err(io::Error::other)?;
         drop(pair.slave);
         let killer = child.clone_killer();
+        let reaped = Arc::new(Mutex::new(false));
+        let reaping = Arc::clone(&reaped);
         let reader = thread::spawn(move || {
             let mut buffer = [0; 4096];
             while let Ok(read @ 1..) = output.read(&mut buffer) {
                 let _ = out.send(Update::TermOutput(id, buffer[..read].to_vec()));
             }
-            let code = child.wait().map_or(1, |status| status.exit_code() as i32);
+            let code = loop {
+                let mut reaped = reaping.lock().unwrap_or_else(PoisonError::into_inner);
+                match child.try_wait() {
+                    Ok(None) => {}
+                    waited => {
+                        *reaped = true;
+                        break waited
+                            .ok()
+                            .flatten()
+                            .map_or(1, |status| status.exit_code() as i32);
+                    }
+                }
+                drop(reaped);
+                thread::sleep(REAP_PAUSE);
+            };
             let _ = out.send(Update::TermEnded(id, code));
+        });
+        let (writes, queue) = mpsc::channel::<Vec<u8>>();
+        let writer = thread::spawn(move || {
+            for bytes in queue {
+                if input
+                    .write_all(&bytes)
+                    .and_then(|()| input.flush())
+                    .is_err()
+                {
+                    return;
+                }
+            }
         });
         Ok(Box::new(Pty {
             master: pair.master,
-            writer,
+            writes: Some(writes),
             killer,
+            reaped,
             reader: Some(reader),
+            writer: Some(writer),
         }))
     }
 }
@@ -94,8 +130,9 @@ fn pty_size((rows, cols): (u16, u16)) -> PtySize {
 
 impl Wire for Pty {
     fn write(&mut self, bytes: &[u8]) {
-        let _ = self.writer.write_all(bytes);
-        let _ = self.writer.flush();
+        if let Some(writes) = &self.writes {
+            let _ = writes.send(bytes.to_vec());
+        }
     }
 
     fn resize(&mut self, size: (u16, u16)) {
@@ -103,21 +140,23 @@ impl Wire for Pty {
     }
 
     fn close(&mut self) {
-        if self
-            .reader
-            .as_ref()
-            .is_some_and(|reader| !reader.is_finished())
-        {
+        let reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
+        if !*reaped {
             let _ = self.killer.kill();
         }
+        drop(reaped);
+        self.writes = None;
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
         self.close();
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+        for thread in [self.reader.take(), self.writer.take()]
+            .into_iter()
+            .flatten()
+        {
+            let _ = thread.join();
         }
     }
 }
@@ -127,7 +166,7 @@ pub(crate) mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc::{self, Receiver};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use nobs_core::device;
 
@@ -316,6 +355,40 @@ pub(crate) mod tests {
 
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    #[test]
+    fn a_large_write_to_a_child_that_never_reads_returns_at_once_and_close_leaves_nothing() {
+        let (mut wire, updates) = open(
+            &["-c", "stty raw -echo; echo pid=$$; exec sleep 10"],
+            (24, 80),
+            &Login::default(),
+        );
+        let seen = output_until(&updates, "\n");
+        let pid: libc::pid_t = seen
+            .trim()
+            .strip_prefix("pid=")
+            .and_then(|pid| pid.parse().ok())
+            .unwrap_or_else(|| panic!("{seen:?}"));
+
+        let started = Instant::now();
+        wire.write(&[b'x'; 64 * 1024]);
+        let took = started.elapsed();
+        wire.close();
+        drop(wire);
+
+        assert!(took < Duration::from_millis(100), "{took:?}");
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        let left: Vec<Update> = updates.try_iter().collect();
+        assert!(
+            matches!(left.last(), Some(Update::TermEnded(7, _))),
+            "{left:?}"
+        );
+        assert!(matches!(
+            updates.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]
