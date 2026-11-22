@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::fmt::Display;
 use std::io::{self, IsTerminal, Write};
 use std::panic::{self, PanicHookInfo};
@@ -20,7 +19,8 @@ use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use aside::ask_aside;
-use shell::{Login, Model};
+use run::Invocation;
+use shell::Model;
 
 pub mod actions;
 mod aside;
@@ -91,13 +91,17 @@ pub fn run(
         .map_err(failed)
         .and_then(|mut terminal| {
             turns(
-                &mut terminal,
-                &mut screen,
+                &mut Console {
+                    terminal: &mut terminal,
+                    screen: &mut screen,
+                },
                 &mut model,
-                &pollers,
-                &updates,
-                &mut actions,
-                &mut wires,
+                &mut Workers {
+                    pollers: &pollers,
+                    updates: &updates,
+                    actions: &mut actions,
+                    wires: &mut wires,
+                },
                 read_key,
             )
         });
@@ -128,11 +132,8 @@ impl Actions {
         }
     }
 
-    fn start(&mut self, program: &Path, args: &[OsString], login: &Login) {
-        match self
-            .launcher
-            .start(program, args, login, self.sender.clone())
-        {
+    fn start(&mut self, child: Invocation<'_>) {
+        match self.launcher.start(child, self.sender.clone()) {
             Ok(running) => self.running = Some(running),
             Err(error) => {
                 let _ = self.sender.send(Update::ActionLine(cannot_run(error)));
@@ -197,18 +198,10 @@ impl Wires {
         }
     }
 
-    fn open(
-        &mut self,
-        id: u64,
-        program: &Path,
-        args: &[OsString],
-        dir: &Path,
-        login: &Login,
-        size: (u16, u16),
-    ) {
+    fn open(&mut self, id: u64, child: Invocation<'_>, dir: &Path, size: (u16, u16)) {
         let opened = self
             .terminals
-            .open(program, args, dir, login, size, id, self.sender.clone());
+            .open(child, dir, size, id, self.sender.clone());
         match opened {
             Ok(wire) => self.open.push((id, wire)),
             Err(error) => {
@@ -281,35 +274,42 @@ fn panic_hook(main: ThreadId, previous: Hook) -> Hook {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+struct Console<'a, B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>> {
+    terminal: &'a mut Terminal<B>,
+    screen: &'a mut Screen<W, R>,
+}
+
+struct Workers<'a> {
+    pollers: &'a Pollers,
+    updates: &'a Receiver<Update>,
+    actions: &'a mut Actions,
+    wires: &'a mut Wires,
+}
+
 fn turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
-    terminal: &mut Terminal<B>,
-    screen: &mut Screen<W, R>,
+    console: &mut Console<'_, B, W, R>,
     model: &mut Model,
-    pollers: &Pollers,
-    updates: &Receiver<Update>,
-    actions: &mut Actions,
-    wires: &mut Wires,
+    workers: &mut Workers<'_>,
     next_key: impl FnMut(Duration) -> Result<Option<KeyEvent>, String>,
 ) -> Result<i32, String> {
-    let result = loop_turns(
-        terminal, screen, model, pollers, updates, actions, wires, next_key,
-    );
-    wires.close_all();
+    let result = loop_turns(console, model, workers, next_key);
+    workers.wires.close_all();
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 fn loop_turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
-    terminal: &mut Terminal<B>,
-    screen: &mut Screen<W, R>,
+    console: &mut Console<'_, B, W, R>,
     model: &mut Model,
-    pollers: &Pollers,
-    updates: &Receiver<Update>,
-    actions: &mut Actions,
-    wires: &mut Wires,
+    workers: &mut Workers<'_>,
     mut next_key: impl FnMut(Duration) -> Result<Option<KeyEvent>, String>,
 ) -> Result<i32, String> {
+    let Console { terminal, screen } = console;
+    let Workers {
+        pollers,
+        updates,
+        actions,
+        wires,
+    } = workers;
     let mut gone = false;
     send(model.ask_changes(), actions, wires, pollers);
     loop {
@@ -366,7 +366,11 @@ fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, poller
                 program,
                 args,
                 login,
-            } => actions.start(program, args, login),
+            } => actions.start(Invocation {
+                program,
+                args,
+                login,
+            }),
             Command::Stop => actions.stop(),
             Command::AskSudo(lines) => actions.asking = Some(lines.clone()),
             Command::TermOpen {
@@ -376,7 +380,16 @@ fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, poller
                 dir,
                 size,
                 login,
-            } => wires.open(*id, program, args, dir, login, *size),
+            } => wires.open(
+                *id,
+                Invocation {
+                    program,
+                    args,
+                    login,
+                },
+                dir,
+                *size,
+            ),
             Command::TermWrite { id, bytes } => {
                 if let Some(wire) = wires.wire(*id) {
                     wire.write(bytes);
@@ -514,7 +527,7 @@ mod tests {
     use crate::pty::tests::{Call, FakeTerminals};
     use crate::run::tests::FakeLauncher;
     use crate::shell::tests::{defined, every_service_up, finding, listing, SECRET, USER};
-    use crate::shell::RunState;
+    use crate::shell::{Login, RunState};
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");
     const TWO: &str = "{\"Service\":\"grafana\",\"State\":\"running\"}\n{\"Service\":\"loki\",\"State\":\"exited\"}\n";
@@ -722,13 +735,17 @@ mod tests {
         let (pollers, updates) = launch(&scripted(Vec::new()), model);
         let mut keys = keys.iter().copied();
         turns(
-            &mut terminal(width, height),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(width, height),
+                screen: &mut bare_screen(),
+            },
             model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            wires,
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires,
+            },
             |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
         )
     }
@@ -778,13 +795,17 @@ mod tests {
         for (size, keys) in [((100, 30), vec![ch('t')]), ((80, 20), Vec::new())] {
             let mut keys = keys.into_iter();
             loop_turns(
-                &mut terminal(size.0, size.1),
-                &mut bare_screen(),
+                &mut Console {
+                    terminal: &mut terminal(size.0, size.1),
+                    screen: &mut bare_screen(),
+                },
                 &mut model,
-                &pollers,
-                &updates,
-                &mut actions(),
-                &mut wires,
+                &mut Workers {
+                    pollers: &pollers,
+                    updates: &updates,
+                    actions: &mut actions(),
+                    wires: &mut wires,
+                },
                 |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
             )
             .unwrap_err();
@@ -821,10 +842,12 @@ mod tests {
         for id in [1, 2] {
             wires.open(
                 id,
-                Path::new("nobs"),
-                &[],
+                Invocation {
+                    program: Path::new("nobs"),
+                    args: &[],
+                    login: &Login::default(),
+                },
                 Path::new("/"),
-                &Login::default(),
                 (8, 58),
             );
         }
@@ -841,10 +864,12 @@ mod tests {
         for id in [1, 2] {
             wires.open(
                 id,
-                Path::new("nobs-t-shell"),
-                &[],
+                Invocation {
+                    program: Path::new("nobs-t-shell"),
+                    args: &[],
+                    login: &Login::default(),
+                },
                 Path::new("/"),
-                &Login::default(),
                 (8, 58),
             );
         }
@@ -892,10 +917,12 @@ mod tests {
     fn open_sleeper(wires: &mut Wires, id: u64) {
         wires.open(
             id,
-            Path::new("/bin/sh"),
-            &args(&["-c", "echo pid=$$; exec sleep 10"]),
+            Invocation {
+                program: Path::new("/bin/sh"),
+                args: &args(&["-c", "echo pid=$$; exec sleep 10"]),
+                login: &Login::default(),
+            },
             Path::new(env!("CARGO_MANIFEST_DIR")),
-            &Login::default(),
             (24, 80),
         );
     }
@@ -971,13 +998,17 @@ mod tests {
         let mut waits = Vec::new();
 
         turns(
-            &mut terminal(60, 15),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(60, 15),
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |wait| {
                 waits.push(wait);
                 match waits.len() {
@@ -1036,13 +1067,17 @@ mod tests {
         let mut waits = Vec::new();
 
         turns(
-            &mut terminal(80, 24),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |wait| {
                 waits.push(wait);
                 Ok((waits.len() == 2).then(q))
@@ -1062,13 +1097,17 @@ mod tests {
         let mut turn = 0;
 
         turns(
-            &mut terminal,
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |_| {
                 turn += 1;
                 if turn == 1 {
@@ -1116,13 +1155,17 @@ mod tests {
         );
 
         let result = turns(
-            &mut terminal,
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |_| Ok(Some(q())),
         );
         let elapsed = started.elapsed();
@@ -1202,13 +1245,17 @@ mod tests {
         );
 
         let result = turns(
-            &mut terminal,
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |_| Ok(Some(keys.next().unwrap_or_else(q))),
         );
         let elapsed = started.elapsed();
@@ -1309,13 +1356,17 @@ mod tests {
         }
 
         turns(
-            &mut terminal,
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |_| Ok(Some(q())),
         )
         .unwrap();
@@ -1530,13 +1581,17 @@ mod tests {
             let (pollers, updates) = launch(&scripted(Vec::new()), &model);
 
             let result = turns(
-                &mut terminal(80, 24),
-                &mut bare_screen(),
+                &mut Console {
+                    terminal: &mut terminal(80, 24),
+                    screen: &mut bare_screen(),
+                },
                 &mut model,
-                &pollers,
-                &updates,
-                &mut actions(),
-                &mut wires(),
+                &mut Workers {
+                    pollers: &pollers,
+                    updates: &updates,
+                    actions: &mut actions(),
+                    wires: &mut wires(),
+                },
                 |_| Ok(Some(q())),
             );
 
@@ -1585,13 +1640,17 @@ mod tests {
         let mut turn = 0;
 
         turns(
-            &mut terminal,
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |_| {
                 turn += 1;
                 Ok(Some(match turn {
@@ -1614,13 +1673,17 @@ mod tests {
         drop(sender);
 
         turns(
-            &mut terminal(80, 24),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |_| Ok(Some(q())),
         )
         .unwrap();
@@ -1635,6 +1698,16 @@ mod tests {
         key(KeyCode::Char(typed))
     }
 
+    fn login_keys(first: char) -> Vec<KeyEvent> {
+        [ch(first)]
+            .into_iter()
+            .chain(USER.chars().map(ch))
+            .chain([key(KeyCode::Enter)])
+            .chain(SECRET.chars().map(ch))
+            .chain([key(KeyCode::Enter)])
+            .collect()
+    }
+
     fn acting(launcher: &Arc<FakeLauncher>) -> (Model, Actions) {
         let model = Model::new(start(vec![stack(&[CLOSED])], false));
         (model, Actions::new(launcher.clone(), asker(1)))
@@ -1644,13 +1717,17 @@ mod tests {
         let (pollers, updates) = launch(&scripted(Vec::new()), model);
         let mut keys = keys.iter().copied();
         turns(
-            &mut terminal(80, 24),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
             model,
-            &pollers,
-            &updates,
-            actions,
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions,
+                wires: &mut wires(),
+            },
             |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
         )
     }
@@ -1774,13 +1851,7 @@ mod tests {
         let launcher = Arc::new(FakeLauncher::new());
         let mut actions = Actions::new(launcher.clone(), asker(1));
         let mut model = devices_finding("book-lab", finding(None, None));
-        let keys: Vec<KeyEvent> = [ch('g')]
-            .into_iter()
-            .chain(USER.chars().map(ch))
-            .chain([key(KeyCode::Enter)])
-            .chain(SECRET.chars().map(ch))
-            .chain([key(KeyCode::Enter)])
-            .collect();
+        let keys = login_keys('g');
 
         press(&mut model, &mut actions, &keys).unwrap_err();
 
@@ -1792,6 +1863,40 @@ mod tests {
         let calls = launcher.calls();
         assert_eq!(calls.len(), 1);
         assert!(!format!("{calls:?}").contains(SECRET), "{calls:?}");
+    }
+
+    #[test]
+    fn t_with_a_typed_login_opens_the_terminal_the_model_built_and_no_argument_holds_the_password()
+    {
+        let fake = Arc::new(FakeTerminals::default());
+        let mut model = devices_finding("book-lab", finding(None, None));
+        let book = fixture("book-lab");
+        let keys = login_keys('t');
+
+        terminal_turns(&mut model, &mut Wires::new(fake.clone()), (80, 20), &keys).unwrap_err();
+
+        let calls = fake.calls();
+        let Some(Call::Open { args: given, .. }) = calls.first() else {
+            panic!("{calls:?}");
+        };
+        assert!(!format!("{given:?}").contains(SECRET), "{given:?}");
+        assert_eq!(
+            calls.first(),
+            Some(&Call::Open {
+                id: 1,
+                program: PathBuf::from("nobs"),
+                args: [OsString::from("--dir"), book.clone().into_os_string()]
+                    .into_iter()
+                    .chain(args(&["device", "shell", "srl1"]))
+                    .collect(),
+                dir: book,
+                size: (13, 78),
+                login: Login {
+                    user: Some(USER.to_string()),
+                    password: Some(Password::new(SECRET.to_string())),
+                },
+            })
+        );
     }
 
     #[test]
@@ -1823,13 +1928,17 @@ mod tests {
         let (_alive, quiet) = mpsc::channel();
 
         turns(
-            &mut terminal(80, 24),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &quiet,
-            &mut actions,
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &quiet,
+                actions: &mut actions,
+                wires: &mut wires(),
+            },
             |_| Err(PAUSED.to_string()),
         )
         .unwrap_err();
@@ -1922,13 +2031,17 @@ mod tests {
         let mut keys = [q(), ch('y')].into_iter();
 
         let result = turns(
-            &mut terminal(80, 24),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions,
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions,
+                wires: &mut wires(),
+            },
             |_| {
                 let key = keys.next().ok_or_else(|| PAUSED.to_string())?;
                 if key == ch('y') {
@@ -1972,13 +2085,17 @@ mod tests {
         let mut gaps = Vec::new();
 
         let result = turns(
-            &mut terminal(80, 24),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions,
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions,
+                wires: &mut wires(),
+            },
             |_| {
                 if let Some(at) = sent {
                     gaps.push(at.elapsed());
@@ -2093,13 +2210,17 @@ mod tests {
 
         for _ in 0..2 {
             turns(
-                &mut terminal,
-                &mut screen,
+                &mut Console {
+                    terminal: &mut terminal,
+                    screen: &mut screen,
+                },
                 &mut model,
-                &pollers,
-                &updates,
-                &mut actions,
-                &mut wires(),
+                &mut Workers {
+                    pollers: &pollers,
+                    updates: &updates,
+                    actions: &mut actions,
+                    wires: &mut wires(),
+                },
                 |_| Err(PAUSED.to_string()),
             )
             .unwrap_err();
@@ -2142,13 +2263,17 @@ mod tests {
             let (pollers, updates) = launch(&scripted(Vec::new()), &model);
 
             turns(
-                &mut terminal(80, 24),
-                &mut bare_screen(),
+                &mut Console {
+                    terminal: &mut terminal(80, 24),
+                    screen: &mut bare_screen(),
+                },
                 &mut model,
-                &pollers,
-                &updates,
-                &mut actions,
-                &mut wires(),
+                &mut Workers {
+                    pollers: &pollers,
+                    updates: &updates,
+                    actions: &mut actions,
+                    wires: &mut wires(),
+                },
                 |_| Err(PAUSED.to_string()),
             )
             .unwrap_err();
@@ -2187,13 +2312,17 @@ mod tests {
         };
 
         let result = turns(
-            &mut terminal(80, 24),
-            &mut screen,
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut screen,
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions,
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions,
+                wires: &mut wires(),
+            },
             |_| Err(PAUSED.to_string()),
         );
         let after = handlers();
@@ -2260,13 +2389,17 @@ mod tests {
         }
 
         turns(
-            &mut terminal(80, 24),
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions,
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions,
+                wires: &mut wires(),
+            },
             |_| Err(PAUSED.to_string()),
         )
         .unwrap_err();
@@ -2387,13 +2520,17 @@ mod tests {
             .chain(std::iter::repeat_n(ch('j'), presses))
             .chain(back.then(|| ch('k')));
         turns(
-            &mut terminal,
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
             &mut model,
-            &pollers,
-            &updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
         )
         .unwrap_err();
@@ -2451,13 +2588,17 @@ mod tests {
         let mut terminal = terminal(width, height);
         let mut keys = keys.iter().copied();
         turns(
-            &mut terminal,
-            &mut bare_screen(),
+            &mut Console {
+                terminal: &mut terminal,
+                screen: &mut bare_screen(),
+            },
             model,
-            pollers,
-            updates,
-            &mut actions(),
-            &mut wires(),
+            &mut Workers {
+                pollers,
+                updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
             |_| keys.next().map(Some).ok_or_else(|| PAUSED.to_string()),
         )
         .unwrap_err();
@@ -2916,13 +3057,17 @@ mod tests {
         let mut actions = actions();
         loop {
             turns(
-                &mut terminal(100, 30),
-                &mut bare_screen(),
+                &mut Console {
+                    terminal: &mut terminal(100, 30),
+                    screen: &mut bare_screen(),
+                },
                 model,
-                pollers,
-                updates,
-                &mut actions,
-                &mut wires(),
+                &mut Workers {
+                    pollers,
+                    updates,
+                    actions: &mut actions,
+                    wires: &mut wires(),
+                },
                 |_| {
                     thread::sleep(Duration::from_millis(20));
                     Err(PAUSED.to_string())
