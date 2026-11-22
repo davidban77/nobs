@@ -2981,6 +2981,16 @@ impl Model {
     }
 
     fn lab_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let following = self.lab_logs.following;
+        let lines = if self.lab_lines_shown() {
+            self.lab_logs.shown().len()
+        } else {
+            0
+        };
+        if let Some(commands) = self.leave_newest(code, true, following, lines, Model::lab_logs_key)
+        {
+            return commands;
+        }
         match code {
             KeyCode::Char('f') if self.lab_can_pause() => {
                 self.lab_logs.toggle();
@@ -3121,6 +3131,13 @@ impl Model {
     }
 
     fn device_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let following = self.device_logs.following;
+        let lines = self.shown_device_logs().len();
+        if let Some(commands) =
+            self.leave_newest(code, true, following, lines, Model::device_logs_key)
+        {
+            return commands;
+        }
         match code {
             KeyCode::Char('f') => {
                 let following = self.device_logs.toggle();
@@ -3192,7 +3209,35 @@ impl Model {
         Vec::new()
     }
 
+    fn leave_newest(
+        &mut self,
+        code: KeyCode,
+        newest_first: bool,
+        following: bool,
+        lines: usize,
+        keys: fn(&mut Model, KeyCode) -> Vec<Command>,
+    ) -> Option<Vec<Command>> {
+        let away = if newest_first {
+            matches!(code, KeyCode::Char('j') | KeyCode::Down)
+        } else {
+            matches!(code, KeyCode::Char('k') | KeyCode::Up)
+        };
+        if !(away && following && lines > 1) {
+            return None;
+        }
+        let mut commands = keys(self, KeyCode::Char('f'));
+        commands.extend(keys(self, code));
+        Some(commands)
+    }
+
     fn logs_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let (following, lines) = self
+            .logs
+            .as_ref()
+            .map_or((false, 0), |logs| (logs.following, logs.shown()));
+        if let Some(commands) = self.leave_newest(code, false, following, lines, Model::logs_key) {
+            return commands;
+        }
         let Some(logs) = self.logs.as_mut() else {
             return Vec::new();
         };
@@ -5100,7 +5145,7 @@ pub(crate) mod tests {
         let mut model = logs_open("grafana");
         let lines: Vec<String> = (0..5).map(|n| format!("t n{n}")).collect();
         model.apply(Update::Logs(0, "grafana".to_string(), Ok(lines)));
-        assert_eq!(ch(&mut model, 'k'), []);
+        assert_eq!(ch(&mut model, 'j'), []);
         assert_eq!(model.logs().unwrap().3, 0);
 
         assert_eq!(ch(&mut model, 'f'), [Command::Follow(false)]);
@@ -5982,7 +6027,7 @@ pub(crate) mod tests {
     #[test]
     fn following_shows_no_marker() {
         let mut model = logs_view();
-        ch(&mut model, 'j');
+        ch(&mut model, 'k');
         assert_eq!(marked(&model), None);
         ch(&mut model, 'f');
         ch(&mut model, 'j');

@@ -4477,9 +4477,62 @@ mod tests {
             model.apply(Update::ActionLine(line));
         }
         model.apply(Update::ActionEnded(End::Exited(0)));
+        model.apply(lab_lines("d01", 40));
         if !pane {
             press(&mut model, 'o');
         }
+        model
+    }
+
+    fn lab_lines(device: &str, count: i64) -> Update {
+        Update::LabLogs(Ok((1..=count)
+            .map(|index| {
+                (
+                    [("device".to_string(), device.to_string())].into(),
+                    log_line(index, &format!("lab {index:02}")),
+                )
+            })
+            .collect()))
+    }
+
+    fn lab_logs_of(count: i64) -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(lab_lines("srl1", count));
+        press(&mut model, '3');
+        press(&mut model, ']');
+        model
+    }
+
+    fn looped(model: &mut Model, area: Rect) {
+        crate::settle(model, area);
+        model.set_terminal_size(terminal_size(model, area));
+        crate::measure(model, area);
+    }
+
+    fn long_details() -> Model {
+        let fields: Vec<String> = (1..=30)
+            .map(|index| format!(r#""f{index:02}":1"#))
+            .collect();
+        let show = format!("{{{}}}", fields.join(","));
+        tabbed(sonda_details(r#"{"state":"running"}"#, &show), 1)
+    }
+
+    fn services_box() -> Model {
+        let mut model = opened("a");
+        let rows = vec![row("grafana", "running"), row("loki", "running")];
+        model.apply(listing(0, Ok(rows)));
+        tabbed(model, 1)
+    }
+
+    fn config_tab() -> Model {
+        let mut model = lab_devices_model();
+        press(&mut model, 'g');
+        for line in numbered(60) {
+            model.apply(Update::ActionLine(line));
+        }
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        open_tab(&mut model, Tab::Config);
+        focus_tabs(&mut model);
         model
     }
 
@@ -4488,24 +4541,28 @@ mod tests {
         let area = Rect::new(0, 0, 60, 15);
         let pressed = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let row = |typed| pressed(KeyCode::Char(typed));
-        let reach = |(pane, path): &(Option<bool>, Vec<KeyEvent>), moves: &[KeyEvent]| {
-            let mut model = rich(*pane);
-            let turn = |model: &mut Model| {
-                crate::settle(model, area);
-                model.set_terminal_size(terminal_size(model, area));
-                crate::measure(model, area);
-            };
+        let reach = |(build, path): &(Build, Vec<KeyEvent>), moves: &[KeyEvent]| {
+            let mut model = build();
             for key in path {
-                turn(&mut model);
+                looped(&mut model, area);
                 handle(&mut model, *key);
             }
-            turn(&mut model);
+            looped(&mut model, area);
             moves.iter().for_each(|key| drop(handle(&mut model, *key)));
-            turn(&mut model);
+            looped(&mut model, area);
             model
         };
-        let mut states = vec![(None, vec![]), (None, vec![row('?')])];
-        for pane in [false, true] {
+        let bare: Build = || rich(None);
+        let mut states = vec![
+            (bare, vec![]),
+            (bare, vec![row('?')]),
+            (long_details, vec![]),
+            (services_box, vec![]),
+            (|| services_log_of(forty_lines()), vec![]),
+            (config_tab, vec![]),
+        ];
+        let panes: [Build; 2] = [|| rich(Some(false)), || rich(Some(true))];
+        for pane in panes {
             for digit in ['1', '2', '3', '4'] {
                 for tabs in 0..4 {
                     for turns in 0..7 {
@@ -4516,13 +4573,31 @@ mod tests {
                                 path.extend(std::iter::repeat_n(row(']'), turns));
                                 path.extend(enter.then(|| pressed(KeyCode::Enter)));
                                 path.extend(help.then(|| row('?')));
-                                states.push((Some(pane), path));
+                                states.push((pane, path));
                             }
                         }
                     }
                 }
             }
         }
+        let place_of = |model: &Model| {
+            let (bench, tab) = (model.workbench(), model.tab());
+            let following = match (bench, tab) {
+                (Workbench::Services, Tab::Logs) => model.logs().map(|logs| logs.2),
+                (Workbench::Devices, Tab::Logs) => model.device_logs().map(|logs| logs.2),
+                (Workbench::Observability, Tab::Logs) => Some(model.lab_logs().1),
+                _ => None,
+            };
+            let state = match following {
+                Some(true) => " following",
+                Some(false) => " paused",
+                None => "",
+            };
+            match holder(model) {
+                Holder::Pane | Holder::Alerts => format!("{bench:?} {tab:?}{state}"),
+                other => format!("{other:?}"),
+            }
+        };
         let bottom = vec![row('j'); 80];
         let top: Vec<KeyEvent> = bottom.iter().copied().chain(vec![row('k'); 80]).collect();
         let mut frames = Vec::new();
@@ -4537,10 +4612,7 @@ mod tests {
             for edge in [&[][..], &bottom, &top] {
                 for (page, typed) in [(KeyCode::PageDown, 'j'), (KeyCode::PageUp, 'k')] {
                     let mut paged = reach(&state, edge);
-                    compared.push(match holder(&paged) {
-                        Holder::Pane => format!("Pane {:?}", paged.tab()),
-                        other => format!("{other:?}"),
-                    });
+                    let place = place_of(&paged);
                     handle(&mut paged, pressed(page));
                     let mut rowed = reach(&state, edge);
                     let presses = vec![row(typed); rowed.page()];
@@ -4550,9 +4622,11 @@ mod tests {
                     assert_eq!(
                         drawn(&mut paged, 60, 15),
                         drawn(&mut rowed, 60, 15),
-                        "{state:?} {} {page:?}",
+                        "{place} {:?} {} {page:?}",
+                        state.1,
                         edge.len()
                     );
+                    compared.push(place);
                 }
             }
         }
@@ -4561,22 +4635,124 @@ mod tests {
         assert_eq!(
             compared,
             [
-                "Alerts",
                 "Chapters",
                 "Chooser",
                 "Devices",
+                "Devices Config",
+                "Devices Interfaces",
+                "Devices Logs following",
+                "Devices Logs paused",
+                "Devices Overview",
+                "Devices Timeline",
                 "Entry",
                 "Keys",
                 "Nodes",
+                "Observability Alerts",
+                "Observability Logs following",
+                "Observability Logs paused",
+                "Observability Metrics",
                 "Overview",
-                "Pane Interfaces",
-                "Pane Overview",
-                "Pane Timeline",
                 "Run",
+                "Services Logs following",
+                "Services Logs paused",
+                "Services Overview",
+                "Sonda(Details)",
                 "Sonda(Scenarios)",
                 "Stacks"
             ]
         );
+    }
+
+    #[test]
+    fn a_move_away_from_the_newest_line_pauses_a_following_log_and_moves() {
+        type Seen = fn(&Model) -> (bool, usize);
+        type Follow = fn(bool) -> Vec<Command>;
+        type OfLines = fn(i64) -> Model;
+        let area = Rect::new(0, 0, 100, 30);
+        let pressed = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let frame = |model: &mut Model| drawn(model, 100, 30).join("\n");
+        let logs: [(OfLines, char, Seen, Follow, &str); 4] = [
+            (
+                |count| services_log_of((0..count).map(|index| format!("l{index}")).collect()),
+                'k',
+                |model| model.logs().map(|logs| (logs.2, logs.3)).unwrap(),
+                |on| vec![Command::Follow(on)],
+                "paused",
+            ),
+            (
+                device_log_of,
+                'j',
+                |model| model.device_logs().map(|logs| (logs.2, logs.3)).unwrap(),
+                |on| vec![Command::FollowDevice(on)],
+                "paused",
+            ),
+            (
+                lab_logs_of,
+                'j',
+                |model| (model.lab_logs().1, model.lab_logs().2.unwrap_or(0)),
+                |_| Vec::new(),
+                "paused",
+            ),
+            (
+                |count| {
+                    let mut model = answered(&numbered(count as usize));
+                    tab_to_run(&mut model, 100, 30);
+                    model
+                },
+                'k',
+                |model| {
+                    let back = model.run_overflow() - model.run_scroll();
+                    (back == 0, back)
+                },
+                |_| Vec::new(),
+                "f follow",
+            ),
+        ];
+        for (index, (build, away, seen, follow, word)) in logs.into_iter().enumerate() {
+            let (toward, away_page, toward_page) = match away {
+                'k' => ('j', KeyCode::PageUp, KeyCode::PageDown),
+                _ => ('k', KeyCode::PageDown, KeyCode::PageUp),
+            };
+            for (key, paged) in [(KeyCode::Char(away), false), (away_page, true)] {
+                let mut model = build(100);
+                looped(&mut model, area);
+                assert_eq!(seen(&model), (true, 0), "{index} {key:?}");
+                let rows = if paged { model.page() } else { 1 };
+                assert!(!paged || rows > 1, "{index}");
+
+                let commands = handle(&mut model, pressed(key));
+                assert_eq!(commands, follow(false), "{index} {key:?}");
+                looped(&mut model, area);
+                assert_eq!(seen(&model), (false, rows), "{index} {key:?}");
+                assert!(frame(&mut model).contains(word), "{index} {key:?}");
+
+                let commands = handle(&mut model, pressed(KeyCode::Char('f')));
+                assert_eq!(commands, follow(true), "{index} {key:?} f");
+                looped(&mut model, area);
+                assert_eq!(seen(&model), (true, 0), "{index} {key:?} f");
+                assert!(!frame(&mut model).contains(word), "{index} {key:?} f");
+            }
+            for key in [KeyCode::Char(toward), toward_page] {
+                let mut model = build(100);
+                looped(&mut model, area);
+                let before = frame(&mut model);
+
+                assert_eq!(handle(&mut model, pressed(key)), [], "{index} {key:?}");
+                looped(&mut model, area);
+                assert_eq!(seen(&model), (true, 0), "{index} {key:?}");
+                assert_eq!(frame(&mut model), before, "{index} {key:?}");
+            }
+            if word == "paused" {
+                for key in [KeyCode::Char(away), away_page] {
+                    let mut model = build(1);
+                    looped(&mut model, area);
+
+                    let commands = handle(&mut model, pressed(key));
+                    assert_eq!(commands, [], "{index} one line {key:?}");
+                    assert_eq!(seen(&model), (true, 0), "{index} one line {key:?}");
+                }
+            }
+        }
     }
 
     fn log_line(seconds: i64, text: &str) -> nobs_core::loki::Line {
