@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run sixteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run twenty-one actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -246,7 +246,7 @@ When the server stops answering, or no reply comes within 10 seconds, the tab ke
 
 ### The lab workbench
 
-The lab workbench is workbench `3`. It exists in every lab with containerlab nodes: a book lab (see [Book lab](#book-lab)), a folder with `nobs_project.yml` (see [Project](#project)), and a lab with a topology file. Such a lab opens on it. In a workshop or a lab with only a compose file, the switcher shows `1 devices  2 services  3 observability`.
+The lab workbench is workbench `3`. It exists in every lab with containerlab nodes: a book lab (see [Book lab](#book-lab)), a folder with `nobs_project.yml` (see [Project](#project)), and a labcli lab with a topology file, also one with only a topology (see [Where nobs runs from](#where-nobs-runs-from)). Such a lab opens on it. In a workshop or a lab with only a compose file, the switcher shows `1 devices  2 services  3 observability`.
 
 In a book lab, at 60 by 15, it looks like this:
 
@@ -352,7 +352,7 @@ The overview has these lines:
 | `files` | only in a folder with `nobs_project.yml`: whether the files under `containerlab/` are what `nobs project render` would write now |
 | `last` | the last action of the workbench and how it ended; `—` when there was none |
 
-The `files` line gives the same answer as `nobs project render --check` (see [Project](#project)). The screen checks again every 5 seconds, after `r` and after each action. The check writes nothing.
+The `files` line counts the same files that `nobs project render --check` names (see [Project](#project)). The screen checks again every 5 seconds, after `r` and after each action. The check writes nothing.
 
 | `files` says | Meaning |
 |---|---|
@@ -362,7 +362,7 @@ The `files` line gives the same answer as `nobs project render --check` (see [Pr
 | `error: <text>` | the project file or a template has an error; a long text is cut at the border |
 | `?` | no answer yet, in the first seconds |
 
-| Key | What it does | In a folder with `nobs_project.yml` | In a lab with only a topology file |
+| Key | What it does | In a folder with `nobs_project.yml` | In a lab with a topology file and no `nobs_project.yml` |
 |---|---|---|---|
 | `D` | deploy the nodes | `nobs --dir <lab folder> project deploy --sudo-no-prompt`, which writes the files first | `nobs --dir <lab folder> containerlab deploy --sudo-no-prompt` |
 | `X` | destroy the nodes | `nobs --dir <lab folder> containerlab destroy --sudo-no-prompt` | the same |
@@ -657,7 +657,7 @@ Once per machine, the Linux build needs two steps: `rustup target add aarch64-un
 
 Run the `containerlab` commands inside the Linux machine `clab`, with the Linux binary: `orb -m clab <path> containerlab deploy`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab with `sudo` unless you give `--no-sudo`. By default, sudo does not pass on the variables of your shell. So nobs reads the topology file, finds each variable it uses as `${NAME}`, and tells sudo to keep it. Set such a variable inside `clab`, for example `orb -m clab env NAME=value <path> containerlab deploy`, or in the `.env` file of the lab folder (of the current folder when you give a `TOPOLOGY` file).
 
-`nobs containerlab deploy`, `destroy` and `inspect` also take `--sudo-no-prompt`: fail instead of asking for a password when sudo needs one. nobs then runs containerlab as `sudo -n`, and first checks that `sudo` can run without a password. When it cannot, nobs runs nothing, prints the line below and exits with 1. With `--no-sudo`, `--sudo-no-prompt` changes nothing.
+`nobs containerlab deploy`, `destroy` and `inspect` also take `--sudo-no-prompt`. With it, nobs fails instead of asking for a password when sudo needs one. nobs then runs containerlab as `sudo -n`, and first checks that `sudo` can run without a password. When it cannot, nobs runs nothing, prints the line below and exits with 1. With `--no-sudo`, `--sudo-no-prompt` changes nothing.
 
 ```
 nobs: containerlab destroy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again
