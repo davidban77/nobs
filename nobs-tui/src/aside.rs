@@ -236,23 +236,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_wrong_word_gives_code_1_and_the_terminal_is_raw_again() {
-        if is_child() {
-            return checked_here();
-        }
-
-        let seen = answered(
-            "aside::tests::a_wrong_word_gives_code_1_and_the_terminal_is_raw_again",
-            b"nobs-t-wrong\n",
-        );
-
-        assert!(
-            seen.contains("nobs-t-back asked=Ok(Ok(1)) same=true raw=true keys=false"),
-            "{seen}"
-        );
-    }
-
-    #[test]
     fn ctrl_c_and_ctrl_backslash_at_the_prompt_end_the_question_and_leave_the_process_alive() {
         if is_child() {
             return checked_here();

@@ -1211,9 +1211,6 @@ impl Model {
             self.end_run(end);
             return Vec::new();
         };
-        if let Some(run) = self.run.as_mut() {
-            run.asked = true;
-        }
         self.sessions.leave();
         vec![Command::AskSudo(vec![
             format!("nobs: lab {word} runs containerlab with sudo;"),

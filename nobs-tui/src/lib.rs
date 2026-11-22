@@ -2089,6 +2089,7 @@ mod tests {
             },
         };
         let mut frames = Vec::new();
+        let before = handlers();
 
         for _ in 0..2 {
             turns(
@@ -2108,20 +2109,24 @@ mod tests {
                 text(&terminal).contains("password is required"),
             ));
         }
+        let after = handlers();
         let out = mem::take(&mut screen.out);
         drop(screen);
 
         assert_eq!(frames, [(1, 2, false), (1, 2, false)]);
+        assert_eq!(after, before);
         assert_eq!(raw, [false, true, false]);
-        let (mut leave, mut enter) = (Vec::new(), Vec::new());
+        let (mut leave, mut show, mut enter) = (Vec::new(), Vec::new(), Vec::new());
         execute!(leave, LeaveAlternateScreen).unwrap();
+        execute!(show, cursor::Show).unwrap();
         execute!(enter, EnterAlternateScreen).unwrap();
         let first = position(&out, b"nobs: lab destroy runs containerlab with sudo;");
         let second = position(
             &out,
             b"      sudo asks for your password, nobs never sees it",
         );
-        assert!(position(&out, &leave) < first, "{out:?}");
+        let shown = position(&out, &show);
+        assert!(position(&out, &leave) < shown && shown < first, "{out:?}");
         assert!(first < second && second < position(&out, &enter), "{out:?}");
     }
 
