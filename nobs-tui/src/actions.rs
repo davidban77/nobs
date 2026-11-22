@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 
-use nobs_core::locate::Kind;
+use nobs_core::locate::{Kind, Nodes};
 
 use crate::shell::{Model, StackKind, Workbench};
 
@@ -10,7 +10,17 @@ pub enum Row {
     Device,
     Node,
     Chapter,
-    Lab,
+    Lab(&'static [Nodes]),
+}
+
+impl Row {
+    pub(crate) fn needs(self) -> Option<&'static [Nodes]> {
+        match self {
+            Row::Chapter => Some(&[Nodes::Chapters]),
+            Row::Lab(nodes) => Some(nodes),
+            Row::Stack | Row::Device | Row::Node => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,8 +45,9 @@ pub struct Action {
 }
 
 const OTHER_CHAPTERS_DOWN: &str = "takes the other chapters' services down";
+const WITH_NODES: &[Nodes] = &[Nodes::Project, Nodes::Topology];
 
-pub const ACTIONS: [Action; 16] = [
+pub const ACTIONS: [Action; 21] = [
     Action {
         key: 'u',
         workbench: Workbench::Services,
@@ -161,7 +172,7 @@ pub const ACTIONS: [Action; 16] = [
     Action {
         key: 'P',
         workbench: Workbench::Lab,
-        row: Row::Lab,
+        row: Row::Lab(&[Nodes::Chapters]),
         words: &["lab", "purge"],
         hint: "purge",
         ask: Ask::Saying("takes every scenario down and removes their volumes"),
@@ -215,7 +226,70 @@ pub const ACTIONS: [Action; 16] = [
         keeps: false,
         login: false,
     },
+    Action {
+        key: 'D',
+        workbench: Workbench::Lab,
+        row: Row::Lab(&[Nodes::Project]),
+        words: &["project", "deploy"],
+        hint: "deploy",
+        ask: Ask::Saying("writes the files under containerlab/ first"),
+        sudo: true,
+        keeps: false,
+        login: false,
+    },
+    Action {
+        key: 'D',
+        workbench: Workbench::Lab,
+        row: Row::Lab(&[Nodes::Topology]),
+        words: &["containerlab", "deploy"],
+        hint: "deploy",
+        ask: Ask::Yes,
+        sudo: true,
+        keeps: false,
+        login: false,
+    },
+    Action {
+        key: 'X',
+        workbench: Workbench::Lab,
+        row: Row::Lab(WITH_NODES),
+        words: &["containerlab", "destroy"],
+        hint: "destroy",
+        ask: Ask::Saying("removes every node of the lab"),
+        sudo: true,
+        keeps: false,
+        login: false,
+    },
+    Action {
+        key: 'R',
+        workbench: Workbench::Lab,
+        row: Row::Lab(&[Nodes::Project]),
+        words: &["project", "render"],
+        hint: "render",
+        ask: Ask::No,
+        sudo: false,
+        keeps: false,
+        login: false,
+    },
+    Action {
+        key: 'S',
+        workbench: Workbench::Lab,
+        row: Row::Lab(WITH_NODES),
+        words: &["containerlab", "inspect"],
+        hint: "show",
+        ask: Ask::No,
+        sudo: true,
+        keeps: false,
+        login: false,
+    },
 ];
+
+pub(crate) fn fits(action: &Action, model: &Model) -> bool {
+    action.row.needs().is_none_or(|needs| {
+        model
+            .nodes_from()
+            .is_some_and(|nodes| needs.contains(&nodes))
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -295,8 +369,8 @@ pub(crate) fn pieces(
             let args = words.chain([pair("-s", &stack.name)]).collect();
             (stack.path.clone().into(), args)
         }
-        (Row::Lab, Target::Lab) => {
-            let lab = model.located().filter(|_| model.book_lab())?;
+        (Row::Lab(_), Target::Lab) => {
+            let lab = model.located().filter(|_| fits(action, model))?;
             (lab.dir.clone().into(), words.collect())
         }
         _ => return None,
@@ -374,25 +448,36 @@ mod tests {
     }
 
     #[test]
-    fn each_workbench_has_unique_action_keys_that_no_fixed_key_of_it_uses() {
+    fn each_workbench_has_unique_action_keys_in_each_lab_that_no_fixed_key_of_it_uses() {
+        let labs = [
+            None,
+            Some(Nodes::Chapters),
+            Some(Nodes::Project),
+            Some(Nodes::Topology),
+        ];
         for workbench in WORKBENCHES {
             let fixed = fixed_keys(workbench);
-            let mut seen = Vec::new();
-            for action in ACTIONS
-                .iter()
-                .filter(|action| action.workbench == workbench)
-            {
-                assert!(
-                    !seen.contains(&action.key),
-                    "{workbench:?} has two actions on {}",
-                    action.key
-                );
-                assert!(
-                    !fixed.contains(&KeyCode::Char(action.key)),
-                    "{workbench:?} reads {} as a fixed key",
-                    action.key
-                );
-                seen.push(action.key);
+            for lab in labs {
+                let mut seen = Vec::new();
+                for action in ACTIONS.iter().filter(|action| {
+                    action.workbench == workbench
+                        && action
+                            .row
+                            .needs()
+                            .is_none_or(|needs| lab.is_some_and(|lab| needs.contains(&lab)))
+                }) {
+                    assert!(
+                        !seen.contains(&action.key),
+                        "{workbench:?} in {lab:?} has two actions on {}",
+                        action.key
+                    );
+                    assert!(
+                        !fixed.contains(&KeyCode::Char(action.key)),
+                        "{workbench:?} reads {} as a fixed key",
+                        action.key
+                    );
+                    seen.push(action.key);
+                }
             }
         }
     }

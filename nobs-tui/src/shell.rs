@@ -13,16 +13,17 @@ use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
 use nobs_core::lab;
-use nobs_core::locate::{locate, Kind, Located};
+use nobs_core::locate::{locate, Kind, Located, Nodes};
 use nobs_core::loki::Line;
 use nobs_core::prefect::FlowRun;
+use nobs_core::project::Rendered;
 use nobs_core::prometheus::Sample;
 use nobs_core::sonda::Sonda;
 use nobs_core::sot::{Device, Session, SourceOfTruth};
 use nobs_core::status::{self, Urls, SERVICES};
 use nobs_core::time;
 
-use crate::actions::{flat, pieces, Action, Ask, Row, Target, ACTIONS};
+use crate::actions::{fits, flat, pieces, Action, Ask, Row, Target, ACTIONS};
 use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
@@ -327,6 +328,7 @@ pub enum Update {
     ActionError(String),
     ActionEnded(run::End),
     Nodes(Result<Vec<book::NodeRow>, String>),
+    Files(Rendered),
     TermOutput(u64, Vec<u8>),
     TermEnded(u64, i32),
     Asked(Result<bool, String>),
@@ -665,6 +667,8 @@ impl LogsState {
 
 pub struct Model {
     lab: Option<Located>,
+    nodes_from: Option<Nodes>,
+    files: Option<Rendered>,
     stacks: Vec<Stack>,
     states: Vec<StackState>,
     defined: Vec<Option<Vec<String>>>,
@@ -784,7 +788,9 @@ impl Model {
             .map(|text| (error_source(status::Service::Sot).to_string(), text, now))
             .into_iter()
             .collect();
-        Model {
+        let mut model = Model {
+            nodes_from: lab.as_ref().and_then(Located::nodes),
+            files: None,
             lab,
             states: vec![StackState::Unknown; stacks.len()],
             defined: vec![None; stacks.len()],
@@ -876,6 +882,18 @@ impl Model {
             lookup: login,
             sessions: Sessions::new(),
             kept_tab: Tab::Overview,
+        };
+        if model.focus == Focus::List {
+            model.focus = model.first_focus();
+        }
+        model
+    }
+
+    fn first_focus(&self) -> Focus {
+        if self.workbench == Workbench::Lab && self.nodes_from != Some(Nodes::Chapters) {
+            Focus::Tabs
+        } else {
+            Focus::List
         }
     }
 
@@ -1210,6 +1228,7 @@ impl Model {
                 self.nodes_ok = false;
                 self.fail("nodes", text);
             }
+            Update::Files(rendered) => self.files = Some(rendered),
             Update::TermOutput(id, bytes) => self.sessions.output(id, &bytes),
             Update::TermEnded(id, code) => self.sessions.ended(id, code),
         }
@@ -1217,40 +1236,37 @@ impl Model {
     }
 
     fn action_ended(&mut self, end: End) -> Vec<Command> {
-        let Some(word) = self.refused_sudo(end) else {
+        let Some(command) = self.refused_sudo(end) else {
             self.end_run(end);
             return Vec::new();
         };
         self.sessions.leave();
         vec![Command::AskSudo(vec![
-            format!("nobs: lab {word} runs containerlab with sudo;"),
+            format!("nobs: {command} runs containerlab with sudo;"),
             "      sudo asks for your password, nobs never sees it".to_string(),
         ])]
     }
 
-    fn refused_sudo(&self, end: End) -> Option<&'static str> {
+    fn refused_sudo(&self, end: End) -> Option<String> {
         let run = self
             .run
             .as_ref()
             .filter(|run| end == End::Exited(1) && run.state == RunState::Running && !run.asked)?;
-        let (_, word, _) = self.sudo_action(run)?;
+        let (action, _) = self.sudo_action(run)?;
+        let command = action.words.join(" ");
         run.lines
-            .contains(&sudo_refused_line(&format!("lab {word}")))
-            .then_some(word)
+            .contains(&sudo_refused_line(&command))
+            .then_some(command)
     }
 
-    fn sudo_action(
-        &self,
-        run: &Run,
-    ) -> Option<(&'static Action, &'static str, Vec<Vec<OsString>>)> {
+    fn sudo_action(&self, run: &Run) -> Option<(&'static Action, Vec<Vec<OsString>>)> {
         ACTIONS
             .iter()
             .filter(|action| action.sudo)
             .find_map(|action| {
-                let word = action.words.last()?;
                 pieces(action, &run.target, self)
                     .filter(|args| joined(args) == run.command)
-                    .map(|args| (action, *word, args))
+                    .map(|args| (action, args))
             })
     }
 
@@ -1259,9 +1275,10 @@ impl Model {
             return Vec::new();
         };
         let target = run.target.clone();
-        let Some((action, word, args)) = self.sudo_action(run) else {
+        let Some((action, args)) = self.sudo_action(run) else {
             return Vec::new();
         };
+        let command = action.words.join(" ");
         let line = match answer {
             Ok(true) => {
                 let commands = self.start_run(args, target, action.keeps, Login::default());
@@ -1270,8 +1287,8 @@ impl Model {
                 }
                 return commands;
             }
-            Ok(false) => format!("nobs: lab {word}: sudo got no password; nothing ran"),
-            Err(error) => format!("nobs: lab {word}: cannot run sudo: {error}; nothing ran"),
+            Ok(false) => format!("nobs: {command}: sudo got no password; nothing ran"),
+            Err(error) => format!("nobs: {command}: cannot run sudo: {error}; nothing ran"),
         };
         if let Some(run) = self.run.as_mut() {
             run.state = RunState::NotRun;
@@ -1651,7 +1668,7 @@ impl Model {
                 .selected_device()
                 .map(|device| Target::Device(device.name.clone())),
             Row::Chapter => self.selected_chapter().map(Target::Chapter),
-            Row::Lab => self.book_lab().then_some(Target::Lab),
+            Row::Lab(_) => Some(Target::Lab),
         }
     }
 
@@ -1659,9 +1676,9 @@ impl Model {
         let KeyCode::Char(typed) = code else {
             return None;
         };
-        let action = ACTIONS
-            .iter()
-            .find(|action| action.key == typed && action.workbench == self.workbench)?;
+        let action = ACTIONS.iter().find(|action| {
+            action.key == typed && action.workbench == self.workbench && fits(action, self)
+        })?;
         let target = self.action_target(action.row);
         if action.row == Row::Stack && target.is_none() {
             return None;
@@ -1975,7 +1992,7 @@ impl Model {
         let Some(measure) = measure else {
             self.run_view = RunView::default();
             if self.focus == Focus::Run {
-                self.focus = Focus::List;
+                self.focus = self.first_focus();
             }
             return;
         };
@@ -2431,17 +2448,22 @@ impl Model {
         self.lab.as_ref()
     }
 
-    pub fn book_lab(&self) -> bool {
-        matches!(
-            self.lab.as_ref().map(|lab| &lab.kind),
-            Some(Kind::BookLab(_))
-        )
+    pub(crate) fn lab_name(&self) -> Option<String> {
+        self.lab.as_ref().map(|lab| located_name(lab).0)
+    }
+
+    pub fn nodes_from(&self) -> Option<Nodes> {
+        self.nodes_from
+    }
+
+    pub fn files(&self) -> Option<&Rendered> {
+        self.files.as_ref()
     }
 
     pub fn workbenches(&self) -> Vec<Workbench> {
         WORKBENCHES
             .into_iter()
-            .filter(|&workbench| workbench != Workbench::Lab || self.book_lab())
+            .filter(|&workbench| workbench != Workbench::Lab || self.nodes_from.is_some())
             .collect()
     }
 
@@ -2693,7 +2715,7 @@ impl Model {
                     Focus::List if self.workbench != Workbench::Observability => Focus::Tabs,
                     Focus::Tabs if self.has_lines() => Focus::Lines,
                     Focus::List | Focus::Tabs | Focus::Lines if self.run_view.drawn => Focus::Run,
-                    Focus::List | Focus::Tabs | Focus::Lines | Focus::Run => Focus::List,
+                    Focus::List | Focus::Tabs | Focus::Lines | Focus::Run => self.first_focus(),
                 };
             }
             KeyCode::Esc => return self.escape(key),
@@ -2726,7 +2748,7 @@ impl Model {
         let left_devices = self.workbench == Workbench::Devices && workbench != Workbench::Devices;
         self.workbench = workbench;
         if matches!(workbench, Workbench::Lab | Workbench::Observability) {
-            self.focus = Focus::List;
+            self.focus = self.first_focus();
         }
         let tabs: &[Tab] = match workbench {
             Workbench::Devices => self.device_tabs(),
@@ -2769,7 +2791,7 @@ impl Model {
             self.popup = None;
             return Vec::new();
         }
-        self.focus = Focus::List;
+        self.focus = self.first_focus();
         Vec::new()
     }
 
@@ -2777,7 +2799,7 @@ impl Model {
         self.run_pane = false;
         self.run_view.drawn = false;
         if self.focus == Focus::Run {
-            self.focus = Focus::List;
+            self.focus = self.first_focus();
         }
     }
 
@@ -4124,17 +4146,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn in_a_labcli_lab_the_keys_open_what_they_open_in_a_workshop() {
+    fn in_a_project_lab_one_to_four_open_devices_services_lab_and_observability() {
         let model = lab_model("project-two-node", "project-two-node/expected/lab_vars.yml");
         assert!(matches!(model.located().unwrap().kind, Kind::LabcliLab(_)));
         assert_eq!(
             workbenches_after(model, "23143"),
             [
                 Workbench::Services,
+                Workbench::Lab,
+                Workbench::Devices,
                 Workbench::Observability,
-                Workbench::Devices,
-                Workbench::Devices,
-                Workbench::Observability
+                Workbench::Lab
             ]
         );
     }
@@ -7107,14 +7129,233 @@ pub(crate) mod tests {
         assert_eq!(model.error(), None);
     }
 
-    const READING: [&str; 3] = ["status", "show", "fetch"];
+    const READING: [&str; 5] = ["status", "show", "fetch", "inspect", "render"];
 
     fn on_its_row(row: Row) -> Model {
         match row {
             Row::Stack => opened(&["nobs-t-packt"]),
             Row::Device => devices_model(workshop_located("infrahub")),
             Row::Node => lab_devices_model(),
-            Row::Chapter | Row::Lab => book_model(),
+            Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => book_model(),
+            Row::Lab([Nodes::Project, ..]) => nodes_model(&fixture("project-two-node")),
+            Row::Lab(_) => nodes_model(&fixture("labcli-example")),
+        }
+    }
+
+    fn nodes_model(dir: &Path) -> Model {
+        let located = locate(dir, Some(dir)).unwrap();
+        let stacks = stacks(Some(&located), vec![]).unwrap();
+        Model::new(Start {
+            lab: Some(located),
+            home: Workbench::Lab,
+            chooser: false,
+            ..start(stacks)
+        })
+    }
+
+    fn scratch_lab(name: &str, files: &[(&str, &str)]) -> Scratch {
+        let scratch = Scratch::new(name, "");
+        for (from, to) in files {
+            let to = scratch.0.join(to);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(fixture(from), to).unwrap();
+        }
+        scratch
+    }
+
+    fn project_with_yaml(name: &str) -> Scratch {
+        scratch_lab(
+            name,
+            &[
+                ("project-two-node/nobs_project.yml", "nobs_project.yml"),
+                (
+                    "labcli-yaml/containerlab/lab.clab.yaml",
+                    "containerlab/lab.clab.yaml",
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_lab_workbench_exists_in_every_folder_whose_nodes_something_makes_and_nowhere_else() {
+        let yaml = project_with_yaml("switcher-yaml");
+        let alone = scratch_lab(
+            "switcher-alone",
+            &[(
+                "labcli-example/containerlab/lab.clab.yml",
+                "containerlab/lab.clab.yml",
+            )],
+        );
+        let cases = [
+            (fixture("book-lab"), Some(Nodes::Chapters)),
+            (fixture("project-two-node"), Some(Nodes::Project)),
+            (fixture("labcli-example"), Some(Nodes::Topology)),
+            (yaml.0.clone(), Some(Nodes::Project)),
+            (alone.0.clone(), Some(Nodes::Topology)),
+            (fixture("one-service"), None),
+            (fixture("workshop-one"), None),
+        ];
+
+        for (dir, nodes) in cases {
+            let located = locate(&dir, Some(&dir)).unwrap();
+            let model = Model::new(Start {
+                lab: Some(located),
+                chooser: false,
+                ..start(vec![stack("a", &[])])
+            });
+            let mut expected = vec![
+                Workbench::Devices,
+                Workbench::Services,
+                Workbench::Observability,
+            ];
+            if nodes.is_some() {
+                expected.insert(2, Workbench::Lab);
+            }
+
+            assert_eq!(
+                (model.nodes_from(), model.workbenches()),
+                (nodes, expected),
+                "{}",
+                dir.display()
+            );
+            assert_eq!(
+                workbenches_after(model, "12"),
+                [Workbench::Devices, Workbench::Services],
+                "{}",
+                dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_lab_without_chapters_opens_on_its_nodes_and_tab_never_lands_on_a_chapters_box() {
+        let mut model = nodes_model(&fixture("project-two-node"));
+        let mut seen = vec![model.focus()];
+        for _ in 0..3 {
+            code(&mut model, KeyCode::Tab);
+            seen.push(model.focus());
+        }
+        ch(&mut model, '2');
+        ch(&mut model, '3');
+        seen.push(model.focus());
+
+        assert_eq!(
+            seen,
+            [
+                Focus::Tabs,
+                Focus::Lines,
+                Focus::Tabs,
+                Focus::Lines,
+                Focus::Tabs
+            ]
+        );
+        assert_eq!(book_model().focus(), Focus::List);
+    }
+
+    #[test]
+    fn each_lab_key_gives_its_whole_command_in_each_folder_with_nodes() {
+        let yaml = project_with_yaml("keys-yaml");
+        let (project, topology) = (fixture("project-two-node"), fixture("labcli-example"));
+        let deploy: &[&str] = &["project", "deploy", "--sudo-no-prompt"];
+        let destroy: &[&str] = &["containerlab", "destroy", "--sudo-no-prompt"];
+        let render: &[&str] = &["project", "render"];
+        let show: &[&str] = &["containerlab", "inspect", "--sudo-no-prompt"];
+        let cases = [
+            (&project, 'D', Some(deploy)),
+            (&project, 'X', Some(destroy)),
+            (&project, 'R', Some(render)),
+            (&project, 'S', Some(show)),
+            (&yaml.0, 'D', Some(deploy)),
+            (&yaml.0, 'X', Some(destroy)),
+            (&yaml.0, 'R', Some(render)),
+            (&yaml.0, 'S', Some(show)),
+            (
+                &topology,
+                'D',
+                Some(&["containerlab", "deploy", "--sudo-no-prompt"][..]),
+            ),
+            (&topology, 'X', Some(destroy)),
+            (&topology, 'R', None),
+            (&topology, 'S', Some(show)),
+        ];
+
+        for (dir, key, words) in cases {
+            let mut model = nodes_model(dir);
+            let commands = ch(&mut model, key);
+            let seen = match (&commands[..], model.question()) {
+                ([Command::Run { args, .. }], None) => Some(("runs", args.clone())),
+                ([], Some(Question::Pending { args, .. })) => Some(("asks", flat(args))),
+                ([], None) => None,
+                other => panic!("{key} {other:?}"),
+            };
+            let expected = words.map(|words| {
+                let way = if matches!(key, 'D' | 'X') {
+                    "asks"
+                } else {
+                    "runs"
+                };
+                let args = [OsString::from("--dir"), dir.clone().into_os_string()]
+                    .into_iter()
+                    .chain(words.iter().map(OsString::from))
+                    .collect::<Vec<_>>();
+                (way, args)
+            });
+
+            assert_eq!(seen, expected, "{key} in {}", dir.display());
+        }
+    }
+
+    #[test]
+    fn render_is_neither_in_the_key_line_nor_in_the_help_of_a_lab_without_a_project_file() {
+        let topology = nodes_model(&fixture("labcli-example"));
+        let project = nodes_model(&fixture("project-two-node"));
+        let render = |model: &Model| {
+            help_entries(model)
+                .into_iter()
+                .filter(|(key, _)| key == "R")
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(render(&topology), []);
+        assert_eq!(render(&project), [("R".to_string(), "render")]);
+        assert!(!key_line(&topology, 200).concat().contains("R render"));
+        assert!(key_line(&project, 200).concat().contains("R render"));
+    }
+
+    #[test]
+    fn a_refused_sudo_of_a_project_or_containerlab_command_steps_aside_with_the_whole_command() {
+        let cases = [
+            ("project-two-node", 'D', "project deploy"),
+            ("project-two-node", 'X', "containerlab destroy"),
+            ("project-two-node", 'S', "containerlab inspect"),
+            ("labcli-example", 'D', "containerlab deploy"),
+        ];
+        for (folder, key, command) in cases {
+            let mut model = nodes_model(&fixture(folder));
+            let mut started = ch(&mut model, key);
+            if key != 'S' {
+                started = ch(&mut model, 'y');
+            }
+            assert!(matches!(started[..], [Command::Run { .. }]), "{key}");
+
+            model.apply(Update::ActionError(sudo_refused_line(command)));
+            let asked = model.apply(Update::ActionEnded(End::Exited(1)));
+
+            assert_eq!(
+                asked,
+                [Command::AskSudo(vec![
+                    format!("nobs: {command} runs containerlab with sudo;"),
+                    "      sudo asks for your password, nobs never sees it".to_string(),
+                ])],
+                "{key}"
+            );
+            assert_eq!(model.apply(Update::Asked(Ok(false))), [], "{key}");
+            assert_eq!(
+                model.run().unwrap().lines,
+                [format!(
+                    "nobs: {command}: sudo got no password; nothing ran"
+                )]
+            );
         }
     }
 
@@ -7132,7 +7373,7 @@ pub(crate) mod tests {
                 model
             }
             Row::Node => devices_model(workshop_located("infrahub")),
-            Row::Chapter | Row::Lab => Model::new(Start {
+            Row::Chapter | Row::Lab(_) => Model::new(Start {
                 lab: Some(workshop_located("infrahub")),
                 home: Workbench::Lab,
                 chooser: false,
@@ -7141,60 +7382,50 @@ pub(crate) mod tests {
         }
     }
 
-    const CLAUSES: [(Workbench, char, &str); 9] = [
-        (Workbench::Services, 'X', "removes the stack's volumes"),
+    const CLAUSES: [(&[&str], &str); 11] = [
+        (&["destroy"], "removes the stack's volumes"),
         (
-            Workbench::Services,
-            'R',
+            &["reset"],
             "clears silences, maintenance and cascade scenarios",
         ),
         (
-            Workbench::Services,
-            'p',
+            &["preflight"],
             "flaps srl1, leaves it in maintenance and can take 13 minutes",
         ),
+        (&["lab", "deploy"], "takes the other chapters' services down"),
         (
-            Workbench::Lab,
-            'D',
-            "takes the other chapters' services down",
-        ),
-        (
-            Workbench::Lab,
-            'X',
+            &["lab", "destroy"],
             "removes the chapter's volumes, every node and the other chapters' services",
         ),
         (
-            Workbench::Lab,
-            'P',
+            &["lab", "purge"],
             "takes every scenario down and removes their volumes",
         ),
-        (Workbench::Lab, 'R', "takes every scenario down first"),
+        (&["lab", "prepare"], "takes every scenario down first"),
         (
-            Workbench::Lab,
-            'U',
+            &["lab", "update"],
             "recreates every service of the chapter and its unnamed volumes, and takes the other chapters' services down",
         ),
+        (&["lab", "rebuild"], "takes the other chapters' services down"),
         (
-            Workbench::Lab,
-            'B',
-            "takes the other chapters' services down",
+            &["project", "deploy"],
+            "writes the files under containerlab/ first",
         ),
+        (&["containerlab", "destroy"], "removes every node of the lab"),
     ];
 
     fn agreed_clause(action: &Action) -> Option<&'static str> {
         CLAUSES
             .iter()
-            .find(|(workbench, key, _)| *workbench == action.workbench && *key == action.key)
-            .map(|(.., clause)| *clause)
+            .find(|(words, _)| *words == action.words)
+            .map(|(_, clause)| *clause)
     }
 
     #[test]
     fn a_changing_action_asks_with_its_whole_command_and_a_reading_one_runs_at_once() {
-        for (workbench, key, _) in &CLAUSES {
-            let named = ACTIONS
-                .iter()
-                .any(|action| action.workbench == *workbench && action.key == *key);
-            assert!(named, "{workbench:?} {key}");
+        for (words, _) in &CLAUSES {
+            let named = ACTIONS.iter().any(|action| action.words == *words);
+            assert!(named, "{words:?}");
         }
         for action in &ACTIONS {
             let saying = match action.ask {
@@ -7291,7 +7522,7 @@ pub(crate) mod tests {
                     KeyCode::Char(']'),
                     KeyCode::Esc,
                 ],
-                Row::Chapter | Row::Lab => &[],
+                Row::Chapter | Row::Lab(_) => &[],
             };
             model.tick(
                 Instant::now(),

@@ -12,13 +12,13 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::{cursor, execute};
-use nobs_core::locate::{Kind, Located};
 use nobs_core::runner::Runner;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use aside::ask_aside;
+use poll::LabFiles;
 use run::Invocation;
 use shell::Model;
 
@@ -62,29 +62,9 @@ pub fn run(
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the screen needs a terminal".to_string());
     }
-    let sonda = start.sonda.clone();
-    let source = start
-        .source
-        .clone()
-        .map(|source| (source, start.source_service));
-    let urls = start.lab.is_some().then(|| start.urls.clone());
-    let topology = start
-        .lab
-        .as_ref()
-        .filter(|lab| matches!(lab.kind, Kind::BookLab(_)))
-        .map(Located::topology);
-    let mut model = Model::new(start);
     panic::set_hook(panic_hook(thread::current().id(), panic::take_hook()));
     let mut screen = Screen::open(io::stdout(), raw_mode)?;
-    let (pollers, updates) = Pollers::start(
-        runner,
-        model.stacks().to_vec(),
-        model.selected_stack(),
-        sonda,
-        source,
-        urls,
-        topology,
-    );
+    let (mut model, pollers, updates) = started(start, runner);
     let mut actions = Actions::new(launcher, asker);
     let mut wires = Wires::new(terminals);
     let result = Terminal::new(CrosstermBackend::new(io::stdout()))
@@ -108,6 +88,30 @@ pub fn run(
     drop(screen);
     pollers.send(Command::Quit);
     result
+}
+
+fn started(
+    start: Start,
+    runner: Arc<dyn Runner + Send + Sync>,
+) -> (Model, Pollers, Receiver<Update>) {
+    let sonda = start.sonda.clone();
+    let source = start
+        .source
+        .clone()
+        .map(|source| (source, start.source_service));
+    let urls = start.lab.is_some().then(|| start.urls.clone());
+    let lab = start.lab.as_ref().and_then(LabFiles::of);
+    let model = Model::new(start);
+    let (pollers, updates) = Pollers::start(
+        runner,
+        model.stacks().to_vec(),
+        model.selected_stack(),
+        sonda,
+        source,
+        urls,
+        lab,
+    );
+    (model, pollers, updates)
 }
 
 struct Actions {
@@ -519,6 +523,7 @@ mod tests {
     use nobs_core::device::Password;
     use nobs_core::lab;
     use nobs_core::locate::{locate, Kind, Located};
+    use nobs_core::project::Rendered;
     use nobs_core::runner::Output;
     use nobs_core::sot::{self, Device, Maintenance, SourceOfTruth};
     use nobs_core::status::{Service, Urls, SERVICES};
@@ -1851,6 +1856,62 @@ mod tests {
         assert_eq!(seen, wanted);
     }
 
+    fn project_start() -> Start {
+        let dir = fixture("project-two-node");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        let chapters = shell::stacks(Some(&located), Vec::new()).unwrap();
+        Start {
+            lab: Some(located),
+            home: Workbench::Lab,
+            ..start(chapters, false)
+        }
+    }
+
+    #[test]
+    fn y_after_x_in_a_project_folder_starts_containerlab_destroy_with_the_sudo_flag() {
+        let dir = fixture("project-two-node").to_string_lossy().into_owned();
+        let launcher = Arc::new(FakeLauncher::new());
+        let mut actions = Actions::new(launcher.clone(), asker(1));
+        let mut model = Model::new(project_start());
+
+        press(&mut model, &mut actions, &[ch('X'), ch('y')]).unwrap_err();
+
+        let words = ["--dir", &dir, "containerlab", "destroy", "--sudo-no-prompt"];
+        assert_eq!(launcher.calls(), [(PathBuf::from("nobs"), args(&words))]);
+    }
+
+    #[test]
+    fn the_loop_starts_the_files_poller_of_a_project_folder_and_the_model_gets_its_answer() {
+        let (mut model, pollers, updates) = started(project_start(), scripted(Vec::new()));
+        let mut turns_left = 40;
+
+        turns(
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
+            &mut model,
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
+            |_| {
+                thread::sleep(Duration::from_millis(50));
+                turns_left -= 1;
+                if turns_left == 0 {
+                    Err(PAUSED.to_string())
+                } else {
+                    Ok(None)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(model.files(), Some(&Rendered::NotRendered));
+    }
+
     #[test]
     fn a_typed_login_reaches_the_launcher_and_none_of_its_arguments() {
         let launcher = Arc::new(FakeLauncher::new());
@@ -1914,7 +1975,10 @@ mod tests {
             target(),
             None,
             None,
-            Some(fixture("book-lab/containerlab/lab.yml")),
+            Some(LabFiles {
+                topology: fixture("book-lab/containerlab/lab.yml"),
+                project: None,
+            }),
         );
         let nodes = |limit: Duration| {
             next(&updates, limit, |update| {
@@ -2440,7 +2504,10 @@ mod tests {
             target(),
             None,
             None,
-            Some(topology),
+            Some(LabFiles {
+                topology,
+                project: None,
+            }),
         );
 
         let rows = next(&updates, Duration::from_secs(5), |update| match update {
@@ -2467,6 +2534,29 @@ mod tests {
                 args(&["ps", "-a", "--format", "{{.Names}}\t{{.State}}"])
             )]
         );
+    }
+
+    #[test]
+    fn the_nodes_thread_of_a_topology_not_written_yet_gives_no_nodes_and_no_error() {
+        let (_pollers, updates) = Pollers::start(
+            scripted(Vec::new()),
+            Vec::new(),
+            0,
+            target(),
+            None,
+            None,
+            Some(LabFiles {
+                topology: fixture("project-two-node/containerlab/lab.clab.yml"),
+                project: None,
+            }),
+        );
+
+        let rows = next(&updates, Duration::from_secs(5), |update| match update {
+            Update::Nodes(result) => Some(result),
+            _ => None,
+        });
+
+        assert_eq!(rows, Ok(Vec::new()));
     }
 
     #[test]

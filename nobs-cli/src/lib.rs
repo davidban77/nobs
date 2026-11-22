@@ -5285,8 +5285,8 @@ fn screen_start_with(
                 Kind::LabcliLab(_) => ((None, None), None),
             };
             let home = match located.kind {
+                _ if located.nodes().is_some() => nobs_tui::Workbench::Lab,
                 Kind::Workshop(_) => nobs_tui::Workbench::Devices,
-                Kind::BookLab(_) => nobs_tui::Workbench::Lab,
                 Kind::LabcliLab(_) if source.is_some() => nobs_tui::Workbench::Devices,
                 _ => home,
             };
@@ -6459,6 +6459,33 @@ mod tests {
     }
 
     #[test]
+    fn a_lab_with_nodes_opens_on_the_lab_workbench_and_a_compose_only_lab_does_not() {
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures");
+        let topology = Scratch::new("screen-home-topology");
+        fs::create_dir_all(topology.0.join("containerlab")).unwrap();
+        fs::copy(
+            fixtures.join("labcli-example/containerlab/lab.clab.yml"),
+            topology.0.join("containerlab/lab.clab.yml"),
+        )
+        .unwrap();
+        let home = |dir: &Path| {
+            screen_start_with(dir, None, flags(None), false, &|_| None)
+                .unwrap()
+                .home
+        };
+
+        assert_eq!(
+            home(&fixtures.join("project-two-node")),
+            nobs_tui::Workbench::Lab
+        );
+        assert_eq!(home(&topology.0), nobs_tui::Workbench::Lab);
+        assert_eq!(
+            home(&fixtures.join("one-service")),
+            nobs_tui::Workbench::Services
+        );
+    }
+
+    #[test]
     fn the_screen_takes_the_metrics_address_from_the_first_place_then_the_new_name() {
         type Case = (
             &'static str,
@@ -6547,7 +6574,7 @@ mod tests {
 
         let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
 
-        assert_eq!(start.home, nobs_tui::Workbench::Devices);
+        assert_eq!(start.home, nobs_tui::Workbench::Lab);
         assert!(start.source_error.is_none());
         let names: Vec<_> = start
             .source
@@ -6593,7 +6620,7 @@ mod tests {
 
         let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
 
-        assert_eq!(start.home, nobs_tui::Workbench::Services);
+        assert_eq!(start.home, nobs_tui::Workbench::Lab);
         assert!(start.source.is_none());
         assert!(start.source_error.is_none());
         let header = nobs_tui::Shell::new(start).header();
@@ -6612,7 +6639,7 @@ mod tests {
 
         let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
 
-        assert_eq!(start.home, nobs_tui::Workbench::Services);
+        assert_eq!(start.home, nobs_tui::Workbench::Lab);
         assert!(start.source.is_none());
         assert_eq!(
             start.source_error,

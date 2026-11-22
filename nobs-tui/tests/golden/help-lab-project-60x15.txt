@@ -1,0 +1,15 @@
+ nobs  project-two-node lab  sot none              13:42:07
+ 1 devices  2 services  [3 lab]  4 obs       ? keys  q quit
+  ╔ keys  lab workbench ═════════════════════════════════╗
+  ║1 2 3 4  switch workbench  Esc     close/fold/back    ║
+  ║Tab      focus next pane   D       deploy             ║
+  ║j k ↑ ↓  move              X       destroy            ║
+  ║r        refresh now       R       render             ║
+  ║o        run pane          S       show               ║
+  ║x        dismiss the error q       quit; asks if busy ║
+  ║?        close             Ctrl-C  stop a run, or quit║
+  ║                                                      ║
+  ║PgUp PgDn  move a page where j and k move             ║
+  ║↑3 ↓13   3 rows hidden above, 13 below                ║
+  ╚══════════════════════════════════════════════════════╝
+ Tab focus  j/k move  D deploy  X destroy  R render  S show

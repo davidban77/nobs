@@ -1,0 +1,30 @@
+ nobs  project-two-node lab  sot none                                                      13:42:07
+ 1 devices  2 services  [3 lab]  4 observability                                     ? keys  q quit
+╔ nodes 2 ═══════════════════════════════╗┌ project-two-node ──────────────────────────────────────┐
+║ NAME         KIND           STATE      ║│OVERVIEW                                                │
+║>nobs-t-srl1  nokia_srlinux  running    ║│ topology  containerlab/lab.clab.yml                    │
+║ nobs-t-srl2  nokia_srlinux  running    ║│ nodes     2 of 2 running                               │
+║                                        ║│ files     as rendered                                  │
+║                                        ║│ last      project deploy --sudo-no-prompt  exit 0      │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+╚════════════════════════════════════════╝└────────────────────────────────────────────────────────┘
+ run  project deploy --sudo-no-prompt  exit 0  48s                                           o open
+ Tab focus  j/k move  D deploy  X destroy  R render  S show  r refresh  o pane

@@ -1,0 +1,30 @@
+ nobs  project-two-node lab  sot none                                                      13:42:07
+ 1 devices  2 services  [3 lab]  4 observability                                     ? keys  q quit
+╔ nodes 2 ═══════════════════════════════╗┌ project-two-node ──────────────────────────────────────┐
+║ NAME         KIND           STATE      ║│OVERVIEW                                                │
+║>nobs-t-srl1  nokia_srlinux  —          ║│ topology  containerlab/lab.clab.yml                    │
+║ nobs-t-srl2  nokia_srlinux  —          ║│ nodes     0 of 2 running                               │
+║                                        ║│ files     1 of 4 differ                                │
+║                                        ║│ last      —                                            │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+╚════════════════════════════════════════╝└────────────────────────────────────────────────────────┘
+ run  none                                                                                   o open
+ Tab focus  j/k move  D deploy  X destroy  R render  S show  r refresh  o pane

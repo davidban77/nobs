@@ -5,7 +5,7 @@ use std::sync::Arc;
 use clap::{CommandFactory, Parser};
 use nobs_cli::{Cli, Command, WorkshopCli};
 use nobs_core::device::{PASSWORD, USER};
-use nobs_core::locate::{locate, Kind, Located};
+use nobs_core::locate::{locate, Kind, Located, Nodes};
 use nobs_core::sot::Device;
 use nobs_core::status::Urls;
 use nobs_tui::actions::{arguments, Action, Ask, Row, Target, ACTIONS};
@@ -83,7 +83,19 @@ fn stack_index(model: &Shell, kind: StackKind, name: Option<&str>) -> usize {
         .unwrap_or_else(|| panic!("no {kind:?} stack {name:?}"))
 }
 
+fn nodes_model(nodes: &[Nodes]) -> Shell {
+    let dir = if nodes.contains(&Nodes::Project) {
+        fixture("project-two-node")
+    } else {
+        fixture("labcli-example")
+    };
+    let located = locate(&dir, Some(&dir)).unwrap();
+    let stacks = stacks(Some(&located), Vec::new()).unwrap();
+    model(located, stacks)
+}
+
 fn command_line(action: &Action, workshop: &Shell, book: &Shell) -> Vec<OsString> {
+    let other;
     let (model, target) = match action.row {
         Row::Stack => (
             workshop,
@@ -95,7 +107,11 @@ fn command_line(action: &Action, workshop: &Shell, book: &Shell) -> Vec<OsString
             book,
             Target::Chapter(stack_index(book, StackKind::BookLab, Some(CHAPTER))),
         ),
-        Row::Lab => (book, Target::Lab),
+        Row::Lab([Nodes::Chapters, ..]) => (book, Target::Lab),
+        Row::Lab(nodes) => {
+            other = nodes_model(nodes);
+            (&other, Target::Lab)
+        }
     };
     let mut args = arguments(action, &target, model)
         .unwrap_or_else(|| panic!("{} on {:?} builds no command", action.key, action.row));
@@ -108,7 +124,7 @@ fn command_line(action: &Action, workshop: &Shell, book: &Shell) -> Vec<OsString
 fn workshop_row(row: Row) -> bool {
     match row {
         Row::Stack | Row::Device => true,
-        Row::Node | Row::Chapter | Row::Lab => false,
+        Row::Node | Row::Chapter | Row::Lab(_) => false,
     }
 }
 

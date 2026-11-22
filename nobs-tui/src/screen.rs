@@ -12,11 +12,12 @@ use tui_term::widget::{Cursor as TermCursor, PseudoTerminal};
 
 use nobs_core::alertmanager::Alert;
 use nobs_core::count::counted;
-use nobs_core::locate::Located;
+use nobs_core::locate::{Located, Nodes};
+use nobs_core::project::Rendered;
 use nobs_core::status::{row, Service};
 use nobs_core::time;
 
-use crate::actions::{self, arguments, Target, ACTIONS};
+use crate::actions::{self, arguments, fits, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
@@ -2162,24 +2163,30 @@ fn lab(frame: &mut Frame, area: Rect, model: &Model) {
     let chapters = model.chapters();
     let [top, bottom] = lab_panes(model, left);
     node_list(frame, top, model, wide);
-    let selected = model.selected_chapter();
-    let block = Block::bordered()
-        .border_type(border_of(model, Holder::Chapters))
-        .title_top(format!(" chapters {} ", chapters.len()));
-    stack_list(
-        frame,
-        bottom,
-        model,
-        block,
-        &chapters,
-        selected,
-        Target::Chapter,
-    );
+    if model.nodes_from() == Some(Nodes::Chapters) {
+        let selected = model.selected_chapter();
+        let block = Block::bordered()
+            .border_type(border_of(model, Holder::Chapters))
+            .title_top(format!(" chapters {} ", chapters.len()));
+        stack_list(
+            frame,
+            bottom,
+            model,
+            block,
+            &chapters,
+            selected,
+            Target::Chapter,
+        );
+    }
     lab_overview(frame, right, model);
 }
 
 fn lab_panes(model: &Model, left: Rect) -> [Rect; 2] {
-    let chapters_height = u16::try_from(model.chapters().len() + 2).unwrap_or(u16::MAX);
+    let chapters_height = if model.nodes_from() == Some(Nodes::Chapters) {
+        u16::try_from(model.chapters().len() + 2).unwrap_or(u16::MAX)
+    } else {
+        0
+    };
     Layout::vertical([
         Constraint::Min(NODES_LEAST),
         Constraint::Length(chapters_height),
@@ -2250,15 +2257,14 @@ fn node_list(frame: &mut Frame, area: Rect, model: &Model, wide: bool) {
 
 fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
     let block = Block::bordered().border_type(border_of(model, Holder::Overview));
-    let Some(chapter) = model.selected_chapter() else {
+    let Some(title) = overview_title(model) else {
         frame.render_widget(block, area);
         return;
     };
-    let block = block.title_top(format!(" {} ", model.stacks()[chapter].name));
-    frame.render_widget(block, area);
+    frame.render_widget(block.title_top(format!(" {title} ")), area);
     let [tab_row, content] = tab_content(area);
     frame.render_widget(Paragraph::new(Span::styled("OVERVIEW", REVERSE)), tab_row);
-    let lines = lab_lines(model, chapter, usize::from(content.width));
+    let lines = lab_lines(model, usize::from(content.width));
     let (room, total) = (usize::from(content.height), lines.len());
     let first = model.lab_scroll().min(total.saturating_sub(room));
     let shown: Vec<Line> = lines.into_iter().skip(first).collect();
@@ -2266,18 +2272,37 @@ fn lab_overview(frame: &mut Frame, area: Rect, model: &Model) {
     rows_mark(frame, border_below(content), first, room, total);
 }
 
+fn overview_title(model: &Model) -> Option<String> {
+    match model.selected_chapter() {
+        Some(chapter) => Some(model.stacks()[chapter].name.clone()),
+        None if model.nodes_from() == Some(Nodes::Chapters) => None,
+        None => model.lab_name(),
+    }
+}
+
 pub(crate) fn lab_overflow(model: &Model, area: Rect) -> usize {
-    let Some(chapter) = model.selected_chapter() else {
+    if overview_title(model).is_none() {
         return 0;
-    };
+    }
     let (_, [_, _, _, body, _, _]) = regions(model, area);
     let content = device_content(body);
-    lab_lines(model, chapter, usize::from(content.width))
+    lab_lines(model, usize::from(content.width))
         .len()
         .saturating_sub(usize::from(content.height))
 }
 
-fn lab_lines(model: &Model, chapter: usize, width: usize) -> Vec<Line<'static>> {
+fn files_text(files: Option<&Rendered>) -> String {
+    match files {
+        None => "?".to_string(),
+        Some(Rendered::NotRendered) => "not rendered".to_string(),
+        Some(Rendered::AsRendered) => "as rendered".to_string(),
+        Some(Rendered::Differ { count, of }) => format!("{count} of {of} differ"),
+        Some(Rendered::Error(text)) => format!("error: {text}"),
+    }
+}
+
+fn lab_lines(model: &Model, width: usize) -> Vec<Line<'static>> {
+    let chapter = model.selected_chapter();
     let lab = model.located();
     let topology = lab.map_or("—".to_string(), |lab| {
         let path = lab.topology();
@@ -2296,15 +2321,15 @@ fn lab_lines(model: &Model, chapter: usize, width: usize) -> Vec<Line<'static>> 
     } else {
         "?".to_string()
     };
-    let services = match model.stack_state(chapter) {
+    let services = chapter.map(|chapter| match model.stack_state(chapter) {
         StackState::Up { running, total } => format!("{running} of {total} running"),
         StackState::Down { total } => format!("0 of {total} running"),
         StackState::Unknown | StackState::Failed => "?".to_string(),
-    };
+    });
+    let files = (model.nodes_from() == Some(Nodes::Project)).then(|| files_text(model.files()));
     let row = |label: &str, value: String| format!(" {label:<8}  {value}");
-    let last = model
-        .run()
-        .filter(|run| run.target == Target::Chapter(chapter));
+    let target = chapter.map_or(Target::Lab, Target::Chapter);
+    let last = model.run().filter(|run| run.target == target);
     let (last, end) = match last {
         Some(run) => {
             let (end, style) = run_end(run);
@@ -2318,16 +2343,17 @@ fn lab_lines(model: &Model, chapter: usize, width: usize) -> Vec<Line<'static>> 
         None => ("—".to_string(), (String::new(), Style::new())),
     };
     let plain = |label: &str, value: String| fitted(vec![(row(label, value), Style::new())], width);
-    vec![
-        plain("topology", topology),
-        plain(
-            "project",
-            lab.and_then(Located::project).unwrap_or("—").to_string(),
-        ),
-        plain("nodes", nodes),
-        plain("services", services),
-        fitted(vec![(row("last", last), Style::new()), end], width),
-    ]
+    let project = lab
+        .and_then(Located::project)
+        .map(|project| plain("project", project.to_string()));
+    [plain("topology", topology)]
+        .into_iter()
+        .chain(project)
+        .chain([plain("nodes", nodes)])
+        .chain(services.map(|services| plain("services", services)))
+        .chain(files.map(|files| plain("files", files)))
+        .chain([fitted(vec![(row("last", last), Style::new()), end], width)])
+        .collect()
 }
 
 fn action_hints(model: &Model) -> Vec<String> {
@@ -2560,7 +2586,7 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
         .collect();
     let actions = ACTIONS
         .iter()
-        .filter(|action| action.workbench == workbench)
+        .filter(|action| action.workbench == workbench && fits(action, model))
         .filter(|action| action.row != actions::Row::Node || model.lab_with_nodes())
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
