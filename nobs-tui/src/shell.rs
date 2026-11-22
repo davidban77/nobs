@@ -9408,6 +9408,11 @@ pub(crate) mod tests {
                 model.selected_device().map(|device| device.name.as_str()),
                 Some(SRL1)
             );
+            assert_eq!(
+                model.cursor(),
+                Cursor::Device(model.device_index(SRL1).unwrap()),
+                "{rows:?}"
+            );
             assert_eq!(written_to(&ch(&mut model, 'x')), [srl1], "{rows:?}");
             assert_eq!(state_of(&model, SRL1), Some(connecting(true)));
         }
