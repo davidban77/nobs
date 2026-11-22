@@ -5346,6 +5346,14 @@ fn lab_vars_source(path: &Path) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, O
     }
 }
 
+struct SudoValidate<R: Runner>(R);
+
+impl<R: Runner + Send + Sync> nobs_tui::Asker for SudoValidate<R> {
+    fn ask(&self) -> io::Result<i32> {
+        self.0.run(Containerlab::SUDO, &os_strings(&["-v"]))
+    }
+}
+
 fn open_screen(given_dir: Option<&Path>, flags: SondaFlags, chooser: bool) -> i32 {
     in_current_folder(|here| {
         let start = match screen_start(here, given_dir, flags, chooser) {
@@ -5361,6 +5369,7 @@ fn open_screen(given_dir: Option<&Path>, flags: SondaFlags, chooser: bool) -> i3
             runner,
             std::sync::Arc::new(nobs_tui::Processes),
             std::sync::Arc::new(nobs_tui::Ptys),
+            std::sync::Arc::new(SudoValidate(nobs_core::runner::RealRunner)),
         ) {
             Ok(1) => {
                 eprintln!("nobs: {}", LocateError::NotFound);
@@ -7000,5 +7009,35 @@ mod tests {
 
         std::env::set_var("TERM", "nobs-t-term");
         assert_eq!(LocalTerminal::new(|_| Ok(())).kind(), "nobs-t-term");
+    }
+
+    #[derive(Default)]
+    struct Shared(Mutex<Vec<(String, Vec<OsString>)>>);
+
+    impl Runner for Shared {
+        fn run(&self, program: &str, args: &[OsString]) -> io::Result<i32> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((program.to_string(), args.to_vec()));
+            Ok(0)
+        }
+
+        fn output(&self, program: &str, _args: &[OsString]) -> io::Result<Output> {
+            panic!("{program} asked for its output");
+        }
+    }
+
+    #[test]
+    fn the_screen_asks_sudo_v_on_the_terminal_and_nothing_else() {
+        use nobs_tui::Asker;
+        let asker = SudoValidate(Shared::default());
+
+        assert_eq!(asker.ask().unwrap(), 0);
+
+        assert_eq!(
+            *asker.0 .0.lock().unwrap(),
+            [("sudo".to_string(), vec![OsString::from("-v")])]
+        );
     }
 }

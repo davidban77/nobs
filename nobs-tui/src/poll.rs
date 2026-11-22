@@ -25,7 +25,7 @@ use crate::shell::{
     DOCKER_LOGS, WINDOW_MINUTES,
 };
 
-const PS_PERIOD: Duration = Duration::from_secs(2);
+pub(crate) const PS_PERIOD: Duration = Duration::from_secs(2);
 const HEALTH_PERIOD: Duration = Duration::from_secs(5);
 const LOGS_PERIOD: Duration = Duration::from_secs(2);
 const SOT_PERIOD: Duration = Duration::from_secs(10);
@@ -213,7 +213,7 @@ impl Pollers {
 
     pub fn send(&self, command: Command) {
         let (services, devices): (&[&Source], &[&Option<Source>]) = match command {
-            Command::Quit | Command::Refresh => (
+            Command::Quit | Command::Refresh | Command::AskSudo(_) => (
                 &[&self.ps, &self.health, &self.logs, &self.sonda],
                 &[
                     &self.sot,
@@ -237,8 +237,7 @@ impl Pollers {
             | Command::TermOpen { .. }
             | Command::TermWrite { .. }
             | Command::TermResize { .. }
-            | Command::TermClose(_)
-            | Command::AskSudo(_) => (&[], &[]),
+            | Command::TermClose(_) => (&[], &[]),
             Command::Ask(service, _) => match service {
                 Service::Metrics => (&[&self.health], &[&self.prometheus]),
                 Service::Logs => (&[&self.health], &[&self.loki]),
@@ -279,11 +278,12 @@ fn spawn(
 }
 
 fn wait(inbox: &Receiver<Command>, until: Option<Instant>) -> Wake {
-    let received = match until {
-        Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
-        None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
-    };
+    wake(inbox, data::receive(inbox, until))
+}
+
+fn wake(inbox: &Receiver<Command>, received: Result<Command, RecvTimeoutError>) -> Wake {
     match received {
+        Ok(Command::AskSudo(_)) => wait(inbox, None),
         Ok(Command::Quit) | Err(RecvTimeoutError::Disconnected) => Wake::Stop,
         Ok(command) => Wake::Command(command),
         Err(RecvTimeoutError::Timeout) => Wake::Timeout,
@@ -568,7 +568,11 @@ fn forward_sonda(
     let mut sonda: Option<(data::Poller, Receiver<data::Update>, Receiver<data::Note>)> = None;
     loop {
         let until = sonda.is_some().then(|| Instant::now() + FORWARD_WAIT);
-        match wait(inbox, until) {
+        let received = data::receive(inbox, until);
+        if let (Ok(Command::AskSudo(_)), Some((poller, ..))) = (&received, &sonda) {
+            poller.send(data::Command::Pause);
+        }
+        match wake(inbox, received) {
             Wake::Stop => {
                 if let Some((poller, ..)) = &sonda {
                     poller.send(data::Command::Stop);
