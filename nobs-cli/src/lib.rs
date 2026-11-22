@@ -28,7 +28,6 @@ use nobs_core::prefect::{FlowRun, Prefect};
 use nobs_core::preflight::{preflight, Check, Status};
 use nobs_core::project;
 use nobs_core::prometheus::Prometheus;
-use nobs_core::render::Renderer;
 use nobs_core::reset;
 use nobs_core::runner::{Output, Runner};
 use nobs_core::settings::Workshop;
@@ -1168,6 +1167,8 @@ pub struct ContainerlabFlags {
         help = "Run containerlab without sudo; sudo is on by default"
     )]
     no_sudo: bool,
+    #[arg(long, help = SUDO_NO_PROMPT_HELP)]
+    sudo_no_prompt: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1226,8 +1227,13 @@ pub enum ProjectCommand {
     #[command(
         about = "Write the files as render does, then deploy the topology with containerlab"
     )]
-    Deploy,
+    Deploy {
+        #[arg(long, help = SUDO_NO_PROMPT_HELP)]
+        sudo_no_prompt: bool,
+    },
 }
+
+const SUDO_NO_PROMPT_HELP: &str = "Fail instead of asking for a password when sudo needs one";
 
 const LAB_TOPOLOGY_HELP: &str = "Topology file, a relative path starts at the lab folder; the topology setting of nobs.toml, else containerlab/lab.yml in the lab folder, when none is given";
 
@@ -2122,38 +2128,54 @@ fn run_containerlab_command(
     runner: &dyn Runner,
 ) -> i32 {
     match command {
-        ContainerlabCommand::Deploy { flags } => {
-            run_containerlab(flags, given, runner, Containerlab::deploy_args)
-        }
-        ContainerlabCommand::Destroy { flags } => {
-            run_containerlab(flags, given, runner, Containerlab::destroy_args)
-        }
-        ContainerlabCommand::Inspect { flags } => {
-            run_containerlab(flags, given, runner, Containerlab::inspect_args)
-        }
+        ContainerlabCommand::Deploy { flags } => run_containerlab(
+            "containerlab deploy",
+            flags,
+            given,
+            runner,
+            Containerlab::deploy_args,
+        ),
+        ContainerlabCommand::Destroy { flags } => run_containerlab(
+            "containerlab destroy",
+            flags,
+            given,
+            runner,
+            Containerlab::destroy_args,
+        ),
+        ContainerlabCommand::Inspect { flags } => run_containerlab(
+            "containerlab inspect",
+            flags,
+            given,
+            runner,
+            Containerlab::inspect_args,
+        ),
     }
 }
 
 fn run_containerlab(
+    command: &str,
     flags: ContainerlabFlags,
     given: Option<&Path>,
     runner: &dyn Runner,
     args: impl FnOnce(&Containerlab) -> Vec<OsString>,
 ) -> i32 {
     let sudo = flags.sudo || !flags.no_sudo;
+    let no_prompt = flags.sudo_no_prompt;
     match flags.topology {
         Some(topology) => with_env(Path::new("."), || {
-            run_topology(topology, sudo, runner, args)
+            run_topology(command, topology, sudo, no_prompt, runner, args)
         }),
         None => in_lab(given, |located| {
-            run_topology(located.topology(), sudo, runner, args)
+            run_topology(command, located.topology(), sudo, no_prompt, runner, args)
         }),
     }
 }
 
 fn run_topology(
+    command: &str,
     topology: PathBuf,
     sudo: bool,
+    no_prompt: bool,
     runner: &dyn Runner,
     args: impl FnOnce(&Containerlab) -> Vec<OsString>,
 ) -> i32 {
@@ -2161,11 +2183,52 @@ fn run_topology(
         Ok(text) => text,
         Err(code) => return code,
     };
+    match checked_containerlab(command, topology, &text, sudo, no_prompt, runner) {
+        Ok(containerlab) => run_with(&containerlab, runner, args),
+        Err(code) => code,
+    }
+}
+
+fn checked_containerlab(
+    command: &str,
+    topology: PathBuf,
+    text: &str,
+    sudo: bool,
+    no_prompt: bool,
+    runner: &dyn Runner,
+) -> Result<Containerlab, i32> {
     let containerlab = Containerlab::new(topology)
         .sudo(sudo)
-        .preserve_env(env_names(&text));
+        .no_prompt(no_prompt)
+        .preserve_env(env_names(text));
+    if sudo && no_prompt {
+        refuse_sudo_prompt(command, &containerlab, runner)?;
+    }
+    Ok(containerlab)
+}
+
+fn refuse_sudo_prompt(
+    command: &str,
+    containerlab: &Containerlab,
+    runner: &dyn Runner,
+) -> Result<(), i32> {
+    let fails = |output: std::io::Result<Output>| output.is_ok_and(|output| output.code != 0);
+    if fails(runner.output(containerlab.program(), &containerlab.version_args()))
+        && fails(runner.output_quiet(Containerlab::SUDO, &os_strings(&["-n", "true"])))
+    {
+        eprintln!("{}", sudo_refused_line(command));
+        return Err(1);
+    }
+    Ok(())
+}
+
+fn run_with(
+    containerlab: &Containerlab,
+    runner: &dyn Runner,
+    args: impl FnOnce(&Containerlab) -> Vec<OsString>,
+) -> i32 {
     let program = containerlab.program();
-    match runner.run(program, &args(&containerlab)) {
+    match runner.run(program, &args(containerlab)) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("nobs: cannot run {program}: {error}");
@@ -2369,7 +2432,7 @@ fn run_project(
 ) -> i32 {
     let sudo = flags.sudo || !flags.no_sudo;
     in_lab(given, |located| {
-        let outputs = match project_outputs(flags.project.as_deref(), located) {
+        let outputs = match project::outputs(&located.dir, flags.project.as_deref()) {
             Ok(outputs) => outputs,
             Err(message) => {
                 eprintln!("nobs: project: {message}");
@@ -2379,57 +2442,30 @@ fn run_project(
         match command {
             ProjectCommand::Render { check: true } => check_project(&located.dir, &outputs),
             ProjectCommand::Render { check: false } => write_project(&located.dir, &outputs),
-            ProjectCommand::Deploy => {
+            ProjectCommand::Deploy { sudo_no_prompt } => {
+                let text = outputs
+                    .iter()
+                    .find(|(relative, _)| relative == project::TOPOLOGY)
+                    .map_or("", |(_, text)| text);
+                let containerlab = match checked_containerlab(
+                    "project deploy",
+                    located.dir.join(project::TOPOLOGY),
+                    text,
+                    sudo,
+                    sudo_no_prompt,
+                    runner,
+                ) {
+                    Ok(containerlab) => containerlab,
+                    Err(code) => return code,
+                };
                 let code = write_project(&located.dir, &outputs);
                 if code != 0 {
                     return code;
                 }
-                run_topology(
-                    located.dir.join("containerlab/lab.clab.yml"),
-                    sudo,
-                    runner,
-                    Containerlab::deploy_args,
-                )
+                run_with(&containerlab, runner, Containerlab::deploy_args)
             }
         }
     })
-}
-
-fn project_outputs(
-    file: Option<&Path>,
-    located: &Located,
-) -> Result<Vec<(String, String)>, String> {
-    let (name, path) = match file {
-        Some(file) => (file.display().to_string(), located.dir.join(file)),
-        None => (
-            "nobs_project.yml".to_string(),
-            located.dir.join("nobs_project.yml"),
-        ),
-    };
-    if !path.is_file() {
-        return Err(match file {
-            Some(_) => format!("no project file at {name}"),
-            None => format!("no nobs_project.yml in {}", located.dir.display()),
-        });
-    }
-    let text = fs::read_to_string(&path).map_err(|error| format!("cannot read {name}: {error}"))?;
-    let parsed = project::read(&text).map_err(|reason| format!("{name}: {reason}"))?;
-    let renderer = Renderer::new(&located.dir.join("templates"));
-    let mut outputs = vec![
-        (
-            "containerlab/lab.clab.yml".to_string(),
-            parsed.topology_yaml()?,
-        ),
-        (
-            "containerlab/lab_vars.yml".to_string(),
-            parsed.lab_vars_yaml()?,
-        ),
-    ];
-    for node in parsed.node_names() {
-        let config = parsed.startup_config(&node, &renderer)?;
-        outputs.push((format!("containerlab/configs/{node}.cfg"), config));
-    }
-    Ok(outputs)
 }
 
 fn write_project(dir: &Path, outputs: &[(String, String)]) -> i32 {
@@ -2450,9 +2486,8 @@ fn write_project(dir: &Path, outputs: &[(String, String)]) -> i32 {
 
 fn check_project(dir: &Path, outputs: &[(String, String)]) -> i32 {
     let mut differs = false;
-    for (relative, text) in outputs {
-        let current = fs::read_to_string(dir.join(relative)).ok();
-        if current.as_deref() != Some(text.as_str()) {
+    for ((relative, _), written) in outputs.iter().zip(project::compare(dir, outputs)) {
+        if written != project::Written::Same {
             println!("would write {relative}");
             differs = true;
         }
@@ -2765,39 +2800,20 @@ impl<'a> LabRun<'a, Topology> {
             None => located.topology(),
         };
         let text = read_topology(&file)?;
-        let no_prompt = flags.sudo.sudo_no_prompt;
-        let containerlab = Containerlab::new(file)
-            .sudo(sudo)
-            .no_prompt(no_prompt)
-            .preserve_env(env_names(&text));
-        let run = Self {
+        let containerlab = checked_containerlab(
+            &format!("lab {command}"),
+            file,
+            &text,
+            sudo,
+            flags.sudo.sudo_no_prompt,
+            runner,
+        )?;
+        Ok(Self {
             command,
             located,
             runner,
             topology: Topology { containerlab, text },
-        };
-        if sudo && no_prompt {
-            run.refuse_sudo_prompt()?;
-        }
-        Ok(run)
-    }
-
-    fn refuse_sudo_prompt(&self) -> Result<(), i32> {
-        let fails = |output: std::io::Result<nobs_core::runner::Output>| {
-            output.is_ok_and(|output| output.code != 0)
-        };
-        let containerlab = &self.topology.containerlab;
-        if fails(
-            self.runner
-                .output(containerlab.program(), &containerlab.version_args()),
-        ) && fails(
-            self.runner
-                .output_quiet(Containerlab::SUDO, &os_strings(&["-n", "true"])),
-        ) {
-            eprintln!("{}", sudo_refused_line(self.command));
-            return Err(1);
-        }
-        Ok(())
+        })
     }
 }
 

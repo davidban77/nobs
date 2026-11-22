@@ -1234,7 +1234,9 @@ impl Model {
             .as_ref()
             .filter(|run| end == End::Exited(1) && run.state == RunState::Running && !run.asked)?;
         let (_, word, _) = self.sudo_action(run)?;
-        run.lines.contains(&sudo_refused_line(word)).then_some(word)
+        run.lines
+            .contains(&sudo_refused_line(&format!("lab {word}")))
+            .then_some(word)
     }
 
     fn sudo_action(
@@ -7471,7 +7473,9 @@ pub(crate) mod tests {
         model.apply(Update::ActionError(
             "sudo: a password is required".to_string(),
         ));
-        model.apply(Update::ActionError(sudo_refused_line(word)));
+        model.apply(Update::ActionError(sudo_refused_line(&format!(
+            "lab {word}"
+        ))));
         model.apply(Update::ActionEnded(End::Exited(1)))
     }
 
@@ -7547,7 +7551,7 @@ pub(crate) mod tests {
     fn exit_1_without_the_refusal_of_its_own_command_ends_as_today() {
         for line in [
             "nobs: lab destroy: node containers already exist".to_string(),
-            sudo_refused_line("deploy"),
+            sudo_refused_line("lab deploy"),
         ] {
             let (mut model, _) = sudo_started('X');
             model.apply(Update::ActionError(line.clone()));

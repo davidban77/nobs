@@ -600,11 +600,17 @@ Once per machine, the Linux build needs two steps: `rustup target add aarch64-un
 
 Run the `containerlab` commands inside the Linux machine `clab`, with the Linux binary: `orb -m clab <path> containerlab deploy`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab with `sudo` unless you give `--no-sudo`. By default, sudo does not pass on the variables of your shell. So nobs reads the topology file, finds each variable it uses as `${NAME}`, and tells sudo to keep it. Set such a variable inside `clab`, for example `orb -m clab env NAME=value <path> containerlab deploy`, or in the `.env` file of the lab folder (of the current folder when you give a `TOPOLOGY` file).
 
+`nobs containerlab deploy`, `destroy` and `inspect` also take `--sudo-no-prompt`: fail instead of asking for a password when sudo needs one. nobs then runs containerlab as `sudo -n`, and first checks that `sudo` can run without a password. When it cannot, nobs runs nothing, prints the line below and exits with 1. With `--no-sudo`, `--sudo-no-prompt` changes nothing.
+
+```
+nobs: containerlab destroy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again
+```
+
 ## Where nobs runs from
 
 Most commands work on one lab or one workshop. Its folder is called the lab folder here. You do not have to be inside the lab folder: nobs looks for it, starting from the folder you are in.
 
-nobs knows four kinds of lab folder:
+nobs knows five kinds of lab folder:
 
 | Kind | How nobs knows it |
 |---|---|
@@ -612,8 +618,9 @@ nobs knows four kinds of lab folder:
 | The book lab | the folder holds a `chapters/` folder and the file `containerlab/lab.yml` |
 | A project | the folder holds a `nobs_project.yml` file |
 | A labcli lab | the folder holds a `docker-compose.yml` file |
+| A lab with only a topology | the folder holds the file `containerlab/lab.clab.yaml` or `containerlab/lab.clab.yml` |
 
-nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `nobs_project.yml`, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
+nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `nobs_project.yml`, else the nearest `docker-compose.yml`, else the nearest `containerlab/lab.clab.yaml` or `containerlab/lab.clab.yml`. A lab with only a topology is a labcli lab without a compose file. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
 
 To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab`, `nobs lab`, `nobs project` and `nobs device` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
 
@@ -628,13 +635,13 @@ These commands need a lab folder:
 
 These commands do not need a lab folder. They work from any folder and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)). `nobs tui` and plain `nobs` do the same: they use `--dir` and `NOBS_DIR` when they are set (see [The screen](#the-screen)).
 
-In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.yml` in the book lab. In a workshop or a labcli lab, it uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml`. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`. For the book lab, nobs gives it the project name `netobs`, as netobs does, so every `nobs docker` command in the book lab passes `--project-name netobs`, unless a `nobs.toml` of the book lab sets `project`.
+In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.yml` in the book lab. In a project, it uses `containerlab/lab.clab.yml`, the file `nobs project render` writes (see [Project](#project)). In a workshop or another labcli lab, it uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml`. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`. For the book lab, nobs gives it the project name `netobs`, as netobs does, so every `nobs docker` command in the book lab passes `--project-name netobs`, unless a `nobs.toml` of the book lab sets `project`.
 
 A labcli lab may also hold a `nobs.toml` with `kind = "lab"`. In it, `compose` and `topology` name other files to use, relative to the lab folder, and `project` sets the project name. nobs also accepts `network`, but a labcli lab does not use it. Each of these is optional.
 
 A `nobs.toml` with `kind = "lab"` in the book lab folder, next to `chapters/` and `containerlab/lab.yml`, keeps the folder a book lab and overrides its defaults: `topology`, `project` and `network` (the network `nobs lab deploy` and `nobs lab prepare` create). The `lab` commands do not use `compose`, because each scenario has its own `docker-compose.yml`. Which folder nobs takes is still decided by the walk above, so a `nobs.toml` in a parent folder wins over a book lab lower down.
 
-When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the four kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
+When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the five kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
 
 A command that needs a lab folder reads the `.env` file (and the `.setup.env` file, when there is one) of the lab folder. A command that does not need one reads them from the current folder. This is a change from labcli and netobs, which always read the current folder.
 
@@ -2474,7 +2481,7 @@ A project file is one YAML file, `nobs_project.yml`, that you write by hand. YAM
 | `nobs project render` | writes the topology, `lab_vars.yml` and one startup configuration for each node under `containerlab/` of the lab folder |
 | `nobs project deploy` | writes the same files, then deploys the topology it just wrote with containerlab |
 
-Both commands run in a lab folder. nobs finds the folder as for the other commands (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. nobs reads the `.env` file of the lab folder first. `--project` does not make a folder a lab folder: the folder must still be one of the four kinds in [Where nobs runs from](#where-nobs-runs-from).
+Both commands run in a lab folder. nobs finds the folder as for the other commands (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. nobs reads the `.env` file of the lab folder first. `--project` does not make a folder a lab folder: the folder must still be one of the five kinds in [Where nobs runs from](#where-nobs-runs-from).
 
 | Command | Flag | What it does |
 |---|---|---|
@@ -2482,9 +2489,12 @@ Both commands run in a lab folder. nobs finds the folder as for the other comman
 | both | `--project PATH` | gives the project file to read (default: `nobs_project.yml` in the lab folder); a relative path starts at the lab folder |
 | `deploy` | `--sudo` | runs containerlab with sudo; this is on by default |
 | `deploy` | `--no-sudo` | runs containerlab without sudo; sudo is on by default |
+| `deploy` | `--sudo-no-prompt` | fails instead of asking for a password when sudo needs one |
 | `render` | `--check` | writes nothing; lists each file that is missing or different, and exits 1 if there is one |
 
-`--project`, `--sudo` and `--no-sudo` belong to the group and go before `render` or `deploy`, as in `nobs project --no-sudo deploy`. `--check` goes after `render`.
+`--project`, `--sudo` and `--no-sudo` belong to the group and go before `render` or `deploy`, as in `nobs project --no-sudo deploy`. `--check` goes after `render`, and `--sudo-no-prompt` goes after `deploy`, as in `nobs project deploy --sudo-no-prompt`.
+
+With `--sudo-no-prompt`, `deploy` runs containerlab as `sudo -n`. Before it writes any file, it checks that `sudo` can run without a password. When it cannot, nobs writes nothing, runs nothing, prints `nobs: project deploy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` and exits with 1. With `--no-sudo`, `--sudo-no-prompt` changes nothing.
 
 `render` prints `wrote <path>` for each file it writes, and exits with 0. The path is relative to the lab folder. The order is the topology, then `lab_vars.yml`, then the configurations in the order of the nodes in the project file.
 
@@ -2700,6 +2710,7 @@ Each error ends the command with exit 1. nobs prints the line on standard error.
 | `nobs: project: no template for kind <kind>: expected templates/<file>` | the template file of a kind is missing |
 | `nobs: project: templates/<file>: <error from the template engine>` | a template is not valid, or names a variable the data lacks |
 | `nobs: project: cannot write <path>: <error>` | nobs cannot write a file; `<path>` is relative to the lab folder |
+| `nobs: project deploy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` | `deploy` with `--sudo-no-prompt`, and `sudo` cannot run without a password; nobs writes no file |
 | `nobs: no lab or workshop at <path>` | `--dir` or `NOBS_DIR` names a folder that is not a lab folder |
 | `nobs: no lab or workshop found from here` | nobs finds no lab folder from the current folder |
 | `nobs: cannot run <program>: <error>` | `deploy` cannot start `<program>`: `sudo`, or `containerlab` with `--no-sudo` |
@@ -2714,7 +2725,7 @@ The four parts of the project file follow the project file of labby. nobs writes
 
 - nobs ships no template: you write `templates/<kind>.j2` yourself. The example project has an SR Linux template, `srl.j2`, only. A kind with no template file is an error, and nobs writes nothing.
 - `deploy` needs containerlab on the machine where nobs runs, and by default sudo, as `nobs containerlab deploy` does (see [Commands](#commands)).
-- In a lab that also has a hand-written `containerlab/lab.clab.yaml`, `nobs containerlab deploy` takes that file, and `nobs project deploy` takes the `lab.clab.yml` it wrote. Keep only one of the two files, or use `nobs project deploy` only.
+- In a lab that also has a hand-written `containerlab/lab.clab.yaml`, every command takes the `lab.clab.yml` that render writes, and the hand-written file is not used. The same holds for a `topology` setting in `nobs.toml`.
 
 ### Example
 

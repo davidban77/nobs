@@ -2160,7 +2160,7 @@ mod tests {
         let sender = launcher.sender().unwrap();
         for line in [
             "sudo: a password is required".to_string(),
-            sudo_refused_line("destroy"),
+            sudo_refused_line("lab destroy"),
         ] {
             sender.send(Update::ActionError(line)).unwrap();
         }

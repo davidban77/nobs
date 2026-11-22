@@ -93,7 +93,7 @@ impl Containerlab {
 
 pub fn sudo_refused_line(command: &str) -> String {
     format!(
-        "nobs: lab {command}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again"
+        "nobs: {command}: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again"
     )
 }
 

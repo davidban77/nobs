@@ -1948,7 +1948,7 @@ fn not_run() -> Shell {
     model.apply(Update::ActionError(
         "sudo: a password is required".to_string(),
     ));
-    model.apply(Update::ActionError(sudo_refused_line("destroy")));
+    model.apply(Update::ActionError(sudo_refused_line("lab destroy")));
     later(&mut model, 2);
     model.apply(Update::ActionEnded(End::Exited(1)));
     model.apply(Update::Asked(Ok(false)));
