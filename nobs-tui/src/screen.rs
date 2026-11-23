@@ -4686,6 +4686,24 @@ mod tests {
     }
 
     #[test]
+    fn after_a_g_with_no_difference_the_second_header_line_says_none_missing() {
+        let mut model = lab_devices_model();
+        model.apply(Update::Intended(vec![(
+            "nobs-t-srl1".to_string(),
+            Ok("set / a b on\n".to_string()),
+        )]));
+        press(&mut model, 'g');
+        model.apply(Update::ActionLine("set / a b on".to_string()));
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        open_tab(&mut model, Tab::Config);
+        focus_tabs(&mut model);
+
+        let screen = drawn(&mut model, 100, 30);
+
+        assert!(row_with(&screen, "║fetched ").contains("  none missing "));
+    }
+
+    #[test]
     fn the_intended_view_gives_the_page_keys_the_rows_under_its_two_header_lines() {
         let area = Rect::new(0, 0, 60, 15);
         let mut model = lab_devices_model();

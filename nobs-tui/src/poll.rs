@@ -867,6 +867,47 @@ mod tests {
     }
 
     #[test]
+    fn each_node_is_rendered_with_the_template_of_its_own_kind() {
+        let dir = std::env::temp_dir().join(format!("nobs-poll-kinds-{}", std::process::id()));
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/project-two-node");
+        fs::create_dir_all(dir.join("templates")).unwrap();
+        fs::copy(
+            fixture.join("templates/srl.j2"),
+            dir.join("templates/srl.j2"),
+        )
+        .unwrap();
+        let topology = dir.join("lab.clab.yml");
+        let nodes = "name: nobs-t-kinds\ntopology:\n  nodes:\n    nobs-t-srl1:\n      kind: nokia_srlinux\n    nobs-t-srl2:\n      kind: ceos\n";
+        fs::write(&topology, nodes).unwrap();
+        let vars = fs::read_to_string(fixture.join("expected/lab_vars.yml")).unwrap();
+        let source: Arc<dyn SourceOfTruth> = Arc::new(sot::Fixed::from_lab_vars(
+            &nobs_core::lab_vars::read(&vars).unwrap(),
+        ));
+        let files = LabFiles {
+            dir: dir.clone(),
+            topology,
+            project: None,
+            source: Ok(source),
+        };
+
+        let Update::Intended(texts) = intended_texts(&files) else {
+            panic!("not an intended update");
+        };
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0].0, "nobs-t-srl1");
+        assert!(texts[0].1.is_ok(), "{:?}", texts[0].1);
+        assert_eq!(texts[1].0, "nobs-t-srl2");
+        assert!(
+            matches!(texts[1].1, Err(nobs_core::intended::Failure::NoTemplate(_))),
+            "{:?}",
+            texts[1].1
+        );
+    }
+
+    #[test]
     fn the_poller_takes_the_shells_old_name_over_the_new_name_in_the_stacks_file() {
         let stack = stack("ws", &[("METRICS_URL", "http://127.0.0.1:19091")]);
         let shell =

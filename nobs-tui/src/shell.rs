@@ -9191,6 +9191,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn shift_n_goes_to_the_nearest_difference_above() {
+        let mut model = on_intended(Ok(&["set / a x", "set / b y", "set / c z"]));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+
+        ch(&mut model, 'N');
+
+        assert_eq!(scroll(&model), 1);
+    }
+
+    #[test]
+    fn with_no_template_v_keeps_the_scroll_and_a_later_template_opens_the_intended_view() {
+        let words = "no template for kind nokia_srlinux: expected templates/srl.j2";
+        let mut model = on_intended(Err(Failure::NoTemplate(words.to_string())));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+        ch(&mut model, 'j');
+
+        ch(&mut model, 'v');
+
+        assert_eq!(scroll(&model), 1);
+        model.apply(intended_of(&[("nobs-t-srl1", Ok(&WANTED))]));
+        assert!(model.intended_view().is_some());
+    }
+
+    #[test]
     fn v_n_and_an_intended_update_start_no_command() {
         let mut model = lab_devices_model();
         let mut commands = model.apply(intended_of(&[("nobs-t-srl1", Ok(&WANTED))]));
