@@ -6752,11 +6752,63 @@ mod tests {
         let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
 
         assert_eq!(start.home, nobs_tui::Workbench::Lab);
-        assert!(start.source.is_none());
+        assert!(start.source_error.is_none());
         assert_eq!(
-            start.source_error,
-            Some(format!("{}: {error}", path.display()))
+            start.source.unwrap().devices().unwrap_err().to_string(),
+            format!("{}: {error}", path.display())
         );
+    }
+
+    #[test]
+    fn a_lab_vars_broken_at_the_start_shows_its_words_in_the_sot_error_row_until_it_is_mended() {
+        let book = Scratch::new("screen-broken-book");
+        fs::create_dir_all(book.0.join("chapters")).unwrap();
+        fs::create_dir_all(book.0.join("containerlab")).unwrap();
+        fs::write(book.0.join("containerlab/lab.yml"), "").unwrap();
+        let nodes = project_lab(
+            "screen-broken-nodes",
+            &[("expected/lab.clab.yml", "lab.clab.yml")],
+        );
+        let compose = Scratch::new("screen-broken-compose");
+        fs::create_dir_all(compose.0.join("containerlab")).unwrap();
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures/one-service/docker-compose.yml"),
+            compose.0.join("docker-compose.yml"),
+        )
+        .unwrap();
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/project-two-node/expected/lab_vars.yml");
+
+        for (dir, home) in [
+            (&book.0, nobs_tui::Workbench::Lab),
+            (&nodes.0, nobs_tui::Workbench::Lab),
+            (&compose.0, nobs_tui::Workbench::Devices),
+        ] {
+            let path = dir.join("containerlab").join("lab_vars.yml");
+            fs::write(&path, "nodes: [\n").unwrap();
+            let words = format!(
+                "{}: {}",
+                path.display(),
+                lab_vars::read("nodes: [\n").unwrap_err()
+            );
+            let start = screen_start_with(dir, None, flags(None), false, &|_| None).unwrap();
+            assert_eq!(start.home, home, "{dir:?}");
+            let source = start.source.clone().unwrap();
+            let mut shell = nobs_tui::Shell::new(start);
+            let poll = || nobs_tui::Update::Devices(source.devices().map_err(|e| e.to_string()));
+
+            shell.apply(poll());
+            assert_eq!(
+                shell.error().map(|(row, text, _)| (row, text)),
+                Some((status::row(Service::Sot).word, words.as_str())),
+                "{dir:?}"
+            );
+
+            fs::copy(&fixture, &path).unwrap();
+            shell.apply(poll());
+            assert_eq!(shell.error(), None, "{dir:?}");
+        }
     }
 
     #[test]

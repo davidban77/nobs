@@ -160,7 +160,7 @@ pub struct LabVarsFile {
 
 impl LabVarsFile {
     pub fn open(path: &Path) -> Result<LabVarsFile, String> {
-        read_lab_vars(path)?;
+        read_text(path)?;
         Ok(LabVarsFile {
             path: path.to_path_buf(),
         })
@@ -192,10 +192,15 @@ impl SourceOfTruth for LabVarsFile {
 }
 
 fn read_lab_vars(path: &Path) -> Result<LabVars, String> {
-    fs::read_to_string(path)
-        .map_err(|error| error.to_string())
-        .and_then(|text| lab_vars::read(&text))
-        .map_err(|error| format!("{}: {error}", path.display()))
+    read_text(path).and_then(|text| lab_vars::read(&text).map_err(|error| at(path, error)))
+}
+
+fn read_text(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|error| at(path, error))
+}
+
+fn at(path: &Path, error: impl fmt::Display) -> String {
+    format!("{}: {error}", path.display())
 }
 
 struct Empty;
@@ -478,18 +483,25 @@ schema_file = "infrahub/schema.yml"
     }
 
     #[test]
-    fn open_gives_the_path_and_the_error_of_a_file_that_does_not_read() {
-        let file = VarsFile::new("open");
+    fn a_lab_vars_file_broken_at_the_start_gives_its_path_and_error_until_it_is_mended() {
+        let file = VarsFile::new("broken-start");
         file.write("nodes: [\n");
-        assert_eq!(
-            LabVarsFile::open(&file.0).err(),
-            Some(format!(
-                "{}: {}",
-                file.0.display(),
-                lab_vars::read("nodes: [\n").unwrap_err()
-            ))
+        let words = format!(
+            "{}: {}",
+            file.0.display(),
+            lab_vars::read("nodes: [\n").unwrap_err()
         );
 
+        let source = LabVarsFile::open(&file.0).unwrap();
+
+        assert_eq!(source.devices(), Err(Error::LabVars(words)));
+        file.write(&book_lab_text());
+        assert_eq!(names(&source), ["nobs-t-srl1", "nobs-t-srl2"]);
+    }
+
+    #[test]
+    fn open_gives_the_path_and_the_error_of_a_file_that_does_not_read() {
+        let file = VarsFile::new("open");
         fs::remove_file(&file.0).unwrap();
         let missing = fs::read_to_string(&file.0).unwrap_err();
         assert_eq!(
