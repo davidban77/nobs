@@ -1,3 +1,6 @@
+#[path = "support/listing.rs"]
+mod listing;
+
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs;
@@ -6,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use clap::Parser;
+use listing::listing;
 use nobs_cli::{run, Cli};
 use nobs_core::project::{self, Rendered};
 use nobs_core::runner::{FakeRunner, Output as RunnerOutput, Runner};
@@ -376,21 +380,6 @@ fn the_project_help_lists_render_and_deploy_and_the_flags() {
     assert_eq!(output.status.code(), Some(0));
     let help = stdout(&output);
     assert!(help.contains("--check"), "{help}");
-}
-
-fn listing(dir: &Path) -> Vec<(PathBuf, String)> {
-    let mut found = Vec::new();
-    for entry in fs::read_dir(dir).unwrap().flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            found.push((path.clone(), String::new()));
-            found.extend(listing(&path));
-        } else {
-            found.push((path.clone(), fs::read_to_string(&path).unwrap()));
-        }
-    }
-    found.sort();
-    found
 }
 
 const PASSWORD_SUDO: &str = "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then\n  echo 'sudo: a password is required' >&2\n  exit 1\nfi\n: > \"${0%/*}/marker\"\nexit 97\n";

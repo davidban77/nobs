@@ -6,6 +6,7 @@ use ureq::{Agent, Body, RequestBuilder};
 
 use crate::http::{self, Reply};
 use crate::lab_vars::{BgpSession, Device as LabDevice, Interface as LabInterface, LabVars};
+use crate::render::NodeVars;
 use crate::sot::{Device, Error, Interface, Maintenance, Session, SourceOfTruth};
 use crate::status::{self, Service};
 
@@ -319,6 +320,10 @@ impl SourceOfTruth for Infrahub {
 
     fn set_maintenance(&self, device: &str, state: bool) -> Result<Maintenance, Error> {
         self.maintenance(&self.maintenance_kind, device, state)
+    }
+
+    fn node_vars(&self, _name: &str) -> Result<Option<NodeVars>, Error> {
+        Err(Error::NoTemplateData)
     }
 }
 

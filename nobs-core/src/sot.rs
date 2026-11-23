@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use crate::infrahub;
 use crate::lab_vars::{self, LabVars};
+use crate::render::NodeVars;
 use crate::settings::Workshop;
 
 const BODY_CUT: usize = 200;
@@ -11,6 +12,7 @@ pub trait SourceOfTruth: Send + Sync {
     fn devices(&self) -> Result<Vec<Device>, Error>;
     fn device(&self, name: &str) -> Result<Option<Device>, Error>;
     fn set_maintenance(&self, device: &str, state: bool) -> Result<Maintenance, Error>;
+    fn node_vars(&self, name: &str) -> Result<Option<NodeVars>, Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +68,7 @@ pub enum Error {
         device: String,
     },
     NoSource,
+    NoTemplateData,
 }
 
 impl fmt::Display for Error {
@@ -86,18 +89,25 @@ impl fmt::Display for Error {
                 write!(f, "{kind} {device} not found in the source of truth.")
             }
             Error::NoSource => write!(f, "this lab has no source of truth"),
+            Error::NoTemplateData => write!(f, "the source of truth gives no data for templates"),
         }
     }
 }
 
 pub struct Fixed {
     devices: Mutex<Vec<Device>>,
+    vars: Vec<(String, NodeVars)>,
 }
 
 impl Fixed {
     pub fn from_lab_vars(vars: &LabVars) -> Fixed {
         Fixed {
             devices: Mutex::new(vars.devices.iter().map(device_from).collect()),
+            vars: vars
+                .devices
+                .iter()
+                .map(|device| (device.name.clone(), device.vars.clone()))
+                .collect(),
         }
     }
 }
@@ -130,6 +140,14 @@ impl SourceOfTruth for Fixed {
             previous: std::mem::replace(&mut found.maintenance, state),
         })
     }
+
+    fn node_vars(&self, name: &str) -> Result<Option<NodeVars>, Error> {
+        Ok(self
+            .vars
+            .iter()
+            .find(|(device, _)| device == name)
+            .map(|(_, vars)| vars.clone()))
+    }
 }
 
 struct Empty;
@@ -145,6 +163,10 @@ impl SourceOfTruth for Empty {
 
     fn set_maintenance(&self, _device: &str, _state: bool) -> Result<Maintenance, Error> {
         Err(Error::NoSource)
+    }
+
+    fn node_vars(&self, _name: &str) -> Result<Option<NodeVars>, Error> {
+        Ok(None)
     }
 }
 
