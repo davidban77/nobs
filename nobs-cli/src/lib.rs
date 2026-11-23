@@ -18,6 +18,7 @@ use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_tex
 use nobs_core::grafana::Grafana;
 use nobs_core::http;
 use nobs_core::infrahub::{annotation, connect, read_schema, Infrahub, Seed, KINDS};
+use nobs_core::intended::intended;
 use nobs_core::lab::{self, TopologyNode, WaitError};
 use nobs_core::lab_vars;
 use nobs_core::layers;
@@ -145,7 +146,7 @@ pub enum Command {
         command: ProjectCommand,
     },
     #[command(
-        about = "Fetch the configuration of a lab device, run one command on it, or open a shell on it, over SSH"
+        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, or print its intended configuration"
     )]
     Device {
         #[command(subcommand)]
@@ -1144,6 +1145,11 @@ pub enum DeviceCommand {
     },
     #[command(about = "Open a shell on a device in this terminal, until the shell ends")]
     Shell {
+        #[arg(help = "Node name in the lab's topology file")]
+        name: String,
+    },
+    #[command(about = "Print the intended configuration of a device, from the lab's template")]
+    Render {
         #[arg(help = "Node name in the lab's topology file")]
         name: String,
     },
@@ -2281,6 +2287,9 @@ fn run_device(
                     device_shell(name, &topology, &nodes, transport, terminal),
                 )
             }
+            DeviceCommand::Render { name } => {
+                return render_device(name, located, &topology, &nodes);
+            }
         };
         match outcome {
             Ok(code) => code,
@@ -2305,6 +2314,30 @@ fn device_nodes(located: &Located) -> Result<(PathBuf, Vec<TopologyNode>), i32> 
     let nodes =
         lab::topology_nodes(&text).map_err(|error| unreadable_topology(&topology, error))?;
     Ok((topology, nodes))
+}
+
+fn render_device(name: &str, located: &Located, topology: &Path, nodes: &[TopologyNode]) -> i32 {
+    let rendered = nodes
+        .iter()
+        .find(|node| node.name == name)
+        .ok_or_else(|| device::Error::NotANode(topology.to_path_buf()).to_string())
+        .and_then(|node| {
+            let (source, error) = containerlab_source(located);
+            let source = source
+                .as_deref()
+                .ok_or_else(|| error.unwrap_or_else(|| sot::Error::NoSource.to_string()));
+            intended(&located.dir, name, &node.kind, source)
+        });
+    match rendered {
+        Ok(text) => {
+            print!("{text}");
+            0
+        }
+        Err(error) => {
+            eprintln!("nobs: render {name}: {error}");
+            1
+        }
+    }
 }
 
 fn device_answer(
@@ -5265,7 +5298,6 @@ fn screen_start_with(
             };
             let lookup = |name: &str| given(process(name)).or_else(|| given(lab_file(name)));
             let urls = Urls::from_lookup(&[process, &lab_file]);
-            let path = located.dir.join("containerlab").join("lab_vars.yml");
             let ((source, source_error), source_service): (
                 (Option<std::sync::Arc<dyn SourceOfTruth>>, _),
                 _,
@@ -5280,9 +5312,7 @@ fn screen_start_with(
                         Err(text) => ((None, Some(text)), None),
                     }
                 }
-                Kind::BookLab(_) => (lab_vars_source(&path), None),
-                Kind::LabcliLab(_) if path.exists() => (lab_vars_source(&path), None),
-                Kind::LabcliLab(_) => ((None, None), None),
+                Kind::BookLab(_) | Kind::LabcliLab(_) => (containerlab_source(&located), None),
             };
             let nodes = located.nodes();
             let topology = Some(located.topology());
@@ -5353,6 +5383,17 @@ fn screen_start_with(
             login: std::sync::Arc::new(|_| None),
         }),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+fn containerlab_source(
+    located: &Located,
+) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
+    let path = located.dir.join("containerlab").join("lab_vars.yml");
+    match located.kind {
+        Kind::BookLab(_) => lab_vars_source(&path),
+        Kind::LabcliLab(_) if path.exists() => lab_vars_source(&path),
+        Kind::LabcliLab(_) | Kind::Workshop(_) => (None, None),
     }
 }
 

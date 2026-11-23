@@ -7,11 +7,11 @@ pub fn intended(
     lab: &Path,
     name: &str,
     kind: &str,
-    source: &dyn SourceOfTruth,
+    source: Result<&dyn SourceOfTruth, String>,
 ) -> Result<String, String> {
     let renderer = Renderer::new(&lab.join(TEMPLATES));
     let file = renderer.template(kind)?;
-    let vars = source
+    let vars = source?
         .node_vars(name)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| {
@@ -73,11 +73,11 @@ mod tests {
         let lab = Lab::new("renders", Some(SRL_TEMPLATE));
         let source = fixed();
         assert_eq!(
-            intended(&lab.0, "nobs-t-srl1", "nokia_srlinux", &source),
+            intended(&lab.0, "nobs-t-srl1", "nokia_srlinux", Ok(&source)),
             Ok(SRL1.to_string())
         );
         assert_eq!(
-            intended(&lab.0, "nobs-t-srl2", "nokia_srlinux", &source),
+            intended(&lab.0, "nobs-t-srl2", "nokia_srlinux", Ok(&source)),
             Ok(SRL2.to_string())
         );
     }
@@ -86,7 +86,7 @@ mod tests {
     fn a_node_the_source_does_not_know_is_not_found() {
         let lab = Lab::new("unknown", Some(SRL_TEMPLATE));
         assert_eq!(
-            intended(&lab.0, "nobs-t-srl9", "nokia_srlinux", &fixed()),
+            intended(&lab.0, "nobs-t-srl9", "nokia_srlinux", Ok(&fixed())),
             Err("device nobs-t-srl9 not found in the source of truth.".to_string())
         );
     }
@@ -96,7 +96,7 @@ mod tests {
         let lab = Lab::new("infrahub", Some(SRL_TEMPLATE));
         let source = Infrahub::new("http://nobs-t-infrahub:8000", "");
         assert_eq!(
-            intended(&lab.0, "nobs-t-srl1", "nokia_srlinux", &source),
+            intended(&lab.0, "nobs-t-srl1", "nokia_srlinux", Ok(&source)),
             Err("the source of truth gives no data for templates".to_string())
         );
     }
@@ -107,12 +107,12 @@ mod tests {
         let expected =
             Err("no template for kind nokia_srlinux: expected templates/srl.j2".to_string());
         assert_eq!(
-            intended(&lab.0, "nobs-t-srl9", "nokia_srlinux", &fixed()),
+            intended(&lab.0, "nobs-t-srl9", "nokia_srlinux", Ok(&fixed())),
             expected
         );
         let infrahub = Infrahub::new("http://nobs-t-infrahub:8000", "");
         assert_eq!(
-            intended(&lab.0, "nobs-t-srl1", "nokia_srlinux", &infrahub),
+            intended(&lab.0, "nobs-t-srl1", "nokia_srlinux", Ok(&infrahub)),
             expected
         );
     }

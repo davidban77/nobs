@@ -100,7 +100,7 @@ fn the_help_pages_name_the_sonda_group_and_exactly_its_ten_commands() {
     assert_eq!(commands, SONDA_COMMANDS);
 }
 
-const DEVICE_COMMANDS: [&str; 3] = ["fetch", "run", "shell"];
+const DEVICE_COMMANDS: [&str; 4] = ["fetch", "run", "shell", "render"];
 
 #[test]
 fn the_help_pages_name_the_device_group_exactly_its_three_commands_and_their_words() {
@@ -111,7 +111,7 @@ fn the_help_pages_name_the_device_group_exactly_its_three_commands_and_their_wor
     );
     assert!(
         root.contains(
-            "Fetch the configuration of a lab device, run one command on it, or open a shell on it, over SSH"
+            "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, or print its intended configuration"
         ),
         "{root}"
     );
@@ -122,6 +122,7 @@ fn the_help_pages_name_the_device_group_exactly_its_three_commands_and_their_wor
         "Print the running configuration of a device, one set line per setting",
         "Run one command on a device and print its answer",
         "Open a shell on a device in this terminal, until the shell ends",
+        "Print the intended configuration of a device, from the lab's template",
     ] {
         assert!(group.contains(words), "{group}");
     }
