@@ -1,0 +1,30 @@
+ nobs  book-lab book lab  sot lab_vars                                                     13:42:07
+ [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
+┌ devices 2 ─────────────────────────────┐╔ nobs-t-srl1 ═══════════════════════════════════════════╗
+│   NAME         KIND  HLTH  SYNC  ALRT  │║overview  interfaces  CONFIG  timeline  logs  terminal  ║
+│>  nobs-t-srl1  —     —     —        —  │║intended 13:42:07  6 lines                              ║
+│   nobs-t-srl2  —     —     —        —  │║press g to compare with the device                      ║
+│                                        │║ set / system name host-name nobs-t-srl1                ║
+│                                        │║ set / interface ethernet-1/1 admin-state enable        ║
+│                                        │║ set / interface ethernet-1/…erface 0 admin-state enable║
+│                                        │║ set / interface ethernet-1/…e 0 ipv4 admin-state enable║
+│                                        │║ set / interface ethernet-1/…0 ipv4 address 192.0.2.0/31║
+│                                        │║ set / network-instance default interface ethernet-1/1.0║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+├ alerts — ──────────────────────────────┤║                                                        ║
+│no alerts in this lab                   │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+└────────────────────────────────────────┘╚════════════════════════════════════════════════════════╝
+ run  none                                                                                   o open
+ v running  n N next/previous difference  / filter  j/k scroll  [ ] tab  Esc back to list

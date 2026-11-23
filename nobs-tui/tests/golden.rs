@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nobs_core::alertmanager::Alert;
 use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::device::{PASSWORD, USER};
+use nobs_core::intended::Failure;
 use nobs_core::lab::{services, Service};
 use nobs_core::lab_vars;
 use nobs_core::locate::{locate, Kind, Located, Nodes};
@@ -1058,6 +1059,102 @@ fn the_config_filter_frame_is_pinned() {
         }
         model
     });
+}
+
+const SRL1_INTENDED: &str =
+    include_str!("../../tests/fixtures/project-two-node/expected/configs/nobs-t-srl1.cfg");
+const SRL1_ON_DEVICE: [&str; 6] = [
+    "set / system name host-name nobs-t-srl1",
+    "set / interface ethernet-1/1 admin-state enable",
+    "set / interface ethernet-1/1 subinterface 0 admin-state enable",
+    "set / interface ethernet-1/1 subinterface 0 ipv4 admin-state enable",
+    "set / interface ethernet-1/1 subinterface 0 ipv4 address 192.0.2.9/31",
+    "set / system information location nobs-t-rack",
+];
+
+fn intended(text: Result<&str, Failure>) -> Update {
+    Update::Intended(
+        ["nobs-t-srl1", "nobs-t-srl2"]
+            .map(|name| (name.to_string(), text.clone().map(str::to_string)))
+            .into(),
+    )
+}
+
+fn intended_differs() -> Shell {
+    let mut model = lab_devices_model();
+    model.apply(intended(Ok(SRL1_INTENDED)));
+    press(&mut model, KeyCode::Enter);
+    press(&mut model, KeyCode::Char('g'));
+    for line in SRL1_ON_DEVICE {
+        model.apply(Update::ActionLine(line.to_string()));
+    }
+    model.apply(Update::ActionEnded(End::Exited(0)));
+    press(&mut model, KeyCode::Esc);
+    press(&mut model, KeyCode::Char('n'));
+    model
+}
+
+#[test]
+fn the_intended_config_frame_is_pinned() {
+    golden("devices-config-intended", || {
+        let mut model = on_lab_tab(2);
+        model.apply(intended(Ok(SRL1_INTENDED)));
+        model
+    });
+}
+
+#[test]
+fn the_intended_config_with_differences_frame_is_pinned() {
+    golden("devices-config-differ", intended_differs);
+}
+
+#[test]
+fn the_config_frame_with_no_template_is_pinned() {
+    golden("devices-config-no-template", || {
+        let mut model = config_shown();
+        model.apply(intended(Err(Failure::NoTemplate(
+            "no template for kind nokia_srlinux: expected templates/srl.j2".to_string(),
+        ))));
+        model
+    });
+}
+
+#[test]
+fn the_intended_config_error_frame_is_pinned() {
+    golden("devices-config-error", || {
+        let mut model = on_lab_tab(2);
+        model.apply(intended(Err(Failure::Other(
+            "templates/srl.j2: undefined value: nobs_t_missing (in srl.j2:7)".to_string(),
+        ))));
+        model
+    });
+}
+
+#[test]
+fn a_plus_line_is_green_and_its_hint_line_is_red() {
+    let colour_of = |model: Shell, mark: &str| {
+        let buffer = render(model, 100, 30);
+        let screen = lines(&buffer);
+        let y = screen.iter().position(|row| row.contains(mark)).unwrap();
+        let x = u16::try_from(screen[y].chars().position(|letter| letter == '║').unwrap()).unwrap();
+        let y = u16::try_from(y).unwrap();
+        (buffer[(x + 1, y)].fg, buffer[(x + 20, y)].fg)
+    };
+    let mut unmarked = on_lab_tab(2);
+    unmarked.apply(intended(Ok(SRL1_INTENDED)));
+
+    assert_eq!(
+        colour_of(intended_differs(), "║+set / interface"),
+        (Color::Green, Color::Green)
+    );
+    assert_eq!(
+        colour_of(intended_differs(), "║-set / interface"),
+        (Color::Red, Color::Red)
+    );
+    assert_eq!(
+        colour_of(unmarked, "║ set / system"),
+        (Color::Reset, Color::Reset)
+    );
 }
 
 #[test]

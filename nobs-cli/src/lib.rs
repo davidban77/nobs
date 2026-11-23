@@ -6702,6 +6702,129 @@ mod tests {
         assert_eq!(names(), ["nobs-t-srl1", "nobs-t-srl3"]);
     }
 
+    struct NoDocker;
+
+    impl Runner for NoDocker {
+        fn run(&self, _program: &str, _args: &[OsString]) -> io::Result<i32> {
+            Err(io::Error::other("nobs-t-no-docker"))
+        }
+
+        fn output(&self, _program: &str, _args: &[OsString]) -> io::Result<Output> {
+            Err(io::Error::other("nobs-t-no-docker"))
+        }
+    }
+
+    type Texts = Vec<(String, Result<String, nobs_core::intended::Failure>)>;
+
+    fn polled_until(
+        updates: &std::sync::mpsc::Receiver<nobs_tui::Update>,
+        done: impl Fn(&[String], &Texts) -> bool,
+    ) -> (Vec<String>, Texts) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let (mut devices, mut texts) = (Vec::new(), Vec::new());
+        while !done(&devices, &texts) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match updates
+                .recv_timeout(left)
+                .expect("the pollers gave no such answer")
+            {
+                nobs_tui::Update::Devices(list) => {
+                    devices = list
+                        .unwrap()
+                        .into_iter()
+                        .map(|device| device.name)
+                        .collect();
+                }
+                nobs_tui::Update::Intended(list) => texts = list,
+                _ => {}
+            }
+        }
+        (devices, texts)
+    }
+
+    #[test]
+    fn the_screen_text_equals_device_render_for_the_same_device_and_follows_lab_vars() {
+        let lab = project_lab(
+            "screen-intended",
+            &[
+                ("expected/lab_vars.yml", "lab_vars.yml"),
+                ("expected/lab.clab.yml", "lab.clab.yml"),
+            ],
+        );
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/project-two-node");
+        fs::create_dir_all(lab.0.join("templates")).unwrap();
+        fs::copy(
+            fixture.join("templates/srl.j2"),
+            lab.0.join("templates/srl.j2"),
+        )
+        .unwrap();
+        let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
+        let located = start.lab.clone().unwrap();
+        let command = |name: &str| {
+            let (topology, nodes) = device_nodes(&located).unwrap();
+            let node = topology_node(name, &topology, &nodes).unwrap();
+            let (source, error) = containerlab_source(&located);
+            let source = source.as_deref().ok_or_else(|| error.unwrap_or_default());
+            intended(&located.dir, name, &node.kind, source)
+        };
+        let files = nobs_tui::poll::LabFiles::of(&start).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            files.source.as_ref().unwrap(),
+            start.source.as_ref().unwrap()
+        ));
+        let (pollers, updates) = nobs_tui::Pollers::start(
+            Arc::new(NoDocker),
+            Vec::new(),
+            0,
+            start.sonda.clone(),
+            start
+                .source
+                .clone()
+                .map(|source| (source, start.source_service)),
+            Some(start.urls.clone()),
+            Some(files),
+        );
+
+        let (devices, texts) = polled_until(&updates, |devices, texts| {
+            !devices.is_empty() && !texts.is_empty()
+        });
+        assert_eq!(devices, ["nobs-t-srl1", "nobs-t-srl2"]);
+        let srl1 = fs::read_to_string(fixture.join("expected/configs/nobs-t-srl1.cfg")).unwrap();
+        assert_eq!(texts[0], ("nobs-t-srl1".to_string(), Ok(srl1)));
+        for (name, text) in &texts {
+            assert_eq!(*text, command(name), "{name}");
+        }
+
+        let path = lab.0.join("containerlab/lab_vars.yml");
+        let vars = fs::read_to_string(&path).unwrap();
+        fs::write(&path, vars.replace("nobs-t-srl2", "nobs-t-srl3")).unwrap();
+        pollers.send(nobs_tui::Command::Refresh);
+
+        let (_, texts) = polled_until(&updates, |devices, texts| {
+            devices == ["nobs-t-srl1", "nobs-t-srl3"]
+                && texts
+                    .iter()
+                    .any(|(name, text)| name == "nobs-t-srl2" && text.is_err())
+        });
+        for (name, text) in &texts {
+            assert_eq!(*text, command(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_workshop_gives_the_screen_no_lab_files_and_so_no_intended_poller() {
+        let workshop = workshop_scratch("screen-intended-workshop", Some("none"), None);
+        let book = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/book-lab");
+        let files = |dir: &Path| {
+            let start = screen_start_with(dir, None, flags(None), false, &|_| None).unwrap();
+            nobs_tui::poll::LabFiles::of(&start).is_some()
+        };
+
+        assert!(!files(&workshop.0));
+        assert!(files(&book));
+    }
+
     #[test]
     fn a_server_given_with_the_flag_counts_as_set_for_sonda_in_a_lab() {
         let lab = project_lab(
