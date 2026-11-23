@@ -43,6 +43,7 @@ impl Renderer {
         let mut environment = Environment::new();
         environment.set_loader(path_loader(folder));
         environment.set_undefined_behavior(UndefinedBehavior::Strict);
+        environment.set_debug(true);
         let syntax = SyntaxConfig::builder()
             .keep_trailing_newline(true)
             .trim_blocks(true)
@@ -227,6 +228,26 @@ mod tests {
         .unwrap_err();
         assert!(error.starts_with("templates/motd.j2: "), "{error}");
         assert!(error.contains("mtu"), "{error}");
+    }
+
+    #[test]
+    fn an_error_is_one_line_without_the_template_source_or_the_data() {
+        let vars = node_vars(json!({"nobs-t-key": "nobs-t-data-value"}), None);
+        for (tag, source) in [
+            ("syntax", "nobs-t-source-line {{ name }}\n{% if %}\n"),
+            (
+                "undefined",
+                "nobs-t-source-line {{ name }}\n{{ hostname }}\n",
+            ),
+        ] {
+            let error = config_from_source(tag, source, &vars).unwrap_err();
+            assert!(error.starts_with("templates/motd.j2: "), "{error}");
+            assert!(error.contains("motd.j2:2"), "{error}");
+            assert_eq!(error.lines().count(), 1, "{error}");
+            for leak in ["nobs-t-source-line", "nobs-t-data-value", "nobs-t-srl1"] {
+                assert!(!error.contains(leak), "{error}");
+            }
+        }
     }
 
     #[test]
