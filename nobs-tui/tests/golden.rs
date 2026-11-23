@@ -10,9 +10,10 @@ use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::device::{PASSWORD, USER};
 use nobs_core::lab::{services, Service};
 use nobs_core::lab_vars;
-use nobs_core::locate::{locate, Kind, Located};
+use nobs_core::locate::{locate, Kind, Located, Nodes};
 use nobs_core::loki::Line as LokiLine;
 use nobs_core::prefect::FlowRun;
+use nobs_core::project::Rendered;
 use nobs_core::prometheus::Sample;
 use nobs_core::sot::{Device, Fixed, Interface, Session, SourceOfTruth};
 use nobs_core::status::{self, Urls};
@@ -152,6 +153,8 @@ fn clock() -> SystemTime {
 
 fn begin(lab: Option<Located>, stacks: Vec<Stack>, home: Workbench) -> Start {
     Start {
+        nodes: lab.as_ref().and_then(Located::nodes),
+        topology: lab.as_ref().map(Located::topology),
         lab,
         stacks,
         sonda: SondaTarget {
@@ -1667,6 +1670,162 @@ fn the_lab_overview_with_the_focus_frame_is_pinned() {
     });
 }
 
+fn bench_in(dir: &Path) -> Shell {
+    let lab = locate(dir, Some(dir)).unwrap();
+    let stacks = stacks(Some(&lab), Vec::new()).unwrap();
+    let mut model = Shell::new(Start {
+        chooser: false,
+        ..begin(Some(lab), stacks, Workbench::Lab)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
+    model
+}
+
+fn project_bench() -> Shell {
+    bench_in(Path::new(PROJECT_LAB))
+}
+
+fn topology_bench() -> Shell {
+    let dir = PathBuf::from("/home/me/hand-written");
+    let topology = dir.join("containerlab/lab.clab.yml");
+    let stack = Stack {
+        name: "hand-written".to_string(),
+        kind: StackKind::Lab,
+        compose: dir.join("docker-compose.yml"),
+        path: dir.clone(),
+        project: None,
+        env: Vec::new(),
+        shows_sonda: false,
+    };
+    let lab = Located {
+        dir,
+        kind: Kind::LabcliLab(None),
+    };
+    let mut model = Shell::new(Start {
+        chooser: false,
+        nodes: Some(Nodes::Topology),
+        topology: Some(topology),
+        ..begin(Some(lab), vec![stack], Workbench::Lab)
+    });
+    model.tick(Instant::now(), clock(), (80, 24));
+    model
+}
+
+fn two_nodes(state: Option<&str>) -> Update {
+    Update::Nodes(Ok(vec![
+        node("nobs-t-srl1", state),
+        node("nobs-t-srl2", state),
+    ]))
+}
+
+fn project_with(files: Rendered, state: Option<&str>) -> Shell {
+    let mut model = project_bench();
+    model.apply(two_nodes(state));
+    model.apply(Update::Files(files));
+    model
+}
+
+fn project_new() -> Shell {
+    let mut model = project_bench();
+    model.apply(Update::Nodes(Ok(Vec::new())));
+    model.apply(Update::Files(Rendered::NotRendered));
+    model
+}
+
+fn acted(mut model: Shell, keys: &[KeyCode], seconds: u64, then: [Update; 2]) -> Shell {
+    for key in keys {
+        press(&mut model, *key);
+    }
+    later(&mut model, seconds);
+    model.apply(Update::ActionEnded(End::Exited(0)));
+    for update in then {
+        model.apply(update);
+    }
+    press(&mut model, KeyCode::Esc);
+    model
+}
+
+#[test]
+fn the_lab_frames_of_a_project_folder_are_pinned() {
+    use KeyCode::Char;
+    golden("lab-project-new", project_new);
+    golden("lab-project", || {
+        let rendered = [two_nodes(None), Update::Files(Rendered::AsRendered)];
+        acted(project_new(), &[Char('R')], 2, rendered)
+    });
+    golden("lab-project-differ", || {
+        project_with(Rendered::Differ { count: 1, of: 4 }, None)
+    });
+    golden("lab-project-running", || {
+        let deployed = [
+            two_nodes(Some("running")),
+            Update::Files(Rendered::AsRendered),
+        ];
+        let model = project_with(Rendered::AsRendered, None);
+        acted(model, &[Char('D'), Char('y')], 48, deployed)
+    });
+}
+
+#[test]
+fn the_lab_frame_of_a_folder_with_only_a_topology_is_pinned() {
+    use KeyCode::Char;
+    golden("lab-topology", || {
+        let mut model = topology_bench();
+        model.apply(two_nodes(None));
+        let deployed = [two_nodes(None), two_nodes(Some("running"))];
+        acted(model, &[Char('D'), Char('y')], 30, deployed)
+    });
+}
+
+#[test]
+fn a_folder_with_only_a_topology_has_services_without_a_compose_file_and_its_devices() {
+    let mut services = topology_bench();
+    services.apply(Update::Services(0, defined(&[]), Ok(Vec::new())));
+    press(&mut services, KeyCode::Char('2'));
+    let mut devices = topology_bench();
+    press(&mut devices, KeyCode::Char('1'));
+
+    let services = lines(&render(services, 100, 30));
+    let devices = lines(&render(devices, 100, 30));
+
+    let shown = services.join("\n");
+    assert!(
+        services[1].starts_with(" 1 devices  [2 services]  3 lab  4 observability"),
+        "{shown}"
+    );
+    assert!(shown.contains("no services in this lab"), "{shown}");
+    let shown = devices.join("\n");
+    assert!(
+        devices[1].starts_with(" [1 devices]  2 services  3 lab  4 observability"),
+        "{shown}"
+    );
+    assert!(shown.contains(" devices 0 "), "{shown}");
+}
+
+#[test]
+fn the_lab_help_frame_of_a_project_folder_is_pinned() {
+    golden("help-lab-project", || {
+        let mut model = project_new();
+        press(&mut model, KeyCode::Char('?'));
+        model
+    });
+}
+
+#[test]
+fn an_error_of_the_project_file_is_said_in_the_files_line_and_the_nodes_still_show() {
+    let error = Rendered::Error("no template for nobs-t-srl1".to_string());
+    let screen = lines(&render(project_with(error, Some("running")), 60, 15)).join("\n");
+    let waiting = lines(&render(project_bench(), 60, 15)).join("\n");
+
+    assert!(
+        screen.contains("│ files     error: no template for …│"),
+        "{screen}"
+    );
+    assert!(screen.contains("nobs-t-srl1  running║"), "{screen}");
+    assert!(screen.contains("│ nodes     2 of 2 running"), "{screen}");
+    assert!(waiting.contains("│ files     ?"), "{waiting}");
+}
+
 #[test]
 fn a_narrow_run_title_cuts_its_command_to_keep_its_time_whole_and_a_gap_before_the_hint() {
     let mut folded = deployed_after(120, End::Exited(0));
@@ -1948,7 +2107,7 @@ fn not_run() -> Shell {
     model.apply(Update::ActionError(
         "sudo: a password is required".to_string(),
     ));
-    model.apply(Update::ActionError(sudo_refused_line("destroy")));
+    model.apply(Update::ActionError(sudo_refused_line("lab destroy")));
     later(&mut model, 2);
     model.apply(Update::ActionEnded(End::Exited(1)));
     model.apply(Update::Asked(Ok(false)));
@@ -2099,7 +2258,9 @@ fn asked(action: &Action) -> Shell {
     let mut model = match action.row {
         Row::Stack => services_model(),
         Row::Device | Row::Node => maintenance_model(false),
-        Row::Chapter | Row::Lab => lab_model(),
+        Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => lab_model(),
+        Row::Lab([Nodes::Project, ..]) => project_bench(),
+        Row::Lab(_) => topology_bench(),
     };
     press(&mut model, KeyCode::Char(action.key));
     model

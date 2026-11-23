@@ -74,6 +74,8 @@ pub fn shell(home: Workbench) -> Shell {
             dir: path.clone(),
             kind: Kind::LabcliLab(None),
         }),
+        nodes: None,
+        topology: None,
         stacks: vec![Stack {
             name: "ws".to_string(),
             kind: StackKind::Workshop,

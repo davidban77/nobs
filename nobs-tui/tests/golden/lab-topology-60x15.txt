@@ -1,0 +1,15 @@
+ nobs  hand-written lab  sot none                  13:42:07
+ 1 devices  2 services  [3 lab]  4 obs       ? keys  q quit
+╔ nodes 2 ════════════╗┌ hand-written ─────────────────────┐
+║ NAME         STATE  ║│OVERVIEW                           │
+║>nobs-t-srl1  running║│ topology  containerlab/lab.clab.y…│
+║ nobs-t-srl2  running║│ nodes     2 of 2 running          │
+║                     ║│ last      containerlab …  exit 0  │
+║                     ║│                                   │
+║                     ║│                                   │
+║                     ║│                                   │
+║                     ║│                                   │
+║                     ║│                                   │
+╚═════════════════════╝└───────────────────────────────────┘
+ run  containerlab deploy …  exit 0  30s             o open
+ Tab focus  j/k move  D deploy  X destroy  S show  r refresh

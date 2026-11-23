@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::lab;
+use crate::project;
 use crate::settings::{read_settings, read_settings_file, Lab, Settings, Workshop};
 
 pub const FILE: &str = "nobs.toml";
@@ -31,6 +32,13 @@ pub enum Kind {
     LabcliLab(Option<Lab>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nodes {
+    Chapters,
+    Project,
+    Topology,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Located {
     pub dir: PathBuf,
@@ -52,20 +60,30 @@ impl Located {
         }
     }
 
+    pub fn nodes(&self) -> Option<Nodes> {
+        match self.kind {
+            Kind::BookLab(_) => Some(Nodes::Chapters),
+            Kind::Workshop(_) => None,
+            Kind::LabcliLab(_) if self.has_project() => Some(Nodes::Project),
+            Kind::LabcliLab(_) => self.topology().is_file().then_some(Nodes::Topology),
+        }
+    }
+
     pub fn topology(&self) -> PathBuf {
+        if self.has_project() {
+            return self.dir.join(project::TOPOLOGY);
+        }
         if let Some(file) = self.lab().and_then(|lab| lab.topology.as_ref()) {
             return self.dir.join(file);
         }
-        let folder = self.dir.join("containerlab");
         if matches!(self.kind, Kind::BookLab(_)) {
-            return folder.join("lab.yml");
+            return self.dir.join("containerlab/lab.yml");
         }
-        let yaml = folder.join("lab.clab.yaml");
-        if yaml.is_file() {
-            yaml
-        } else {
-            folder.join("lab.clab.yml")
-        }
+        hand_written_topology(&self.dir)
+    }
+
+    fn has_project(&self) -> bool {
+        matches!(self.kind, Kind::LabcliLab(_)) && self.dir.join(project::FILE).is_file()
     }
 
     pub fn project(&self) -> Option<&str> {
@@ -95,12 +113,23 @@ impl Located {
 
 type Marker = fn(&Path) -> Result<Option<Kind>, LocateError>;
 
-const MARKERS: [Marker; 4] = [
+const MARKERS: [Marker; 5] = [
     settings_file,
     book_lab_layout,
     project_file,
     labcli_lab_layout,
+    topology_file,
 ];
+
+fn hand_written_topology(dir: &Path) -> PathBuf {
+    let folder = dir.join("containerlab");
+    let yaml = folder.join("lab.clab.yaml");
+    if yaml.is_file() {
+        yaml
+    } else {
+        folder.join("lab.clab.yml")
+    }
+}
 
 fn settings_file(dir: &Path) -> Result<Option<Kind>, LocateError> {
     let file = dir.join(FILE);
@@ -131,7 +160,7 @@ fn book_lab_layout(dir: &Path) -> Result<Option<Kind>, LocateError> {
 
 fn project_file(dir: &Path) -> Result<Option<Kind>, LocateError> {
     Ok(dir
-        .join("nobs_project.yml")
+        .join(project::FILE)
         .is_file()
         .then_some(Kind::LabcliLab(None)))
 }
@@ -139,6 +168,12 @@ fn project_file(dir: &Path) -> Result<Option<Kind>, LocateError> {
 fn labcli_lab_layout(dir: &Path) -> Result<Option<Kind>, LocateError> {
     Ok(dir
         .join("docker-compose.yml")
+        .is_file()
+        .then_some(Kind::LabcliLab(None)))
+}
+
+fn topology_file(dir: &Path) -> Result<Option<Kind>, LocateError> {
+    Ok(hand_written_topology(dir)
         .is_file()
         .then_some(Kind::LabcliLab(None)))
 }
@@ -502,6 +537,92 @@ mod tests {
                 "{topology}"
             );
         }
+    }
+
+    #[test]
+    fn nodes_say_what_makes_the_nodes_of_each_kind_of_folder() {
+        let scratch = Scratch::new("nodes");
+        let book = scratch.book_lab("book");
+        scratch.file("ws/nobs.toml", &workshop_text());
+        scratch.file("ws/containerlab/lab.clab.yml", "");
+        scratch.file("project/nobs_project.yml", "");
+        scratch.file("project-compose/nobs_project.yml", "");
+        scratch.file("project-compose/docker-compose.yml", "");
+        scratch.file("project-yaml/nobs_project.yml", "");
+        scratch.file("project-yaml/containerlab/lab.clab.yaml", "");
+        scratch.file("labcli/docker-compose.yml", "");
+        scratch.file("labcli/containerlab/lab.clab.yml", "");
+        scratch.file("compose/docker-compose.yml", "");
+        scratch.file("topology/containerlab/lab.clab.yaml", "");
+        for (folder, nodes) in [
+            (book, Some(Nodes::Chapters)),
+            (scratch.0.join("ws"), None),
+            (scratch.0.join("project"), Some(Nodes::Project)),
+            (scratch.0.join("project-compose"), Some(Nodes::Project)),
+            (scratch.0.join("project-yaml"), Some(Nodes::Project)),
+            (scratch.0.join("labcli"), Some(Nodes::Topology)),
+            (scratch.0.join("compose"), None),
+            (scratch.0.join("topology"), Some(Nodes::Topology)),
+        ] {
+            let located = locate(&folder, Some(&folder)).unwrap();
+            assert_eq!(located.nodes(), nodes, "{folder:?}");
+        }
+    }
+
+    #[test]
+    fn in_a_project_folder_the_topology_is_the_rendered_file_before_a_setting_and_a_yaml() {
+        let scratch = Scratch::new("project-topology");
+        let lab = scratch.dir("lab");
+        scratch.file("lab/nobs_project.yml", "");
+        scratch.file("lab/containerlab/lab.clab.yaml", "");
+        assert_eq!(
+            locate(&lab, None).unwrap().topology(),
+            lab.join("containerlab/lab.clab.yml")
+        );
+        scratch.file("lab/nobs.toml", "kind = \"lab\"\ntopology = \"t/x.yml\"\n");
+        let located = locate(&lab, None).unwrap();
+        assert!(
+            matches!(located.kind, Kind::LabcliLab(Some(_))),
+            "{located:?}"
+        );
+        assert_eq!(located.topology(), lab.join(project::TOPOLOGY));
+    }
+
+    #[test]
+    fn a_folder_with_only_a_containerlab_file_is_a_labcli_lab_found_from_below() {
+        for name in ["lab.clab.yaml", "lab.clab.yml"] {
+            let scratch = Scratch::new("topology-only");
+            let topology = scratch.file(&format!("lab/containerlab/{name}"), "");
+            let located = locate(&scratch.dir("lab/containerlab/sub"), None).unwrap();
+            assert_eq!(located.dir, scratch.0.join("lab"), "{name}");
+            assert_eq!(located.kind, Kind::LabcliLab(None), "{name}");
+            assert_eq!(located.topology(), topology, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_containerlab_file_changes_no_folder_found_by_the_four_markers_before_it() {
+        let scratch = Scratch::new("topology-last");
+        scratch.file("ws/nobs.toml", &workshop_text());
+        scratch.file("settings/nobs.toml", "kind = \"lab\"\n");
+        let book = scratch.book_lab("book");
+        scratch.file("project/nobs_project.yml", "");
+        scratch.file("compose/docker-compose.yml", "");
+        scratch.file("compose/inner/containerlab/lab.clab.yml", "");
+        for folder in ["ws", "settings", "book", "project"] {
+            scratch.file(&format!("{folder}/containerlab/lab.clab.yml"), "");
+        }
+        let kind = |folder: &Path| locate(folder, None).unwrap().kind;
+        assert!(matches!(kind(&scratch.0.join("ws")), Kind::Workshop(_)));
+        assert!(matches!(
+            kind(&scratch.0.join("settings")),
+            Kind::LabcliLab(Some(_))
+        ));
+        assert_eq!(kind(&book), Kind::BookLab(None));
+        let project = locate(&scratch.0.join("project"), None).unwrap();
+        assert_eq!(project.nodes(), Some(Nodes::Project));
+        let inner = scratch.0.join("compose/inner");
+        assert_eq!(locate(&inner, None).unwrap().dir, scratch.0.join("compose"));
     }
 
     #[test]

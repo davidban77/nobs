@@ -10,8 +10,10 @@ use std::time::{Duration, Instant, SystemTime};
 use nobs_core::alertmanager::Alertmanager;
 use nobs_core::compose::Compose;
 use nobs_core::lab;
+use nobs_core::locate::{Located, Nodes};
 use nobs_core::loki::{rca_selector, Loki};
 use nobs_core::prefect::Prefect;
+use nobs_core::project;
 use nobs_core::prometheus::Prometheus;
 use nobs_core::runner::{Output, Runner};
 use nobs_core::sonda::Sonda;
@@ -34,6 +36,7 @@ const ALERTS_PERIOD: Duration = Duration::from_secs(2);
 const DEVICE_LOGS_PERIOD: Duration = Duration::from_secs(2);
 const FLOWS_PERIOD: Duration = Duration::from_secs(5);
 const NODES_PERIOD: Duration = Duration::from_secs(5);
+const FILES_PERIOD: Duration = Duration::from_secs(5);
 const DEVICE_LOG_LIMIT: u64 = 200;
 const FLOW_RUN_LIMIT: u64 = 100;
 const METRICS_QUERY: &str =
@@ -57,6 +60,22 @@ pub struct Pollers {
     loki: Option<Source>,
     prefect: Option<Source>,
     nodes: Option<Source>,
+    files: Option<Source>,
+}
+
+pub struct LabFiles {
+    pub topology: PathBuf,
+    pub project: Option<PathBuf>,
+}
+
+impl LabFiles {
+    pub fn of(lab: &Located, nodes: Option<Nodes>, topology: Option<PathBuf>) -> Option<LabFiles> {
+        let nodes = nodes?;
+        Some(LabFiles {
+            topology: topology?,
+            project: (nodes == Nodes::Project).then(|| lab.dir.clone()),
+        })
+    }
 }
 
 enum Wake {
@@ -101,15 +120,23 @@ impl Pollers {
         sonda: SondaTarget,
         source: Option<(Arc<dyn SourceOfTruth>, Option<Service>)>,
         urls: Option<Urls>,
-        topology: Option<PathBuf>,
+        lab: Option<LabFiles>,
     ) -> (Pollers, Receiver<Update>) {
         let (updates, out) = mpsc::channel();
         let stacks: Arc<[Stack]> = stacks.into();
+        let (topology, project) = lab.map_or((None, None), |lab| (Some(lab.topology), lab.project));
         let nodes = topology.map(|topology| {
             let runner = Arc::clone(&runner);
             spawn("nodes", &updates, move |inbox, out| {
                 every(NODES_PERIOD, false, inbox, out, || {
                     Update::Nodes(nodes(runner.as_ref(), &topology))
+                })
+            })
+        });
+        let files = project.map(|dir| {
+            spawn("files", &updates, move |inbox, out| {
+                every(FILES_PERIOD, false, inbox, out, || {
+                    Update::Files(project::rendered(&dir))
                 })
             })
         });
@@ -206,6 +233,7 @@ impl Pollers {
                 loki,
                 prefect,
                 nodes,
+                files,
             },
             out,
         )
@@ -222,6 +250,7 @@ impl Pollers {
                     &self.loki,
                     &self.prefect,
                     &self.nodes,
+                    &self.files,
                 ],
             ),
             Command::SelectStack(_) => (&[&self.health, &self.sonda], &[]),
@@ -669,8 +698,11 @@ fn services(runner: &dyn Runner, stack: &Stack) -> Result<Vec<lab::Service>, Str
 }
 
 fn nodes(runner: &dyn Runner, topology: &Path) -> Result<Vec<book::NodeRow>, String> {
-    let text = fs::read_to_string(topology)
-        .map_err(|error| format!("cannot read {}: {error}", topology.display()))?;
+    let text = match fs::read_to_string(topology) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("cannot read {}: {error}", topology.display())),
+    };
     let nodes = lab::topology_nodes(&text)?;
     let args = ["ps", "-a", "--format", "{{.Names}}\t{{.State}}"].map(OsString::from);
     answer(runner.output(Compose::PROGRAM, &args), |stdout| {
@@ -748,6 +780,30 @@ fn probe(stack: &Stack, server: Option<&str>, asked: &[Service]) -> Vec<Health> 
 mod tests {
     use super::*;
     use crate::shell::tests::stack;
+
+    #[test]
+    fn lab_files_name_the_project_folder_only_for_a_project() {
+        let dir = PathBuf::from("/lab");
+        let file = dir.join("containerlab/lab.clab.yml");
+        let lab = Located {
+            dir: dir.clone(),
+            kind: nobs_core::locate::Kind::LabcliLab(None),
+        };
+        let of = |nodes: Option<Nodes>, topology: Option<PathBuf>| {
+            LabFiles::of(&lab, nodes, topology).map(|files| (files.topology, files.project))
+        };
+
+        assert_eq!(
+            of(Some(Nodes::Project), Some(file.clone())),
+            Some((file.clone(), Some(dir)))
+        );
+        assert_eq!(
+            of(Some(Nodes::Topology), Some(file.clone())),
+            Some((file.clone(), None))
+        );
+        assert_eq!(of(None, Some(file)), None);
+        assert_eq!(of(Some(Nodes::Project), None), None);
+    }
 
     #[test]
     fn the_poller_takes_the_shells_old_name_over_the_new_name_in_the_stacks_file() {

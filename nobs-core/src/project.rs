@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::fmt;
+use std::fs;
 use std::marker::PhantomData;
+use std::path::Path;
 
 use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, Serializer};
@@ -8,6 +10,10 @@ use serde::Deserialize;
 use serde_saphyr::Spanned;
 
 use crate::render::{template_name, Renderer};
+
+pub const FILE: &str = "nobs_project.yml";
+
+pub const TOPOLOGY: &str = "containerlab/lab.clab.yml";
 
 #[derive(Debug, Clone, PartialEq)]
 enum Ordered {
@@ -416,6 +422,79 @@ impl Project {
     }
 }
 
+pub fn outputs(dir: &Path, file: Option<&Path>) -> Result<Vec<(String, String)>, String> {
+    let (name, path) = match file {
+        Some(file) => (file.display().to_string(), dir.join(file)),
+        None => (FILE.to_string(), dir.join(FILE)),
+    };
+    if !path.is_file() {
+        return Err(match file {
+            Some(_) => format!("no project file at {name}"),
+            None => format!("no {FILE} in {}", dir.display()),
+        });
+    }
+    let text = fs::read_to_string(&path).map_err(|error| format!("cannot read {name}: {error}"))?;
+    let parsed = read(&text).map_err(|reason| format!("{name}: {reason}"))?;
+    let renderer = Renderer::new(&dir.join("templates"));
+    let mut outputs = vec![
+        (TOPOLOGY.to_string(), parsed.topology_yaml()?),
+        (
+            "containerlab/lab_vars.yml".to_string(),
+            parsed.lab_vars_yaml()?,
+        ),
+    ];
+    for node in parsed.node_names() {
+        let config = parsed.startup_config(&node, &renderer)?;
+        outputs.push((format!("containerlab/configs/{node}.cfg"), config));
+    }
+    Ok(outputs)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Written {
+    Same,
+    Differs,
+    Missing,
+}
+
+pub fn compare(dir: &Path, outputs: &[(String, String)]) -> Vec<Written> {
+    outputs
+        .iter()
+        .map(|(relative, text)| match fs::read(dir.join(relative)) {
+            Ok(current) if current == text.as_bytes() => Written::Same,
+            Ok(_) => Written::Differs,
+            Err(_) => Written::Missing,
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rendered {
+    NotRendered,
+    AsRendered,
+    Differ { count: usize, of: usize },
+    Error(String),
+}
+
+pub fn rendered(dir: &Path) -> Rendered {
+    let outputs = match outputs(dir, None) {
+        Ok(outputs) => outputs,
+        Err(message) => return Rendered::Error(message),
+    };
+    let written = compare(dir, &outputs);
+    let count = written.iter().filter(|w| **w != Written::Same).count();
+    if written.iter().all(|w| *w == Written::Missing) {
+        Rendered::NotRendered
+    } else if count == 0 {
+        Rendered::AsRendered
+    } else {
+        Rendered::Differ {
+            count,
+            of: written.len(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,6 +671,66 @@ mod tests {
         let text = "main:\n  name: nobs-t-p\n  mgmt:\n    network: nobs-t-net\nnodes:\n  - kind: nokia_srlinux\n    image: nobs-t-image\n    nodes: [nobs-t-srl1, nobs-t-srl2]\nlink:\n  nobs-t-srl1:\n    - {port: e1-1, node_b: nobs-t-srl2, port_b: e1-1}\nvars: {}\n";
         let error = read(text).unwrap_err();
         assert!(error.contains("link"), "{error}");
+    }
+
+    struct Folder(std::path::PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("nobs-project-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            let folder = Self(root);
+            folder.write(FILE, PROJECT);
+            folder.write(
+                "templates/srl.j2",
+                include_str!("../../tests/fixtures/project-two-node/templates/srl.j2"),
+            );
+            folder
+        }
+
+        fn write(&self, relative: &str, text: &str) {
+            let path = self.0.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn compare_and_rendered_name_each_state_of_the_written_files() {
+        use Written::{Differs, Missing, Same};
+        let folder = Folder::new("states");
+        let dir = folder.0.as_path();
+        let outputs = outputs(dir, None).unwrap();
+        assert_eq!(outputs[0].0, super::TOPOLOGY);
+
+        assert_eq!(compare(dir, &outputs), [Missing; 4]);
+        assert_eq!(rendered(dir), Rendered::NotRendered);
+
+        for (relative, text) in &outputs {
+            folder.write(relative, text);
+        }
+        assert_eq!(compare(dir, &outputs), [Same; 4]);
+        assert_eq!(rendered(dir), Rendered::AsRendered);
+
+        folder.write("containerlab/lab_vars.yml", "extra: 1\n");
+        assert_eq!(compare(dir, &outputs), [Same, Differs, Same, Same]);
+        assert_eq!(rendered(dir), Rendered::Differ { count: 1, of: 4 });
+
+        fs::remove_file(dir.join("containerlab/configs/nobs-t-srl2.cfg")).unwrap();
+        assert_eq!(compare(dir, &outputs), [Same, Differs, Same, Missing]);
+        assert_eq!(rendered(dir), Rendered::Differ { count: 2, of: 4 });
+
+        folder.write(FILE, "main: [\n");
+        let error = super::outputs(dir, None).unwrap_err();
+        assert!(error.starts_with("nobs_project.yml: "), "{error}");
+        assert_eq!(rendered(dir), Rendered::Error(error));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for the book lab. A workshop opens on the devices workbench. The screen can run sixteen actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run twenty-one actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -12,7 +12,7 @@ Five words are used in this part:
 
 | Word | Meaning |
 |---|---|
-| workbench | one view of the screen for one kind of work: `1 devices`, `2 services`, in a book lab only `3 lab`, and last `observability`; the number in front of a name is its key, so observability is `3`, or `4` in a book lab; the observability workbench has three views of its own, `alerts`, `logs` and `metrics` |
+| workbench | one view of the screen for one kind of work: `1 devices`, `2 services`, in a lab with containerlab nodes `3 lab`, and last `observability`; the number in front of a name is its key, so observability is `3`, or `4` in a lab with containerlab nodes; the observability workbench has three views of its own, `alerts`, `logs` and `metrics` |
 | action | a nobs command that the screen runs for you when you press its key; an action that changes something asks `y/n` first (see [Actions](#actions)) |
 | stack | one group of containers that Docker Compose starts together: a workshop, one chapter of the book lab, or a labcli lab; the row `sonda only` is listed as a stack too, but it has no containers |
 | focus | the part of the screen that gets your keys, the stack list or the tabs, and in the sonda tab also the right panel; in the lab workbench, the chapters, the nodes or the overview; the keys box (`?`) and the box of a timeline entry while they are open; `Tab` moves it; the box that has the focus has a double border (`╔═╗`), and no other box has one |
@@ -43,7 +43,7 @@ The screen reads the `.env` file of each stack itself, and asks each stack's Son
 | Part | Where | What it shows |
 |---|---|---|
 | header | the first line | `nobs`, the name and the kind of the lab, and the `sot` word (`sot` is short for source of truth: the system that holds the intended state of the network): `sot infrahub` or `sot none` as the `sot` setting of `nobs.toml` says in a workshop, `sot lab_vars` in a book lab and in a labcli lab that has the file `containerlab/lab_vars.yml`, `sot none` in a labcli lab without it (see [The devices workbench](#the-devices-workbench)); the clock at the right end, in UTC (world time, not your local time); in the chooser `no lab here`; on the stack `sonda only`, `sonda only` and the server address |
-| switcher | the second line | `1 devices` and `2 services`, `3 lab` in a book lab, and `observability` last, or `obs` when the line has no room, with the open workbench in brackets; `? keys  q quit` at the right end; in the chooser `choose a lab, or q to quit` |
+| switcher | the second line | `1 devices` and `2 services`, `3 lab` in a lab with containerlab nodes, and `observability` last, or `obs` when the line has no room, with the open workbench in brackets; `? keys  q quit` at the right end; in the chooser `choose a lab, or q to quit` |
 | body | the middle | the open workbench, or the chooser |
 | run line | the line above the last | `run  none` before the first action, else the last action and its state, for example `run  lab deploy --sudo-no-prompt -s ch1  exit 0  41s`; `o open` at the right end; when the run pane is open, the pane takes the place of the run line, and `Tab` can move the focus to it while it is open as a box, and when the open pane has room for only one row, the run line stays and shows `Esc fold` at the right end (see [Actions](#actions)); the chooser has no run line |
 | key line | the last line | the keys that work now; while you type a filter, `filter: <text>  Enter keep  Esc clear`; the question or the note of an action |
@@ -166,7 +166,7 @@ The alerts box is still filled.
 
 ### The services workbench
 
-The services workbench is workbench `2`. The screen opens on it, except in a workshop, which opens on the devices workbench, and in a book lab, which opens on the lab workbench. It has two sides.
+The services workbench is workbench `2`. The screen opens on it, except in a workshop, which opens on the devices workbench, and in a lab with containerlab nodes, which opens on the lab workbench. It has two sides.
 
 The left side is the list of stacks, titled `stacks <n>`. A book lab lists its chapters first and then the workshops nobs finds. `>` marks the selected stack, and the right side shows that stack. The state of each stack comes from two calls, run for every stack. `docker compose config --services` gives the services that the compose file of the stack defines. `docker compose ps --all --format json` gives the containers of the stack. When one of the calls fails, the red error row names it: `config <stack>` or `ps <stack>`.
 
@@ -246,9 +246,9 @@ When the server stops answering, or no reply comes within 10 seconds, the tab ke
 
 ### The lab workbench
 
-The lab workbench is workbench `3`. It exists only in a book lab (see [Book lab](#book-lab)), and a book lab opens on it. In any other lab, the switcher shows `1 devices  2 services  3 observability`.
+The lab workbench is workbench `3`. It exists in every lab with containerlab nodes: a book lab (see [Book lab](#book-lab)), a folder with `nobs_project.yml` (see [Project](#project)), and a labcli lab with a topology file, also one with only a topology (see [Where nobs runs from](#where-nobs-runs-from)). Such a lab opens on it. In a workshop or a lab with only a compose file, the switcher shows `1 devices  2 services  3 observability`.
 
-At 60 by 15 it looks like this:
+In a book lab, at 60 by 15, it looks like this:
 
 ```
  nobs  book-lab book lab  sot lab_vars             13:42:07
@@ -320,9 +320,60 @@ nobs: lab destroy: sudo needs a password and cannot ask for it here; run sudo -v
 
 Run `sudo -v`, then the command again.
 
+#### A project folder or a hand-written topology
+
+A folder with `nobs_project.yml`, or a lab with a topology file you wrote yourself, has no chapters. Its lab workbench has the `nodes` box on the left and the overview on the right, and it opens with the focus on the nodes. `Tab` moves the focus between the nodes and the overview. The title of the overview is the name of the lab folder. A project folder before the first render, at 60 by 15:
+
+```
+ nobs  project-two-node lab  sot none              13:42:07
+ 1 devices  2 services  [3 lab]  4 obs       ? keys  q quit
+╔ nodes 0 ════════════╗┌ project-two-node ─────────────────┐
+║ NAME  STATE         ║│OVERVIEW                           │
+║                     ║│ topology  containerlab/lab.clab.y…│
+║                     ║│ nodes     0 of 0 running          │
+║                     ║│ files     not rendered            │
+║                     ║│ last      —                       │
+║                     ║│                                   │
+║                     ║│                                   │
+║                     ║│                                   │
+║                     ║│                                   │
+╚═════════════════════╝└───────────────────────────────────┘
+ run  none                                           o open
+ Tab focus  j/k move  D deploy  X destroy  R render  S show
+```
+
+The overview has these lines:
+
+| Line | What it shows |
+|---|---|
+| `topology` | the topology file; in a folder with `nobs_project.yml` it is `containerlab/lab.clab.yml`, the file `nobs project render` writes |
+| `project` | the Docker Compose project, only when the lab has a project name (the `project` setting of its `nobs.toml`) |
+| `nodes` | how many nodes run; `0 of 0 running` while the topology file is not written yet |
+| `files` | only in a folder with `nobs_project.yml`: whether the files under `containerlab/` are what `nobs project render` would write now |
+| `last` | the last action of the workbench and how it ended; `—` when there was none |
+
+The `files` line counts the same files that `nobs project render --check` names (see [Project](#project)). The screen checks again every 5 seconds, after `r` and after each action. The check writes nothing.
+
+| `files` says | Meaning |
+|---|---|
+| `not rendered` | none of the files that render writes exists |
+| `as rendered` | every file is what render would write, so `render --check` would write nothing |
+| `1 of 4 differ` | 1 of the 4 files is missing or is not what render would write |
+| `error: <text>` | the project file or a template has an error; a long text is cut at the border |
+| `?` | no answer yet, in the first seconds |
+
+| Key | What it does | In a folder with `nobs_project.yml` | In a lab with a topology file and no `nobs_project.yml` |
+|---|---|---|---|
+| `D` | deploy the nodes | `nobs --dir <lab folder> project deploy --sudo-no-prompt`, which writes the files first | `nobs --dir <lab folder> containerlab deploy --sudo-no-prompt` |
+| `X` | destroy the nodes | `nobs --dir <lab folder> containerlab destroy --sudo-no-prompt` | the same |
+| `R` | write the files only | `nobs --dir <lab folder> project render` | nothing; the key line and `?` do not name it |
+| `S` | show the nodes | `nobs --dir <lab folder> containerlab inspect --sudo-no-prompt` | the same |
+
+`D` and `X` ask `y/n` first. `R` and `S` run at once (see [Actions](#actions)). `D`, `X` and `S` act on the same topology file, the one the `topology` line names. The keys act on the nodes only. The services of the lab's compose file stay in the services workbench. When `sudo` needs a password, the screen steps aside as described above, and its lines name the whole command, for example `nobs: containerlab destroy runs containerlab with sudo;`.
+
 ### The observability workbench
 
-The observability workbench has three views. The alerts view shows every alert of the lab in one table, the newest first. The logs view shows the log lines of every device of the lab in one stream, the newest first. The metrics view shows one row for each device of the lab, with how many of its interfaces and of its BGP sessions are up. It is workbench `3`, or `4` in a book lab. Every lab has it. `[` and `]` move between the three views. The first time you open the workbench, it shows the alerts view. After that, it opens on the view you left it on. A visit to the workbench does not change the open tab of the other workbenches: when you press `1`, the device is still on the tab it had before. The alerts view shows the alerts that the screen already asks for the devices workbench, in the same order as the alerts box, and it sends no request of its own.
+The observability workbench has three views. The alerts view shows every alert of the lab in one table, the newest first. The logs view shows the log lines of every device of the lab in one stream, the newest first. The metrics view shows one row for each device of the lab, with how many of its interfaces and of its BGP sessions are up. It is workbench `3`, or `4` in a lab with containerlab nodes, which has the lab workbench as `3`. Every lab has it. `[` and `]` move between the three views. The first time you open the workbench, it shows the alerts view. After that, it opens on the view you left it on. A visit to the workbench does not change the open tab of the other workbenches: when you press `1`, the device is still on the tab it had before. The alerts view shows the alerts that the screen already asks for the devices workbench, in the same order as the alerts box, and it sends no request of its own.
 
 The logs view shows the Loki lines that name a device, without the RCA records. Each row shows the time in UTC, the name of the device and the text. nobs asks for the last 200 lines every 2 seconds, only while the logs view is open and follows. It uses the time window of the timeline tab (see `-` `+` in [Keys](#keys)). The first row says `all devices` and how many lines the view shows, for example `all devices   6 lines`, and at its right end `following` or `paused`. With a kept filter it says how many of the lines the filter shows, for example `all devices   2 of 6 lines`. `f` pauses the view and resumes it. While the view is paused, `>` marks one line, at first the newest. `j` and `k` move the mark, and `Enter` opens the device of the marked line in the devices workbench, on its logs tab. On a line of a device that is not in the lab, the key line does not offer `Enter`, and it does nothing. `/` filters the lines: type the text, then `Enter` keeps the filter and `Esc` clears it. When the lab has no logs service, the view shows the grey sentence `no logs in this lab`, then `to add them, write the address in the lab's .env:` and `  LOGS_URL=http://localhost:3001`. When the stack is down, it shows `the stack is down`. When the logs service does not answer, the view is empty, and the red line `logs: <error>  <n>s ago` shows above the pane.
 
@@ -385,7 +436,7 @@ When the table is not shown, the key line offers only `[ ] view  r refresh`, and
 
 ### Actions
 
-An action is a nobs command that the screen runs for you. There are sixteen:
+An action is a nobs command that the screen runs for you. There are twenty-one:
 
 | Key | Where it works | Command it runs | When you press the key |
 |---|---|---|---|
@@ -405,6 +456,11 @@ An action is a nobs command that the screen runs for you. There are sixteen:
 | `U` | the same as `D`; it acts on every service of the chapter | `nobs --dir <lab folder> lab update -s <chapter>` | asks `y/n` and says `It recreates every service of the chapter and its unnamed volumes, and takes the other chapters' services down.` |
 | `B` | the same as `U` | `nobs --dir <lab folder> lab rebuild -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `S` | the same as `D` | `nobs --dir <lab folder> lab show --sudo-no-prompt -s <chapter>` | runs at once |
+| `D` | the lab workbench of a folder with `nobs_project.yml` | `nobs --dir <lab folder> project deploy --sudo-no-prompt` | asks `y/n` and says `It writes the files under containerlab/ first.` |
+| `D` | the lab workbench of a lab with a topology file and no `nobs_project.yml` | `nobs --dir <lab folder> containerlab deploy --sudo-no-prompt` | asks `y/n` |
+| `X` | the lab workbench of a folder with `nobs_project.yml` or of a lab with a topology file | `nobs --dir <lab folder> containerlab destroy --sudo-no-prompt` | asks `y/n` and says `It removes every node of the lab.` |
+| `R` | the lab workbench of a folder with `nobs_project.yml` | `nobs --dir <lab folder> project render` | runs at once |
+| `S` | the same as this `X` | `nobs --dir <lab folder> containerlab inspect --sudo-no-prompt` | runs at once |
 
 In the questions of `P` and `R`, a scenario is a chapter of the book lab, not a Sonda scenario (see [The lab workbench](#the-lab-workbench)).
 
@@ -424,7 +480,7 @@ run nobs --dir /home/me/ws/packt packt destroy? It removes the stack's volumes. 
 
 Only `y` runs it. Any other key runs nothing, and the line says `not run:` and the command without its `--dir` folder, for example `not run: packt up`.
 
-`s` of the services workbench, `g` and `S` only read, so they ask no `y/n` question. They start at once, and their output shows in the run pane. `g` first asks for a missing device login (see [Device](#device)). `s` of the devices workbench asks for a missing login and then for a command on the key line.
+`s` of the services workbench, `g` and `S` only read, so they ask no `y/n` question. `R` in a folder with `nobs_project.yml` only writes the files that `nobs project render` writes, and asks no question either. They start at once, and their output shows in the run pane. `g` first asks for a missing device login (see [Device](#device)). `s` of the devices workbench asks for a missing login and then for a command on the key line.
 
 Some keys refuse:
 
@@ -469,7 +525,7 @@ An action that failed:
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P` acts on the whole lab, so it marks no row. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`. It lasts while the screen is open.
+When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`. It lasts while the screen is open.
 
 Ctrl-C while an action runs stops it. The title shows `stopping`. The screen starts each action in its own process group: a process group is a program together with every program it starts. The screen sends an interrupt to the whole group. If the group has not ended 5 seconds later, the screen kills it. When the whole group has ended, the title shows `stopped`. Ctrl-C when no action runs closes the screen.
 
@@ -487,8 +543,8 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 
 | Key | What it does |
 |---|---|
-| `1` `2` `3` `4` | open the workbench whose number stands in front of its name; `3` is observability, or the lab workbench in a book lab, where observability is `4` |
-| `Tab` | move the focus between the stack list and the tabs; in the sonda tab, from the stack list to the tabs, then to the right panel, then back to the stack list; in the devices workbench, between the device list and the tabs; in the lab workbench, from the chapters to the nodes, then to the overview, then back to the chapters; in the observability workbench, to the run pane while it is open; while the run pane is open as a box, not only as the one run line, the last stop is the pane |
+| `1` `2` `3` `4` | open the workbench whose number stands in front of its name; `3` is observability, or the lab workbench in a lab with containerlab nodes, where observability is `4` |
+| `Tab` | move the focus between the stack list and the tabs; in the sonda tab, from the stack list to the tabs, then to the right panel, then back to the stack list; in the devices workbench, between the device list and the tabs; in the lab workbench, from the chapters to the nodes, then to the overview, then back to the chapters, and in a lab without chapters between the nodes and the overview; in the observability workbench, to the run pane while it is open; while the run pane is open as a box, not only as the one run line, the last stop is the pane |
 | `j` `k` and the arrow keys | move the selection: the stack in the list, the service in the overview tab, the scenario in the sonda tab, the row in the chooser; in the devices workbench, the device in the list and then the alert in the alerts box, the row in the interfaces tab and the row in the timeline tab; in the lab workbench, the chapter or the node; in the observability workbench, the alert in the table, or the mark in the logs view; in the overview tab of a device, in the box of a timeline row, in the overview of the lab workbench and in the right panel of the sonda tab, move the text by one line; scroll a log and the Config tab; in a log that follows, the key that leaves the newest line pauses it first, and `f` follows again; a log with only one line keeps following; with the focus in the run pane, scroll it by one row |
 | `PgUp` `PgDn` | wherever `j` and `k` move, move one page: the rows the box shows, less one, so the last row you saw stays on the screen |
 | `[` `]` | open the previous or the next tab, when the focus is on the tabs, or on the right panel of the sonda tab; the devices workbench has four tabs, six in a lab with containerlab nodes; in the observability workbench, open the other view, `alerts` or `logs` |
@@ -503,11 +559,12 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `m` | ask to set or clear the maintenance flag of the selected device |
 | `g` `s` | in the devices workbench, in a lab with containerlab nodes, on the selected device: ask for a missing login first; then run `nobs device fetch` and open the Config tab, or ask for a command on the key line and run `nobs device run` (see [Actions](#actions)) |
 | `D` `X` `P` `R` `U` `B` `S` | in the lab workbench: ask to deploy, destroy, prepare, update or rebuild the selected chapter, or to purge the whole lab; `S` shows the chapter at once (see [Actions](#actions)) |
+| `D` `X` `R` `S` | in the lab workbench of a lab without chapters: ask to deploy or destroy the nodes, write the files at once (only with `nobs_project.yml`), or show the nodes at once (see [A project folder or a hand-written topology](#a-project-folder-or-a-hand-written-topology)) |
 | `y` | answer yes to the open question; any other key answers no |
 | `o` | open or fold the run pane; folding the pane while it has the focus gives the focus back to the list |
 | `x` | dismiss the red error line |
 | `?` | show the keys and every action of the workbench, or close them; while they are open they cover the run pane too, a running action keeps going, and the pane is back when they close; when they do not fit, `j`, `k`, `PgUp` and `PgDn` scroll them, also after the terminal changes size, and the last row says `j/k more`; the bottom border counts the hidden rows |
-| `Esc` | close the keys, fold the run pane, and give the focus back to the list if the pane had it, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list; in the lab workbench, back to the chapters |
+| `Esc` | close the keys, fold the run pane, and give the focus back to the list if the pane had it, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list; in the lab workbench, back to the chapters, or to the nodes in a lab without chapters |
 | `q` and Ctrl-C | close the screen and give the terminal back as it was; while an action runs, Ctrl-C stops it and `q` asks first; while a terminal session is open, `q` asks first and Ctrl-C closes it with the screen; while you type in the terminal tab, both go to the device |
 
 While a question or a filter is open, `q` is typed or answers the question, and Ctrl-C still closes the screen, or stops the action that runs.
@@ -600,11 +657,17 @@ Once per machine, the Linux build needs two steps: `rustup target add aarch64-un
 
 Run the `containerlab` commands inside the Linux machine `clab`, with the Linux binary: `orb -m clab <path> containerlab deploy`, where `<path>` is the full path of `target/aarch64-unknown-linux-musl/release/nobs`. nobs runs containerlab with `sudo` unless you give `--no-sudo`. By default, sudo does not pass on the variables of your shell. So nobs reads the topology file, finds each variable it uses as `${NAME}`, and tells sudo to keep it. Set such a variable inside `clab`, for example `orb -m clab env NAME=value <path> containerlab deploy`, or in the `.env` file of the lab folder (of the current folder when you give a `TOPOLOGY` file).
 
+`nobs containerlab deploy`, `destroy` and `inspect` also take `--sudo-no-prompt`. With it, nobs fails instead of asking for a password when sudo needs one. nobs then runs containerlab as `sudo -n`, and first checks that `sudo` can run without a password. When it cannot, nobs runs nothing, prints the line below and exits with 1. With `--no-sudo`, `--sudo-no-prompt` changes nothing.
+
+```
+nobs: containerlab destroy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again
+```
+
 ## Where nobs runs from
 
 Most commands work on one lab or one workshop. Its folder is called the lab folder here. You do not have to be inside the lab folder: nobs looks for it, starting from the folder you are in.
 
-nobs knows four kinds of lab folder:
+nobs knows five kinds of lab folder:
 
 | Kind | How nobs knows it |
 |---|---|
@@ -612,8 +675,9 @@ nobs knows four kinds of lab folder:
 | The book lab | the folder holds a `chapters/` folder and the file `containerlab/lab.yml` |
 | A project | the folder holds a `nobs_project.yml` file |
 | A labcli lab | the folder holds a `docker-compose.yml` file |
+| A lab with only a topology | the folder holds the file `containerlab/lab.clab.yaml` or `containerlab/lab.clab.yml` |
 
-nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `nobs_project.yml`, else the nearest `docker-compose.yml`. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
+nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `nobs_project.yml`, else the nearest `docker-compose.yml`, else the nearest `containerlab/lab.clab.yaml` or `containerlab/lab.clab.yml`. A lab with only a topology is a labcli lab without a compose file. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
 
 To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab`, `nobs lab`, `nobs project` and `nobs device` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
 
@@ -628,13 +692,13 @@ These commands need a lab folder:
 
 These commands do not need a lab folder. They work from any folder and ignore `--dir` and `NOBS_DIR`: `nobs docker network`, `nobs sonda`, a `nobs docker` command given `--compose FILE`, and a `nobs containerlab` command given a `TOPOLOGY` file. `nobs workshops` does not need a lab folder either, but it uses `--dir` and `NOBS_DIR` when they are set (see [Workshops](#workshops)). `nobs tui` and plain `nobs` do the same: they use `--dir` and `NOBS_DIR` when they are set (see [The screen](#the-screen)).
 
-In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.yml` in the book lab. In a workshop or a labcli lab, it uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml`. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`. For the book lab, nobs gives it the project name `netobs`, as netobs does, so every `nobs docker` command in the book lab passes `--project-name netobs`, unless a `nobs.toml` of the book lab sets `project`.
+In the lab folder, `nobs docker` uses `docker-compose.yml`, and with `--scenario NAME` it uses `chapters/NAME/docker-compose.yml`. `nobs containerlab` uses `containerlab/lab.yml` in the book lab. In a project, it uses `containerlab/lab.clab.yml`, the file `nobs project render` writes (see [Project](#project)). In a workshop or another labcli lab, it uses `containerlab/lab.clab.yaml`, else `containerlab/lab.clab.yml`. Docker Compose groups the containers of one stack under a project name. For a workshop, nobs gives Docker Compose the project name from the workshop's `nobs.toml`. For the book lab, nobs gives it the project name `netobs`, as netobs does, so every `nobs docker` command in the book lab passes `--project-name netobs`, unless a `nobs.toml` of the book lab sets `project`.
 
 A labcli lab may also hold a `nobs.toml` with `kind = "lab"`. In it, `compose` and `topology` name other files to use, relative to the lab folder, and `project` sets the project name. nobs also accepts `network`, but a labcli lab does not use it. Each of these is optional.
 
 A `nobs.toml` with `kind = "lab"` in the book lab folder, next to `chapters/` and `containerlab/lab.yml`, keeps the folder a book lab and overrides its defaults: `topology`, `project` and `network` (the network `nobs lab deploy` and `nobs lab prepare` create). The `lab` commands do not use `compose`, because each scenario has its own `docker-compose.yml`. Which folder nobs takes is still decided by the walk above, so a `nobs.toml` in a parent folder wins over a book lab lower down.
 
-When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the four kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
+When nobs finds no lab folder, it prints `nobs: no lab or workshop found from here` and exits with 1. When `--dir` or `NOBS_DIR` names a folder that is none of the five kinds, it prints `nobs: no lab or workshop at PATH` and exits with 1. When nobs cannot read a `nobs.toml` file it meets on the way, it prints the file and what is wrong (the setting, or the line), and exits with 1. In each case nobs runs nothing.
 
 A command that needs a lab folder reads the `.env` file (and the `.setup.env` file, when there is one) of the lab folder. A command that does not need one reads them from the current folder. This is a change from labcli and netobs, which always read the current folder.
 
@@ -2474,7 +2538,7 @@ A project file is one YAML file, `nobs_project.yml`, that you write by hand. YAM
 | `nobs project render` | writes the topology, `lab_vars.yml` and one startup configuration for each node under `containerlab/` of the lab folder |
 | `nobs project deploy` | writes the same files, then deploys the topology it just wrote with containerlab |
 
-Both commands run in a lab folder. nobs finds the folder as for the other commands (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. nobs reads the `.env` file of the lab folder first. `--project` does not make a folder a lab folder: the folder must still be one of the four kinds in [Where nobs runs from](#where-nobs-runs-from).
+Both commands run in a lab folder. nobs finds the folder as for the other commands (see [Where nobs runs from](#where-nobs-runs-from)), and `--dir` or `NOBS_DIR` sets it. nobs reads the `.env` file of the lab folder first. `--project` does not make a folder a lab folder: the folder must still be one of the five kinds in [Where nobs runs from](#where-nobs-runs-from).
 
 | Command | Flag | What it does |
 |---|---|---|
@@ -2482,9 +2546,12 @@ Both commands run in a lab folder. nobs finds the folder as for the other comman
 | both | `--project PATH` | gives the project file to read (default: `nobs_project.yml` in the lab folder); a relative path starts at the lab folder |
 | `deploy` | `--sudo` | runs containerlab with sudo; this is on by default |
 | `deploy` | `--no-sudo` | runs containerlab without sudo; sudo is on by default |
+| `deploy` | `--sudo-no-prompt` | fails instead of asking for a password when sudo needs one |
 | `render` | `--check` | writes nothing; lists each file that is missing or different, and exits 1 if there is one |
 
-`--project`, `--sudo` and `--no-sudo` belong to the group and go before `render` or `deploy`, as in `nobs project --no-sudo deploy`. `--check` goes after `render`.
+`--project`, `--sudo` and `--no-sudo` belong to the group and go before `render` or `deploy`, as in `nobs project --no-sudo deploy`. `--check` goes after `render`, and `--sudo-no-prompt` goes after `deploy`, as in `nobs project deploy --sudo-no-prompt`.
+
+With `--sudo-no-prompt`, `deploy` runs containerlab as `sudo -n`. Before it writes any file, it checks that `sudo` can run without a password. When it cannot, nobs writes nothing, runs nothing, prints `nobs: project deploy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` and exits with 1. With `--no-sudo`, `--sudo-no-prompt` changes nothing.
 
 `render` prints `wrote <path>` for each file it writes, and exits with 0. The path is relative to the lab folder. The order is the topology, then `lab_vars.yml`, then the configurations in the order of the nodes in the project file.
 
@@ -2700,6 +2767,7 @@ Each error ends the command with exit 1. nobs prints the line on standard error.
 | `nobs: project: no template for kind <kind>: expected templates/<file>` | the template file of a kind is missing |
 | `nobs: project: templates/<file>: <error from the template engine>` | a template is not valid, or names a variable the data lacks |
 | `nobs: project: cannot write <path>: <error>` | nobs cannot write a file; `<path>` is relative to the lab folder |
+| `nobs: project deploy: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again` | `deploy` with `--sudo-no-prompt`, and `sudo` cannot run without a password; nobs writes no file |
 | `nobs: no lab or workshop at <path>` | `--dir` or `NOBS_DIR` names a folder that is not a lab folder |
 | `nobs: no lab or workshop found from here` | nobs finds no lab folder from the current folder |
 | `nobs: cannot run <program>: <error>` | `deploy` cannot start `<program>`: `sudo`, or `containerlab` with `--no-sudo` |
@@ -2714,7 +2782,7 @@ The four parts of the project file follow the project file of labby. nobs writes
 
 - nobs ships no template: you write `templates/<kind>.j2` yourself. The example project has an SR Linux template, `srl.j2`, only. A kind with no template file is an error, and nobs writes nothing.
 - `deploy` needs containerlab on the machine where nobs runs, and by default sudo, as `nobs containerlab deploy` does (see [Commands](#commands)).
-- In a lab that also has a hand-written `containerlab/lab.clab.yaml`, `nobs containerlab deploy` takes that file, and `nobs project deploy` takes the `lab.clab.yml` it wrote. Keep only one of the two files, or use `nobs project deploy` only.
+- In a lab that also has a hand-written `containerlab/lab.clab.yaml`, every command takes the `lab.clab.yml` that render writes, and the hand-written file is not used. The same holds for a `topology` setting in `nobs.toml`.
 
 ### Example
 
