@@ -1208,6 +1208,13 @@ mod tests {
         fn set_maintenance(&self, _device: &str, _state: bool) -> Result<Maintenance, sot::Error> {
             Ok(Maintenance { previous: false })
         }
+
+        fn node_vars(
+            &self,
+            _name: &str,
+        ) -> Result<Option<nobs_core::render::NodeVars>, sot::Error> {
+            Ok(None)
+        }
     }
 
     fn device(name: &str) -> Device {
@@ -3051,6 +3058,13 @@ mod tests {
 
         fn set_maintenance(&self, _device: &str, _state: bool) -> Result<Maintenance, sot::Error> {
             Ok(Maintenance { previous: false })
+        }
+
+        fn node_vars(
+            &self,
+            _name: &str,
+        ) -> Result<Option<nobs_core::render::NodeVars>, sot::Error> {
+            Ok(None)
         }
     }
 

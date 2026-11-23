@@ -5,6 +5,8 @@ use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::render::NodeVars;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LabVars {
     pub devices: Vec<Device>,
@@ -19,6 +21,7 @@ pub struct Device {
     pub maintenance: bool,
     pub interfaces: Vec<Interface>,
     pub sessions: Vec<BgpSession>,
+    pub vars: NodeVars,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,8 +143,8 @@ pub fn read(text: &str) -> Result<LabVars, String> {
         .nodes
         .into_iter()
         .map(|(name, block)| {
-            let sessions = peers.remove(&name).flatten().unwrap_or_default();
-            device(name, block, &afi_safi, sessions)
+            let peers = peers.remove(&name);
+            device(name, block, &afi_safi, peers)
         })
         .collect::<Result<Vec<Device>, String>>()?;
     Ok(LabVars { devices })
@@ -151,14 +154,22 @@ fn device(
     name: String,
     block: Value,
     afi_safi: &str,
-    sessions: Vec<Value>,
+    peers: Option<Option<Vec<Value>>>,
 ) -> Result<Device, String> {
     let context = |error: serde_json::Error| format!("{name}: {error}");
-    if !block.is_object() {
+    let Some(entry) = block.as_object().cloned() else {
         return Err(format!("{name}: the block is not a map"));
-    }
+    };
     let block: Block = serde_json::from_value(block).map_err(context)?;
-    let sessions = sessions
+    let vars = NodeVars {
+        entry,
+        peers: peers
+            .clone()
+            .map(|list| list.map_or(Value::Null, Value::Array)),
+    };
+    let sessions = peers
+        .flatten()
+        .unwrap_or_default()
         .into_iter()
         .map(|session| {
             let session: RawSession = serde_json::from_value(session).map_err(context)?;
@@ -186,6 +197,7 @@ fn device(
             .map(interface)
             .collect(),
         sessions,
+        vars,
         name,
     })
 }

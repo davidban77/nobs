@@ -9,7 +9,7 @@ use serde::ser::{Serialize, Serializer};
 use serde::Deserialize;
 use serde_saphyr::Spanned;
 
-use crate::render::{template_name, Renderer};
+use crate::render::{NodeVars, Renderer, TEMPLATES};
 
 pub const FILE: &str = "nobs_project.yml";
 
@@ -377,48 +377,27 @@ impl Project {
             .iter()
             .find(|group| group.nodes.iter().any(|name| name == node))
             .ok_or_else(|| format!("unknown node {node}"))?;
-        let file = template_name(&group.kind);
-        if !renderer.exists(&file) {
-            return Err(format!(
-                "no template for kind {}: expected templates/{file}",
-                group.kind
-            ));
-        }
-        renderer
-            .render(&file, &self.node_data(node, &group.kind))
-            .map_err(|error| format!("templates/{file}: {error}"))
+        let file = renderer.template(&group.kind)?;
+        renderer.config(&file, node, &group.kind, &self.template_vars(node))
     }
 
     fn node_vars(&self, node: &str) -> Option<&Ordered> {
         self.vars.get("nodes")?.get(node)
     }
 
-    fn node_data(&self, node: &str, kind: &str) -> serde_json::Value {
-        let node_vars = self.node_vars(node);
-        let mut data = serde_json::Map::new();
-        if let Some(Ordered::Map(entries)) = node_vars {
-            for (key, value) in entries {
-                if key != "mgmt-ipv4" {
-                    data.insert(key.clone(), value.to_json());
-                }
-            }
-        }
-        data.insert("name".to_string(), node.into());
-        data.insert("kind".to_string(), kind.into());
-        if let Some(address) = node_vars.and_then(|vars| vars.get("mgmt-ipv4")) {
-            data.insert("mgmt_ipv4".to_string(), address.to_json());
-        }
-        data.entry("interfaces")
-            .or_insert_with(|| serde_json::json!([]));
-        let sessions = self
+    fn template_vars(&self, node: &str) -> NodeVars {
+        let entry = match self.node_vars(node).map(Ordered::to_json) {
+            Some(serde_json::Value::Object(entry)) => entry,
+            _ => serde_json::Map::new(),
+        };
+        let peers = self
             .vars
             .get("observability_intent")
             .and_then(|intent| intent.get("bgp"))
             .and_then(|bgp| bgp.get("intended_peers"))
             .and_then(|peers| peers.get(node))
-            .map_or_else(|| serde_json::json!([]), Ordered::to_json);
-        data.insert("sessions".to_string(), sessions);
-        serde_json::Value::Object(data)
+            .map(Ordered::to_json);
+        NodeVars { entry, peers }
     }
 }
 
@@ -435,7 +414,7 @@ pub fn outputs(dir: &Path, file: Option<&Path>) -> Result<Vec<(String, String)>,
     }
     let text = fs::read_to_string(&path).map_err(|error| format!("cannot read {name}: {error}"))?;
     let parsed = read(&text).map_err(|reason| format!("{name}: {reason}"))?;
-    let renderer = Renderer::new(&dir.join("templates"));
+    let renderer = Renderer::new(&dir.join(TEMPLATES));
     let mut outputs = vec![
         (TOPOLOGY.to_string(), parsed.topology_yaml()?),
         (
@@ -631,6 +610,28 @@ mod tests {
         assert_eq!(written, LAB_VARS);
         let again: Ordered = serde_saphyr::from_str(&written).unwrap();
         assert_eq!(serde_saphyr::to_string(&again).unwrap(), written);
+    }
+
+    #[test]
+    fn the_template_data_from_the_project_equals_the_data_read_back_from_the_written_lab_vars() {
+        let text = "main:\n  name: nobs-t-p\n  mgmt:\n    network: nobs-t-net\nnodes:\n  - kind: nokia_srlinux\n    image: nobs-t-image\n    nodes: [nobs-t-srl1, nobs-t-srl2]\nvars:\n  nodes:\n    nobs-t-srl1:\n      mgmt-ipv4: 203.0.113.11\n      nobs-t-code: \"65001\"\n      nobs-t-number: 65001\n      nobs-t-weight: 1.5\n      nobs-t-flag: true\n      interfaces:\n        - name: ethernet-1/1\n          ipv4: [192.0.2.0/31, 198.51.100.0/31]\n    nobs-t-srl2:\n      mgmt-ipv4: 203.0.113.12\n  observability_intent:\n    bgp:\n      intended_peers:\n        nobs-t-srl1:\n          - peer_ip: 192.0.2.1\n            remote_as: 65002\n            nobs-t-note: \"1.5\"\n        nobs-t-srl2:\n";
+        let project = read(text).unwrap();
+        let lab = lab_vars::read(&project.lab_vars_yaml().unwrap()).unwrap();
+        assert_eq!(lab.devices.len(), 2);
+        for device in &lab.devices {
+            assert_eq!(project.template_vars(&device.name), device.vars);
+        }
+        let srl1 = &lab.devices[0].vars;
+        assert_eq!(srl1.entry["nobs-t-code"], json!("65001"));
+        assert_eq!(srl1.entry["nobs-t-number"], json!(65001));
+        assert_eq!(srl1.entry["nobs-t-weight"], json!(1.5));
+        assert_eq!(srl1.entry["nobs-t-flag"], json!(true));
+        assert_eq!(
+            srl1.entry["interfaces"][0]["ipv4"],
+            json!(["192.0.2.0/31", "198.51.100.0/31"])
+        );
+        assert_eq!(srl1.peers.as_ref().unwrap()[0]["nobs-t-note"], json!("1.5"));
+        assert_eq!(lab.devices[1].vars.peers, Some(serde_json::Value::Null));
     }
 
     #[test]
