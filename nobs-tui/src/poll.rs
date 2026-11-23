@@ -80,12 +80,7 @@ impl LabFiles {
             dir: lab.dir.clone(),
             topology: start.topology.clone()?,
             project: (nodes == Nodes::Project).then(|| lab.dir.clone()),
-            source: start.source.clone().ok_or_else(|| {
-                start
-                    .source_error
-                    .clone()
-                    .unwrap_or_else(|| sot::Error::NoSource.to_string())
-            }),
+            source: sot::source_or_error(start.source.clone(), start.source_error.clone()),
         })
     }
 }

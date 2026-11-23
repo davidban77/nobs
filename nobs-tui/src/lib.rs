@@ -1982,23 +1982,32 @@ mod tests {
         )
         .unwrap_err();
 
-        let wanted = nobs_core::intended::intended(
-            &dir,
-            "nobs-t-srl1",
-            "nokia_srlinux",
-            Ok(source.as_ref()),
-        )
-        .unwrap();
+        let names = ["nobs-t-srl1", "nobs-t-srl2"];
+        let wanted = names.map(|name| {
+            let text =
+                nobs_core::intended::intended(&dir, name, "nokia_srlinux", Ok(source.as_ref()))
+                    .unwrap();
+            (
+                name.to_string(),
+                text.lines().map(str::to_string).collect::<Vec<_>>(),
+            )
+        });
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(model.selected_device().unwrap().name, "nobs-t-srl1");
-        let shown: Vec<&str> = model
-            .intended_view()
-            .unwrap()
-            .rows
-            .iter()
-            .map(|(_, line)| *line)
-            .collect();
-        assert_eq!(shown, wanted.lines().collect::<Vec<_>>());
+        let shown = |model: &Model| -> Vec<String> {
+            model
+                .intended_view()
+                .unwrap()
+                .rows
+                .iter()
+                .map(|(_, line)| line.to_string())
+                .collect()
+        };
+        let mut seen = Vec::new();
+        for _ in names {
+            seen.push((model.selected_device().unwrap().name.clone(), shown(&model)));
+            handle(&mut model, key(KeyCode::Char('j')));
+        }
+        assert_eq!(seen, wanted);
     }
 
     #[test]

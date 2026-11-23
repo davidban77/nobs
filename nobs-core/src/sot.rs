@@ -159,11 +159,10 @@ pub struct LabVarsFile {
 }
 
 impl LabVarsFile {
-    pub fn open(path: &Path) -> Result<LabVarsFile, String> {
-        read_text(path)?;
-        Ok(LabVarsFile {
+    pub fn new(path: &Path) -> LabVarsFile {
+        LabVarsFile {
             path: path.to_path_buf(),
-        })
+        }
     }
 
     fn fixed(&self) -> Result<Fixed, Error> {
@@ -189,6 +188,10 @@ impl SourceOfTruth for LabVarsFile {
     fn node_vars(&self, name: &str) -> Result<Option<NodeVars>, Error> {
         self.fixed()?.node_vars(name)
     }
+}
+
+pub fn source_or_error<S>(source: Option<S>, error: Option<String>) -> Result<S, String> {
+    source.ok_or_else(|| error.unwrap_or_else(|| Error::NoSource.to_string()))
 }
 
 fn read_lab_vars(path: &Path) -> Result<LabVars, String> {
@@ -443,7 +446,7 @@ schema_file = "infrahub/schema.yml"
     #[test]
     fn a_lab_vars_file_reads_the_file_again_on_every_call() {
         let file = VarsFile::new("edit");
-        let source = LabVarsFile::open(&file.0).unwrap();
+        let source = LabVarsFile::new(&file.0);
         assert_eq!(source.devices(), book_lab().devices());
         assert_eq!(names(&source), ["nobs-t-srl1", "nobs-t-srl2"]);
 
@@ -459,7 +462,7 @@ schema_file = "infrahub/schema.yml"
     #[test]
     fn a_lab_vars_file_broken_after_the_start_gives_its_path_and_error_until_it_is_mended() {
         let file = VarsFile::new("broken");
-        let source = LabVarsFile::open(&file.0).unwrap();
+        let source = LabVarsFile::new(&file.0);
         file.write("nodes: [\n");
         let words = format!(
             "{}: {}",
@@ -492,7 +495,7 @@ schema_file = "infrahub/schema.yml"
             lab_vars::read("nodes: [\n").unwrap_err()
         );
 
-        let source = LabVarsFile::open(&file.0).unwrap();
+        let source = LabVarsFile::new(&file.0);
 
         assert_eq!(source.devices(), Err(Error::LabVars(words)));
         file.write(&book_lab_text());
@@ -500,13 +503,18 @@ schema_file = "infrahub/schema.yml"
     }
 
     #[test]
-    fn open_gives_the_path_and_the_error_of_a_file_that_does_not_read() {
-        let file = VarsFile::new("open");
-        fs::remove_file(&file.0).unwrap();
-        let missing = fs::read_to_string(&file.0).unwrap_err();
+    fn a_missing_source_gives_its_start_error_or_the_no_source_words() {
         assert_eq!(
-            LabVarsFile::open(&file.0).err(),
-            Some(format!("{}: {missing}", file.0.display()))
+            source_or_error(Some(7), Some("nobs-t-error".to_string())),
+            Ok(7)
+        );
+        assert_eq!(
+            source_or_error::<u8>(None, Some("nobs-t-error".to_string())),
+            Err("nobs-t-error".to_string())
+        );
+        assert_eq!(
+            source_or_error::<u8>(None, None),
+            Err("this lab has no source of truth".to_string())
         );
     }
 
