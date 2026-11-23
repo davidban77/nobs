@@ -2336,8 +2336,8 @@ fn rendered(
     nodes: &[TopologyNode],
 ) -> Result<String, String> {
     let node = topology_node(name, topology, nodes).map_err(|error| error.to_string())?;
-    let (source, error) = containerlab_source(located);
-    let source = sot::source_or_error(source.as_deref(), error);
+    let source = containerlab_source(located);
+    let source = sot::source_or_error(source.as_deref());
     intended(&located.dir, name, &node.kind, source).map_err(|failure| failure.to_string())
 }
 
@@ -5321,7 +5321,9 @@ fn screen_start_with(
                         Err(text) => ((None, Some(text)), None),
                     }
                 }
-                Kind::BookLab(_) | Kind::LabcliLab(_) => (containerlab_source(&located), None),
+                Kind::BookLab(_) | Kind::LabcliLab(_) => {
+                    ((containerlab_source(&located), None), None)
+                }
             };
             let nodes = located.nodes();
             let topology = Some(located.topology());
@@ -5395,22 +5397,16 @@ fn screen_start_with(
     }
 }
 
-fn containerlab_source(
-    located: &Located,
-) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
+fn containerlab_source(located: &Located) -> Option<std::sync::Arc<dyn SourceOfTruth>> {
     let path = located.dir.join("containerlab").join("lab_vars.yml");
-    match located.kind {
-        Kind::BookLab(_) => lab_vars_source(&path),
-        Kind::LabcliLab(_) if path.exists() => lab_vars_source(&path),
-        Kind::LabcliLab(_) | Kind::Workshop(_) => (None, None),
-    }
-}
-
-fn lab_vars_source(path: &Path) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
-    (
-        Some(std::sync::Arc::new(sot::LabVarsFile::new(path)) as std::sync::Arc<dyn SourceOfTruth>),
-        None,
-    )
+    let followed = match located.kind {
+        Kind::BookLab(_) => true,
+        Kind::LabcliLab(_) => path.exists(),
+        Kind::Workshop(_) => false,
+    };
+    followed.then(|| {
+        std::sync::Arc::new(sot::LabVarsFile::new(&path)) as std::sync::Arc<dyn SourceOfTruth>
+    })
 }
 
 struct SudoValidate<R: Runner>(R);

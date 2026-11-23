@@ -190,8 +190,8 @@ impl SourceOfTruth for LabVarsFile {
     }
 }
 
-pub fn source_or_error<S>(source: Option<S>, error: Option<String>) -> Result<S, String> {
-    source.ok_or_else(|| error.unwrap_or_else(|| Error::NoSource.to_string()))
+pub fn source_or_error<S>(source: Option<S>) -> Result<S, String> {
+    source.ok_or_else(|| Error::NoSource.to_string())
 }
 
 fn read_lab_vars(path: &Path) -> Result<LabVars, String> {
@@ -503,17 +503,10 @@ schema_file = "infrahub/schema.yml"
     }
 
     #[test]
-    fn a_missing_source_gives_its_start_error_or_the_no_source_words() {
+    fn a_missing_source_gives_the_no_source_words() {
+        assert_eq!(source_or_error(Some(7)), Ok(7));
         assert_eq!(
-            source_or_error(Some(7), Some("nobs-t-error".to_string())),
-            Ok(7)
-        );
-        assert_eq!(
-            source_or_error::<u8>(None, Some("nobs-t-error".to_string())),
-            Err("nobs-t-error".to_string())
-        );
-        assert_eq!(
-            source_or_error::<u8>(None, None),
+            source_or_error::<u8>(None),
             Err("this lab has no source of truth".to_string())
         );
     }

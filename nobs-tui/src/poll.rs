@@ -80,7 +80,7 @@ impl LabFiles {
             dir: lab.dir.clone(),
             topology: start.topology.clone()?,
             project: (nodes == Nodes::Project).then(|| lab.dir.clone()),
-            source: sot::source_or_error(start.source.clone(), start.source_error.clone()),
+            source: sot::source_or_error(start.source.clone()),
         })
     }
 }
@@ -849,26 +849,19 @@ mod tests {
     fn lab_files_carry_the_lab_folder_and_the_one_source_of_the_start() {
         let topology = Some(PathBuf::from("/lab/containerlab/lab.clab.yml"));
         let held = workshop_source();
-        let with = |source: Option<Arc<dyn SourceOfTruth>>, error: Option<&str>| {
+        let with = |source: Option<Arc<dyn SourceOfTruth>>| {
             LabFiles::of(&Start {
                 source,
-                source_error: error.map(str::to_string),
                 ..lab_start(Some(Nodes::Topology), topology.clone())
             })
             .unwrap()
         };
 
-        let files = with(Some(Arc::clone(&held)), None);
+        let files = with(Some(Arc::clone(&held)));
         assert_eq!(files.dir, PathBuf::from("/lab"));
         assert!(Arc::ptr_eq(files.source.as_ref().unwrap(), &held));
         assert_eq!(
-            with(None, Some("/lab/containerlab/lab_vars.yml: gone"))
-                .source
-                .err(),
-            Some("/lab/containerlab/lab_vars.yml: gone".to_string())
-        );
-        assert_eq!(
-            with(None, None).source.err(),
+            with(None).source.err(),
             Some(sot::Error::NoSource.to_string())
         );
     }
