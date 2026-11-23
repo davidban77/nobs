@@ -2324,7 +2324,7 @@ fn render_device(name: &str, located: &Located, topology: &Path, nodes: &[Topolo
             let source = source
                 .as_deref()
                 .ok_or_else(|| error.unwrap_or_else(|| sot::Error::NoSource.to_string()));
-            intended(&located.dir, name, &node.kind, source)
+            intended(&located.dir, name, &node.kind, source).map_err(|failure| failure.to_string())
         });
     match rendered {
         Ok(text) => {
@@ -5404,16 +5404,12 @@ fn containerlab_source(
 }
 
 fn lab_vars_source(path: &Path) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
-    match fs::read_to_string(path)
-        .map_err(|error| error.to_string())
-        .and_then(|text| lab_vars::read(&text))
-    {
-        Ok(vars) => (
-            Some(std::sync::Arc::new(sot::Fixed::from_lab_vars(&vars))
-                as std::sync::Arc<dyn SourceOfTruth>),
+    match sot::LabVarsFile::open(path) {
+        Ok(file) => (
+            Some(std::sync::Arc::new(file) as std::sync::Arc<dyn SourceOfTruth>),
             None,
         ),
-        Err(error) => (None, Some(format!("{}: {error}", path.display()))),
+        Err(error) => (None, Some(error)),
     }
 }
 
@@ -6676,6 +6672,34 @@ mod tests {
         assert_eq!(names, ["nobs-t-srl1", "nobs-t-srl2"]);
         let header = nobs_tui::Shell::new(start).header();
         assert!(header.ends_with("sot lab_vars"), "{header}");
+    }
+
+    #[test]
+    fn the_screen_source_of_a_lab_follows_an_edit_of_lab_vars() {
+        let lab = project_lab(
+            "screen-project-edit",
+            &[
+                ("expected/lab_vars.yml", "lab_vars.yml"),
+                ("expected/lab.clab.yml", "lab.clab.yml"),
+            ],
+        );
+        let path = lab.0.join("containerlab").join("lab_vars.yml");
+        let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
+        let source = start.source.unwrap();
+        let names = || -> Vec<String> {
+            source
+                .devices()
+                .unwrap()
+                .into_iter()
+                .map(|device| device.name)
+                .collect()
+        };
+        assert_eq!(names(), ["nobs-t-srl1", "nobs-t-srl2"]);
+
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, text.replace("nobs-t-srl2", "nobs-t-srl3")).unwrap();
+
+        assert_eq!(names(), ["nobs-t-srl1", "nobs-t-srl3"]);
     }
 
     #[test]
