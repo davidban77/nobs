@@ -100,10 +100,7 @@ fn started(
         .clone()
         .map(|source| (source, start.source_service));
     let urls = start.lab.is_some().then(|| start.urls.clone());
-    let lab = start
-        .lab
-        .as_ref()
-        .and_then(|lab| LabFiles::of(lab, start.nodes, start.topology.clone()));
+    let lab = LabFiles::of(&start);
     let model = Model::new(start);
     let (pollers, updates) = Pollers::start(
         runner,
@@ -1931,6 +1928,89 @@ mod tests {
     }
 
     #[test]
+    fn the_loop_starts_the_intended_poller_of_a_lab_and_the_model_gets_each_node() {
+        let dir = std::env::temp_dir().join(format!("nobs-tui-intended-{}", std::process::id()));
+        let project = fixture("project-two-node");
+        let topology = dir.join("containerlab/lab.clab.yml");
+        std::fs::create_dir_all(dir.join("containerlab")).unwrap();
+        std::fs::create_dir_all(dir.join("templates")).unwrap();
+        std::fs::copy(project.join("expected/lab.clab.yml"), &topology).unwrap();
+        std::fs::copy(
+            project.join("templates/srl.j2"),
+            dir.join("templates/srl.j2"),
+        )
+        .unwrap();
+        let vars = std::fs::read_to_string(project.join("expected/lab_vars.yml")).unwrap();
+        let source: Arc<dyn SourceOfTruth> = Arc::new(sot::Fixed::from_lab_vars(
+            &nobs_core::lab_vars::read(&vars).unwrap(),
+        ));
+        let start = Start {
+            lab: Some(Located {
+                dir: dir.clone(),
+                kind: Kind::LabcliLab(None),
+            }),
+            nodes: Some(nobs_core::locate::Nodes::Topology),
+            topology: Some(topology),
+            source: Some(Arc::clone(&source)),
+            home: Workbench::Devices,
+            ..start(vec![stack(&[])], false)
+        };
+        let (mut model, pollers, updates) = started(start, scripted(Vec::new()));
+        let mut turns_left = 40;
+
+        turns(
+            &mut Console {
+                terminal: &mut terminal(80, 24),
+                screen: &mut bare_screen(),
+            },
+            &mut model,
+            &mut Workers {
+                pollers: &pollers,
+                updates: &updates,
+                actions: &mut actions(),
+                wires: &mut wires(),
+            },
+            |_| {
+                thread::sleep(Duration::from_millis(50));
+                turns_left -= 1;
+                if turns_left == 0 {
+                    Err(PAUSED.to_string())
+                } else {
+                    Ok(None)
+                }
+            },
+        )
+        .unwrap_err();
+
+        let names = ["nobs-t-srl1", "nobs-t-srl2"];
+        let wanted = names.map(|name| {
+            let text =
+                nobs_core::intended::intended(&dir, name, "nokia_srlinux", Ok(source.as_ref()))
+                    .unwrap();
+            (
+                name.to_string(),
+                text.lines().map(str::to_string).collect::<Vec<_>>(),
+            )
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+        let shown = |model: &Model| -> Vec<String> {
+            model
+                .intended_view()
+                .unwrap()
+                .rows
+                .iter()
+                .map(|(_, line)| line.to_string())
+                .collect()
+        };
+        let mut seen = Vec::new();
+        for _ in names {
+            seen.push((model.selected_device().unwrap().name.clone(), shown(&model)));
+            handle(&mut model, key(KeyCode::Char('j')));
+        }
+        assert_eq!(seen, wanted);
+    }
+
+    #[test]
     fn a_typed_login_reaches_the_launcher_and_none_of_its_arguments() {
         let launcher = Arc::new(FakeLauncher::new());
         let mut actions = Actions::new(launcher.clone(), asker(1));
@@ -1994,8 +2074,10 @@ mod tests {
             None,
             None,
             Some(LabFiles {
+                dir: fixture("book-lab"),
                 topology: fixture("book-lab/containerlab/lab.yml"),
                 project: None,
+                source: Err(sot::Error::NoSource.to_string()),
             }),
         );
         let nodes = |limit: Duration| {
@@ -2523,8 +2605,10 @@ mod tests {
             None,
             None,
             Some(LabFiles {
+                dir: fixture("book-lab"),
                 topology,
                 project: None,
+                source: Err(sot::Error::NoSource.to_string()),
             }),
         );
 
@@ -2564,8 +2648,10 @@ mod tests {
             None,
             None,
             Some(LabFiles {
+                dir: fixture("project-two-node"),
                 topology: fixture("project-two-node/containerlab/lab.clab.yml"),
                 project: None,
+                source: Err(sot::Error::NoSource.to_string()),
             }),
         );
 

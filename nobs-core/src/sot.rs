@@ -1,4 +1,6 @@
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::infrahub;
@@ -69,6 +71,7 @@ pub enum Error {
     },
     NoSource,
     NoTemplateData,
+    LabVars(String),
 }
 
 impl fmt::Display for Error {
@@ -90,6 +93,7 @@ impl fmt::Display for Error {
             }
             Error::NoSource => write!(f, "this lab has no source of truth"),
             Error::NoTemplateData => write!(f, "the source of truth gives no data for templates"),
+            Error::LabVars(text) => f.write_str(text),
         }
     }
 }
@@ -148,6 +152,58 @@ impl SourceOfTruth for Fixed {
             .find(|(device, _)| device == name)
             .map(|(_, vars)| vars.clone()))
     }
+}
+
+pub struct LabVarsFile {
+    path: PathBuf,
+}
+
+impl LabVarsFile {
+    pub fn new(path: &Path) -> LabVarsFile {
+        LabVarsFile {
+            path: path.to_path_buf(),
+        }
+    }
+
+    fn fixed(&self) -> Result<Fixed, Error> {
+        read_lab_vars(&self.path)
+            .map(|vars| Fixed::from_lab_vars(&vars))
+            .map_err(Error::LabVars)
+    }
+}
+
+impl SourceOfTruth for LabVarsFile {
+    fn devices(&self) -> Result<Vec<Device>, Error> {
+        self.fixed()?.devices()
+    }
+
+    fn device(&self, name: &str) -> Result<Option<Device>, Error> {
+        self.fixed()?.device(name)
+    }
+
+    fn set_maintenance(&self, device: &str, state: bool) -> Result<Maintenance, Error> {
+        self.fixed()?.set_maintenance(device, state)
+    }
+
+    fn node_vars(&self, name: &str) -> Result<Option<NodeVars>, Error> {
+        self.fixed()?.node_vars(name)
+    }
+}
+
+pub fn source_or_error<S>(source: Option<S>) -> Result<S, String> {
+    source.ok_or_else(|| Error::NoSource.to_string())
+}
+
+fn read_lab_vars(path: &Path) -> Result<LabVars, String> {
+    read_text(path).and_then(|text| lab_vars::read(&text).map_err(|error| at(path, error)))
+}
+
+fn read_text(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|error| at(path, error))
+}
+
+fn at(path: &Path, error: impl fmt::Display) -> String {
+    format!("{}: {error}", path.display())
 }
 
 struct Empty;
@@ -344,6 +400,115 @@ schema_file = "infrahub/schema.yml"
         .unwrap();
 
         assert_eq!(names, ["nobs-t-srl1", "nobs-t-srl2"]);
+    }
+
+    struct VarsFile(PathBuf);
+
+    impl VarsFile {
+        fn new(tag: &str) -> VarsFile {
+            let folder =
+                std::env::temp_dir().join(format!("nobs-lab-vars-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&folder);
+            fs::create_dir_all(&folder).unwrap();
+            let file = VarsFile(folder.join("lab_vars.yml"));
+            file.write(&book_lab_text());
+            file
+        }
+
+        fn write(&self, text: &str) {
+            fs::write(&self.0, text).unwrap();
+        }
+    }
+
+    impl Drop for VarsFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    fn book_lab_text() -> String {
+        fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures/book-lab/containerlab/lab_vars.yml"),
+        )
+        .unwrap()
+    }
+
+    fn names(source: &dyn SourceOfTruth) -> Vec<String> {
+        source
+            .devices()
+            .unwrap()
+            .into_iter()
+            .map(|device| device.name)
+            .collect()
+    }
+
+    #[test]
+    fn a_lab_vars_file_reads_the_file_again_on_every_call() {
+        let file = VarsFile::new("edit");
+        let source = LabVarsFile::new(&file.0);
+        assert_eq!(source.devices(), book_lab().devices());
+        assert_eq!(names(&source), ["nobs-t-srl1", "nobs-t-srl2"]);
+
+        file.write(&book_lab_text().replace("nobs-t-srl2", "nobs-t-srl3"));
+
+        assert_eq!(names(&source), ["nobs-t-srl1", "nobs-t-srl3"]);
+        assert_eq!(source.device("nobs-t-srl2"), Ok(None));
+        assert!(source.device("nobs-t-srl3").unwrap().is_some());
+        assert_eq!(source.node_vars("nobs-t-srl2"), Ok(None));
+        assert!(source.node_vars("nobs-t-srl3").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_lab_vars_file_broken_after_the_start_gives_its_path_and_error_until_it_is_mended() {
+        let file = VarsFile::new("broken");
+        let source = LabVarsFile::new(&file.0);
+        file.write("nodes: [\n");
+        let words = format!(
+            "{}: {}",
+            file.0.display(),
+            lab_vars::read("nodes: [\n").unwrap_err()
+        );
+
+        assert_eq!(source.devices(), Err(Error::LabVars(words.clone())));
+        assert_eq!(
+            source.device("nobs-t-srl1"),
+            Err(Error::LabVars(words.clone()))
+        );
+        assert_eq!(
+            source.node_vars("nobs-t-srl1"),
+            Err(Error::LabVars(words.clone()))
+        );
+        assert_eq!(source.devices().unwrap_err().to_string(), words);
+
+        file.write(&book_lab_text());
+        assert_eq!(names(&source), ["nobs-t-srl1", "nobs-t-srl2"]);
+    }
+
+    #[test]
+    fn a_lab_vars_file_broken_at_the_start_gives_its_path_and_error_until_it_is_mended() {
+        let file = VarsFile::new("broken-start");
+        file.write("nodes: [\n");
+        let words = format!(
+            "{}: {}",
+            file.0.display(),
+            lab_vars::read("nodes: [\n").unwrap_err()
+        );
+
+        let source = LabVarsFile::new(&file.0);
+
+        assert_eq!(source.devices(), Err(Error::LabVars(words)));
+        file.write(&book_lab_text());
+        assert_eq!(names(&source), ["nobs-t-srl1", "nobs-t-srl2"]);
+    }
+
+    #[test]
+    fn a_missing_source_gives_the_no_source_words() {
+        assert_eq!(source_or_error(Some(7)), Ok(7));
+        assert_eq!(
+            source_or_error::<u8>(None),
+            Err("this lab has no source of truth".to_string())
+        );
     }
 
     #[test]

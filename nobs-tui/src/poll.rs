@@ -9,22 +9,23 @@ use std::time::{Duration, Instant, SystemTime};
 
 use nobs_core::alertmanager::Alertmanager;
 use nobs_core::compose::Compose;
+use nobs_core::intended::intended;
 use nobs_core::lab;
-use nobs_core::locate::{Located, Nodes};
+use nobs_core::locate::Nodes;
 use nobs_core::loki::{rca_selector, Loki};
 use nobs_core::prefect::Prefect;
 use nobs_core::project;
 use nobs_core::prometheus::Prometheus;
 use nobs_core::runner::{Output, Runner};
 use nobs_core::sonda::Sonda;
-use nobs_core::sot::SourceOfTruth;
+use nobs_core::sot::{self, SourceOfTruth};
 use nobs_core::status::{self, Service, State, Urls, SERVICES};
 
 use crate::book;
 use crate::data;
 use crate::shell::{
-    env_value, sonda_url, watched, Command, Health, SondaTarget, Stack, StackKind, Tab, Update,
-    DOCKER_LOGS, WINDOW_MINUTES,
+    env_value, sonda_url, watched, Command, Health, SondaTarget, Stack, StackKind, Start, Tab,
+    Update, DOCKER_LOGS, WINDOW_MINUTES,
 };
 
 pub(crate) const PS_PERIOD: Duration = Duration::from_secs(2);
@@ -61,19 +62,25 @@ pub struct Pollers {
     prefect: Option<Source>,
     nodes: Option<Source>,
     files: Option<Source>,
+    intended: Option<Source>,
 }
 
 pub struct LabFiles {
+    pub dir: PathBuf,
     pub topology: PathBuf,
     pub project: Option<PathBuf>,
+    pub source: Result<Arc<dyn SourceOfTruth>, String>,
 }
 
 impl LabFiles {
-    pub fn of(lab: &Located, nodes: Option<Nodes>, topology: Option<PathBuf>) -> Option<LabFiles> {
-        let nodes = nodes?;
+    pub fn of(start: &Start) -> Option<LabFiles> {
+        let lab = start.lab.as_ref()?;
+        let nodes = start.nodes?;
         Some(LabFiles {
-            topology: topology?,
+            dir: lab.dir.clone(),
+            topology: start.topology.clone()?,
             project: (nodes == Nodes::Project).then(|| lab.dir.clone()),
+            source: sot::source_or_error(start.source.clone()),
         })
     }
 }
@@ -124,20 +131,24 @@ impl Pollers {
     ) -> (Pollers, Receiver<Update>) {
         let (updates, out) = mpsc::channel();
         let stacks: Arc<[Stack]> = stacks.into();
-        let (topology, project) = lab.map_or((None, None), |lab| (Some(lab.topology), lab.project));
-        let nodes = topology.map(|topology| {
-            let runner = Arc::clone(&runner);
+        let nodes = lab.as_ref().map(|lab| {
+            let (runner, topology) = (Arc::clone(&runner), lab.topology.clone());
             spawn("nodes", &updates, move |inbox, out| {
                 every(NODES_PERIOD, false, inbox, out, || {
                     Update::Nodes(nodes(runner.as_ref(), &topology))
                 })
             })
         });
-        let files = project.map(|dir| {
+        let files = lab.as_ref().and_then(|lab| lab.project.clone()).map(|dir| {
             spawn("files", &updates, move |inbox, out| {
                 every(FILES_PERIOD, false, inbox, out, || {
                     Update::Files(project::rendered(&dir))
                 })
+            })
+        });
+        let intended = lab.map(|lab| {
+            spawn("intended", &updates, move |inbox, out| {
+                every(FILES_PERIOD, false, inbox, out, || intended_texts(&lab))
             })
         });
         let ps = {
@@ -234,6 +245,7 @@ impl Pollers {
                 prefect,
                 nodes,
                 files,
+                intended,
             },
             out,
         )
@@ -251,6 +263,7 @@ impl Pollers {
                     &self.prefect,
                     &self.nodes,
                     &self.files,
+                    &self.intended,
                 ],
             ),
             Command::SelectStack(_) => (&[&self.health, &self.sonda], &[]),
@@ -710,6 +723,23 @@ fn nodes(runner: &dyn Runner, topology: &Path) -> Result<Vec<book::NodeRow>, Str
     })
 }
 
+fn intended_texts(files: &LabFiles) -> Update {
+    let nodes = fs::read_to_string(&files.topology)
+        .ok()
+        .and_then(|text| lab::topology_nodes(&text).ok())
+        .unwrap_or_default();
+    Update::Intended(
+        nodes
+            .into_iter()
+            .map(|node| {
+                let source = files.source.as_deref().map_err(String::clone);
+                let text = intended(&files.dir, &node.name, &node.kind, source);
+                (node.name, text)
+            })
+            .collect(),
+    )
+}
+
 fn fetch(runner: &dyn Runner, tail: &mut Tail) -> Result<Vec<String>, String> {
     let args = tail
         .compose
@@ -778,19 +808,29 @@ fn probe(stack: &Stack, server: Option<&str>, asked: &[Service]) -> Vec<Health> 
 
 #[cfg(test)]
 mod tests {
+    use nobs_core::locate::{Kind, Located};
+
     use super::*;
-    use crate::shell::tests::stack;
+    use crate::shell::tests::{stack, start, workshop_source};
+
+    fn lab_start(nodes: Option<Nodes>, topology: Option<PathBuf>) -> Start {
+        Start {
+            lab: Some(Located {
+                dir: PathBuf::from("/lab"),
+                kind: Kind::LabcliLab(None),
+            }),
+            nodes,
+            topology,
+            ..start(Vec::new())
+        }
+    }
 
     #[test]
     fn lab_files_name_the_project_folder_only_for_a_project() {
         let dir = PathBuf::from("/lab");
         let file = dir.join("containerlab/lab.clab.yml");
-        let lab = Located {
-            dir: dir.clone(),
-            kind: nobs_core::locate::Kind::LabcliLab(None),
-        };
         let of = |nodes: Option<Nodes>, topology: Option<PathBuf>| {
-            LabFiles::of(&lab, nodes, topology).map(|files| (files.topology, files.project))
+            LabFiles::of(&lab_start(nodes, topology)).map(|files| (files.topology, files.project))
         };
 
         assert_eq!(
@@ -803,6 +843,68 @@ mod tests {
         );
         assert_eq!(of(None, Some(file)), None);
         assert_eq!(of(Some(Nodes::Project), None), None);
+    }
+
+    #[test]
+    fn lab_files_carry_the_lab_folder_and_the_one_source_of_the_start() {
+        let topology = Some(PathBuf::from("/lab/containerlab/lab.clab.yml"));
+        let held = workshop_source();
+        let with = |source: Option<Arc<dyn SourceOfTruth>>| {
+            LabFiles::of(&Start {
+                source,
+                ..lab_start(Some(Nodes::Topology), topology.clone())
+            })
+            .unwrap()
+        };
+
+        let files = with(Some(Arc::clone(&held)));
+        assert_eq!(files.dir, PathBuf::from("/lab"));
+        assert!(Arc::ptr_eq(files.source.as_ref().unwrap(), &held));
+        assert_eq!(
+            with(None).source.err(),
+            Some(sot::Error::NoSource.to_string())
+        );
+    }
+
+    #[test]
+    fn each_node_is_rendered_with_the_template_of_its_own_kind() {
+        let dir = std::env::temp_dir().join(format!("nobs-poll-kinds-{}", std::process::id()));
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/project-two-node");
+        fs::create_dir_all(dir.join("templates")).unwrap();
+        fs::copy(
+            fixture.join("templates/srl.j2"),
+            dir.join("templates/srl.j2"),
+        )
+        .unwrap();
+        let topology = dir.join("lab.clab.yml");
+        let nodes = "name: nobs-t-kinds\ntopology:\n  nodes:\n    nobs-t-srl1:\n      kind: nokia_srlinux\n    nobs-t-srl2:\n      kind: ceos\n";
+        fs::write(&topology, nodes).unwrap();
+        let vars = fs::read_to_string(fixture.join("expected/lab_vars.yml")).unwrap();
+        let source: Arc<dyn SourceOfTruth> = Arc::new(sot::Fixed::from_lab_vars(
+            &nobs_core::lab_vars::read(&vars).unwrap(),
+        ));
+        let files = LabFiles {
+            dir: dir.clone(),
+            topology,
+            project: None,
+            source: Ok(source),
+        };
+
+        let Update::Intended(texts) = intended_texts(&files) else {
+            panic!("not an intended update");
+        };
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0].0, "nobs-t-srl1");
+        assert!(texts[0].1.is_ok(), "{:?}", texts[0].1);
+        assert_eq!(texts[1].0, "nobs-t-srl2");
+        assert!(
+            matches!(texts[1].1, Err(nobs_core::intended::Failure::NoTemplate(_))),
+            "{:?}",
+            texts[1].1
+        );
     }
 
     #[test]

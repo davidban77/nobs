@@ -12,6 +12,7 @@ use nobs_core::alertmanager::Alert;
 use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
+use nobs_core::intended::{compare, Failure};
 use nobs_core::lab;
 use nobs_core::locate::{locate, Kind, Located, Nodes};
 use nobs_core::loki::Line;
@@ -333,6 +334,7 @@ pub enum Update {
     ActionEnded(run::End),
     Nodes(Result<Vec<book::NodeRow>, String>),
     Files(Rendered),
+    Intended(Vec<(String, Result<String, Failure>)>),
     TermOutput(u64, Vec<u8>),
     TermEnded(u64, i32),
     Asked(Result<bool, String>),
@@ -433,6 +435,29 @@ pub(crate) struct RunMeasure {
 pub struct Config {
     pub lines: Vec<String>,
     pub fetched: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Intended {
+    pub text: Result<String, Failure>,
+    pub since: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntendedView<'a> {
+    pub since: &'a str,
+    pub lines: usize,
+    pub fetched: Option<&'a str>,
+    pub missing: Option<usize>,
+    pub rows: Vec<(char, &'a str)>,
+    pub scroll: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigView {
+    Intended,
+    Running,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -729,6 +754,8 @@ pub struct Model {
     view: Tab,
     config_scroll: usize,
     config_filter: Filter,
+    config_view: ConfigView,
+    intended: BTreeMap<String, Intended>,
     window: u64,
     timeline_row: usize,
     popup: Option<devices::Entry>,
@@ -863,6 +890,8 @@ impl Model {
             view: Tab::Alerts,
             config_scroll: 0,
             config_filter: Filter::default(),
+            config_view: ConfigView::Intended,
+            intended: BTreeMap::new(),
             window: WINDOW_MINUTES,
             timeline_row: 0,
             popup: None,
@@ -1237,6 +1266,18 @@ impl Model {
                 self.fail("nodes", text);
             }
             Update::Files(rendered) => self.files = Some(rendered),
+            Update::Intended(texts) => {
+                self.intended = texts
+                    .into_iter()
+                    .map(|(name, text)| {
+                        let since = match self.intended.get(&name) {
+                            Some(kept) if kept.text == text => kept.since.clone(),
+                            _ => self.clock.clone(),
+                        };
+                        (name, Intended { text, since })
+                    })
+                    .collect();
+            }
             Update::TermOutput(id, bytes) => self.sessions.output(id, &bytes),
             Update::TermEnded(id, code) => self.sessions.ended(id, code),
         }
@@ -2511,6 +2552,70 @@ impl Model {
         Some((device.name.as_str(), kept, shown, self.config_scroll))
     }
 
+    fn selected_intended(&self) -> Option<&Intended> {
+        self.intended.get(&self.selected_device()?.name)
+    }
+
+    pub(crate) fn has_template(&self) -> bool {
+        self.selected_intended()
+            .is_some_and(|intended| !matches!(intended.text, Err(Failure::NoTemplate(_))))
+    }
+
+    pub(crate) fn no_template(&self) -> Option<&str> {
+        match &self.selected_intended()?.text {
+            Err(Failure::NoTemplate(words)) => Some(words),
+            _ => None,
+        }
+    }
+
+    pub fn intended_view(&self) -> Option<IntendedView<'_>> {
+        if self.config_view == ConfigView::Running || !self.has_template() {
+            return None;
+        }
+        let device = self.selected_device()?;
+        let intended = self.intended.get(&device.name)?;
+        let text = match &intended.text {
+            Ok(text) => text,
+            Err(failure) => {
+                return Some(IntendedView {
+                    since: &intended.since,
+                    lines: 0,
+                    fetched: None,
+                    missing: None,
+                    rows: Vec::new(),
+                    scroll: self.config_scroll,
+                    error: Some(failure.to_string()),
+                })
+            }
+        };
+        let kept = self.configs.get(&device.name);
+        let checked = compare(text, kept.map_or(&[][..], |kept| &kept.lines));
+        let rows = checked
+            .iter()
+            .filter(|checked| self.config_filter.matches(checked.line))
+            .flat_map(|checked| {
+                let lacking = checked.lacking.as_ref().filter(|_| kept.is_some());
+                let mark = if lacking.is_some() { '+' } else { ' ' };
+                std::iter::once((mark, checked.line))
+                    .chain(lacking.into_iter().flatten().map(|hint| ('-', *hint)))
+            })
+            .collect();
+        Some(IntendedView {
+            since: &intended.since,
+            lines: checked.len(),
+            fetched: kept.map(|kept| kept.fetched.as_str()),
+            missing: kept.map(|_| {
+                checked
+                    .iter()
+                    .filter(|checked| checked.lacking.is_some())
+                    .count()
+            }),
+            rows,
+            scroll: self.config_scroll,
+            error: None,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn config_of(&self, device: &str) -> Option<&Config> {
         self.configs.get(device)
@@ -3197,11 +3302,39 @@ impl Model {
     }
 
     fn config_key(&mut self, code: KeyCode) -> Vec<Command> {
-        if code == KeyCode::Char('/') {
-            self.config_filter.start();
-        } else {
-            let shown = self.config().map_or(0, |(_, _, shown, _)| shown.len());
-            scroll_step(code, &mut self.config_scroll, shown);
+        let (shown, differences): (usize, Vec<usize>) = match self.intended_view() {
+            Some(view) => (
+                view.rows.len(),
+                (0..view.rows.len())
+                    .filter(|row| view.rows[*row].0 == '+')
+                    .collect(),
+            ),
+            None => (
+                self.config().map_or(0, |(_, _, shown, _)| shown.len()),
+                Vec::new(),
+            ),
+        };
+        let scroll = self.config_scroll;
+        match code {
+            KeyCode::Char('/') => self.config_filter.start(),
+            KeyCode::Char('v') if self.has_template() => {
+                self.config_view = match self.config_view {
+                    ConfigView::Intended => ConfigView::Running,
+                    ConfigView::Running => ConfigView::Intended,
+                };
+                self.config_scroll = 0;
+            }
+            KeyCode::Char('n') => {
+                if let Some(row) = differences.iter().find(|row| **row > scroll) {
+                    self.config_scroll = *row;
+                }
+            }
+            KeyCode::Char('N') => {
+                if let Some(row) = differences.iter().rev().find(|row| **row < scroll) {
+                    self.config_scroll = *row;
+                }
+            }
+            _ => scroll_step(code, &mut self.config_scroll, shown),
         }
         Vec::new()
     }
@@ -8855,6 +8988,303 @@ pub(crate) mod tests {
 
         assert_eq!(model.config().unwrap().0, "nobs-t-srl2");
         assert_eq!(scroll(&model), 0);
+    }
+
+    const WANTED: [&str; 4] = [
+        "set / interface ethernet-1/1 admin-state enable",
+        "set / interface ethernet-1/1 mtu 9000",
+        "set / interface ethernet-1/2 admin-state enable",
+        "set / interface ethernet-1/2 mtu 9000",
+    ];
+    const ON_DEVICE: [&str; 4] = [
+        "set / interface ethernet-1/1 admin-state enable",
+        "set / interface ethernet-1/1 mtu 1500",
+        "set / interface ethernet-1/2 admin-state enable",
+        "set / system name host-name nobs-t-srl1",
+    ];
+
+    fn intended_of(texts: &[(&str, Result<&[&str], Failure>)]) -> Update {
+        Update::Intended(
+            texts
+                .iter()
+                .map(|(name, text)| {
+                    let text = text.clone().map(|lines| lines.join("\n") + "\n");
+                    (name.to_string(), text)
+                })
+                .collect(),
+        )
+    }
+
+    fn on_intended(text: Result<&[&str], Failure>) -> Model {
+        let mut model = lab_devices_model();
+        at_clock(&mut model, "13:45:02");
+        model.apply(intended_of(&[("nobs-t-srl1", text)]));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Config));
+        model
+    }
+
+    fn rows(model: &Model) -> Vec<(char, &str)> {
+        model.intended_view().unwrap().rows
+    }
+
+    #[test]
+    fn the_tab_opens_on_the_intended_view_with_no_mark_and_no_count_before_a_g() {
+        let model = on_intended(Ok(&WANTED));
+
+        let view = model.intended_view().unwrap();
+
+        assert_eq!(view.since, "13:45:02");
+        assert_eq!(view.lines, 4);
+        assert_eq!((view.fetched, view.missing, view.error), (None, None, None));
+        assert_eq!(view.rows, WANTED.map(|line| (' ', line)));
+    }
+
+    #[test]
+    fn a_good_g_brings_the_marks_and_counts_only_the_plus_lines() {
+        let mut model = on_intended(Ok(&WANTED));
+
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+
+        let view = model.intended_view().unwrap();
+        assert_eq!((view.fetched, view.missing), (Some("13:45:08"), Some(2)));
+        assert_eq!(
+            view.rows,
+            [
+                (' ', WANTED[0]),
+                ('+', WANTED[1]),
+                ('-', ON_DEVICE[1]),
+                (' ', WANTED[2]),
+                ('+', WANTED[3]),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_marks_follow_a_changed_intended_text_with_no_g() {
+        let mut model = on_intended(Ok(&WANTED));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+        at_clock(&mut model, "13:46:00");
+
+        let commands = model.apply(intended_of(&[(
+            "nobs-t-srl1",
+            Ok(&[WANTED[0], ON_DEVICE[1]]),
+        )]));
+
+        assert_eq!(commands, []);
+        let view = model.intended_view().unwrap();
+        assert_eq!(view.since, "13:46:00");
+        assert_eq!((view.fetched, view.missing), (Some("13:45:08"), Some(0)));
+        assert_eq!(view.rows, [(' ', WANTED[0]), (' ', ON_DEVICE[1])]);
+    }
+
+    #[test]
+    fn the_intended_time_moves_only_when_the_text_changes() {
+        let mut model = on_intended(Ok(&WANTED));
+        at_clock(&mut model, "13:46:00");
+
+        model.apply(intended_of(&[("nobs-t-srl1", Ok(&WANTED))]));
+
+        assert_eq!(model.intended_view().unwrap().since, "13:45:02");
+    }
+
+    #[test]
+    fn a_failed_g_leaves_the_intended_view_as_it_was() {
+        let mut model = on_intended(Ok(&WANTED));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+        let before = format!("{:?}", model.intended_view());
+        at_clock(&mut model, "13:47:00");
+
+        ch(&mut model, 'g');
+        answered(&mut model, &WANTED, End::Exited(1));
+
+        assert_eq!(format!("{:?}", model.intended_view()), before);
+    }
+
+    #[test]
+    fn an_error_of_the_intended_text_is_said_with_the_command_words_and_the_list_still_moves() {
+        let words = "templates/srl.j2: undefined value (in srl.j2:2)";
+        let mut model = on_intended(Err(Failure::Other(words.to_string())));
+
+        let view = model.intended_view().unwrap();
+        assert_eq!(view.error.as_deref(), Some(words));
+        assert_eq!((view.rows, view.missing), (Vec::new(), None));
+
+        code(&mut model, KeyCode::Esc);
+        ch(&mut model, 'j');
+        assert_eq!(model.selected_device().unwrap().name, "nobs-t-srl2");
+    }
+
+    #[test]
+    fn with_no_template_the_tab_keeps_the_running_view_of_today_and_v_does_nothing() {
+        let words = "no template for kind nokia_srlinux: expected templates/srl.j2";
+        let mut model = on_intended(Err(Failure::NoTemplate(words.to_string())));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+
+        assert_eq!(ch(&mut model, 'v'), []);
+
+        assert_eq!(model.intended_view(), None);
+        assert!(!model.has_template());
+        assert_eq!(model.no_template(), Some(words));
+        assert_eq!(model.config().unwrap().2, ON_DEVICE);
+    }
+
+    #[test]
+    fn v_switches_the_view_goes_back_to_the_top_and_keeps_the_filter() {
+        let mut model = on_intended(Ok(&WANTED));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+        ch(&mut model, '/');
+        typed(&mut model, "9000");
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(
+            rows(&model),
+            [('+', WANTED[1]), ('-', ON_DEVICE[1]), ('+', WANTED[3])]
+        );
+        ch(&mut model, 'j');
+
+        ch(&mut model, 'v');
+
+        assert_eq!(model.intended_view(), None);
+        assert_eq!(model.config().unwrap().2, Vec::<&str>::new());
+        assert_eq!(scroll(&model), 0);
+        ch(&mut model, 'j');
+        ch(&mut model, 'v');
+        assert_eq!(scroll(&model), 0);
+        assert_eq!(
+            rows(&model),
+            [('+', WANTED[1]), ('-', ON_DEVICE[1]), ('+', WANTED[3])]
+        );
+    }
+
+    #[test]
+    fn n_and_shift_n_put_the_next_and_the_previous_difference_on_the_top_row() {
+        let mut model = on_intended(Ok(&WANTED));
+        ch(&mut model, 'n');
+        assert_eq!(scroll(&model), 0);
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+
+        let mut tops = Vec::new();
+        for key in ['n', 'n', 'n', 'N', 'N', 'k', 'j', 'j', 'n', 'j', 'j', 'N'] {
+            ch(&mut model, key);
+            tops.push((key, scroll(&model)));
+        }
+
+        assert_eq!(
+            tops,
+            [
+                ('n', 1),
+                ('n', 4),
+                ('n', 4),
+                ('N', 1),
+                ('N', 1),
+                ('k', 0),
+                ('j', 1),
+                ('j', 2),
+                ('n', 4),
+                ('j', 4),
+                ('j', 4),
+                ('N', 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn shift_n_goes_to_the_nearest_difference_above() {
+        let mut model = on_intended(Ok(&["set / a x", "set / b y", "set / c z"]));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+
+        ch(&mut model, 'N');
+
+        assert_eq!(scroll(&model), 1);
+    }
+
+    #[test]
+    fn with_no_template_v_keeps_the_scroll_and_a_later_template_opens_the_intended_view() {
+        let words = "no template for kind nokia_srlinux: expected templates/srl.j2";
+        let mut model = on_intended(Err(Failure::NoTemplate(words.to_string())));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+        ch(&mut model, 'j');
+
+        ch(&mut model, 'v');
+
+        assert_eq!(scroll(&model), 1);
+        model.apply(intended_of(&[("nobs-t-srl1", Ok(&WANTED))]));
+        assert!(model.intended_view().is_some());
+    }
+
+    #[test]
+    fn v_n_and_an_intended_update_start_no_command() {
+        let mut model = lab_devices_model();
+        let mut commands = model.apply(intended_of(&[("nobs-t-srl1", Ok(&WANTED))]));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        ch(&mut model, ']');
+        for key in ['n', 'N', 'v', 'n', 'N', 'v'] {
+            commands.extend(ch(&mut model, key));
+        }
+        commands.extend(model.apply(intended_of(&[("nobs-t-srl1", Ok(&ON_DEVICE))])));
+
+        assert_eq!(commands, []);
+        assert!(model.run().is_none());
+    }
+
+    #[test]
+    fn an_intended_update_reaches_the_view_of_its_own_device() {
+        let mut model = on_intended(Ok(&WANTED));
+        model.apply(intended_of(&[
+            ("nobs-t-srl1", Ok(&WANTED[..1])),
+            ("nobs-t-srl2", Ok(&ON_DEVICE[3..])),
+        ]));
+        assert_eq!(rows(&model), [(' ', WANTED[0])]);
+
+        code(&mut model, KeyCode::Esc);
+        ch(&mut model, 'j');
+
+        assert_eq!(rows(&model), [(' ', ON_DEVICE[3])]);
+        model.apply(intended_of(&[("nobs-t-srl1", Ok(&WANTED))]));
+        assert_eq!(model.intended_view(), None);
+    }
+
+    #[test]
+    fn v_n_and_shift_n_are_in_the_key_line_and_the_help_only_where_a_template_exists() {
+        let help = |model: &Model| {
+            let entries = help_entries(model);
+            let at = entries.iter().position(|(key, _)| key == "t").unwrap();
+            entries[at + 1..]
+                .iter()
+                .take(2)
+                .map(|(key, meaning)| format!("{key} {meaning}"))
+                .collect::<Vec<_>>()
+        };
+        let line = |model: &Model, width| key_line(model, width).concat();
+        let mut model = on_intended(Ok(&WANTED));
+        assert!(line(&model, 60).starts_with(" v running  n N difference  / filter"));
+        assert!(line(&model, 100).starts_with(" v running  n N next/previous difference  / filter"));
+        assert_eq!(
+            help(&model),
+            [
+                "v intended or running config",
+                "n N next/previous difference"
+            ]
+        );
+
+        ch(&mut model, 'v');
+        assert!(line(&model, 100).starts_with(" v intended  / filter"));
+
+        let error = on_intended(Err(Failure::Other("nobs-t-error".to_string())));
+        assert!(line(&error, 100).starts_with(" v running  / filter"));
+
+        for model in [
+            on_intended(Err(Failure::NoTemplate("nobs-t-none".to_string()))),
+            on_config(&entries(3)),
+        ] {
+            assert!(line(&model, 100).starts_with(" / filter"));
+            assert!(!help(&model).iter().any(|entry| entry.starts_with('v')));
+        }
     }
 
     #[test]

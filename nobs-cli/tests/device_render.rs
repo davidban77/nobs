@@ -141,6 +141,28 @@ fn each_node_prints_the_startup_config_project_render_wrote_and_the_folder_stays
 }
 
 #[test]
+fn an_edit_of_lab_vars_after_project_render_reaches_the_next_render() {
+    let lab = Lab::project("edit");
+    let rendered = nobs(
+        &lab.0,
+        &["--dir", lab.0.to_str().unwrap(), "project", "render"],
+    );
+    assert_eq!(rendered.status.code(), Some(0), "{}", stderr(&rendered));
+    let vars = lab.0.join("containerlab/lab_vars.yml");
+    let text = fs::read_to_string(&vars).unwrap();
+    fs::write(&vars, text.replace("192.0.2.0/31", "198.51.100.0/31")).unwrap();
+    let written = fs::read_to_string(lab.0.join("containerlab/configs/nobs-t-srl1.cfg")).unwrap();
+
+    let output = render(&lab.0, "nobs-t-srl1");
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        written.replace("192.0.2.0/31", "198.51.100.0/31")
+    );
+}
+
+#[test]
 fn the_name_the_kind_from_the_topology_and_the_labs_source_reach_the_template() {
     let lab = Lab::linux("hand-over");
     let before = listing(&lab.0);

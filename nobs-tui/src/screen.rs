@@ -21,8 +21,8 @@ use crate::actions::{self, arguments, fits, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    absent, kind_text, Cursor, Focus, LoginEntry, Model, Reach, Run, RunMeasure, RunState,
-    StackKind, StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
+    absent, kind_text, Cursor, Focus, IntendedView, LoginEntry, Model, Reach, Run, RunMeasure,
+    RunState, StackKind, StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
 };
 use crate::terminal::SHELL;
 use crate::view;
@@ -33,6 +33,16 @@ const LEFT_WIDE: u16 = 32;
 const LEFT_DEVICES: u16 = 42;
 const TOO_SMALL: &str = "terminal too small: needs 60 columns and 15 rows";
 const CONFIG_HINT: &str = "press g to get the running config";
+const INTENDED_HINT: &str = "press g to compare with the device";
+const INTENDED_ERROR: &str = "intended: error";
+const VIEW_RUNNING: &str = "v running";
+const VIEW_INTENDED: &str = "v intended";
+const DIFFERENCE_NARROW: &str = "n N difference";
+const DIFFERENCE_WIDE: &str = "n N next/previous difference";
+const HELP_CONFIG: [(&str, &str); 2] = [
+    ("v", "intended or running config"),
+    ("n N", "next/previous difference"),
+];
 const TERMINAL_HINT: &str = "press t to open a shell on";
 const HELP_QUIT_SESSION: &str = "quit; asks if busy";
 const HELP_TERMINAL: &str = "type in terminal";
@@ -321,7 +331,7 @@ pub(crate) fn shown_rows(model: &Model, area: Rect) -> usize {
                 Tab::Overview | Tab::Logs => usize::from(content.height),
                 Tab::Timeline => usize::from(timeline_layout(model, content).1[1].height),
                 Tab::Interfaces => table_room(table_and_footer(content)[0]),
-                Tab::Config => usize::from(header_and_rows(content)[1].height),
+                Tab::Config => usize::from(config_layout(model, content)[2].height),
                 Tab::Terminal => usize::from(terminal_size(model, area).0),
                 Tab::Sonda | Tab::Alerts | Tab::Metrics => 0,
             }
@@ -1920,16 +1930,23 @@ fn log_row(nanoseconds: i64, device: Option<(&str, usize)>, text: &str, width: u
 }
 
 fn config_pane(frame: &mut Frame, area: Rect, model: &Model) {
+    let [note, header, rows_area] = config_layout(model, area);
+    if let Some(view) = model.intended_view() {
+        intended_pane(frame, header, rows_area, &view);
+        return;
+    }
+    let width = usize::from(area.width);
+    if let Some(words) = model.no_template() {
+        frame.render_widget(Paragraph::new(fit(words, width)), note);
+    }
     let Some((_, kept, lines, scroll)) = model.config() else {
         return;
     };
-    let width = usize::from(area.width);
     let Some(kept) = kept else {
         let hint = fitted(vec![(CONFIG_HINT.to_string(), DIM)], width);
-        frame.render_widget(Paragraph::new(hint), area);
+        frame.render_widget(Paragraph::new(hint), header);
         return;
     };
-    let [header, rows_area] = header_and_rows(area);
     let fetched = format!(
         "fetched {}  {}",
         kept.fetched,
@@ -1938,6 +1955,68 @@ fn config_pane(frame: &mut Frame, area: Rect, model: &Model) {
     frame.render_widget(Paragraph::new(Line::from(fit(&fetched, width))), header);
     let rows = lines.iter().map(|line| Line::from(fit(line, width)));
     pane_rows(frame, rows_area, rows, scroll, lines.len());
+}
+
+fn config_layout(model: &Model, area: Rect) -> [Rect; 3] {
+    let header = if model.intended_view().is_some() {
+        2
+    } else {
+        1
+    };
+    Layout::vertical([
+        Constraint::Length(u16::from(model.no_template().is_some())),
+        Constraint::Length(header),
+        Constraint::Fill(1),
+    ])
+    .areas(area)
+}
+
+fn intended_pane(frame: &mut Frame, header: Rect, rows: Rect, view: &IntendedView) {
+    let width = usize::from(header.width);
+    if let Some(error) = &view.error {
+        let lines: Vec<Line> = std::iter::once(INTENDED_ERROR.to_string())
+            .chain(error.lines().flat_map(|line| wrapped(line, width)))
+            .map(Line::from)
+            .collect();
+        frame.render_widget(Paragraph::new(lines), header.union(rows));
+        return;
+    }
+    let first = format!("intended {}  {}", view.since, counted(view.lines, "line"));
+    let second = match view.fetched.zip(view.missing) {
+        Some((fetched, 0)) => Line::from(fit(&format!("fetched {fetched}  none missing"), width)),
+        Some((fetched, missing)) => {
+            Line::from(fit(&format!("fetched {fetched}  {missing} missing"), width))
+        }
+        None => fitted(vec![(INTENDED_HINT.to_string(), DIM)], width),
+    };
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(fit(&first, width)), second]),
+        header,
+    );
+    let shown = view.rows.iter().map(|(mark, line)| {
+        let style = match mark {
+            '+' => Style::new().fg(Color::Green),
+            '-' => Style::new().fg(Color::Red),
+            _ => Style::new(),
+        };
+        Line::styled(
+            format!("{mark}{}", cut_middle(line, width.saturating_sub(1))),
+            style,
+        )
+    });
+    pane_rows(frame, rows, shown, view.scroll, view.rows.len());
+}
+
+fn cut_middle(text: &str, width: usize) -> String {
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    let kept = width.saturating_sub(1);
+    let head = kept / 2;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(count - (kept - head)).collect();
+    format!("{start}…{end}")
 }
 
 fn header_and_rows(area: Rect) -> [Rect; 2] {
@@ -2399,10 +2478,13 @@ pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
     if let Some(notice) = model.notice() {
         return wrapped(&format!(" {notice}"), width);
     }
-    vec![whole_hints(&key_hints(model), width)]
+    vec![whole_hints(
+        &key_hints(model, width >= usize::from(WIDE)),
+        width,
+    )]
 }
 
-fn key_hints(model: &Model) -> Vec<String> {
+fn key_hints(model: &Model, wide: bool) -> Vec<String> {
     let listed = |fixed: Vec<&'static str>| fixed.into_iter().map(ToString::to_string);
     if model.chooser() {
         return listed(vec!["j/k select", "Enter open", "q quit"]).collect();
@@ -2465,7 +2547,12 @@ fn key_hints(model: &Model) -> Vec<String> {
         (Workbench::Devices, Focus::Tabs, Tab::Logs) => {
             log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
         }
-        (Workbench::Devices, Focus::Tabs, Tab::Config) => PANE_HINTS.to_vec(),
+        (Workbench::Devices, Focus::Tabs, Tab::Config) => {
+            return listed(view_hints(model, wide))
+                .chain(listed(PANE_HINTS.to_vec()))
+                .chain(actions)
+                .collect();
+        }
         (Workbench::Devices, Focus::Tabs, Tab::Terminal) => {
             return match model.drawn_session() {
                 Some(session) => listed(session.state.keys().to_vec()).collect(),
@@ -2480,6 +2567,22 @@ fn key_hints(model: &Model) -> Vec<String> {
         }
     };
     listed(fixed).chain(actions).collect()
+}
+
+fn view_hints(model: &Model, wide: bool) -> Vec<&'static str> {
+    let difference = if wide {
+        DIFFERENCE_WIDE
+    } else {
+        DIFFERENCE_NARROW
+    };
+    match model.intended_view() {
+        Some(view) => [VIEW_RUNNING]
+            .into_iter()
+            .chain(view.error.is_none().then_some(difference))
+            .collect(),
+        None if model.has_template() => vec![VIEW_INTENDED],
+        None => Vec::new(),
+    }
 }
 
 fn observability_hints(model: &Model) -> Vec<&'static str> {
@@ -2593,8 +2696,13 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
     let terminal = workbench == Workbench::Devices && model.lab_with_nodes();
     let fixed = fixed.iter().flat_map(|entry| {
-        let typed = (terminal && entry.0 == "[ ]").then(|| (SHELL.key.to_string(), HELP_TERMINAL));
-        std::iter::once(owned(entry)).chain(typed)
+        let after = terminal && entry.0 == "[ ]";
+        let typed = after.then(|| (SHELL.key.to_string(), HELP_TERMINAL));
+        let views = HELP_CONFIG
+            .iter()
+            .filter(move |_| after && model.has_template())
+            .map(owned);
+        std::iter::once(owned(entry)).chain(typed).chain(views)
     });
     let quit = HELP_QUIT.iter().map(|&(key, meaning)| match key {
         "q" if model.lab_with_nodes() => (key.to_string(), HELP_QUIT_SESSION),
@@ -4575,6 +4683,50 @@ mod tests {
         open_tab(&mut model, Tab::Config);
         focus_tabs(&mut model);
         model
+    }
+
+    #[test]
+    fn after_a_g_with_no_difference_the_second_header_line_says_none_missing() {
+        let mut model = lab_devices_model();
+        model.apply(Update::Intended(vec![(
+            "nobs-t-srl1".to_string(),
+            Ok("set / a b on\n".to_string()),
+        )]));
+        press(&mut model, 'g');
+        model.apply(Update::ActionLine("set / a b on".to_string()));
+        model.apply(Update::ActionEnded(End::Exited(0)));
+        open_tab(&mut model, Tab::Config);
+        focus_tabs(&mut model);
+
+        let screen = drawn(&mut model, 100, 30);
+
+        assert!(row_with(&screen, "║fetched ").contains("  none missing "));
+    }
+
+    #[test]
+    fn the_intended_view_gives_the_page_keys_the_rows_under_its_two_header_lines() {
+        let area = Rect::new(0, 0, 60, 15);
+        let mut model = lab_devices_model();
+        model.apply(Update::Intended(vec![(
+            "nobs-t-srl1".to_string(),
+            Ok(numbered(40).join("\n")),
+        )]));
+        open_tab(&mut model, Tab::Config);
+        focus_tabs(&mut model);
+        looped(&mut model, area);
+
+        let screen = drawn(&mut model, 60, 15);
+        let listed = screen.iter().filter(|row| row.contains("║ line ")).count();
+        assert!(screen
+            .iter()
+            .any(|row| row.contains("║press g to compare with the device")));
+        assert_eq!(shown_rows(&model, area), listed);
+
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+        );
+        assert_eq!(model.intended_view().unwrap().scroll, listed - 1);
     }
 
     #[test]

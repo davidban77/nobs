@@ -1,0 +1,30 @@
+ nobs  book-lab book lab  sot lab_vars                                                     13:42:07
+ [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
+┌ devices 2 ─────────────────────────────┐╔ nobs-t-srl1 ═══════════════════════════════════════════╗
+│   NAME         KIND  HLTH  SYNC  ALRT  │║overview  interfaces  CONFIG  timeline  logs  terminal  ║
+│>  nobs-t-srl1  —     —     —        —  │║intended: error                                         ║
+│   nobs-t-srl2  —     —     —        —  │║templates/srl.j2: undefined value: nobs_t_missing (in   ║
+│                                        │║srl.j2:7)                                               ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+├ alerts — ──────────────────────────────┤║                                                        ║
+│no alerts in this lab                   │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+└────────────────────────────────────────┘╚════════════════════════════════════════════════════════╝
+ run  none                                                                                   o open
+ v running  / filter  j/k scroll  [ ] tab  Esc back to list  g get config  s run command

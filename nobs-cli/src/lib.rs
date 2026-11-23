@@ -2317,16 +2317,7 @@ fn device_nodes(located: &Located) -> Result<(PathBuf, Vec<TopologyNode>), i32> 
 }
 
 fn render_device(name: &str, located: &Located, topology: &Path, nodes: &[TopologyNode]) -> i32 {
-    let rendered = topology_node(name, topology, nodes)
-        .map_err(|error| error.to_string())
-        .and_then(|node| {
-            let (source, error) = containerlab_source(located);
-            let source = source
-                .as_deref()
-                .ok_or_else(|| error.unwrap_or_else(|| sot::Error::NoSource.to_string()));
-            intended(&located.dir, name, &node.kind, source)
-        });
-    match rendered {
+    match rendered(name, located, topology, nodes) {
         Ok(text) => {
             print!("{text}");
             0
@@ -2336,6 +2327,18 @@ fn render_device(name: &str, located: &Located, topology: &Path, nodes: &[Topolo
             1
         }
     }
+}
+
+fn rendered(
+    name: &str,
+    located: &Located,
+    topology: &Path,
+    nodes: &[TopologyNode],
+) -> Result<String, String> {
+    let node = topology_node(name, topology, nodes).map_err(|error| error.to_string())?;
+    let source = containerlab_source(located);
+    let source = sot::source_or_error(source.as_deref());
+    intended(&located.dir, name, &node.kind, source).map_err(|failure| failure.to_string())
 }
 
 fn device_answer(
@@ -5318,7 +5321,9 @@ fn screen_start_with(
                         Err(text) => ((None, Some(text)), None),
                     }
                 }
-                Kind::BookLab(_) | Kind::LabcliLab(_) => (containerlab_source(&located), None),
+                Kind::BookLab(_) | Kind::LabcliLab(_) => {
+                    ((containerlab_source(&located), None), None)
+                }
             };
             let nodes = located.nodes();
             let topology = Some(located.topology());
@@ -5392,29 +5397,16 @@ fn screen_start_with(
     }
 }
 
-fn containerlab_source(
-    located: &Located,
-) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
+fn containerlab_source(located: &Located) -> Option<std::sync::Arc<dyn SourceOfTruth>> {
     let path = located.dir.join("containerlab").join("lab_vars.yml");
-    match located.kind {
-        Kind::BookLab(_) => lab_vars_source(&path),
-        Kind::LabcliLab(_) if path.exists() => lab_vars_source(&path),
-        Kind::LabcliLab(_) | Kind::Workshop(_) => (None, None),
-    }
-}
-
-fn lab_vars_source(path: &Path) -> (Option<std::sync::Arc<dyn SourceOfTruth>>, Option<String>) {
-    match fs::read_to_string(path)
-        .map_err(|error| error.to_string())
-        .and_then(|text| lab_vars::read(&text))
-    {
-        Ok(vars) => (
-            Some(std::sync::Arc::new(sot::Fixed::from_lab_vars(&vars))
-                as std::sync::Arc<dyn SourceOfTruth>),
-            None,
-        ),
-        Err(error) => (None, Some(format!("{}: {error}", path.display()))),
-    }
+    let followed = match located.kind {
+        Kind::BookLab(_) => true,
+        Kind::LabcliLab(_) => path.exists(),
+        Kind::Workshop(_) => false,
+    };
+    followed.then(|| {
+        std::sync::Arc::new(sot::LabVarsFile::new(&path)) as std::sync::Arc<dyn SourceOfTruth>
+    })
 }
 
 struct SudoValidate<R: Runner>(R);
@@ -6678,6 +6670,128 @@ mod tests {
         assert!(header.ends_with("sot lab_vars"), "{header}");
     }
 
+    struct NoDocker;
+
+    impl Runner for NoDocker {
+        fn run(&self, _program: &str, _args: &[OsString]) -> io::Result<i32> {
+            Err(io::Error::other("nobs-t-no-docker"))
+        }
+
+        fn output(&self, _program: &str, _args: &[OsString]) -> io::Result<Output> {
+            Err(io::Error::other("nobs-t-no-docker"))
+        }
+    }
+
+    type Texts = Vec<(String, Result<String, nobs_core::intended::Failure>)>;
+
+    fn polled_until(
+        updates: &std::sync::mpsc::Receiver<nobs_tui::Update>,
+        done: impl Fn(&[String], &Texts) -> bool,
+    ) -> (Vec<String>, Texts) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let (mut devices, mut texts) = (Vec::new(), Vec::new());
+        while !done(&devices, &texts) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match updates
+                .recv_timeout(left)
+                .expect("the pollers gave no such answer")
+            {
+                nobs_tui::Update::Devices(list) => {
+                    devices = list
+                        .unwrap()
+                        .into_iter()
+                        .map(|device| device.name)
+                        .collect();
+                }
+                nobs_tui::Update::Intended(list) => texts = list,
+                _ => {}
+            }
+        }
+        (devices, texts)
+    }
+
+    #[test]
+    fn the_screen_text_equals_device_render_for_the_same_device_and_follows_lab_vars() {
+        let lab = project_lab(
+            "screen-intended",
+            &[
+                ("expected/lab_vars.yml", "lab_vars.yml"),
+                ("expected/lab.clab.yml", "lab.clab.yml"),
+            ],
+        );
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/project-two-node");
+        fs::create_dir_all(lab.0.join("templates")).unwrap();
+        fs::copy(
+            fixture.join("templates/srl.j2"),
+            lab.0.join("templates/srl.j2"),
+        )
+        .unwrap();
+        let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
+        let located = start.lab.clone().unwrap();
+        let command = |name: &str| {
+            let (topology, nodes) = device_nodes(&located).unwrap();
+            rendered(name, &located, &topology, &nodes)
+        };
+        let files = nobs_tui::poll::LabFiles::of(&start).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            files.source.as_ref().unwrap(),
+            start.source.as_ref().unwrap()
+        ));
+        let (pollers, updates) = nobs_tui::Pollers::start(
+            Arc::new(NoDocker),
+            Vec::new(),
+            0,
+            start.sonda.clone(),
+            start
+                .source
+                .clone()
+                .map(|source| (source, start.source_service)),
+            Some(start.urls.clone()),
+            Some(files),
+        );
+
+        let (devices, texts) = polled_until(&updates, |devices, texts| {
+            !devices.is_empty() && !texts.is_empty()
+        });
+        assert_eq!(devices, ["nobs-t-srl1", "nobs-t-srl2"]);
+        let srl1 = fs::read_to_string(fixture.join("expected/configs/nobs-t-srl1.cfg")).unwrap();
+        assert_eq!(texts[0], ("nobs-t-srl1".to_string(), Ok(srl1)));
+        for (name, text) in &texts {
+            let text = text.clone().map_err(|failure| failure.to_string());
+            assert_eq!(text, command(name), "{name}");
+        }
+
+        let path = lab.0.join("containerlab/lab_vars.yml");
+        let vars = fs::read_to_string(&path).unwrap();
+        fs::write(&path, vars.replace("nobs-t-srl2", "nobs-t-srl3")).unwrap();
+        pollers.send(nobs_tui::Command::Refresh);
+
+        let (_, texts) = polled_until(&updates, |devices, texts| {
+            devices == ["nobs-t-srl1", "nobs-t-srl3"]
+                && texts
+                    .iter()
+                    .any(|(name, text)| name == "nobs-t-srl2" && text.is_err())
+        });
+        for (name, text) in &texts {
+            let text = text.clone().map_err(|failure| failure.to_string());
+            assert_eq!(text, command(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_workshop_gives_the_screen_no_lab_files_and_so_no_intended_poller() {
+        let workshop = workshop_scratch("screen-intended-workshop", Some("none"), None);
+        let book = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/book-lab");
+        let files = |dir: &Path| {
+            let start = screen_start_with(dir, None, flags(None), false, &|_| None).unwrap();
+            nobs_tui::poll::LabFiles::of(&start).is_some()
+        };
+
+        assert!(!files(&workshop.0));
+        assert!(files(&book));
+    }
+
     #[test]
     fn a_server_given_with_the_flag_counts_as_set_for_sonda_in_a_lab() {
         let lab = project_lab(
@@ -6728,11 +6842,70 @@ mod tests {
         let start = screen_start_with(&lab.0, None, flags(None), false, &|_| None).unwrap();
 
         assert_eq!(start.home, nobs_tui::Workbench::Lab);
-        assert!(start.source.is_none());
+        assert!(start.source_error.is_none());
         assert_eq!(
-            start.source_error,
-            Some(format!("{}: {error}", path.display()))
+            start.source.unwrap().devices().unwrap_err().to_string(),
+            format!("{}: {error}", path.display())
         );
+    }
+
+    #[test]
+    fn a_lab_vars_broken_at_the_start_shows_its_words_in_the_sot_error_row_until_it_is_mended() {
+        let book_lab = |name: &str| {
+            let book = Scratch::new(name);
+            fs::create_dir_all(book.0.join("chapters")).unwrap();
+            fs::create_dir_all(book.0.join("containerlab")).unwrap();
+            fs::write(book.0.join("containerlab/lab.yml"), "").unwrap();
+            book
+        };
+        let book = book_lab("screen-broken-book");
+        let missing = book_lab("screen-missing-book");
+        let nodes = project_lab(
+            "screen-broken-nodes",
+            &[("expected/lab.clab.yml", "lab.clab.yml")],
+        );
+        let compose = Scratch::new("screen-broken-compose");
+        fs::create_dir_all(compose.0.join("containerlab")).unwrap();
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures/one-service/docker-compose.yml"),
+            compose.0.join("docker-compose.yml"),
+        )
+        .unwrap();
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/project-two-node/expected/lab_vars.yml");
+
+        for (dir, home, broken) in [
+            (&book.0, nobs_tui::Workbench::Lab, true),
+            (&nodes.0, nobs_tui::Workbench::Lab, true),
+            (&compose.0, nobs_tui::Workbench::Devices, true),
+            (&missing.0, nobs_tui::Workbench::Lab, false),
+        ] {
+            let path = dir.join("containerlab").join("lab_vars.yml");
+            let error = if broken {
+                fs::write(&path, "nodes: [\n").unwrap();
+                lab_vars::read("nodes: [\n").unwrap_err()
+            } else {
+                fs::read_to_string(&path).unwrap_err().to_string()
+            };
+            let words = format!("{}: {error}", path.display());
+            let start = screen_start_with(dir, None, flags(None), false, &|_| None).unwrap();
+            assert_eq!(start.home, home, "{dir:?}");
+            let source = start.source.clone().unwrap();
+            let mut shell = nobs_tui::Shell::new(start);
+            let poll = || nobs_tui::Update::Devices(source.devices().map_err(|e| e.to_string()));
+
+            shell.apply(poll());
+            assert_eq!(
+                shell.error().map(|(row, text, _)| (row, text)),
+                Some((status::row(Service::Sot).word, words.as_str())),
+                "{dir:?}"
+            );
+
+            fs::copy(&fixture, &path).unwrap();
+            shell.apply(poll());
+            assert_eq!(shell.error(), None, "{dir:?}");
+        }
     }
 
     #[test]
