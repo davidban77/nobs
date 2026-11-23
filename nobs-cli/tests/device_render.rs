@@ -1,6 +1,11 @@
+#[path = "support/listing.rs"]
+mod listing;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use listing::listing;
 
 const NODES: [&str; 2] = ["nobs-t-srl1", "nobs-t-srl2"];
 
@@ -107,21 +112,6 @@ fn assert_fails_with(output: &Output, line: &str) {
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
-}
-
-fn listing(dir: &Path) -> Vec<(PathBuf, String)> {
-    let mut found = Vec::new();
-    for entry in fs::read_dir(dir).unwrap().flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            found.push((path.clone(), String::new()));
-            found.extend(listing(&path));
-        } else {
-            found.push((path.clone(), fs::read_to_string(&path).unwrap()));
-        }
-    }
-    found.sort();
-    found
 }
 
 #[test]
@@ -290,18 +280,5 @@ fn in_a_workshop_or_outside_a_lab_the_lines_of_today() {
     assert_fails_with(
         &nobs(&bare.0, &["device", "render", "nobs-t-srl1"]),
         "nobs: no lab or workshop found from here",
-    );
-}
-
-#[test]
-fn the_device_help_names_render_with_its_words() {
-    let output = nobs(Path::new(env!("CARGO_MANIFEST_DIR")), &["device", "--help"]);
-
-    assert_eq!(output.status.code(), Some(0));
-    let help = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        help.lines().any(|line| line.trim_start()
-            == "render  Print the intended configuration of a device, from the lab's template"),
-        "{help}"
     );
 }

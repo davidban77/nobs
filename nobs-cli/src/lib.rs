@@ -2317,10 +2317,8 @@ fn device_nodes(located: &Located) -> Result<(PathBuf, Vec<TopologyNode>), i32> 
 }
 
 fn render_device(name: &str, located: &Located, topology: &Path, nodes: &[TopologyNode]) -> i32 {
-    let rendered = nodes
-        .iter()
-        .find(|node| node.name == name)
-        .ok_or_else(|| device::Error::NotANode(topology.to_path_buf()).to_string())
+    let rendered = topology_node(name, topology, nodes)
+        .map_err(|error| error.to_string())
         .and_then(|node| {
             let (source, error) = containerlab_source(located);
             let source = source
@@ -2364,16 +2362,24 @@ fn device_shell(
     })
 }
 
+fn topology_node<'a>(
+    name: &str,
+    topology: &Path,
+    nodes: &'a [TopologyNode],
+) -> Result<&'a TopologyNode, device::Error> {
+    nodes
+        .iter()
+        .find(|node| node.name == name)
+        .ok_or_else(|| device::Error::NotANode(topology.to_path_buf()))
+}
+
 fn device_step<T>(
     name: &str,
     topology: &Path,
     nodes: &[TopologyNode],
     inside: impl FnOnce(&str, &Credentials, device::Driver) -> Result<T, device::Error>,
 ) -> Result<T, device::Error> {
-    let node = nodes
-        .iter()
-        .find(|node| node.name == name)
-        .ok_or_else(|| device::Error::NotANode(topology.to_path_buf()))?;
+    let node = topology_node(name, topology, nodes)?;
     let driver = device::driver(&node.kind)?;
     let credentials = device::credentials()?;
     inside(&node.container, &credentials, driver)
