@@ -635,6 +635,28 @@ mod tests {
     }
 
     #[test]
+    fn the_startup_config_sees_every_template_name_and_equals_the_intended_config() {
+        let text = "main:\n  name: nobs-t-p\n  mgmt:\n    network: nobs-t-net\nnodes:\n  - kind: nokia_srlinux\n    image: nobs-t-image\n    nodes: [nobs-t-srl1]\nvars:\n  nodes:\n    nobs-t-srl1:\n      mgmt-ipv4: 203.0.113.11\n      nobs_t_site: nobs-t-rack1\n  observability_intent:\n    bgp:\n      intended_peers:\n        nobs-t-srl1:\n          - peer_ip: 192.0.2.1\n";
+        let folder = Folder::new("names");
+        folder.write(
+            "templates/srl.j2",
+            "{{ mgmt_ipv4 }} {{ nobs_t_site }} {% for s in sessions %}{{ s.peer_ip }}{% endfor %}\n",
+        );
+        let project = read(text).unwrap();
+        let startup = project
+            .startup_config("nobs-t-srl1", &Renderer::new(&folder.0.join(TEMPLATES)))
+            .unwrap();
+        assert_eq!(startup, "203.0.113.11 nobs-t-rack1 192.0.2.1");
+        let source = crate::sot::Fixed::from_lab_vars(
+            &lab_vars::read(&project.lab_vars_yaml().unwrap()).unwrap(),
+        );
+        assert_eq!(
+            crate::intended::intended(&folder.0, "nobs-t-srl1", "nokia_srlinux", Ok(&source)),
+            Ok(startup)
+        );
+    }
+
+    #[test]
     fn srl1_renders_the_expected_startup_config() {
         let project = fixture();
         let renderer = fixture_renderer();
