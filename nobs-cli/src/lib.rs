@@ -13,13 +13,13 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, sudo_refused_line, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
-use nobs_core::device::{self, Credentials, Terminal, Transport};
+use nobs_core::device::{self, Credentials, Pushed, Terminal, Transport};
 use nobs_core::env::{load_env, read_env};
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
 use nobs_core::http;
 use nobs_core::infrahub::{annotation, connect, read_schema, Infrahub, Seed, KINDS};
-use nobs_core::intended::{intended, Failure};
+use nobs_core::intended::{self, intended, Failure};
 use nobs_core::lab::{self, TopologyNode, WaitError};
 use nobs_core::lab_vars;
 use nobs_core::layers;
@@ -45,6 +45,9 @@ use nobs_core::workshop::{bootstrap, foreign_containers, Bootstrap};
 use nobs_ssh::Ssh;
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
+
+const SAVE_HELP: &str =
+    "Also write what each device answered to a file in this folder; the folder must not exist";
 
 const DASH: &str = "—";
 
@@ -147,7 +150,7 @@ pub enum Command {
         command: ProjectCommand,
     },
     #[command(
-        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, or check every device against it"
+        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, push it to the device, or check every device against it"
     )]
     Device {
         #[command(subcommand)]
@@ -1155,14 +1158,21 @@ pub enum DeviceCommand {
         name: String,
     },
     #[command(
+        about = "Send the intended configuration to a device in one commit, after a yes, and fetch it again"
+    )]
+    Push {
+        #[arg(help = "Node name in the lab's topology file")]
+        name: String,
+        #[arg(long, help = "Push without asking")]
+        yes: bool,
+        #[arg(long, value_name = "FOLDER", help = SAVE_HELP)]
+        save: Option<PathBuf>,
+    },
+    #[command(
         about = "Fetch every device in turn and say which ones lack intended lines; ends with 1 when a device differs or fails"
     )]
     Check {
-        #[arg(
-            long,
-            value_name = "FOLDER",
-            help = "Also write what each device answered to a file in this folder; the folder must not exist"
-        )]
+        #[arg(long, value_name = "FOLDER", help = SAVE_HELP)]
         save: Option<PathBuf>,
     },
 }
@@ -2302,10 +2312,34 @@ fn run_device(
             DeviceCommand::Render { name } => {
                 return render_device(name, located, &topology, &nodes);
             }
+            DeviceCommand::Push { name, yes, save } => {
+                let node = match topology_node(name, &topology, &nodes) {
+                    Ok(node) => node,
+                    Err(error) => {
+                        push_says(&mut io::stderr(), name, error);
+                        return 1;
+                    }
+                };
+                return push_device(
+                    node,
+                    transport,
+                    &|node| node_intended(located, node),
+                    &mut |question| {
+                        if *yes {
+                            Some(true)
+                        } else {
+                            asked_on_terminal(question)
+                        }
+                    },
+                    save.as_deref(),
+                    &mut io::stdout(),
+                    &mut io::stderr(),
+                );
+            }
             DeviceCommand::Check { save } => {
                 return check_devices(
-                    located,
                     &nodes,
+                    &|node| node_intended(located, node),
                     transport,
                     save.as_deref(),
                     &mut io::stdout(),
@@ -2367,9 +2401,102 @@ fn node_intended(located: &Located, node: &TopologyNode) -> Result<String, Failu
     intended(&located.dir, &node.name, &node.kind, source)
 }
 
+fn push_device(
+    node: &TopologyNode,
+    transport: &dyn Transport,
+    intended_of: &dyn Fn(&TopologyNode) -> Result<String, Failure>,
+    ask: &mut dyn FnMut(&str) -> Option<bool>,
+    save: Option<&Path>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> i32 {
+    let name = &node.name;
+    let text = match intended_of(node) {
+        Ok(text) => text,
+        Err(failure) => {
+            push_says(err, name, failure);
+            return 1;
+        }
+    };
+    let count = intended::lines(&text).count();
+    if count == 0 {
+        push_says(err, name, "the intended configuration has no line");
+        return 1;
+    }
+    let lines = counted(count, "line");
+    let mut answer = None;
+    let pushed = device::push(node, transport, &text, &mut || {
+        answer = ask(&format!("push {lines} to {name}? y/n"));
+        answer == Some(true)
+    });
+    match pushed {
+        Err(error) => {
+            let _ = writeln!(err, "{}", device::error_line(name, &error));
+            1
+        }
+        Ok(Pushed::Declined) if answer.is_none() => {
+            push_says(err, name, "needs a yes; run it in a terminal, or add --yes");
+            1
+        }
+        Ok(Pushed::Declined) => {
+            push_says(err, name, "not pushed");
+            1
+        }
+        Ok(Pushed::Refused(output)) => {
+            pass_through(&output, out, err);
+            push_says(
+                err,
+                name,
+                "the device refused the push; its configuration is as before",
+            );
+            1
+        }
+        Ok(Pushed::NotKnown(error)) => {
+            let _ = writeln!(err, "{}", device::error_line(name, &error));
+            let _ = writeln!(err, "{}", device::not_known_line(name));
+            3
+        }
+        Ok(Pushed::Taken(output)) => {
+            pass_through(&output, out, err);
+            let _ = writeln!(out, "{}", device::pushed_line(name, count));
+            let fetched = check_devices(
+                std::slice::from_ref(node),
+                &|_| Ok(text.clone()),
+                transport,
+                save,
+                out,
+                err,
+            );
+            if fetched == 0 {
+                0
+            } else {
+                3
+            }
+        }
+    }
+}
+
+fn push_says(err: &mut impl Write, name: &str, words: impl std::fmt::Display) {
+    let _ = writeln!(err, "nobs: push {name}: {words}");
+}
+
+fn asked_on_terminal(question: &str) -> Option<bool> {
+    if !io::stdin().is_terminal() {
+        return None;
+    }
+    eprint!("{question} ");
+    let mut answer = String::new();
+    let _ = io::stdin().read_line(&mut answer);
+    Some(says_yes(&answer))
+}
+
+fn says_yes(answer: &str) -> bool {
+    answer.trim() == "y"
+}
+
 fn check_devices(
-    located: &Located,
     nodes: &[TopologyNode],
+    intended_of: &dyn Fn(&TopologyNode) -> Result<String, Failure>,
     transport: &dyn Transport,
     save: Option<&Path>,
     out: &mut impl Write,
@@ -2383,23 +2510,18 @@ fn check_devices(
     }
     let width = check::width(nodes);
     let mut unsaved = false;
-    let readings = check::walk(
-        nodes,
-        transport,
-        &|node| node_intended(located, node),
-        &mut |reading| {
-            let _ = writeln!(out, "{}", check::line(width, reading));
-            let _ = out.flush();
-            if let Some(folder) = save {
-                if let Err(error) = check::save(folder, reading) {
-                    if let Some(path) = check::file(folder, reading) {
-                        cannot_make(err, &path, &error);
-                    }
-                    unsaved = true;
+    let readings = check::walk(nodes, transport, intended_of, &mut |reading| {
+        let _ = writeln!(out, "{}", check::line(width, reading));
+        let _ = out.flush();
+        if let Some(folder) = save {
+            if let Err(error) = check::save(folder, reading) {
+                if let Some(path) = check::file(folder, reading) {
+                    cannot_make(err, &path, &error);
                 }
+                unsaved = true;
             }
-        },
-    );
+        }
+    });
     check::exit_code(&readings).max(i32::from(unsaved))
 }
 
@@ -7401,7 +7523,14 @@ mod tests {
         let located = locate(lab, None).unwrap();
         let (_, nodes) = device_nodes(&located).unwrap();
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = check_devices(&located, &nodes, transport, save, &mut out, &mut err);
+        let code = check_devices(
+            &nodes,
+            &|node| node_intended(&located, node),
+            transport,
+            save,
+            &mut out,
+            &mut err,
+        );
         (
             code,
             String::from_utf8(out).unwrap(),
@@ -7760,6 +7889,446 @@ mod tests {
         assert!(folder.join("nobs-t-srl3.config").exists());
     }
 
+    struct PushThenFetch {
+        session: FakeTransport,
+        fetch: FakeTransport,
+    }
+
+    impl Transport for PushThenFetch {
+        fn run(
+            &self,
+            host: &str,
+            credentials: &Credentials,
+            command: &str,
+        ) -> Result<Output, device::Error> {
+            self.fetch.run(host, credentials, command)
+        }
+
+        fn shell(
+            &self,
+            host: &str,
+            _credentials: &Credentials,
+            _terminal: &mut dyn Terminal,
+        ) -> Result<i32, device::Error> {
+            panic!("a push opened a shell on {host}");
+        }
+
+        fn send(
+            &self,
+            host: &str,
+            credentials: &Credentials,
+            lines: &[String],
+        ) -> Result<Output, device::Error> {
+            self.session.send(host, credentials, lines)
+        }
+    }
+
+    fn push_then_fetch(
+        session: Result<Output, device::Error>,
+        fetch: Result<Output, device::Error>,
+    ) -> PushThenFetch {
+        PushThenFetch {
+            session: FakeTransport::answering(session),
+            fetch: FakeTransport::answering(fetch),
+        }
+    }
+
+    fn taken() -> Result<Output, device::Error> {
+        Ok(answer(0, "nobs-t-answer-out\n", "nobs-t-answer-err\n"))
+    }
+
+    fn push_lab(name: &str) -> Scratch {
+        check_lab(name, &[("nobs-t-srl1", "nokia_srlinux")], &[])
+    }
+
+    fn srl1_session() -> Vec<(String, String)> {
+        vec![call(
+            &container("nobs-t-srl1"),
+            "enter candidate private\nset / system name host-name nobs-t-srl1\nset / interface mgmt0 admin-state enable\ncommit now",
+        )]
+    }
+
+    const SRL1_QUESTION: &str = "push 2 lines to nobs-t-srl1? y/n";
+
+    fn pushed_with(
+        lab: &Path,
+        name: &str,
+        transport: &dyn Transport,
+        answer: Option<bool>,
+        save: Option<&Path>,
+    ) -> (i32, String, String, Vec<String>) {
+        let located = locate(lab, None).unwrap();
+        let (topology, nodes) = device_nodes(&located).unwrap();
+        let node = topology_node(name, &topology, &nodes).unwrap();
+        let mut asked = Vec::new();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = push_device(
+            node,
+            transport,
+            &|node| node_intended(&located, node),
+            &mut |question| {
+                asked.push(question.to_string());
+                answer
+            },
+            save,
+            &mut out,
+            &mut err,
+        );
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+            asked,
+        )
+    }
+
+    fn saved_names(folder: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_taken_push_prints_the_answer_the_count_and_the_line_of_the_fetch_after_it_and_ends_by_that_fetch(
+    ) {
+        set_credentials();
+        let cases = [
+            (synced("nobs-t-srl1"), "in sync", 0, "nobs-t-srl1.config"),
+            (
+                Ok(answer(0, "set / system name host-name nobs-t-srl1\n", "")),
+                "1 missing",
+                3,
+                "nobs-t-srl1.config",
+            ),
+            (
+                Err(device::Error::NoAnswer),
+                "failed: no answer in 10 seconds",
+                3,
+                "nobs-t-srl1.error",
+            ),
+        ];
+        for (case, (fetch, words, exit, file)) in cases.into_iter().enumerate() {
+            let lab = push_lab(&format!("push-taken-{case}"));
+            let folder = lab.0.join("check");
+            let transport = push_then_fetch(taken(), fetch);
+
+            let (code, out, err, asked) =
+                pushed_with(&lab.0, "nobs-t-srl1", &transport, Some(true), Some(&folder));
+
+            assert_eq!(
+                out,
+                format!("nobs-t-answer-out\nnobs-t-srl1  pushed 2 lines\nnobs-t-srl1  {words}\n"),
+                "case {case}"
+            );
+            assert_eq!(err, "nobs-t-answer-err\n", "case {case}");
+            assert_eq!(code, exit, "case {case}");
+            assert_eq!(asked, [SRL1_QUESTION], "case {case}");
+            assert_eq!(transport.session.calls(), srl1_session(), "case {case}");
+            assert_eq!(
+                transport.fetch.calls(),
+                fetched(&["nobs-t-srl1"]),
+                "case {case}"
+            );
+            assert_eq!(saved_names(&folder), [file], "case {case}");
+        }
+    }
+
+    #[test]
+    fn a_refused_push_passes_the_device_words_through_says_as_before_and_fetches_nothing() {
+        set_credentials();
+        let lab = push_lab("push-refused");
+        let folder = lab.0.join("check");
+        let transport = push_then_fetch(
+            Ok(answer(1, "nobs-t-answer-out\n", "Error: refused\n")),
+            synced("nobs-t-srl1"),
+        );
+
+        let (code, out, err, _) =
+            pushed_with(&lab.0, "nobs-t-srl1", &transport, Some(true), Some(&folder));
+
+        assert_eq!(out, "nobs-t-answer-out\n");
+        assert_eq!(
+            err,
+            "Error: refused\nnobs: push nobs-t-srl1: the device refused the push; its configuration is as before\n"
+        );
+        assert_eq!(code, 1);
+        assert_eq!(transport.session.calls(), srl1_session());
+        assert!(transport.fetch.calls().is_empty());
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn a_session_that_broke_after_the_lines_went_out_says_not_known_fetches_nothing_and_ends_with_3(
+    ) {
+        set_credentials();
+        let lab = push_lab("push-not-known");
+        let folder = lab.0.join("check");
+        let transport = push_then_fetch(Err(device::Error::NoAnswer), synced("nobs-t-srl1"));
+
+        let (code, out, err, _) =
+            pushed_with(&lab.0, "nobs-t-srl1", &transport, Some(true), Some(&folder));
+
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "nobs: ssh nobs-t-srl1: no answer in 10 seconds\n\
+             nobs: push nobs-t-srl1: not known whether the device took the push; run nobs device check\n"
+        );
+        assert_eq!(code, 3);
+        assert_eq!(transport.session.calls(), srl1_session());
+        assert!(transport.fetch.calls().is_empty());
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn a_refused_login_or_a_device_that_is_down_gives_the_ssh_line_and_fetches_nothing() {
+        set_credentials();
+        for (case, (session, line)) in [
+            (
+                Err(device::Error::AuthenticationFailed),
+                "nobs: ssh nobs-t-srl1: authentication failed\n",
+            ),
+            (
+                unreachable("nobs-t-srl1"),
+                "nobs: ssh nobs-t-srl1: cannot reach clab-nobs-t-dev-nobs-t-srl1: connection refused\n",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let lab = push_lab(&format!("push-no-session-{case}"));
+            let folder = lab.0.join("check");
+            let transport = push_then_fetch(session, synced("nobs-t-srl1"));
+
+            let (code, out, err, _) =
+                pushed_with(&lab.0, "nobs-t-srl1", &transport, Some(true), Some(&folder));
+
+            assert_eq!((code, out.as_str(), err.as_str()), (1, "", line), "case {case}");
+            assert!(transport.fetch.calls().is_empty(), "case {case}");
+            assert!(!folder.exists(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn a_kind_with_a_template_and_no_driver_is_the_no_driver_line_never_asked_and_sends_nothing() {
+        set_credentials();
+        let lab = check_lab("push-no-driver", &[("x1", "ceos")], &[]);
+        fs::write(lab.0.join("templates/ceos.j2"), CHECK_TEMPLATE).unwrap();
+        let transport = push_then_fetch(taken(), synced("x1"));
+
+        let (code, out, err, asked) = pushed_with(&lab.0, "x1", &transport, Some(true), None);
+
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (1, "", "nobs: ssh x1: no driver for the kind ceos yet\n")
+        );
+        assert!(asked.is_empty());
+        assert!(transport.session.calls().is_empty() && transport.fetch.calls().is_empty());
+    }
+
+    #[test]
+    fn a_no_or_no_answer_to_the_question_sends_nothing_and_logs_in_nowhere() {
+        set_credentials();
+        for (answered, line) in [
+            (Some(false), "nobs: push nobs-t-srl1: not pushed\n"),
+            (
+                None,
+                "nobs: push nobs-t-srl1: needs a yes; run it in a terminal, or add --yes\n",
+            ),
+        ] {
+            let lab = push_lab("push-no");
+            let transport = push_then_fetch(taken(), synced("nobs-t-srl1"));
+
+            let (code, out, err, asked) =
+                pushed_with(&lab.0, "nobs-t-srl1", &transport, answered, None);
+
+            assert_eq!(
+                (code, out.as_str(), err.as_str()),
+                (1, "", line),
+                "{answered:?}"
+            );
+            assert_eq!(asked, [SRL1_QUESTION], "{answered:?}");
+            assert!(
+                transport.session.calls().is_empty() && transport.fetch.calls().is_empty(),
+                "{answered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_template_an_error_in_the_text_or_an_empty_text_is_not_pushed_never_asked_and_sends_nothing(
+    ) {
+        set_credentials();
+        let lab = check_lab(
+            "push-no-text",
+            &[("nobs-t-linux1", "linux"), ("nobs-t-srl9", "srl")],
+            &["nobs-t-srl9"],
+        );
+        let empty = push_lab("push-empty-text");
+        fs::write(empty.0.join("templates/srl.j2"), "\n  \n").unwrap();
+        for (dir, name, line) in [
+            (
+                &lab.0,
+                "nobs-t-linux1",
+                "nobs: push nobs-t-linux1: no template for kind linux: expected templates/linux.j2\n",
+            ),
+            (
+                &lab.0,
+                "nobs-t-srl9",
+                "nobs: push nobs-t-srl9: device nobs-t-srl9 not found in the source of truth.\n",
+            ),
+            (
+                &empty.0,
+                "nobs-t-srl1",
+                "nobs: push nobs-t-srl1: the intended configuration has no line\n",
+            ),
+        ] {
+            let transport = push_then_fetch(taken(), synced(name));
+
+            let (code, out, err, asked) = pushed_with(dir, name, &transport, Some(true), None);
+
+            assert_eq!((code, out.as_str(), err.as_str()), (1, "", line), "{name}");
+            assert!(asked.is_empty(), "{name}");
+            assert!(
+                transport.session.calls().is_empty() && transport.fetch.calls().is_empty(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_session_gets_the_lines_of_device_render_in_order_for_each_device_of_the_project() {
+        set_credentials();
+        let lab = project_lab(
+            "push-render",
+            &[
+                ("expected/lab_vars.yml", "lab_vars.yml"),
+                ("expected/lab.clab.yml", "lab.clab.yml"),
+            ],
+        );
+        fs::create_dir_all(lab.0.join("templates")).unwrap();
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures/project-two-node/templates/srl.j2"),
+            lab.0.join("templates/srl.j2"),
+        )
+        .unwrap();
+        let located = locate(&lab.0, None).unwrap();
+        let (topology, nodes) = device_nodes(&located).unwrap();
+        let mut texts = Vec::new();
+        for name in ["nobs-t-srl1", "nobs-t-srl2"] {
+            let text = rendered(name, &located, &topology, &nodes).unwrap();
+            assert!(text.lines().count() > 2, "{text}");
+            let sent = std::iter::once("enter candidate private")
+                .chain(text.lines())
+                .chain(["commit now"])
+                .collect::<Vec<_>>()
+                .join("\n");
+            let transport = push_then_fetch(taken(), Ok(answer(0, "", "")));
+
+            pushed_with(&lab.0, name, &transport, Some(true), None);
+
+            assert_eq!(
+                transport.session.calls(),
+                [call(&format!("clab-nobs-t-project-{name}"), &sent)],
+                "{name}"
+            );
+            texts.push(text);
+        }
+        assert_ne!(texts[0], texts[1]);
+    }
+
+    #[test]
+    fn the_intended_text_is_made_once_for_the_push_and_the_fetch_after_it() {
+        set_credentials();
+        let lab = push_lab("push-made-once");
+        let located = locate(&lab.0, None).unwrap();
+        let (topology, nodes) = device_nodes(&located).unwrap();
+        let node = topology_node("nobs-t-srl1", &topology, &nodes).unwrap();
+        let made = std::cell::Cell::new(0);
+        let transport = push_then_fetch(taken(), synced("nobs-t-srl1"));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+
+        let code = push_device(
+            node,
+            &transport,
+            &|node| {
+                made.set(made.get() + 1);
+                node_intended(&located, node)
+            },
+            &mut |_| Some(true),
+            None,
+            &mut out,
+            &mut err,
+        );
+
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(made.get(), 1);
+        assert_eq!(transport.fetch.calls(), fetched(&["nobs-t-srl1"]));
+    }
+
+    #[test]
+    fn a_push_to_the_second_of_three_devices_reaches_and_fetches_the_second_only() {
+        set_credentials();
+        let lab = check_lab(
+            "push-second",
+            &[
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-srl2", "srl"),
+                ("nobs-t-srl3", "srl"),
+            ],
+            &[],
+        );
+        let transport = push_then_fetch(taken(), synced("nobs-t-srl2"));
+
+        let code = run_device(
+            DeviceCommand::Push {
+                name: "nobs-t-srl2".to_string(),
+                yes: true,
+                save: None,
+            },
+            Some(&lab.0),
+            &transport,
+            || None,
+        );
+
+        assert_eq!(code, 0);
+        let hosts: Vec<String> = transport
+            .session
+            .calls()
+            .into_iter()
+            .map(|(host, _)| host)
+            .collect();
+        assert_eq!(hosts, [container("nobs-t-srl2")]);
+        assert_eq!(transport.fetch.calls(), fetched(&["nobs-t-srl2"]));
+    }
+
+    #[test]
+    fn no_output_of_a_push_holds_a_fetched_line_or_the_password() {
+        set_credentials();
+        let lab = push_lab("push-secret");
+        let fetch = synced("nobs-t-srl1").map(|output| {
+            answer(
+                0,
+                &format!("{}set / nobs-t-sentinel on\n", output.stdout),
+                "",
+            )
+        });
+        let transport = push_then_fetch(taken(), fetch);
+
+        let (code, out, err, _) = pushed_with(&lab.0, "nobs-t-srl1", &transport, Some(true), None);
+
+        assert_eq!(code, 0, "{err}");
+        for text in [&out, &err] {
+            for word in ["nobs-t-sentinel", "nobs-t-extra", TEST_PASSWORD] {
+                assert!(!text.contains(word), "{word}: {text}");
+            }
+        }
+    }
+
     #[test]
     fn the_raw_mode_guard_turns_raw_mode_off_after_an_end_an_error_and_a_panic() {
         set_credentials();
@@ -7843,5 +8412,13 @@ mod tests {
             *asker.0 .0.lock().unwrap(),
             [("sudo".to_string(), vec![OsString::from("-v")])]
         );
+    }
+
+    #[test]
+    fn only_a_typed_y_is_a_yes_to_the_push() {
+        assert!(says_yes("y\n"));
+        for answer in ["Y\n", "yes\n", "\n", "", "n\n"] {
+            assert!(!says_yes(answer), "{answer:?}");
+        }
     }
 }

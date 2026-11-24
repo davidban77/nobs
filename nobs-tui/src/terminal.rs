@@ -1,6 +1,6 @@
 use crossterm::event::KeyEvent;
 
-use crate::actions::{Action, Ask, Row};
+use crate::actions::{Action, Ask, HandsBack, Row};
 use crate::keys;
 use crate::shell::{Command, Workbench, LOG_LINES};
 
@@ -15,7 +15,7 @@ pub(crate) const SHELL: Action = Action {
     hint: "type in the terminal",
     ask: Ask::No,
     sudo: false,
-    keeps: false,
+    hands_back: HandsBack::Nothing,
     login: true,
 };
 

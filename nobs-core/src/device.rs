@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::lab;
+use crate::count::counted;
 use crate::runner::Output;
+use crate::{intended, lab};
 
 pub const ANSWER_LIMIT: Duration = Duration::from_secs(10);
 
@@ -71,6 +72,15 @@ impl fmt::Display for Error {
     }
 }
 
+impl Error {
+    pub fn says_nothing_was_sent(&self) -> bool {
+        matches!(
+            self,
+            Error::Unreachable { .. } | Error::AuthenticationFailed | Error::ShellRefused
+        )
+    }
+}
+
 pub trait Transport {
     fn run(&self, host: &str, credentials: &Credentials, command: &str) -> Result<Output, Error>;
     fn shell(
@@ -79,6 +89,12 @@ pub trait Transport {
         credentials: &Credentials,
         terminal: &mut dyn Terminal,
     ) -> Result<i32, Error>;
+    fn send(
+        &self,
+        host: &str,
+        credentials: &Credentials,
+        lines: &[String],
+    ) -> Result<Output, Error>;
 }
 
 pub trait Terminal {
@@ -92,12 +108,16 @@ pub trait Terminal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Driver {
     pub running_config: &'static str,
+    pub enter: &'static str,
+    pub commit: &'static str,
 }
 
 pub fn driver(kind: &str) -> Result<Driver, Error> {
     if lab::SRLINUX_KINDS.contains(&kind) {
         Ok(Driver {
             running_config: "info flat",
+            enter: "enter candidate private",
+            commit: "commit now",
         })
     } else {
         Err(Error::NoDriver(kind.to_string()))
@@ -111,6 +131,38 @@ pub fn step<T>(
     let driver = driver(&node.kind)?;
     let credentials = credentials()?;
     inside(&node.container, &credentials, driver)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Pushed {
+    Declined,
+    Taken(Output),
+    Refused(Output),
+    NotKnown(Error),
+}
+
+pub fn push(
+    node: &lab::TopologyNode,
+    transport: &dyn Transport,
+    text: &str,
+    yes: &mut dyn FnMut() -> bool,
+) -> Result<Pushed, Error> {
+    step(node, |host, credentials, driver| {
+        if !yes() {
+            return Ok(Pushed::Declined);
+        }
+        let lines: Vec<String> = std::iter::once(driver.enter)
+            .chain(intended::lines(text))
+            .chain([driver.commit])
+            .map(str::to_string)
+            .collect();
+        match transport.send(host, credentials, &lines) {
+            Ok(output) if output.code == 0 => Ok(Pushed::Taken(output)),
+            Ok(output) => Ok(Pushed::Refused(output)),
+            Err(error) if error.says_nothing_was_sent() => Err(error),
+            Err(error) => Ok(Pushed::NotKnown(error)),
+        }
+    })
 }
 
 pub fn credentials() -> Result<Credentials, Error> {
@@ -133,6 +185,14 @@ pub fn credential(name: &str, shell: Option<String>, lab: &[(String, String)]) -
 
 pub fn error_line(name: &str, error: &Error) -> String {
     format!("nobs: ssh {name}: {error}")
+}
+
+pub fn pushed_line(name: &str, count: usize) -> String {
+    format!("{name}  pushed {}", counted(count, "line"))
+}
+
+pub fn not_known_line(name: &str) -> String {
+    format!("nobs: push {name}: not known whether the device took the push; run nobs device check")
 }
 
 #[cfg(any(test, feature = "fake"))]
@@ -193,6 +253,18 @@ impl Transport for FakeTransport {
             .push((host.to_string(), terminal.kind()));
         let _ = terminal.keys();
         self.answer(host).map(|output| output.code)
+    }
+
+    fn send(
+        &self,
+        host: &str,
+        _credentials: &Credentials,
+        lines: &[String],
+    ) -> Result<Output, Error> {
+        self.calls
+            .borrow_mut()
+            .push((host.to_string(), lines.join("\n")));
+        self.answer(host)
     }
 }
 
@@ -328,11 +400,218 @@ mod tests {
             assert_eq!(
                 driver(kind),
                 Ok(Driver {
-                    running_config: "info flat"
+                    running_config: "info flat",
+                    enter: "enter candidate private",
+                    commit: "commit now",
                 }),
                 "{kind}"
             );
         }
         assert_eq!(driver("ceos"), Err(Error::NoDriver("ceos".to_string())));
+    }
+
+    const SRL1: &str =
+        include_str!("../../tests/fixtures/project-two-node/expected/configs/nobs-t-srl1.cfg");
+    const SRL2: &str =
+        include_str!("../../tests/fixtures/project-two-node/expected/configs/nobs-t-srl2.cfg");
+
+    fn node(name: &str, kind: &str) -> lab::TopologyNode {
+        lab::TopologyNode {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            container: host(name),
+        }
+    }
+
+    fn host(name: &str) -> String {
+        format!("clab-{name}")
+    }
+
+    fn logged_in() {
+        std::env::set_var(USER, "admin");
+        std::env::set_var(PASSWORD, "nobs-t-not-a-secret");
+    }
+
+    fn replied(code: i32, stderr: &str) -> Result<Output, Error> {
+        Ok(Output {
+            code,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        })
+    }
+
+    fn session(lines: &[&str]) -> String {
+        ["enter candidate private"]
+            .iter()
+            .chain(lines)
+            .chain(&["commit now"])
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn pushed_with_yes(
+        node: &lab::TopologyNode,
+        transport: &FakeTransport,
+        text: &str,
+    ) -> Result<Pushed, Error> {
+        push(node, transport, text, &mut || true)
+    }
+
+    #[test]
+    fn a_push_gives_one_session_enter_then_every_line_of_the_text_in_order_then_commit() {
+        logged_in();
+        let cases = [
+            ("nobs-t-srl1", "set / a b on\n", session(&["set / a b on"])),
+            (
+                "nobs-t-srl1",
+                "  set / a b on \n\n\tset / c d on\n \nset / e f on",
+                session(&["set / a b on", "set / c d on", "set / e f on"]),
+            ),
+            (
+                "nobs-t-srl1",
+                SRL1,
+                session(&SRL1.lines().collect::<Vec<_>>()),
+            ),
+            (
+                "nobs-t-srl2",
+                SRL2,
+                session(&SRL2.lines().collect::<Vec<_>>()),
+            ),
+        ];
+        for (case, (name, text, sent)) in cases.into_iter().enumerate() {
+            let transport = FakeTransport::answering(replied(0, ""));
+            assert_eq!(
+                pushed_with_yes(&node(name, "nokia_srlinux"), &transport, text),
+                Ok(Pushed::Taken(replied(0, "").unwrap())),
+                "case {case}"
+            );
+            assert_eq!(transport.calls(), [(host(name), sent)], "case {case}");
+        }
+    }
+
+    #[test]
+    fn a_no_gives_declined_and_no_session() {
+        logged_in();
+        let transport = FakeTransport::answering(replied(0, ""));
+        let mut asked = 0;
+        let mut no = || {
+            asked += 1;
+            false
+        };
+        assert_eq!(
+            push(&node("nobs-t-srl1", "srl"), &transport, SRL1, &mut no),
+            Ok(Pushed::Declined)
+        );
+        assert_eq!(asked, 1);
+        assert_eq!(transport.calls(), []);
+    }
+
+    fn pushed_and_asked(node: &lab::TopologyNode) -> (Result<Pushed, Error>, usize, usize) {
+        let transport = FakeTransport::answering(replied(0, ""));
+        let mut asked = 0;
+        let mut yes = || {
+            asked += 1;
+            true
+        };
+        let pushed = push(node, &transport, SRL1, &mut yes);
+        (pushed, asked, transport.calls().len())
+    }
+
+    #[test]
+    fn no_driver_or_no_login_never_asks_and_never_opens_a_session() {
+        logged_in();
+        assert_eq!(
+            pushed_and_asked(&node("nobs-t-ceos1", "ceos")),
+            (Err(Error::NoDriver("ceos".to_string())), 0, 0)
+        );
+        std::env::remove_var(USER);
+        std::env::remove_var(PASSWORD);
+        assert_eq!(
+            pushed_and_asked(&node("nobs-t-srl1", "srl")),
+            (Err(Error::MissingCredentials), 0, 0)
+        );
+    }
+
+    #[test]
+    fn an_exit_not_zero_is_refused_with_the_device_answer() {
+        logged_in();
+        let transport = FakeTransport::answering(replied(1, "Error: refused\n"));
+        assert_eq!(
+            pushed_with_yes(&node("nobs-t-srl1", "srl"), &transport, SRL1),
+            Ok(Pushed::Refused(replied(1, "Error: refused\n").unwrap()))
+        );
+    }
+
+    #[test]
+    fn an_unreachable_device_a_refused_login_or_a_refused_shell_in_the_session_is_an_error() {
+        logged_in();
+        let errors = [
+            Error::Unreachable {
+                host: host("nobs-t-srl1"),
+                reason: "connection refused".to_string(),
+            },
+            Error::AuthenticationFailed,
+            Error::ShellRefused,
+        ];
+        for error in errors {
+            let transport = FakeTransport::answering(Err(error.clone()));
+            assert_eq!(
+                pushed_with_yes(&node("nobs-t-srl1", "srl"), &transport, SRL1),
+                Err(error.clone()),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_with_no_answer_no_exit_status_or_a_library_error_is_not_known() {
+        logged_in();
+        let errors = [
+            Error::NoAnswer,
+            Error::NoExitStatus,
+            Error::Library("Connection closed by the remote side".to_string()),
+        ];
+        for error in errors {
+            let transport = FakeTransport::answering(Err(error.clone()));
+            assert_eq!(
+                pushed_with_yes(&node("nobs-t-srl1", "srl"), &transport, SRL1),
+                Ok(Pushed::NotKnown(error.clone())),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_push_to_the_second_of_three_devices_opens_a_session_to_the_second_only() {
+        logged_in();
+        let nodes = [
+            node("nobs-t-srl1", "srl"),
+            node("nobs-t-srl2", "srl"),
+            node("nobs-t-srl3", "srl"),
+        ];
+        let transport = FakeTransport::per_host(
+            nodes
+                .iter()
+                .map(|node| (node.container.clone(), replied(0, "")))
+                .collect(),
+        );
+        pushed_with_yes(&nodes[1], &transport, SRL2).unwrap();
+        let hosts: Vec<String> = transport
+            .calls()
+            .into_iter()
+            .map(|(host, _)| host)
+            .collect();
+        assert_eq!(hosts, [host("nobs-t-srl2")]);
+    }
+
+    #[test]
+    fn the_lines_sent_hold_no_save_and_no_startup() {
+        logged_in();
+        let transport = FakeTransport::answering(replied(0, ""));
+        pushed_with_yes(&node("nobs-t-srl1", "srl"), &transport, SRL1).unwrap();
+        let [(_, sent)] = transport.calls().try_into().unwrap();
+        assert!(!sent.contains("save"), "{sent}");
+        assert!(!sent.contains("startup"), "{sent}");
     }
 }

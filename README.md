@@ -436,7 +436,7 @@ When the table is not shown, the key line offers only `[ ] view  r refresh`, and
 
 ### Actions
 
-An action is a nobs command that the screen runs for you. There are twenty-two:
+An action is a nobs command that the screen runs for you. There are twenty-three:
 
 | Key | Where it works | Command it runs | When you press the key |
 |---|---|---|---|
@@ -450,6 +450,7 @@ An action is a nobs command that the screen runs for you. There are twenty-two:
 | `g` | the devices workbench, in a lab with containerlab nodes, with a device selected | `nobs --dir <lab folder> device fetch <device>` | asks for a missing login, then runs; a good answer goes to the Config tab |
 | `s` | the same as `g` | `nobs --dir <lab folder> device run <device> "<command>"` | asks on the key line for a missing login, then for the command; `Enter` runs it, `Esc` cancels |
 | `G` | the devices workbench, in a lab with containerlab nodes | `nobs --dir <lab folder> device check` | asks for a missing login, then runs; fills the `SYNC` column and the Config tab of every device that answered |
+| `P` | the same as `g`, when the device has an intended configuration, the text of `nobs device render` | `nobs --dir <lab folder> device push --yes <device>` | asks `push the intended configuration to <device>? <n> lines, <k> missing; it changes the running configuration of the device. y/n`, with `, state not known` in place of `, <k> missing` when the last fetch failed, and neither when no fetch is known; after `y`, asks for a missing login, then runs; sends the intended configuration in one commit, then fetches the device again and fills its `SYNC` cell and Config tab |
 | `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes, every node and the other chapters' services.` |
 | `P` | the lab workbench; it acts on the whole lab, so it needs no chapter | `nobs --dir <lab folder> lab purge --sudo-no-prompt` | asks `y/n` and says `It takes every scenario down and removes their volumes.` |
@@ -558,7 +559,7 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab and the logs view of the observability workbench use the same window |
 | `u` `d` `X` `R` `p` `s` | in the services workbench, on the selected workshop stack: ask to run `nobs <workshop> up`, `down`, `destroy`, `reset` or `preflight`, or run `status` at once; `down` removes the containers and keeps the volumes (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
 | `m` | ask to set or clear the maintenance flag of the selected device |
-| `g` `s` `G` | in the devices workbench, in a lab with containerlab nodes: ask for a missing login first; then `g` runs `nobs device fetch` on the selected device and opens the Config tab, `s` asks for a command on the key line and runs `nobs device run` on it, and `G` runs `nobs device check` on every device and fills the `SYNC` column (see [Actions](#actions)) |
+| `g` `s` `G` `P` | in the devices workbench, in a lab with containerlab nodes: `g`, `s` and `G` ask for a missing login first; then `g` runs `nobs device fetch` on the selected device and opens the Config tab, `s` asks for a command on the key line and runs `nobs device run` on it, and `G` runs `nobs device check` on every device and fills the `SYNC` column; `P` asks a yes, then a missing login, and runs `nobs device push` on the selected device (see [Actions](#actions)) |
 | `v` `n` `N` | in the Config tab, when the lab has a template for the device's kind: switch the view; move to the next or the previous difference |
 | `D` `X` `P` `R` `U` `B` `S` | in the lab workbench: ask to deploy, destroy, prepare, update or rebuild the selected chapter, or to purge the whole lab; `S` shows the chapter at once (see [Actions](#actions)) |
 | `D` `X` `R` `S` | in the lab workbench of a lab without chapters: ask to deploy or destroy the nodes, write the files at once (only with `nobs_project.yml`), or show the nodes at once (see [A project folder or a hand-written topology](#a-project-folder-or-a-hand-written-topology)) |
@@ -652,6 +653,7 @@ Each `docker` command of labcli and netobs has the same name in nobs, and so doe
 | | | `nobs device shell` |
 | | | `nobs device render` |
 | | | `nobs device check` |
+| | | `nobs device push` |
 
 In `nobs docker exec`, the words after the service are passed to the container as separate arguments, and a flag meant for the command inside the container goes after `--`.
 
@@ -2850,8 +2852,9 @@ The `nobs device` group works on the devices of a lab: `check` on every device, 
 | `nobs device shell NAME` | opens a shell on the device in this terminal, until the shell ends |
 | `nobs device render NAME` | prints the intended configuration of the device: the lab's template for its kind, filled with its data from the source of truth |
 | `nobs device check` | fetches every device in turn and says which ones lack intended lines; ends with 1 when a device differs or fails; with `--save FOLDER`, also writes what each device answered to a file in this folder, and the folder must not exist |
+| `nobs device push NAME` | sends the intended configuration of the device in one commit after a yes, fetches it again and prints the result line of `check`; ends with 0 only when the device is in sync after it |
 
-On the screen, `g` and `s` on the devices workbench run `fetch` and `run` for the selected device, and `G` runs `check`.
+On the screen, `g`, `s` and `P` on the devices workbench run `fetch`, `run` and `push` for the selected device, and `G` runs `check`.
 
 `NAME` is the node name in the lab's topology file. `COMMAND` is one text: put it in quotes, and nobs hands it to the device with its spaces kept.
 
@@ -2875,13 +2878,13 @@ $ echo $?
 0
 ```
 
-`nobs device render` logs in to no device and writes no file: it prints the text to the standard output. Like the other four commands, it needs a lab with containerlab nodes, not a workshop. Its source of truth is the `containerlab/lab_vars.yml` of the lab folder. In a lab made by `nobs project`, right after `nobs project render`, its output equals `containerlab/configs/<name>.cfg`.
+`nobs device render` logs in to no device and writes no file: it prints the text to the standard output. Like the other five commands, it needs a lab with containerlab nodes, not a workshop. Its source of truth is the `containerlab/lab_vars.yml` of the lab folder. In a lab made by `nobs project`, right after `nobs project render`, its output equals `containerlab/configs/<name>.cfg`.
 
-`fetch`, `run`, `shell` and `check` work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). None of the five commands works in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file. `fetch`, `run` and `shell` then connect to the container name that containerlab gives the node.
+`fetch`, `run`, `shell`, `push` and `check` work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). None of the six commands works in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file. `fetch`, `run`, `shell` and `push` then connect to the container name that containerlab gives the node.
 
 nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing, empty or only spaces, nobs names the two variables and opens no connection. nobs never prints the password.
 
-In the screen, `g`, `G` and `s` ask on the key line for what is missing: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g`, `G` or `s`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
+In the screen, `g`, `G`, `s` and `P` ask on the key line for what is missing, `P` after its yes: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g`, `G`, `s` or `P`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
 
 `fetch`, `run` and `shell` each open one connection. `fetch` and `run` connect, log in, run one command and close the connection. `shell` connects, logs in and keeps the connection until the shell on the device ends. nobs stops with an error when the device sends nothing for 10 seconds at one of these steps: while nobs connects and logs in, while `fetch` or `run` waits for the answer, and while `shell` waits for the device to open the shell. An open shell has no time limit.
 
@@ -2933,6 +2936,8 @@ The exit code is 0 when every device that was checked is in sync, also when none
 `--save FOLDER` also writes what each device answered. The folder must not exist. nobs makes it private (mode 700) and writes one private file (mode 600) per device: `<name>.config` with the configuration of a device that answered, `<name>.error` with the error of a device that failed, and no file for the others. These files hold password hashes, so do not commit them. When nobs cannot make the folder, it prints `nobs: cannot make <folder>: <error>`, checks no device and exits with 1. When it cannot make the file of one device, it prints the same line for that file, goes on with the next device, and exits with 1.
 
 The screen's `G` runs the check with `--save` and a private folder `nobs-check-<process number>` under the system's temporary folder. It reads the files and then deletes the folder. When the screen is killed hard, the folder stays, with its password hashes.
+
+`nobs device push NAME` sends each line of the text that `nobs device render` prints for the device, without the blank lines. It is all or nothing. For SR Linux, nobs sends `enter candidate private`, the lines, then `commit now`, in one session. A private candidate is a copy of the configuration that only this session changes, and the one commit makes all the lines live together. When the device refuses a line, it takes none of them: nobs passes the device's words through, prints `nobs: push <name>: the device refused the push; its configuration is as before` and exits with 1. Before nobs sends anything, it asks `push <n> lines to <name>? y/n` on the standard error, and only `y` is a yes. `--yes` pushes without asking. Any other answer prints `nobs: push <name>: not pushed`. When the input is not a terminal and there is no `--yes`, nobs prints `nobs: push <name>: needs a yes; run it in a terminal, or add --yes`. In both cases nobs sends nothing and exits with 1. When the device takes the push, nobs prints `<name>  pushed <n> lines` and fetches the device again, as `check` does for that one device, and prints its result line. The exit code is 0 when the device was pushed and is in sync. It is 1 when nothing was pushed and the device is as before: no yes, a node with no template, an error or no line in the intended text, a missing or refused login, a refused shell, or a device that nobs cannot reach. A device that does not answer the connection, the login or the shell request is one that nobs cannot reach: nobs prints `nobs: ssh <name>: cannot reach <host>: <cause>` and sends nothing. It is 3 when the device took the push, or may have taken it, but nobs cannot show that it is in sync: lines are still missing after the fetch, the fetch after it failed, or the session broke after nobs started to send the lines. In the last case nobs prints the `nobs: ssh <name>: …` line of the cause, then `nobs: push <name>: not known whether the device took the push; run nobs device check`. In the screen, when you stop a push with Ctrl-C, the run pane shows the same `not known` line, unless the run already shows `<name>  pushed <n> lines`. In a shell, Ctrl-C during a push ends nobs at once, and nobs prints no line; whether the device took the push is then not known, so run `nobs device check`. A usage error exits with 2. The push changes only the running configuration: nothing is saved as the startup configuration, and nobs reaches no other device.
 
 When nobs finds no lab folder, it prints the line of [Where nobs runs from](#where-nobs-runs-from) and exits with 1. A usage error, such as `nobs device run srl1` without a command, exits with 2.
 

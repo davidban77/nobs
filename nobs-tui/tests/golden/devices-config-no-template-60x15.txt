@@ -12,4 +12,4 @@
 │                     │║set / acl acl-filter cpm type ipv4…║
 └─────────────────────┘╚═════════════════════════════ ↓35 ═╝
  run  device fetch nobs-t-srl1  exit 0  0s           o open
- / filter  j/k scroll  [ ] tab  Esc back to list
+ / filter  j/k scroll  [ ] tab  Esc back to list  g fetch

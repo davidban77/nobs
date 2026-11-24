@@ -12,4 +12,4 @@
 │                     │║                                   ║
 └─────────────────────┘╚═══════════════════════════════════╝
  run  none                                           o open
- / filter  j/k scroll  [ ] tab  Esc back to list
+ / filter  j/k scroll  [ ] tab  Esc back to list  g fetch

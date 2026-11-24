@@ -74,7 +74,12 @@ fn book_model() -> Shell {
     let dir = fixture("book-lab");
     let located = locate(&dir, Some(&dir)).unwrap();
     let stacks = stacks(Some(&located), Vec::new()).unwrap();
-    model(located, stacks)
+    let mut model = model(located, stacks);
+    model.apply(Update::Intended(vec![(
+        DEVICE.to_string(),
+        Ok("set / system information location nobs-t-x\n".to_string()),
+    )]));
+    model
 }
 
 fn stack_index(model: &Shell, kind: StackKind, name: Option<&str>) -> usize {
@@ -137,7 +142,8 @@ fn takes_sudo_no_prompt(action: &Action) -> bool {
     } else {
         Cli::command()
     };
-    let command = action.words.iter().fold(&root, |command, word| {
+    let subcommands = action.words.iter().filter(|word| !word.starts_with("--"));
+    let command = subcommands.fold(&root, |command, word| {
         command
             .find_subcommand(word)
             .unwrap_or_else(|| panic!("{} names no subcommand {word}", action.key))

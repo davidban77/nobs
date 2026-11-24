@@ -34,6 +34,14 @@ pub enum Ask {
     Yes,
     Saying(&'static str),
     Text,
+    Push,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandsBack {
+    Nothing,
+    Lines,
+    Folder,
 }
 
 #[derive(Debug)]
@@ -45,7 +53,7 @@ pub struct Action {
     pub hint: &'static str,
     pub ask: Ask,
     pub sudo: bool,
-    pub keeps: bool,
+    pub hands_back: HandsBack,
     pub login: bool,
 }
 
@@ -53,7 +61,7 @@ const OTHER_CHAPTERS_DOWN: &str = "takes the other chapters' services down";
 pub(crate) const SAVE: &str = "--save";
 const WITH_NODES: &[Nodes] = &[Nodes::Project, Nodes::Topology];
 
-pub const ACTIONS: [Action; 22] = [
+pub const ACTIONS: [Action; 23] = [
     Action {
         key: 'u',
         workbench: Workbench::Services,
@@ -62,7 +70,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "up",
         ask: Ask::Yes,
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -73,7 +81,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "down",
         ask: Ask::Yes,
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -84,7 +92,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "destroy",
         ask: Ask::Saying("removes the stack's volumes"),
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -95,7 +103,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "reset",
         ask: Ask::Saying("clears silences, maintenance and cascade scenarios"),
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -106,7 +114,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "preflight",
         ask: Ask::Saying("flaps srl1, leaves it in maintenance and can take 13 minutes"),
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -117,7 +125,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "status",
         ask: Ask::No,
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -128,7 +136,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "maintenance",
         ask: Ask::Yes,
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -136,10 +144,10 @@ pub const ACTIONS: [Action; 22] = [
         workbench: Workbench::Devices,
         row: Row::Node,
         words: &["device", "fetch"],
-        hint: "get config",
+        hint: "fetch",
         ask: Ask::No,
         sudo: false,
-        keeps: true,
+        hands_back: HandsBack::Lines,
         login: true,
     },
     Action {
@@ -147,10 +155,10 @@ pub const ACTIONS: [Action; 22] = [
         workbench: Workbench::Devices,
         row: Row::Node,
         words: &["device", "run"],
-        hint: "run command",
+        hint: "run",
         ask: Ask::Text,
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: true,
     },
     Action {
@@ -161,7 +169,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "check all",
         ask: Ask::No,
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Folder,
         login: true,
     },
     Action {
@@ -172,7 +180,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "deploy",
         ask: Ask::Saying(OTHER_CHAPTERS_DOWN),
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -183,7 +191,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "destroy",
         ask: Ask::Saying("removes the chapter's volumes, every node and the other chapters' services"),
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -194,7 +202,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "purge",
         ask: Ask::Saying("takes every scenario down and removes their volumes"),
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -205,7 +213,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "prepare",
         ask: Ask::Saying("takes every scenario down first"),
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -218,7 +226,7 @@ pub const ACTIONS: [Action; 22] = [
             "recreates every service of the chapter and its unnamed volumes, and takes the other chapters' services down",
         ),
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -229,7 +237,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "rebuild",
         ask: Ask::Saying(OTHER_CHAPTERS_DOWN),
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -240,7 +248,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "show",
         ask: Ask::No,
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -251,7 +259,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "deploy",
         ask: Ask::Saying("writes the files under containerlab/ first"),
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -262,7 +270,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "deploy",
         ask: Ask::Yes,
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -273,7 +281,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "destroy",
         ask: Ask::Saying("removes every node of the lab"),
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -284,7 +292,7 @@ pub const ACTIONS: [Action; 22] = [
         hint: "render",
         ask: Ask::No,
         sudo: false,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
     },
     Action {
@@ -295,8 +303,19 @@ pub const ACTIONS: [Action; 22] = [
         hint: "show",
         ask: Ask::No,
         sudo: true,
-        keeps: false,
+        hands_back: HandsBack::Nothing,
         login: false,
+    },
+    Action {
+        key: 'P',
+        workbench: Workbench::Devices,
+        row: Row::Node,
+        words: &["device", "push", "--yes"],
+        hint: "push",
+        ask: Ask::Push,
+        sudo: false,
+        hands_back: HandsBack::Folder,
+        login: true,
     },
 ];
 
@@ -377,14 +396,16 @@ pub(crate) fn pieces(
             (lab.dir.clone().into(), args)
         }
         (Row::Node, Target::Device(name)) => {
-            let lab = model.located().filter(|_| in_its_lab(action.row, model))?;
+            let lab = model
+                .located()
+                .filter(|_| in_its_lab(action.row, model))
+                .filter(|_| action.ask != Ask::Push || model.intended_text(name).is_some())?;
             let args = words.chain([vec![OsString::from(name)]]).collect();
             (lab.dir.clone().into(), args)
         }
         (Row::EveryNode, Target::Lab) => {
             let lab = model.located().filter(|_| in_its_lab(action.row, model))?;
-            let args = words.chain([pair(SAVE, check_folder())]).collect();
-            (lab.dir.clone().into(), args)
+            (lab.dir.clone().into(), words.collect())
         }
         (Row::Chapter, Target::Chapter(index)) => {
             let stack = model
@@ -400,7 +421,14 @@ pub(crate) fn pieces(
         }
         _ => return None,
     };
-    Some([pair("--dir", dir)].into_iter().chain(args).collect())
+    let save = (action.hands_back == HandsBack::Folder).then(|| pair(SAVE, check_folder()));
+    Some(
+        [pair("--dir", dir)]
+            .into_iter()
+            .chain(args)
+            .chain(save)
+            .collect(),
+    )
 }
 
 #[cfg(test)]

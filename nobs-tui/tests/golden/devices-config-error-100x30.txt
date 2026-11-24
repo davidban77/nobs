@@ -27,4 +27,4 @@
 │                                        │║                                                        ║
 └────────────────────────────────────────┘╚════════════════════════════════════════════════════════╝
  run  none                                                                                   o open
- v running  / filter  j/k scroll  [ ] tab  Esc back to list  g get config  s run command
+ v running  / filter  j/k scroll  [ ] tab  Esc back to list  g fetch  s run  G check all

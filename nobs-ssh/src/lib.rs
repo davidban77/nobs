@@ -26,6 +26,15 @@ impl Transport for Ssh {
     ) -> Result<i32, Error> {
         shell_at(host, 22, credentials, terminal, ANSWER_LIMIT)
     }
+
+    fn send(
+        &self,
+        host: &str,
+        credentials: &Credentials,
+        lines: &[String],
+    ) -> Result<Output, Error> {
+        send_at(host, 22, credentials, lines, ANSWER_LIMIT)
+    }
 }
 
 struct AcceptAnyKey;
@@ -58,12 +67,27 @@ fn shell_at(
     block_on(live_shell(host, port, credentials, terminal, limit))
 }
 
+fn send_at(
+    host: &str,
+    port: u16,
+    credentials: &Credentials,
+    lines: &[String],
+    limit: Duration,
+) -> Result<Output, Error> {
+    runtime()
+        .map_err(|error| before_sent(error, host))?
+        .block_on(fed(host, port, credentials, lines, limit))
+}
+
 fn block_on<T>(work: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+    runtime()?.block_on(work)
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, Error> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|error| Error::Library(error.to_string()))?
-        .block_on(work)
+        .map_err(|error| Error::Library(error.to_string()))
 }
 
 async fn open(
@@ -96,6 +120,50 @@ async fn session(
     answer(&mut channel, limit, host).await
 }
 
+async fn fed(
+    host: &str,
+    port: u16,
+    credentials: &Credentials,
+    lines: &[String],
+    limit: Duration,
+) -> Result<Output, Error> {
+    let (_handle, mut channel) = async {
+        let (handle, mut channel) = open(host, port, credentials, limit).await?;
+        within(limit, channel.request_shell(true), host).await?;
+        granted(&mut channel, &mut |_| Ok(()), limit, host).await?;
+        Ok((handle, channel))
+    }
+    .await
+    .map_err(|error| before_sent(error, host))?;
+    let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    async {
+        within(limit, channel.data(input.as_bytes()), host).await?;
+        within(limit, channel.eof(), host).await?;
+        answer(&mut channel, limit, host).await
+    }
+    .await
+    .map_err(once_sent)
+}
+
+fn before_sent(error: Error, host: &str) -> Error {
+    if error.says_nothing_was_sent() {
+        error
+    } else {
+        Error::Unreachable {
+            host: host.to_string(),
+            reason: error.to_string(),
+        }
+    }
+}
+
+fn once_sent(error: Error) -> Error {
+    match error {
+        Error::Unreachable { reason, .. } => Error::Library(reason),
+        error if error.says_nothing_was_sent() => Error::Library(error.to_string()),
+        error => error,
+    }
+}
+
 async fn live_shell(
     host: &str,
     port: u16,
@@ -103,37 +171,35 @@ async fn live_shell(
     terminal: &mut dyn Terminal,
     limit: Duration,
 ) -> Result<i32, Error> {
-    let (_handle, channel) = open(host, port, credentials, limit).await?;
-    let (mut read, write) = channel.split();
+    let (_handle, mut channel) = open(host, port, credentials, limit).await?;
     let kind = terminal.kind();
     let size = terminal.size();
     let (cols, rows) = size;
-    let pty = write.request_pty(true, &kind, cols.into(), rows.into(), 0, 0, &[]);
+    let pty = channel.request_pty(true, &kind, cols.into(), rows.into(), 0, 0, &[]);
     within(limit, pty, host).await?;
-    granted(&mut read, terminal, limit, host).await?;
-    within(limit, write.request_shell(true), host).await?;
-    granted(&mut read, terminal, limit, host).await?;
+    granted(&mut channel, &mut |data| show(terminal, data), limit, host).await?;
+    within(limit, channel.request_shell(true), host).await?;
+    granted(&mut channel, &mut |data| show(terminal, data), limit, host).await?;
     let keys = terminal
         .keys()
         .map_err(|error| Error::Library(error.to_string()))?;
+    let (read, write) = channel.split();
     let write = Arc::new(write);
     send_keys(keys, Arc::clone(&write), tokio::runtime::Handle::current());
     pump(read, &write, terminal, size).await
 }
 
 async fn granted(
-    read: &mut ChannelReadHalf,
-    terminal: &mut dyn Terminal,
+    channel: &mut Channel<client::Msg>,
+    show: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
     limit: Duration,
     host: &str,
 ) -> Result<(), Error> {
     loop {
-        match within(limit, async { Ok(read.wait().await) }, host).await? {
+        match within(limit, async { Ok(channel.wait().await) }, host).await? {
             Some(ChannelMsg::Success) => return Ok(()),
             Some(ChannelMsg::Failure) => return Err(Error::ShellRefused),
-            Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
-                show(terminal, &data)?
-            }
+            Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => show(&data)?,
             Some(_) => {}
             None => return Err(Error::NoExitStatus),
         }
@@ -249,6 +315,7 @@ mod tests {
     use std::io::Write;
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Mutex};
     use std::thread;
     use std::time::Instant;
@@ -267,6 +334,47 @@ mod tests {
         _channel: Option<Channel<Msg>>,
         term: String,
         size: (u32, u32),
+        feed: Feed,
+    }
+
+    enum Feed {
+        Off,
+        Refusing,
+        Closing,
+        Reading(Vec<u8>),
+        Stopped,
+    }
+
+    static WRITTEN_TO_A_REFUSED_SHELL: AtomicUsize = AtomicUsize::new(0);
+
+    impl Device {
+        fn read_lines(
+            &mut self,
+            channel: ChannelId,
+            session: &mut Session,
+        ) -> Result<(), russh::Error> {
+            while let Feed::Reading(buffer) = &mut self.feed {
+                let Some(end) = buffer.iter().position(|&byte| byte == b'\n') else {
+                    return Ok(());
+                };
+                let line: Vec<u8> = buffer.drain(..=end).collect();
+                match &line[..end] {
+                    b"refuse" => {
+                        self.feed = Feed::Stopped;
+                        session.extended_data(channel, 1, "Error: refused\n")?;
+                        session.exit_status_request(channel, 1)?;
+                        session.close(channel)?;
+                    }
+                    b"drop" => {
+                        self.feed = Feed::Stopped;
+                        session.close(channel)?;
+                    }
+                    b"cut" => return Err(russh::Error::Disconnect),
+                    _ => session.data(channel, line)?,
+                }
+            }
+            Ok(())
+        }
     }
 
     struct Devices;
@@ -279,6 +387,7 @@ mod tests {
                 _channel: None,
                 term: String::new(),
                 size: (0, 0),
+                feed: Feed::Off,
             }
         }
     }
@@ -286,9 +395,14 @@ mod tests {
     impl server::Handler for Device {
         type Error = russh::Error;
 
-        async fn auth_password(&mut self, _: &str, password: &str) -> Result<Auth, Self::Error> {
+        async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
             if password == "hang" {
                 return std::future::pending().await;
+            }
+            match user {
+                "nobs-t-refuse-shell" => self.feed = Feed::Refusing,
+                "nobs-t-close-before-grant" => self.feed = Feed::Closing,
+                _ => {}
             }
             Ok(if password == "right" {
                 Auth::Accept
@@ -357,6 +471,15 @@ mod tests {
             channel: ChannelId,
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            if self.term.is_empty() {
+                match self.feed {
+                    Feed::Refusing => return session.channel_failure(channel),
+                    Feed::Closing => return session.close(channel),
+                    _ => {}
+                }
+                self.feed = Feed::Reading(Vec::new());
+                return session.channel_success(channel);
+            }
             match self.term.as_str() {
                 "nobs-t-refuse-shell" => return session.channel_failure(channel),
                 "nobs-t-early-data" => session.data(channel, EARLY.to_vec())?,
@@ -373,6 +496,18 @@ mod tests {
             data: &[u8],
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            match &mut self.feed {
+                Feed::Off | Feed::Closing => {}
+                Feed::Refusing => {
+                    WRITTEN_TO_A_REFUSED_SHELL.fetch_add(data.len(), Ordering::SeqCst);
+                    return Ok(());
+                }
+                Feed::Reading(buffer) => {
+                    buffer.extend_from_slice(data);
+                    return self.read_lines(channel, session);
+                }
+                Feed::Stopped => return Ok(()),
+            }
             match data {
                 b"nobs-t-exit" => {
                     session.exit_status_request(channel, 7)?;
@@ -382,6 +517,18 @@ mod tests {
                 b"nobs-t-drop" => Err(russh::Error::Disconnect),
                 _ => session.data(channel, data.to_vec()),
             }
+        }
+
+        async fn channel_eof(
+            &mut self,
+            channel: ChannelId,
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            if matches!(self.feed, Feed::Reading(_)) {
+                session.exit_status_request(channel, 0)?;
+                session.close(channel)?;
+            }
+            Ok(())
         }
 
         async fn window_change_request(
@@ -444,6 +591,26 @@ mod tests {
         answers
             .recv_timeout(Duration::from_secs(5))
             .expect("an answer within 5 seconds")
+    }
+
+    fn feed(user: &str, lines: &[&str]) -> Result<Output, Error> {
+        feed_at(device(), user, "right", lines)
+    }
+
+    fn feed_at(port: u16, user: &str, password: &str, lines: &[&str]) -> Result<Output, Error> {
+        let credentials = Credentials {
+            user: user.to_string(),
+            password: Password::new(password.to_string()),
+        };
+        let lines: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
+        send_at("127.0.0.1", port, &credentials, &lines, LIMIT)
+    }
+
+    fn unreachable_before_sent(reason: &str) -> Result<Output, Error> {
+        Err(Error::Unreachable {
+            host: "127.0.0.1".to_string(),
+            reason: reason.to_string(),
+        })
     }
 
     struct Shell {
@@ -660,6 +827,124 @@ mod tests {
         assert_eq!(shell.ended.try_recv(), Err(mpsc::TryRecvError::Empty));
         shell.types(b"nobs-t-exit");
         assert_eq!(shell.end(), Ok(7));
+    }
+
+    #[test]
+    fn lines_sent_to_a_shell_with_no_terminal_reach_the_device_in_order_and_it_ends_with_0() {
+        assert_eq!(
+            feed(
+                "admin",
+                &[
+                    "enter candidate private",
+                    "set / a b on",
+                    "set / c d on",
+                    "commit now"
+                ]
+            ),
+            Ok(Output {
+                code: 0,
+                stdout: "enter candidate private\nset / a b on\nset / c d on\ncommit now\n"
+                    .to_string(),
+                stderr: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_refused_line_ends_not_0_with_the_device_words_and_no_later_line_is_read() {
+        assert_eq!(
+            feed(
+                "admin",
+                &["set / a b on", "refuse", "set / c d on", "commit now"]
+            ),
+            Ok(Output {
+                code: 1,
+                stdout: "set / a b on\n".to_string(),
+                stderr: "Error: refused\n".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_session_that_closes_after_the_lines_went_out_with_no_status_is_no_exit_status() {
+        assert_eq!(
+            feed("admin", &["set / a b on", "drop", "commit now"]),
+            Err(Error::NoExitStatus)
+        );
+    }
+
+    #[test]
+    fn a_connection_lost_after_a_line_went_out_is_no_exit_status() {
+        assert_eq!(
+            feed("admin", &["set / a b on", "cut", "commit now"]),
+            Err(Error::NoExitStatus)
+        );
+    }
+
+    #[test]
+    fn a_refused_shell_request_is_shell_refused_and_no_line_is_written() {
+        assert_eq!(
+            feed("nobs-t-refuse-shell", &["set / a b on", "commit now"]),
+            Err(Error::ShellRefused)
+        );
+        thread::sleep(LIMIT);
+        assert_eq!(WRITTEN_TO_A_REFUSED_SHELL.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_listener_that_never_speaks_is_unreachable_before_any_line_is_sent() {
+        let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent.local_addr().unwrap().port();
+        assert_eq!(
+            feed_at(port, "admin", "right", &["set / a b on"]),
+            unreachable_before_sent("no answer in 10 seconds")
+        );
+    }
+
+    #[test]
+    fn a_login_that_hangs_is_unreachable_before_any_line_is_sent() {
+        assert_eq!(
+            feed_at(device(), "admin", "hang", &["set / a b on"]),
+            unreachable_before_sent("no answer in 10 seconds")
+        );
+    }
+
+    #[test]
+    fn a_channel_closed_before_the_grant_is_unreachable_before_any_line_is_sent() {
+        assert_eq!(
+            feed("nobs-t-close-before-grant", &["set / a b on"]),
+            unreachable_before_sent("the device sent no exit status")
+        );
+    }
+
+    #[test]
+    fn once_a_line_went_out_every_failure_is_one_that_says_the_state_is_not_known() {
+        let cases = [
+            (
+                Error::Unreachable {
+                    host: "127.0.0.1".to_string(),
+                    reason: "connection reset by peer".to_string(),
+                },
+                Error::Library("connection reset by peer".to_string()),
+            ),
+            (
+                Error::AuthenticationFailed,
+                Error::Library("authentication failed".to_string()),
+            ),
+            (
+                Error::ShellRefused,
+                Error::Library("the device refused a shell".to_string()),
+            ),
+            (Error::NoAnswer, Error::NoAnswer),
+            (Error::NoExitStatus, Error::NoExitStatus),
+            (
+                Error::Library("nobs-t-library".to_string()),
+                Error::Library("nobs-t-library".to_string()),
+            ),
+        ];
+        for (error, after) in cases {
+            assert_eq!(once_sent(error.clone()), after, "{error:?}");
+        }
     }
 
     #[test]
