@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::panic::{self, PanicHookInfo};
 use std::path::Path;
@@ -12,6 +13,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::{cursor, execute};
+use nobs_core::check;
 use nobs_core::runner::Runner;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
@@ -230,6 +232,12 @@ impl Wires {
         self.open.retain(|(open, _)| *open != id);
     }
 
+    fn collect(&self, folder: &Path) {
+        let entries = check::load(folder);
+        let _ = fs::remove_dir_all(folder);
+        let _ = self.sender.send(Update::Checked(entries));
+    }
+
     fn close_all(&mut self) {
         for (_, wire) in &mut self.open {
             wire.close();
@@ -410,6 +418,7 @@ fn send(commands: Vec<Command>, actions: &mut Actions, wires: &mut Wires, poller
                 }
             }
             Command::TermClose(id) => wires.close(*id),
+            Command::Collect(folder) => wires.collect(folder),
             _ => {}
         }
         pollers.send(command);
@@ -518,9 +527,11 @@ mod tests {
     use std::{mem, ptr};
 
     use crossterm::event::{KeyCode, KeyModifiers};
+    use nobs_core::check::{Reading, Verdict};
     use nobs_core::compose::Compose;
     use nobs_core::containerlab::sudo_refused_line;
     use nobs_core::device::Password;
+    use nobs_core::intended::Failure;
     use nobs_core::lab;
     use nobs_core::locate::{locate, Kind, Located};
     use nobs_core::project::Rendered;
@@ -537,7 +548,7 @@ mod tests {
     use crate::pty::tests::{Call, FakeTerminals};
     use crate::run::tests::FakeLauncher;
     use crate::shell::tests::{defined, every_service_up, finding, listing, SECRET, USER};
-    use crate::shell::{Login, RunState};
+    use crate::shell::{Agreement, Login, RunState};
 
     const CLOSED: (&str, &str) = ("SONDA_SERVER_URL", "http://127.0.0.1:1");
     const TWO: &str = "{\"Service\":\"grafana\",\"State\":\"running\"}\n{\"Service\":\"loki\",\"State\":\"exited\"}\n";
@@ -2177,6 +2188,96 @@ mod tests {
 
         assert_eq!(launcher.calls().len(), 2);
         assert_eq!(model.config_of("srl1").unwrap().lines, [config]);
+    }
+
+    const INTENDED: &str = "set / a b on\nset / c d on\n";
+    const NO_DRIVER: &str = "no driver for the kind ceos yet";
+
+    fn checked_answers(folder: &Path) {
+        let lines = |text: &str| text.lines().map(str::to_string).collect::<Vec<_>>();
+        let readings = [
+            (
+                "srl1",
+                Verdict::Answered {
+                    lines: lines(INTENDED),
+                    missing: 0,
+                },
+            ),
+            (
+                "srl2",
+                Verdict::Answered {
+                    lines: lines("set / a b on"),
+                    missing: 1,
+                },
+            ),
+            ("ceos1", Verdict::Failed(NO_DRIVER.to_string())),
+            ("srl3", Verdict::NotTried),
+        ];
+        check::make_folder(folder).unwrap();
+        for (name, verdict) in readings {
+            let reading = Reading {
+                name: name.to_string(),
+                verdict,
+            };
+            check::save(folder, &reading).unwrap();
+        }
+    }
+
+    fn intended_of_four() -> Update {
+        let text = |name: &str| match name {
+            "ceos1" => Err(Failure::NoTemplate("no template for kind ceos".to_string())),
+            _ => Ok(INTENDED.to_string()),
+        };
+        Update::Intended(
+            ["srl1", "srl2", "ceos1", "srl3"]
+                .map(|name| (name.to_string(), text(name)))
+                .into(),
+        )
+    }
+
+    #[test]
+    fn g_big_runs_the_check_and_any_end_leads_the_loop_to_give_each_device_its_file_and_remove_the_folder(
+    ) {
+        let folder = shell::check_folder();
+        let book = fixture("book-lab").to_string_lossy().into_owned();
+        let save = folder.to_string_lossy().into_owned();
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for end in [End::Exited(0), End::Exited(1), End::Stopped] {
+            let _ = fs::remove_dir_all(&folder);
+            let launcher = Arc::new(FakeLauncher::new());
+            let mut actions = Actions::new(launcher.clone(), asker(1));
+            let mut model = devices_in("book-lab");
+            model.apply(intended_of_four());
+
+            press(&mut model, &mut actions, &[ch('G')]).unwrap_err();
+            checked_answers(&folder);
+            if end == End::Stopped {
+                press(&mut model, &mut actions, &[ctrl_c]).unwrap_err();
+            } else {
+                let sender = launcher.sender().unwrap();
+                sender.send(Update::ActionEnded(end)).unwrap();
+                press(&mut model, &mut actions, &[]).unwrap_err();
+            }
+
+            let words = ["--dir", &book, "device", "check", "--save", &save];
+            assert_eq!(launcher.calls(), [(PathBuf::from("nobs"), args(&words))]);
+            assert_eq!(run_state(&model), RunState::Ended(end));
+            assert!(!folder.exists(), "{end:?}");
+            let cells = ["srl1", "srl2", "ceos1", "srl3"].map(|name| model.agreement(name));
+            assert_eq!(
+                cells,
+                [
+                    Agreement::InSync,
+                    Agreement::Missing(1),
+                    Agreement::Failed,
+                    Agreement::Unknown
+                ],
+                "{end:?}"
+            );
+            assert_eq!(model.config_of("srl2").unwrap().lines, ["set / a b on"]);
+            assert_eq!(model.fetch_error("ceos1"), Some(NO_DRIVER), "{end:?}");
+            assert_eq!(model.config_of("srl3"), None, "{end:?}");
+        }
     }
 
     #[test]

@@ -105,6 +105,7 @@ fn command_line(action: &Action, workshop: &Shell, book: &Shell) -> Vec<OsString
         ),
         Row::Device => (workshop, Target::Device(DEVICE.to_string())),
         Row::Node => (book, Target::Device(DEVICE.to_string())),
+        Row::EveryNode => (book, Target::Lab),
         Row::Chapter => (
             book,
             Target::Chapter(stack_index(book, StackKind::BookLab, Some(CHAPTER))),
@@ -126,7 +127,7 @@ fn command_line(action: &Action, workshop: &Shell, book: &Shell) -> Vec<OsString
 fn workshop_row(row: Row) -> bool {
     match row {
         Row::Stack | Row::Device => true,
-        Row::Node | Row::Chapter | Row::Lab(_) => false,
+        Row::Node | Row::EveryNode | Row::Chapter | Row::Lab(_) => false,
     }
 }
 

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use nobs_core::alertmanager::{Alert, Alertmanager, Silence};
 use nobs_core::cascade;
+use nobs_core::check;
 use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, sudo_refused_line, Containerlab};
 use nobs_core::count::{counted, noun};
@@ -18,7 +19,7 @@ use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_tex
 use nobs_core::grafana::Grafana;
 use nobs_core::http;
 use nobs_core::infrahub::{annotation, connect, read_schema, Infrahub, Seed, KINDS};
-use nobs_core::intended::intended;
+use nobs_core::intended::{intended, Failure};
 use nobs_core::lab::{self, TopologyNode, WaitError};
 use nobs_core::lab_vars;
 use nobs_core::layers;
@@ -146,7 +147,7 @@ pub enum Command {
         command: ProjectCommand,
     },
     #[command(
-        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, or print its intended configuration"
+        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, or check every device against it"
     )]
     Device {
         #[command(subcommand)]
@@ -1152,6 +1153,17 @@ pub enum DeviceCommand {
     Render {
         #[arg(help = "Node name in the lab's topology file")]
         name: String,
+    },
+    #[command(
+        about = "Fetch every device in turn and say which ones lack intended lines; ends with 1 when a device differs or fails"
+    )]
+    Check {
+        #[arg(
+            long,
+            value_name = "FOLDER",
+            help = "Also write what each device answered to a file in this folder; the folder must not exist"
+        )]
+        save: Option<PathBuf>,
     },
 }
 
@@ -2290,6 +2302,16 @@ fn run_device(
             DeviceCommand::Render { name } => {
                 return render_device(name, located, &topology, &nodes);
             }
+            DeviceCommand::Check { save } => {
+                return check_devices(
+                    located,
+                    &nodes,
+                    transport,
+                    save.as_deref(),
+                    &mut io::stdout(),
+                    &mut io::stderr(),
+                );
+            }
         };
         match outcome {
             Ok(code) => code,
@@ -2336,9 +2358,53 @@ fn rendered(
     nodes: &[TopologyNode],
 ) -> Result<String, String> {
     let node = topology_node(name, topology, nodes).map_err(|error| error.to_string())?;
+    node_intended(located, node).map_err(|failure| failure.to_string())
+}
+
+fn node_intended(located: &Located, node: &TopologyNode) -> Result<String, Failure> {
     let source = containerlab_source(located);
     let source = sot::source_or_error(source.as_deref());
-    intended(&located.dir, name, &node.kind, source).map_err(|failure| failure.to_string())
+    intended(&located.dir, &node.name, &node.kind, source)
+}
+
+fn check_devices(
+    located: &Located,
+    nodes: &[TopologyNode],
+    transport: &dyn Transport,
+    save: Option<&Path>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> i32 {
+    if let Some(folder) = save {
+        if let Err(error) = check::make_folder(folder) {
+            cannot_make(err, folder, &error);
+            return 1;
+        }
+    }
+    let width = check::width(nodes);
+    let mut unsaved = false;
+    let readings = check::walk(
+        nodes,
+        transport,
+        &|node| node_intended(located, node),
+        &mut |reading| {
+            let _ = writeln!(out, "{}", check::line(width, reading));
+            let _ = out.flush();
+            if let Some(folder) = save {
+                if let Err(error) = check::save(folder, reading) {
+                    if let Some(path) = check::file(folder, reading) {
+                        cannot_make(err, &path, &error);
+                    }
+                    unsaved = true;
+                }
+            }
+        },
+    );
+    check::exit_code(&readings).max(i32::from(unsaved))
+}
+
+fn cannot_make(err: &mut impl Write, path: &Path, error: &io::Error) {
+    let _ = writeln!(err, "nobs: cannot make {}: {error}", path.display());
 }
 
 fn device_answer(
@@ -2382,10 +2448,7 @@ fn device_step<T>(
     nodes: &[TopologyNode],
     inside: impl FnOnce(&str, &Credentials, device::Driver) -> Result<T, device::Error>,
 ) -> Result<T, device::Error> {
-    let node = topology_node(name, topology, nodes)?;
-    let driver = device::driver(&node.kind)?;
-    let credentials = device::credentials()?;
-    inside(&node.container, &credentials, driver)
+    device::step(topology_node(name, topology, nodes)?, inside)
 }
 
 struct RawMode<R: FnMut(bool) -> io::Result<()>> {
@@ -7258,6 +7321,443 @@ mod tests {
             transport.calls(),
             [call("clab-nobs-t-dev-nobs-t-srl1", "xterm-256color")]
         );
+    }
+
+    const CHECK_TEMPLATE: &str =
+        "set / system name host-name {{ name }}\nset / interface mgmt0 admin-state enable\n";
+
+    fn check_lab(name: &str, nodes: &[(&str, &str)], unknown: &[&str]) -> Scratch {
+        let lab = login_lab(name, "", "");
+        let topology: String = nodes
+            .iter()
+            .map(|(node, kind)| format!("    {node}:\n      kind: {kind}\n"))
+            .collect();
+        let vars: String = nodes
+            .iter()
+            .filter(|(node, _)| !unknown.contains(node))
+            .map(|(node, _)| format!("  {node}:\n    role: nobs-t-leaf\n"))
+            .collect();
+        fs::write(
+            lab.0.join("containerlab/lab.clab.yml"),
+            format!("name: nobs-t-dev\ntopology:\n  nodes:\n{topology}"),
+        )
+        .unwrap();
+        fs::write(
+            lab.0.join("containerlab/lab_vars.yml"),
+            format!("nodes:\n{vars}"),
+        )
+        .unwrap();
+        fs::create_dir_all(lab.0.join("templates")).unwrap();
+        fs::write(lab.0.join("templates/srl.j2"), CHECK_TEMPLATE).unwrap();
+        lab
+    }
+
+    fn container(node: &str) -> String {
+        format!("clab-nobs-t-dev-{node}")
+    }
+
+    fn synced(node: &str) -> Result<Output, device::Error> {
+        Ok(answer(
+            0,
+            &format!(
+                "set / system name host-name {node}\nset / interface mgmt0 admin-state enable\nset / nobs-t-extra on\n"
+            ),
+            "",
+        ))
+    }
+
+    fn lacking() -> Result<Output, device::Error> {
+        Ok(answer(0, "set / interface mgmt0 admin-state disable\n", ""))
+    }
+
+    fn unreachable(node: &str) -> Result<Output, device::Error> {
+        Err(device::Error::Unreachable {
+            host: container(node),
+            reason: "connection refused".to_string(),
+        })
+    }
+
+    fn per_node(answers: Vec<(&str, Result<Output, device::Error>)>) -> FakeTransport {
+        FakeTransport::per_host(
+            answers
+                .into_iter()
+                .map(|(node, answer)| (container(node), answer))
+                .collect(),
+        )
+    }
+
+    fn fetched(nodes: &[&str]) -> Vec<(String, String)> {
+        nodes
+            .iter()
+            .map(|node| call(&container(node), "info flat"))
+            .collect()
+    }
+
+    fn checked(
+        lab: &Path,
+        transport: &FakeTransport,
+        save: Option<&Path>,
+    ) -> (i32, String, String) {
+        let located = locate(lab, None).unwrap();
+        let (_, nodes) = device_nodes(&located).unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = check_devices(&located, &nodes, transport, save, &mut out, &mut err);
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    fn check_command(lab: &Path, transport: &FakeTransport, save: Option<PathBuf>) -> i32 {
+        run_device(DeviceCommand::Check { save }, Some(lab), transport, || None)
+    }
+
+    #[test]
+    fn a_device_that_does_not_answer_stops_no_other_and_the_first_and_the_last_of_a_second_kind_get_their_lines(
+    ) {
+        set_credentials();
+        let lab = check_lab(
+            "check-unreachable",
+            &[
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-srl2", "nokia_srlinux"),
+                ("nobs-t-srl3", "srl"),
+                ("nobs-t-srl4", "srl"),
+            ],
+            &[],
+        );
+        let transport = per_node(vec![
+            ("nobs-t-srl1", synced("nobs-t-srl1")),
+            ("nobs-t-srl2", unreachable("nobs-t-srl2")),
+            ("nobs-t-srl3", lacking()),
+            ("nobs-t-srl4", synced("nobs-t-srl4")),
+        ]);
+
+        let (code, out, err) = checked(&lab.0, &transport, None);
+
+        assert_eq!(
+            out,
+            "nobs-t-srl1  in sync\n\
+             nobs-t-srl2  failed: cannot reach clab-nobs-t-dev-nobs-t-srl2: connection refused\n\
+             nobs-t-srl3  2 missing\n\
+             nobs-t-srl4  in sync\n"
+        );
+        assert_eq!(err, "");
+        assert_eq!(code, 1);
+        assert_eq!(
+            transport.calls(),
+            fetched(&["nobs-t-srl1", "nobs-t-srl2", "nobs-t-srl3", "nobs-t-srl4"])
+        );
+    }
+
+    #[test]
+    fn a_mixed_lab_prints_each_kind_of_line_padded_to_the_longest_name_and_nothing_on_stderr() {
+        set_credentials();
+        let lab = check_lab(
+            "check-mixed",
+            &[
+                ("a-srl", "srl"),
+                ("nobs-t-ceos1", "ceos"),
+                ("nobs-t-leaf10", "srl"),
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-srl9", "srl"),
+            ],
+            &["nobs-t-srl9"],
+        );
+        let transport = per_node(vec![
+            ("a-srl", synced("a-srl")),
+            ("nobs-t-leaf10", lacking()),
+            ("nobs-t-srl1", Err(device::Error::NoAnswer)),
+        ]);
+
+        let (code, out, err) = checked(&lab.0, &transport, None);
+
+        assert_eq!(
+            out,
+            "a-srl          in sync\n\
+             nobs-t-ceos1   not checked: no template for kind ceos: expected templates/ceos.j2\n\
+             nobs-t-leaf10  2 missing\n\
+             nobs-t-srl1    failed: no answer in 10 seconds\n\
+             nobs-t-srl9    no intended text: device nobs-t-srl9 not found in the source of truth.\n"
+        );
+        assert_eq!(err, "");
+        assert_eq!(code, 1);
+        assert_eq!(
+            transport.calls(),
+            fetched(&["a-srl", "nobs-t-leaf10", "nobs-t-srl1"])
+        );
+    }
+
+    #[test]
+    fn the_command_ends_with_0_only_when_every_checked_device_is_in_sync() {
+        set_credentials();
+        let srl = [
+            ("nobs-t-srl1", "nokia_srlinux"),
+            ("nobs-t-srl2", "srl"),
+            ("nobs-t-srl3", "srl"),
+        ];
+        let with_linux = [
+            ("nobs-t-linux1", "linux"),
+            ("nobs-t-srl1", "nokia_srlinux"),
+            ("nobs-t-srl2", "srl"),
+        ];
+        let in_sync = || {
+            vec![
+                ("nobs-t-srl1", synced("nobs-t-srl1")),
+                ("nobs-t-srl2", synced("nobs-t-srl2")),
+                ("nobs-t-srl3", synced("nobs-t-srl3")),
+            ]
+        };
+        let second = |answer| {
+            let mut answers = in_sync();
+            answers[1].1 = answer;
+            answers
+        };
+        let cases = [
+            (
+                "all-in-sync",
+                check_lab("check-exit-1", &srl, &[]),
+                in_sync(),
+                0,
+            ),
+            (
+                "no-template",
+                check_lab("check-exit-2", &with_linux, &[]),
+                in_sync(),
+                0,
+            ),
+            (
+                "differs",
+                check_lab("check-exit-3", &srl, &[]),
+                second(lacking()),
+                1,
+            ),
+            (
+                "failed",
+                check_lab("check-exit-4", &srl, &[]),
+                second(unreachable("nobs-t-srl2")),
+                1,
+            ),
+            (
+                "no-intended-text",
+                check_lab("check-exit-5", &srl, &["nobs-t-srl2"]),
+                in_sync(),
+                1,
+            ),
+        ];
+        for (case, lab, answers, code) in cases {
+            assert_eq!(
+                check_command(&lab.0, &per_node(answers), None),
+                code,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_login_on_the_second_device_stops_the_check_and_the_rest_are_not_tried() {
+        set_credentials();
+        let lab = check_lab(
+            "check-refused",
+            &[
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-srl2", "nokia_srlinux"),
+                ("nobs-t-srl3", "srl"),
+                ("nobs-t-srl4", "srl"),
+            ],
+            &[],
+        );
+        let transport = per_node(vec![
+            ("nobs-t-srl1", synced("nobs-t-srl1")),
+            ("nobs-t-srl2", Err(device::Error::AuthenticationFailed)),
+            ("nobs-t-srl3", synced("nobs-t-srl3")),
+            ("nobs-t-srl4", synced("nobs-t-srl4")),
+        ]);
+
+        let (code, out, err) = checked(&lab.0, &transport, None);
+
+        assert_eq!(
+            out,
+            "nobs-t-srl1  in sync\n\
+             nobs-t-srl2  failed: authentication failed\n\
+             nobs-t-srl3  not tried\n\
+             nobs-t-srl4  not tried\n"
+        );
+        assert_eq!(err, "");
+        assert_eq!(code, 1);
+        assert_eq!(transport.calls(), fetched(&["nobs-t-srl1", "nobs-t-srl2"]));
+    }
+
+    #[test]
+    fn no_line_of_a_configuration_reaches_stdout_or_stderr_and_with_save_only_the_config_file_holds_it(
+    ) {
+        set_credentials();
+        let nodes = [
+            ("nobs-t-srl1", "nokia_srlinux"),
+            ("nobs-t-srl2", "srl"),
+            ("nobs-t-srl3", "srl"),
+        ];
+        let secret = "set / system aaa authentication admin-user password $y$nobs-t-hash\nset / nobs-t-sentinel on\n";
+        let answered = |node: &str| {
+            synced(node).map(|output| answer(0, &format!("{}{secret}", output.stdout), ""))
+        };
+        let transport = || {
+            per_node(
+                nodes
+                    .iter()
+                    .map(|(node, _)| (*node, answered(node)))
+                    .collect(),
+            )
+        };
+        let clean = |text: &str| {
+            for word in ["nobs-t-sentinel", "password", "hash", "nobs-t-extra"] {
+                assert!(!text.contains(word), "{word}: {text}");
+            }
+        };
+
+        let lab = check_lab("check-secret", &nodes, &[]);
+        let (code, out, err) = checked(&lab.0, &transport(), None);
+        assert_eq!(code, 0);
+        clean(&out);
+        clean(&err);
+
+        let saved = check_lab("check-secret-saved", &nodes, &[]);
+        let folder = saved.0.join("check");
+        let (code, out, err) = checked(&saved.0, &transport(), Some(&folder));
+        assert_eq!(code, 0);
+        clean(&out);
+        clean(&err);
+        let config = fs::read_to_string(folder.join("nobs-t-srl1.config")).unwrap();
+        assert!(config.contains("set / nobs-t-sentinel on"), "{config}");
+        assert!(config.contains("password $y$nobs-t-hash"), "{config}");
+    }
+
+    #[test]
+    fn save_on_an_existing_folder_says_cannot_make_and_touches_no_device() {
+        set_credentials();
+        let lab = check_lab(
+            "check-folder-exists",
+            &[
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-srl2", "srl"),
+                ("nobs-t-srl3", "srl"),
+            ],
+            &[],
+        );
+        let folder = lab.0.join("check");
+        fs::create_dir(&folder).unwrap();
+        let transport = per_node(vec![
+            ("nobs-t-srl1", synced("nobs-t-srl1")),
+            ("nobs-t-srl2", synced("nobs-t-srl2")),
+            ("nobs-t-srl3", synced("nobs-t-srl3")),
+        ]);
+
+        let (code, out, err) = checked(&lab.0, &transport, Some(&folder));
+
+        assert_eq!(code, 1);
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            format!(
+                "nobs: cannot make {}: File exists (os error 17)\n",
+                folder.display()
+            )
+        );
+        assert!(transport.calls().is_empty());
+        assert_eq!(check_command(&lab.0, &transport, Some(folder)), 1);
+        assert!(transport.calls().is_empty());
+    }
+
+    #[test]
+    fn save_writes_a_private_config_per_answer_and_an_error_per_failure_in_a_private_folder() {
+        use std::os::unix::fs::PermissionsExt;
+
+        set_credentials();
+        let lab = check_lab(
+            "check-save",
+            &[
+                ("nobs-t-ceos1", "ceos"),
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-srl2", "srl"),
+                ("nobs-t-srl3", "srl"),
+            ],
+            &[],
+        );
+        let folder = lab.0.join("check");
+        let transport = per_node(vec![
+            ("nobs-t-srl1", synced("nobs-t-srl1")),
+            ("nobs-t-srl2", unreachable("nobs-t-srl2")),
+            ("nobs-t-srl3", lacking()),
+        ]);
+
+        assert_eq!(check_command(&lab.0, &transport, Some(folder.clone())), 1);
+
+        let mut names: Vec<String> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "nobs-t-srl1.config",
+                "nobs-t-srl2.error",
+                "nobs-t-srl3.config"
+            ]
+        );
+        let read = |name: &str| fs::read_to_string(folder.join(name)).unwrap();
+        assert_eq!(
+            read("nobs-t-srl1.config"),
+            synced("nobs-t-srl1").unwrap().stdout
+        );
+        assert_eq!(
+            read("nobs-t-srl2.error"),
+            "cannot reach clab-nobs-t-dev-nobs-t-srl2: connection refused"
+        );
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&folder), 0o700);
+        for name in &names {
+            assert_eq!(mode(&folder.join(name)), 0o600, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_saved_says_cannot_make_its_path_the_check_goes_on_and_ends_with_1() {
+        set_credentials();
+        let lab = check_lab(
+            "check-save-fails",
+            &[
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-srl2/nobs-t-sub", "srl"),
+                ("nobs-t-srl3", "srl"),
+            ],
+            &[],
+        );
+        let folder = lab.0.join("check");
+        let transport = per_node(vec![
+            ("nobs-t-srl1", synced("nobs-t-srl1")),
+            ("nobs-t-srl2/nobs-t-sub", synced("nobs-t-srl2/nobs-t-sub")),
+            ("nobs-t-srl3", synced("nobs-t-srl3")),
+        ]);
+
+        let (code, out, err) = checked(&lab.0, &transport, Some(&folder));
+
+        assert_eq!(
+            out,
+            "nobs-t-srl1             in sync\n\
+             nobs-t-srl2/nobs-t-sub  in sync\n\
+             nobs-t-srl3             in sync\n"
+        );
+        assert_eq!(
+            err,
+            format!(
+                "nobs: cannot make {}: No such file or directory (os error 2)\n",
+                folder.join("nobs-t-srl2/nobs-t-sub.config").display()
+            )
+        );
+        assert_eq!(code, 1);
+        assert!(folder.join("nobs-t-srl3.config").exists());
     }
 
     #[test]

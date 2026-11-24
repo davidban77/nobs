@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab  4 obs       ? keys  q quit
+┌ devices 2 ──────────┐╔ nobs-t-srl1 ══════════════════════╗
+│   NAME    HLTH  ALRT│║overview  ifaces  CONFIG ›         ║
+│>  nobs-…  —        —│║intended 13:42:07  6 lines         ║
+│   nobs-…  —        —│║fetched 13:42:07  2 missing        ║
+│                     │║+set / interface …ress 192.0.2.0/31║
+│                     │║-set / interface …ress 192.0.2.9/31║
+│                     │║+set / network-in…ce ethernet-1/1.0║
+├ alerts — ───────────┤║                                   ║
+│no alerts in this lab│║                                   ║
+│                     │║                                   ║
+└─────────────────────┘╚══════════════════════════════ ↑4 ═╝
+ run  device check  exit 1  0s                       o open
+ v running  n N difference  / filter  j/k scroll  [ ] tab

@@ -279,7 +279,8 @@ impl Pollers {
             | Command::TermOpen { .. }
             | Command::TermWrite { .. }
             | Command::TermResize { .. }
-            | Command::TermClose(_) => (&[], &[]),
+            | Command::TermClose(_)
+            | Command::Collect(_) => (&[], &[]),
             Command::Ask(service, _) => match service {
                 Service::Metrics => (&[&self.health], &[&self.prometheus]),
                 Service::Logs => (&[&self.health], &[&self.loki]),

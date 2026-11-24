@@ -2,13 +2,14 @@ use std::ffi::OsString;
 
 use nobs_core::locate::{Kind, Nodes};
 
-use crate::shell::{Model, StackKind, Workbench};
+use crate::shell::{check_folder, Model, StackKind, Workbench};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Stack,
     Device,
     Node,
+    EveryNode,
     Chapter,
     Lab(&'static [Nodes]),
 }
@@ -18,9 +19,13 @@ impl Row {
         match self {
             Row::Chapter => Some(&[Nodes::Chapters]),
             Row::Lab(nodes) => Some(nodes),
-            Row::Stack | Row::Device | Row::Node => None,
+            Row::Stack | Row::Device | Row::Node | Row::EveryNode => None,
         }
     }
+}
+
+pub(crate) fn in_its_lab(row: Row, model: &Model) -> bool {
+    !matches!(row, Row::Node | Row::EveryNode) || model.lab_with_nodes()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,9 +50,10 @@ pub struct Action {
 }
 
 const OTHER_CHAPTERS_DOWN: &str = "takes the other chapters' services down";
+pub(crate) const SAVE: &str = "--save";
 const WITH_NODES: &[Nodes] = &[Nodes::Project, Nodes::Topology];
 
-pub const ACTIONS: [Action; 21] = [
+pub const ACTIONS: [Action; 22] = [
     Action {
         key: 'u',
         workbench: Workbench::Services,
@@ -143,6 +149,17 @@ pub const ACTIONS: [Action; 21] = [
         words: &["device", "run"],
         hint: "run command",
         ask: Ask::Text,
+        sudo: false,
+        keeps: false,
+        login: true,
+    },
+    Action {
+        key: 'G',
+        workbench: Workbench::Devices,
+        row: Row::EveryNode,
+        words: &["device", "check"],
+        hint: "check all",
+        ask: Ask::No,
         sudo: false,
         keeps: false,
         login: true,
@@ -360,8 +377,13 @@ pub(crate) fn pieces(
             (lab.dir.clone().into(), args)
         }
         (Row::Node, Target::Device(name)) => {
-            let lab = model.located().filter(|_| model.lab_with_nodes())?;
+            let lab = model.located().filter(|_| in_its_lab(action.row, model))?;
             let args = words.chain([vec![OsString::from(name)]]).collect();
+            (lab.dir.clone().into(), args)
+        }
+        (Row::EveryNode, Target::Lab) => {
+            let lab = model.located().filter(|_| in_its_lab(action.row, model))?;
+            let args = words.chain([pair(SAVE, check_folder())]).collect();
             (lab.dir.clone().into(), args)
         }
         (Row::Chapter, Target::Chapter(index)) => {

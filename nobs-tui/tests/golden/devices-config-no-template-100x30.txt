@@ -27,4 +27,4 @@
 │                                        │║set / acl acl-filter cpm type ipv4 entry 200 match ipv4…║
 └────────────────────────────────────────┘╚══════════════════════════════════════════════════ ↓20 ═╝
  run  device fetch nobs-t-srl1  exit 0  0s                                                   o open
- / filter  j/k scroll  [ ] tab  Esc back to list  g get config  s run command
+ / filter  j/k scroll  [ ] tab  Esc back to list  g get config  s run command  G check all

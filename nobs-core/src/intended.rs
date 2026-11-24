@@ -75,6 +75,13 @@ pub fn compare<'a>(intended: &'a str, fetched: &'a [String]) -> Vec<Checked<'a>>
         .collect()
 }
 
+pub fn missing(checked: &[Checked<'_>]) -> usize {
+    checked
+        .iter()
+        .filter(|checked| checked.lacking.is_some())
+        .count()
+}
+
 fn head(line: &str) -> Option<&str> {
     let quoted = line
         .strip_suffix('"')
@@ -349,6 +356,23 @@ mod tests {
                 checked("nobs-t-other", Some(vec![])),
                 checked("-----END X-----", None)
             ]
+        );
+    }
+
+    #[test]
+    fn missing_counts_each_lacking_line_with_or_without_hints_and_no_present_or_blank_one() {
+        let fetched = lines("set / a b off\nset / c d on");
+        assert_eq!(missing(&compare("set / c d on\n\n  \t", &fetched)), 0);
+        assert_eq!(
+            missing(&compare("set / a b on\nset / c d on\n", &fetched)),
+            1
+        );
+        assert_eq!(
+            missing(&compare(
+                "set / a b on\nset / x y on\nset / c d on\nset / a b on",
+                &fetched
+            )),
+            3
         );
     }
 
