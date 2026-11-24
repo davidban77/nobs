@@ -104,6 +104,15 @@ pub fn driver(kind: &str) -> Result<Driver, Error> {
     }
 }
 
+pub fn step<T>(
+    node: &lab::TopologyNode,
+    inside: impl FnOnce(&str, &Credentials, Driver) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let driver = driver(&node.kind)?;
+    let credentials = credentials()?;
+    inside(&node.container, &credentials, driver)
+}
+
 pub fn credentials() -> Result<Credentials, Error> {
     let found = |name| credential(name, std::env::var(name).ok(), &[]);
     Ok(Credentials {
@@ -128,7 +137,7 @@ pub fn error_line(name: &str, error: &Error) -> String {
 
 #[cfg(any(test, feature = "fake"))]
 pub struct FakeTransport {
-    answer: Result<Output, Error>,
+    answers: Vec<(Option<String>, Result<Output, Error>)>,
     calls: RefCell<Vec<(String, String)>>,
 }
 
@@ -136,9 +145,27 @@ pub struct FakeTransport {
 impl FakeTransport {
     pub fn answering(answer: Result<Output, Error>) -> Self {
         Self {
-            answer,
+            answers: vec![(None, answer)],
             calls: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn per_host(answers: Vec<(String, Result<Output, Error>)>) -> Self {
+        Self {
+            answers: answers
+                .into_iter()
+                .map(|(host, answer)| (Some(host), answer))
+                .collect(),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn answer(&self, host: &str) -> Result<Output, Error> {
+        self.answers
+            .iter()
+            .find(|(known, _)| known.as_deref().is_none_or(|known| known == host))
+            .map(|(_, answer)| answer.clone())
+            .unwrap_or_else(|| panic!("no answer for {host}"))
     }
 
     pub fn calls(&self) -> Vec<(String, String)> {
@@ -152,7 +179,7 @@ impl Transport for FakeTransport {
         self.calls
             .borrow_mut()
             .push((host.to_string(), command.to_string()));
-        self.answer.clone()
+        self.answer(host)
     }
 
     fn shell(
@@ -165,7 +192,7 @@ impl Transport for FakeTransport {
             .borrow_mut()
             .push((host.to_string(), terminal.kind()));
         let _ = terminal.keys();
-        self.answer.clone().map(|output| output.code)
+        self.answer(host).map(|output| output.code)
     }
 }
 

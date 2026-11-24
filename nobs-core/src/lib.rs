@@ -1,5 +1,6 @@
 pub mod alertmanager;
 pub mod cascade;
+pub mod check;
 pub mod compose;
 pub mod containerlab;
 pub mod count;
