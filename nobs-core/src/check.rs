@@ -1,7 +1,7 @@
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::device::{self, Error, Transport};
 use crate::intended::{self, Failure};
@@ -117,20 +117,29 @@ pub fn make_folder(folder: &Path) -> io::Result<()> {
     DirBuilder::new().mode(0o700).create(folder)
 }
 
+pub fn file(folder: &Path, reading: &Reading) -> Option<PathBuf> {
+    let extension = match &reading.verdict {
+        Verdict::Answered { .. } => CONFIG,
+        Verdict::Failed(_) => ERROR,
+        Verdict::NotTried | Verdict::NotChecked(_) | Verdict::NoIntendedText(_) => return None,
+    };
+    Some(folder.join(format!("{}.{extension}", reading.name)))
+}
+
 pub fn save(folder: &Path, reading: &Reading) -> io::Result<()> {
-    let (extension, text) = match &reading.verdict {
-        Verdict::Answered { lines, .. } => (
-            CONFIG,
-            lines.iter().map(|line| format!("{line}\n")).collect(),
-        ),
-        Verdict::Failed(words) => (ERROR, words.clone()),
-        Verdict::NotTried | Verdict::NotChecked(_) | Verdict::NoIntendedText(_) => return Ok(()),
+    let Some(path) = file(folder, reading) else {
+        return Ok(());
+    };
+    let text: String = match &reading.verdict {
+        Verdict::Answered { lines, .. } => lines.iter().map(|line| format!("{line}\n")).collect(),
+        Verdict::Failed(words) => words.clone(),
+        _ => return Ok(()),
     };
     OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(folder.join(format!("{}.{extension}", reading.name)))?
+        .open(path)?
         .write_all(text.as_bytes())
 }
 
@@ -699,6 +708,36 @@ mod tests {
         assert_eq!(read("nobs-t-srl1.config"), SYNCED);
         assert_eq!(read("nobs-t-srl2.config"), LACKING);
         assert_eq!(read("nobs-t-srl3.error"), "authentication failed");
+    }
+
+    #[test]
+    fn file_is_a_config_for_an_answer_an_error_for_a_failure_and_none_for_the_rest() {
+        let folder = Path::new("nobs-t-folder");
+        let cases = [
+            (
+                reading("nobs-t-srl1", answered(LACKING, 2)),
+                Some(folder.join("nobs-t-srl1.config")),
+            ),
+            (
+                reading("nobs-t-srl2", Verdict::Failed("no answer".into())),
+                Some(folder.join("nobs-t-srl2.error")),
+            ),
+            (reading("nobs-t-srl3", Verdict::NotTried), None),
+            (
+                reading("nobs-t-srl4", Verdict::NotChecked("no template".into())),
+                None,
+            ),
+            (
+                reading(
+                    "nobs-t-srl5",
+                    Verdict::NoIntendedText("nobs-t-source-error".into()),
+                ),
+                None,
+            ),
+        ];
+        for (reading, expected) in cases {
+            assert_eq!(file(folder, &reading), expected, "{}", reading.name);
+        }
     }
 
     #[test]

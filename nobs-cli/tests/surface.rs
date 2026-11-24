@@ -100,10 +100,10 @@ fn the_help_pages_name_the_sonda_group_and_exactly_its_ten_commands() {
     assert_eq!(commands, SONDA_COMMANDS);
 }
 
-const DEVICE_COMMANDS: [&str; 4] = ["fetch", "run", "shell", "render"];
+const DEVICE_COMMANDS: [&str; 5] = ["fetch", "run", "shell", "render", "check"];
 
 #[test]
-fn the_help_pages_name_the_device_group_exactly_its_three_commands_and_their_words() {
+fn the_help_pages_name_the_device_group_exactly_its_five_commands_and_their_words() {
     let root = help(&[]);
     assert!(
         commands_block(&root).iter().any(|word| word == "device"),
@@ -111,7 +111,7 @@ fn the_help_pages_name_the_device_group_exactly_its_three_commands_and_their_wor
     );
     assert!(
         root.contains(
-            "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, or print its intended configuration"
+            "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, or check every device against it"
         ),
         "{root}"
     );
@@ -139,6 +139,25 @@ fn the_help_pages_name_the_device_group_exactly_its_three_commands_and_their_wor
     assert!(
         shell.contains("<NAME>  Node name in the lab's topology file"),
         "{shell}"
+    );
+}
+
+#[test]
+fn the_device_check_help_gives_its_about_and_the_save_flag_words() {
+    let group = help(&["device"]);
+    assert!(
+        group.contains(
+            "check   Fetch every device in turn and say which ones lack intended lines; ends with 1 when a device differs or fails"
+        ),
+        "{group}"
+    );
+
+    let check = help(&["device", "check"]);
+    assert!(
+        check.contains(
+            "--save <FOLDER>  Also write what each device answered to a file in this folder; the folder must not exist"
+        ),
+        "{check}"
     );
 }
 
