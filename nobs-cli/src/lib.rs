@@ -2487,7 +2487,11 @@ fn asked_on_terminal(question: &str) -> Option<bool> {
     eprint!("{question} ");
     let mut answer = String::new();
     let _ = io::stdin().read_line(&mut answer);
-    Some(answer.trim() == "y")
+    Some(says_yes(&answer))
+}
+
+fn says_yes(answer: &str) -> bool {
+    answer.trim() == "y"
 }
 
 fn check_devices(
@@ -8408,5 +8412,13 @@ mod tests {
             *asker.0 .0.lock().unwrap(),
             [("sudo".to_string(), vec![OsString::from("-v")])]
         );
+    }
+
+    #[test]
+    fn only_a_typed_y_is_a_yes_to_the_push() {
+        assert!(says_yes("y\n"));
+        for answer in ["Y\n", "yes\n", "\n", "", "n\n"] {
+            assert!(!says_yes(answer), "{answer:?}");
+        }
     }
 }

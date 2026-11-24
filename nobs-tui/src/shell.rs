@@ -9879,6 +9879,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_push_that_ends_by_itself_says_nothing_of_not_known() {
+        for end in [End::Exited(1), End::Exited(3)] {
+            let mut model = with_intended(lab_devices_model());
+            ch(&mut model, 'j');
+            ch(&mut model, 'P');
+            ch(&mut model, 'y');
+
+            let ended = model.apply(Update::ActionEnded(end));
+
+            assert_eq!(ended, [Command::Collect(check_folder())], "{end:?}");
+            let lines = &model.run().unwrap().lines;
+            assert!(!lines.contains(&device::not_known_line(SRL2)), "{end:?}");
+        }
+    }
+
+    #[test]
+    fn the_push_question_counts_the_lines_as_the_pushed_line_does_without_blank_lines() {
+        let mut model = lab_devices_model();
+        model.apply(intended_of(&[(SRL1, Ok(&[WANTED[0], "", WANTED[1]]))]));
+        let count = intended::lines(model.intended_text(SRL1).unwrap()).count();
+        let pushed = device::pushed_line(SRL1, count);
+        let lines = pushed.strip_prefix(&format!("{SRL1}  pushed ")).unwrap();
+
+        ch(&mut model, 'P');
+
+        assert_eq!(lines, "2 lines");
+        assert!(
+            asked_text(&model).contains(&format!("{SRL1}? {lines};")),
+            "{}",
+            asked_text(&model)
+        );
+    }
+
+    #[test]
     fn a_push_stopped_after_its_pushed_line_says_nothing_of_not_known() {
         for end in [End::Stopped, End::NotStopped { group: 7 }] {
             let mut model = with_intended(lab_devices_model());

@@ -127,31 +127,22 @@ async fn fed(
     lines: &[String],
     limit: Duration,
 ) -> Result<Output, Error> {
-    let (_handle, mut channel, early) = async {
+    let (_handle, mut channel) = async {
         let (handle, mut channel) = open(host, port, credentials, limit).await?;
         within(limit, channel.request_shell(true), host).await?;
-        let mut early = Vec::new();
-        let mut keep = |data: &[u8]| {
-            early.extend_from_slice(data);
-            Ok(())
-        };
-        granted(&mut channel, &mut keep, limit, host).await?;
-        Ok((handle, channel, early))
+        granted(&mut channel, &mut |_| Ok(()), limit, host).await?;
+        Ok((handle, channel))
     }
     .await
     .map_err(|error| before_sent(error, host))?;
     let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
-    let mut output = async {
+    async {
         within(limit, channel.data(input.as_bytes()), host).await?;
         within(limit, channel.eof(), host).await?;
         answer(&mut channel, limit, host).await
     }
     .await
-    .map_err(once_sent)?;
-    output
-        .stdout
-        .insert_str(0, &String::from_utf8_lossy(&early));
-    Ok(output)
+    .map_err(once_sent)
 }
 
 fn before_sent(error: Error, host: &str) -> Error {
