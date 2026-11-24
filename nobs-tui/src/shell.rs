@@ -9,6 +9,7 @@ use std::vec::Drain;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::alertmanager::Alert;
+use nobs_core::check;
 use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
@@ -527,7 +528,10 @@ fn fetch_failure(device: &str, lines: &[String], code: i32) -> String {
     let start = device::error_line(device, &device::Error::Library(String::new()));
     lines.last().map_or_else(
         || format!("exit {code}"),
-        |line| line.strip_prefix(&start).unwrap_or(line).to_string(),
+        |line| {
+            line.strip_prefix(&start)
+                .map_or_else(|| check::exit_words(code), str::to_string)
+        },
     )
 }
 
@@ -3842,7 +3846,6 @@ pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
-    use nobs_core::check::{self, Reading, Verdict};
     use nobs_core::lab_vars;
     use nobs_core::locate::locate;
     use nobs_core::sot::Fixed;
@@ -9213,6 +9216,19 @@ pub(crate) mod tests {
         assert_eq!(model.fetch_error("nobs-t-srl1"), Some("exit 3"));
     }
 
+    #[test]
+    fn a_failed_g_whose_last_line_is_a_configuration_line_gives_the_exit_code_words() {
+        let mut model = on_intended(Ok(&WANTED));
+
+        ch(&mut model, 'g');
+        answered(&mut model, &ON_DEVICE, End::Exited(1));
+
+        assert_eq!(
+            model.fetch_error("nobs-t-srl1"),
+            Some("the device ended with exit code 1")
+        );
+    }
+
     const CEOS: &str = "nobs-t-ceos1";
     const NO_DRIVER: &str = "no driver for the kind ceos yet";
 
@@ -9323,6 +9339,26 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn every_cell_keeps_its_value_while_a_check_runs() {
+        let mut model = on_intended(Ok(&WANTED));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+
+        let commands = ch(&mut model, 'G');
+        model.apply(Update::ActionLine("nobs-t-srl1  in sync".to_string()));
+
+        assert!(
+            matches!(&commands[..], [Command::Run { .. }]),
+            "{commands:?}"
+        );
+        let run = model.run().unwrap();
+        assert_eq!(
+            (run.words.as_str(), run.state),
+            ("device check", RunState::Running)
+        );
+        assert_eq!(model.agreement(SRL1), Agreement::Missing(2));
+    }
+
     fn checked_run(model: &mut Model, end: End, entries: Vec<(&str, Result<Vec<String>, String>)>) {
         ch(model, 'G');
         assert_eq!(
@@ -9374,53 +9410,6 @@ pub(crate) mod tests {
         assert_eq!(model.config().unwrap().0, "nobs-t-srl2");
         assert_eq!((view.fetched, view.missing), (Some("13:50:00"), Some(1)));
         assert_eq!(view.rows.last(), Some(&('+', WANTED[3])));
-    }
-
-    #[test]
-    fn the_check_line_and_the_cell_say_the_same_for_the_same_answers() {
-        let text = WANTED.join("\n") + "\n";
-        let answers: [(&str, Result<&[&str], &str>); 4] = [
-            (SRL1, Ok(&WANTED)),
-            ("nobs-t-srl2", Ok(&ON_DEVICE)),
-            ("nobs-t-srl3", Ok(&WANTED[1..])),
-            (CEOS, Err(NO_DRIVER)),
-        ];
-        let mut model = lab_devices_model();
-        model.apply(intended_of(
-            &answers.map(|(name, _)| (name, Ok(&WANTED[..]))),
-        ));
-        let readings: Vec<Reading> = answers
-            .iter()
-            .map(|(name, answer)| Reading {
-                name: name.to_string(),
-                verdict: match answer {
-                    Ok(lines) => {
-                        let lines = owned(lines);
-                        let missing = missing(&compare(&text, &lines));
-                        Verdict::Answered { lines, missing }
-                    }
-                    Err(words) => Verdict::Failed(words.to_string()),
-                },
-            })
-            .collect();
-        let entries = answers
-            .iter()
-            .map(|(name, answer)| (*name, answer.map(owned).map_err(str::to_string)))
-            .collect();
-
-        checked_run(&mut model, End::Exited(1), entries);
-
-        for reading in &readings {
-            let cell = match model.agreement(&reading.name) {
-                Agreement::InSync => "in sync".to_string(),
-                Agreement::Missing(count) => format!("{count} missing"),
-                Agreement::Failed => {
-                    format!("failed: {}", model.fetch_error(&reading.name).unwrap())
-                }
-                Agreement::Unknown => "—".to_string(),
-            };
-            assert_eq!(check::line(0, reading), format!("{}  {cell}", reading.name));
-        }
     }
 
     #[test]

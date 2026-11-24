@@ -50,6 +50,11 @@ fn three(name: &str) -> [Vec<&str>; 3] {
     [fetch, run, vec!["device", "shell", name]]
 }
 
+fn four(name: &str) -> [Vec<&str>; 4] {
+    let [fetch, run, shell] = three(name);
+    [fetch, run, shell, vec!["device", "check"]]
+}
+
 fn in_dir<'a>(dir: &'a Path, args: &[&'a str]) -> Vec<&'a str> {
     let mut line = vec!["--dir", dir.to_str().unwrap()];
     line.extend(args);
@@ -71,7 +76,7 @@ fn assert_fails_with(output: &Output, line: &str) {
 #[test]
 fn outside_a_lab_the_device_commands_exit_1_with_the_locate_line() {
     let bare = folder("device-no-lab");
-    for args in three("nobs-t-srl1") {
+    for args in four("nobs-t-srl1") {
         assert_fails_with(
             &with_credentials(&bare, &args),
             "nobs: no lab or workshop found from here",
@@ -86,7 +91,7 @@ fn outside_a_lab_the_device_commands_exit_1_with_the_locate_line() {
 #[test]
 fn in_a_workshop_the_device_commands_exit_1_with_the_workshop_line() {
     let workshop = fixture("workshop-one");
-    for args in three("nobs-t-srl1") {
+    for args in four("nobs-t-srl1") {
         assert_fails_with(
             &with_credentials(&workshop, &in_dir(&workshop, &args)),
             &format!(
@@ -250,6 +255,37 @@ fn the_shell_without_a_terminal_exits_1_with_its_line_and_opens_no_connection() 
         &with_credentials(&lab, &in_dir(&lab, &["device", "shell", "nobs-t-srl1"])),
         "nobs: the shell needs a terminal",
     );
+}
+
+#[test]
+fn a_check_of_a_lab_with_no_nodes_exits_0_and_prints_nothing() {
+    let lab = folder("device-check-empty");
+    fs::write(lab.join("nobs.toml"), "kind = \"lab\"\n").unwrap();
+    fs::write(
+        lab.join("containerlab/lab.clab.yml"),
+        "name: nobs-t-dev\ntopology:\n  nodes: {}\n",
+    )
+    .unwrap();
+
+    let output = with_credentials(&lab, &in_dir(&lab, &["device", "check"]));
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(output.stdout.is_empty());
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn check_save_with_no_folder_is_a_usage_error_with_exit_2() {
+    let lab = fixture("device-lab");
+    let output = with_credentials(&lab, &in_dir(&lab, &["device", "check", "--save"]));
+    let stderr = stderr(&output);
+
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.starts_with("error: a value is required for '--save <FOLDER>'"),
+        "{stderr}"
+    );
+    assert!(output.stdout.is_empty());
 }
 
 #[test]

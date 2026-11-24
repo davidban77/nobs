@@ -2391,10 +2391,10 @@ fn check_devices(
             let _ = writeln!(out, "{}", check::line(width, reading));
             let _ = out.flush();
             if let Some(folder) = save {
-                if let (Err(error), Some(path)) =
-                    (check::save(folder, reading), check::file(folder, reading))
-                {
-                    cannot_make(err, &path, &error);
+                if let Err(error) = check::save(folder, reading) {
+                    if let Some(path) = check::file(folder, reading) {
+                        cannot_make(err, &path, &error);
+                    }
                     unsaved = true;
                 }
             }

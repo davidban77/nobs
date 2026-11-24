@@ -67,10 +67,7 @@ fn verdict_of(
         transport.run(host, login, driver.running_config)
     });
     match answer {
-        Ok(output) if output.code != 0 => Ok(Verdict::Failed(format!(
-            "the device ended with exit code {}",
-            output.code
-        ))),
+        Ok(output) if output.code != 0 => Ok(Verdict::Failed(exit_words(output.code))),
         Ok(output) => {
             let lines: Vec<String> = output.stdout.lines().map(str::to_string).collect();
             let missing = intended::missing(&intended::compare(&intended, &lines));
@@ -79,6 +76,10 @@ fn verdict_of(
         Err(error @ (Error::AuthenticationFailed | Error::MissingCredentials)) => Err(error),
         Err(error) => Ok(Verdict::Failed(error.to_string())),
     }
+}
+
+pub fn exit_words(code: i32) -> String {
+    format!("the device ended with exit code {code}")
 }
 
 pub fn width(nodes: &[TopologyNode]) -> usize {
@@ -118,22 +119,24 @@ pub fn make_folder(folder: &Path) -> io::Result<()> {
 }
 
 pub fn file(folder: &Path, reading: &Reading) -> Option<PathBuf> {
-    let extension = match &reading.verdict {
-        Verdict::Answered { .. } => CONFIG,
-        Verdict::Failed(_) => ERROR,
+    kept(folder, reading).map(|(path, _)| path)
+}
+
+fn kept(folder: &Path, reading: &Reading) -> Option<(PathBuf, String)> {
+    let (extension, text) = match &reading.verdict {
+        Verdict::Answered { lines, .. } => (
+            CONFIG,
+            lines.iter().map(|line| format!("{line}\n")).collect(),
+        ),
+        Verdict::Failed(words) => (ERROR, words.clone()),
         Verdict::NotTried | Verdict::NotChecked(_) | Verdict::NoIntendedText(_) => return None,
     };
-    Some(folder.join(format!("{}.{extension}", reading.name)))
+    Some((folder.join(format!("{}.{extension}", reading.name)), text))
 }
 
 pub fn save(folder: &Path, reading: &Reading) -> io::Result<()> {
-    let Some(path) = file(folder, reading) else {
+    let Some((path, text)) = kept(folder, reading) else {
         return Ok(());
-    };
-    let text: String = match &reading.verdict {
-        Verdict::Answered { lines, .. } => lines.iter().map(|line| format!("{line}\n")).collect(),
-        Verdict::Failed(words) => words.clone(),
-        _ => return Ok(()),
     };
     OpenOptions::new()
         .write(true)
