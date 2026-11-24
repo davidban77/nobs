@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::count::counted;
 use crate::runner::Output;
 use crate::{intended, lab};
 
@@ -68,6 +69,15 @@ impl fmt::Display for Error {
             Error::ShellRefused => f.write_str("the device refused a shell"),
             Error::Library(text) => f.write_str(text),
         }
+    }
+}
+
+impl Error {
+    pub fn says_nothing_was_sent(&self) -> bool {
+        matches!(
+            self,
+            Error::Unreachable { .. } | Error::AuthenticationFailed | Error::ShellRefused
+        )
     }
 }
 
@@ -149,11 +159,7 @@ pub fn push(
         match transport.send(host, credentials, &lines) {
             Ok(output) if output.code == 0 => Ok(Pushed::Taken(output)),
             Ok(output) => Ok(Pushed::Refused(output)),
-            Err(
-                error @ (Error::Unreachable { .. }
-                | Error::AuthenticationFailed
-                | Error::ShellRefused),
-            ) => Err(error),
+            Err(error) if error.says_nothing_was_sent() => Err(error),
             Err(error) => Ok(Pushed::NotKnown(error)),
         }
     })
@@ -179,6 +185,10 @@ pub fn credential(name: &str, shell: Option<String>, lab: &[(String, String)]) -
 
 pub fn error_line(name: &str, error: &Error) -> String {
     format!("nobs: ssh {name}: {error}")
+}
+
+pub fn pushed_line(name: &str, count: usize) -> String {
+    format!("{name}  pushed {}", counted(count, "line"))
 }
 
 pub fn not_known_line(name: &str) -> String {

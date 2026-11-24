@@ -1321,7 +1321,9 @@ impl Model {
     fn action_ended(&mut self, end: End) -> Vec<Command> {
         let Some(command) = self.refused_sudo(end) else {
             let stopped = matches!(end, End::Stopped | End::NotStopped { .. });
-            let unknown = self.pushed_device().filter(|_| stopped);
+            let unknown = self
+                .pushed_device()
+                .filter(|device| stopped && !self.run_says_pushed(device));
             let collect = self.checking().then(|| Command::Collect(check_folder()));
             self.end_run(end);
             if let (Some(device), Some(run)) = (unknown, self.run.as_mut()) {
@@ -1363,6 +1365,16 @@ impl Model {
         self.run
             .as_ref()
             .is_some_and(|run| run.hands_back == HandsBack::Folder)
+    }
+
+    fn run_says_pushed(&self, name: &str) -> bool {
+        let Some(text) = self.intended_text(name) else {
+            return false;
+        };
+        let line = device::pushed_line(name, intended::lines(text).count());
+        self.run
+            .as_ref()
+            .is_some_and(|run| run.lines.contains(&line))
     }
 
     fn pushed_device(&self) -> Option<String> {
@@ -9863,6 +9875,26 @@ pub(crate) mod tests {
                 "{end:?}"
             );
             assert_eq!(model.agreement(SRL2), Agreement::Missing(1), "{end:?}");
+        }
+    }
+
+    #[test]
+    fn a_push_stopped_after_its_pushed_line_says_nothing_of_not_known() {
+        for end in [End::Stopped, End::NotStopped { group: 7 }] {
+            let mut model = with_intended(lab_devices_model());
+            ch(&mut model, 'j');
+            ch(&mut model, 'P');
+            ch(&mut model, 'y');
+            let count = intended::lines(model.intended_text(SRL2).unwrap()).count();
+            let pushed = device::pushed_line(SRL2, count);
+            model.apply(Update::ActionLine(pushed.clone()));
+
+            let ended = model.apply(Update::ActionEnded(end));
+
+            assert_eq!(ended, [Command::Collect(check_folder())], "{end:?}");
+            let lines = &model.run().unwrap().lines;
+            assert!(!lines.contains(&device::not_known_line(SRL2)), "{end:?}");
+            assert!(lines.contains(&pushed), "{end:?}");
         }
     }
 

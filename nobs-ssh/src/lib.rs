@@ -74,15 +74,20 @@ fn send_at(
     lines: &[String],
     limit: Duration,
 ) -> Result<Output, Error> {
-    block_on(fed(host, port, credentials, lines, limit))
+    runtime()
+        .map_err(|error| before_sent(error, host))?
+        .block_on(fed(host, port, credentials, lines, limit))
 }
 
 fn block_on<T>(work: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+    runtime()?.block_on(work)
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, Error> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|error| Error::Library(error.to_string()))?
-        .block_on(work)
+        .map_err(|error| Error::Library(error.to_string()))
 }
 
 async fn open(
@@ -149,29 +154,22 @@ async fn fed(
     Ok(output)
 }
 
-fn says_not_known(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::NoAnswer | Error::NoExitStatus | Error::Library(_)
-    )
-}
-
 fn before_sent(error: Error, host: &str) -> Error {
-    if says_not_known(&error) {
+    if error.says_nothing_was_sent() {
+        error
+    } else {
         Error::Unreachable {
             host: host.to_string(),
             reason: error.to_string(),
         }
-    } else {
-        error
     }
 }
 
 fn once_sent(error: Error) -> Error {
     match error {
-        error if says_not_known(&error) => error,
         Error::Unreachable { reason, .. } => Error::Library(reason),
-        error => Error::Library(error.to_string()),
+        error if error.says_nothing_was_sent() => Error::Library(error.to_string()),
+        error => error,
     }
 }
 

@@ -2458,7 +2458,7 @@ fn push_device(
         }
         Ok(Pushed::Taken(output)) => {
             pass_through(&output, out, err);
-            let _ = writeln!(out, "{name}  pushed {lines}");
+            let _ = writeln!(out, "{}", device::pushed_line(name, count));
             let fetched = check_devices(
                 std::slice::from_ref(node),
                 &|_| Ok(text.clone()),
