@@ -51,9 +51,16 @@ pub fn intended(
         .map_err(Failure::Other)
 }
 
+pub fn lines(intended: &str) -> impl Iterator<Item = &str> {
+    intended
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+}
+
 pub fn compare<'a>(intended: &'a str, fetched: &'a [String]) -> Vec<Checked<'a>> {
     let device: HashSet<&str> = fetched.iter().map(|line| line.trim()).collect();
-    let stated: HashSet<&str> = intended.lines().map(str::trim).collect();
+    let stated: HashSet<&str> = lines(intended).collect();
     intended
         .lines()
         .map(|line| {
