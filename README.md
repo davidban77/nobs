@@ -526,7 +526,7 @@ An action that failed:
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`. It lasts while the screen is open.
+When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`, or until `G` gets a good answer from that device. It lasts while the screen is open.
 
 Ctrl-C while an action runs stops it. The title shows `stopping`. The screen starts each action in its own process group: a process group is a program together with every program it starts. The screen sends an interrupt to the whole group. If the group has not ended 5 seconds later, the screen kills it. When the whole group has ended, the title shows `stopped`. Ctrl-C when no action runs closes the screen.
 

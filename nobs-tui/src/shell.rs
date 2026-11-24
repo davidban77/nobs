@@ -1374,6 +1374,8 @@ impl Model {
             match fetched {
                 Ok(lines) => {
                     self.fetch_errors.remove(&device);
+                    let target = Target::Device(device.clone());
+                    self.failed.retain(|held| *held != target);
                     let fetched = self.clock.clone();
                     self.configs.insert(device, Config { lines, fetched });
                 }
@@ -9320,6 +9322,57 @@ pub(crate) mod tests {
         ch(&mut bare, 'g');
         answered(&mut bare, &[&refusal()], End::Exited(1));
         assert_eq!(bare.agreement(SRL1), Agreement::Failed);
+    }
+
+    #[test]
+    fn a_failed_g_or_check_shows_failed_and_a_good_check_clears_it() {
+        for by_check in [false, true] {
+            let mut model = on_intended(Ok(&WANTED));
+            fetched(&mut model, &ON_DEVICE, "13:45:08");
+            if by_check {
+                checked_run(
+                    &mut model,
+                    End::Exited(1),
+                    vec![(SRL1, Err(NO_DRIVER.to_string()))],
+                );
+            } else {
+                ch(&mut model, 'g');
+                answered(&mut model, &[&refusal()], End::Exited(1));
+            }
+            assert_eq!(model.agreement(SRL1), Agreement::Failed, "{by_check}");
+
+            checked_run(&mut model, End::Exited(0), vec![(SRL1, Ok(owned(&WANTED)))]);
+
+            assert_eq!(model.agreement(SRL1), Agreement::InSync, "{by_check}");
+            assert_eq!(model.fetch_error(SRL1), None, "{by_check}");
+        }
+    }
+
+    #[test]
+    fn a_good_check_entry_clears_the_marker_of_its_device_only() {
+        let srl1 = Target::Device(SRL1.to_string());
+        let srl2 = Target::Device("nobs-t-srl2".to_string());
+        let mut model = lab_devices_model();
+        ch(&mut model, 'g');
+        answered(&mut model, &[&refusal()], End::Exited(1));
+        ch(&mut model, 'j');
+        ch(&mut model, 'g');
+        answered(&mut model, &["x"], End::Exited(1));
+        assert!(model.failed(&srl1) && model.failed(&srl2));
+
+        checked_run(&mut model, End::Exited(1), vec![(SRL1, Ok(owned(&WANTED)))]);
+
+        assert!(!model.failed(&srl1));
+        assert!(model.failed(&srl2));
+        assert!(model.failed(&Target::Lab));
+
+        let mut fresh = lab_devices_model();
+        checked_run(
+            &mut fresh,
+            End::Exited(1),
+            vec![(SRL1, Err(NO_DRIVER.to_string()))],
+        );
+        assert!(!fresh.failed(&srl1));
     }
 
     #[test]
