@@ -6,16 +6,17 @@
 
 
   ╔ keys  devices workbench ═════════════════════════════════════════════════════════════════════╗
-  ║1 2 3 4  switch workbench                      r       refresh now                            ║
-  ║Tab      focus list/tabs                       f       follow/pause logs                      ║
-  ║j k ↑ ↓  move                                  o       run pane                               ║
-  ║[ ]      other tab                             ?       close                                  ║
-  ║t        type in terminal                      m       maintenance                            ║
-  ║- +      timeline window                       g       get config                             ║
-  ║x        dismiss the error                     s       run command                            ║
-  ║Esc      close/clear/back                      G       check all                              ║
+  ║1 2 3 4  switch workbench                      f       follow/pause logs                      ║
+  ║Tab      focus list/tabs                       o       run pane                               ║
+  ║j k ↑ ↓  move                                  ?       close                                  ║
+  ║[ ]      other tab                             m       maintenance                            ║
+  ║t        type in terminal                      g       fetch                                  ║
+  ║- +      timeline window                       s       run                                    ║
+  ║x        dismiss the error                     G       check all                              ║
+  ║Esc      close/clear/back                      P       push                                   ║
   ║Enter    open / pick alert                     q       quit; asks if busy                     ║
   ║/        filter                                Ctrl-C  stop a run, or quit                    ║
+  ║r        refresh now                                                                          ║
   ║                                                                                              ║
   ║PgUp PgDn  move a page where j and k move                                                     ║
   ║alerts box: Enter picks the device, opens its timeline                                        ║
@@ -26,5 +27,4 @@
 
 
 
-
- Tab focus  j/k move  / filter  Enter open  r refresh  g get config  s run command  G check all
+ Tab focus  j/k move  / filter  Enter open  r refresh  g fetch  s run  G check all

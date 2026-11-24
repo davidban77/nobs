@@ -27,4 +27,4 @@
 │                                        │║                                                        ║
 └────────────────────────────────────────┘╚═══════════════════════════════════════════════════ ↑4 ═╝
  run  device fetch nobs-t-srl1  exit 0  0s                                                   o open
- v running  n N next/previous difference  / filter  j/k scroll  [ ] tab  Esc back to list
+ v running  n N next/previous difference  / filter  j/k scroll  [ ] tab  Esc back to list  g fetch

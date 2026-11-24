@@ -1279,6 +1279,78 @@ fn the_checked_with_a_failed_device_frame_is_pinned() {
     pinned(model, "devices-checked-failed", 100, 30);
 }
 
+const SRL2_INTENDED: &str =
+    include_str!("../../tests/fixtures/project-two-node/expected/configs/nobs-t-srl2.cfg");
+
+fn push_asked() -> Shell {
+    let mut model = project_devices();
+    model.apply(Update::Intended(vec![
+        ("nobs-t-srl1".to_string(), Ok(SRL1_INTENDED.to_string())),
+        ("nobs-t-srl2".to_string(), Ok(SRL2_INTENDED.to_string())),
+    ]));
+    let srl1: Vec<&str> = SRL1_INTENDED.lines().take(4).collect();
+    let srl2: Vec<&str> = SRL2_INTENDED.lines().take(4).collect();
+    model.apply(checked_update(&[
+        ("nobs-t-srl1", Ok(&srl1)),
+        ("nobs-t-srl2", Ok(&srl2)),
+    ]));
+    press(&mut model, KeyCode::Char('j'));
+    press(&mut model, KeyCode::Char('P'));
+    model
+}
+
+#[test]
+fn the_push_question_frame_is_pinned() {
+    golden("devices-push-question", push_asked);
+}
+
+#[test]
+fn the_pushed_frame_is_pinned() {
+    let mut model = push_asked();
+    press(&mut model, KeyCode::Char('y'));
+    for line in ["nobs-t-srl2  pushed 6 lines", "nobs-t-srl2  in sync"] {
+        model.apply(Update::ActionLine(line.to_string()));
+    }
+    model.apply(Update::ActionEnded(End::Exited(0)));
+    let synced: Vec<&str> = SRL2_INTENDED.lines().collect();
+    model.apply(checked_update(&[("nobs-t-srl2", Ok(&synced))]));
+    press(&mut model, KeyCode::Esc);
+    pinned(model, "devices-pushed", 100, 30);
+}
+
+#[test]
+fn p_changes_no_frame_of_a_workshop() {
+    let located = || {
+        let dir = PathBuf::from(WORKSHOP_DIR);
+        let lab = locate(&dir, Some(&dir)).unwrap();
+        let source = lab_vars_source(Path::new(WORKSHOP_ONE));
+        let devices = source.devices().unwrap();
+        let mut model = model_with(false, false, Some(Arc::new(source)), Some(lab));
+        press(&mut model, KeyCode::Char('1'));
+        model.apply(Update::Devices(Ok(devices)));
+        model
+    };
+    for build in [located as fn() -> Shell, devices_model] {
+        let workshop = || {
+            let mut model = build();
+            model.apply(Update::Intended(vec![(
+                "srl1".to_string(),
+                Ok(SRL1_INTENDED.to_string()),
+            )]));
+            model
+        };
+        for (width, height) in SIZES {
+            let mut pressed = workshop();
+            press(&mut pressed, KeyCode::Char('P'));
+            assert_eq!(
+                lines(&render(pressed, width, height)),
+                lines(&render(workshop(), width, height)),
+                "{width}x{height}"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_config_after_a_failed_g_frame_is_pinned() {
     pinned(

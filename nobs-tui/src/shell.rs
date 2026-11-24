@@ -11,9 +11,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nobs_core::alertmanager::Alert;
 use nobs_core::check;
 use nobs_core::containerlab::sudo_refused_line;
+use nobs_core::count::counted;
 use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
-use nobs_core::intended::{compare, missing, Checked, Failure};
+use nobs_core::intended::{self, compare, missing, Checked, Failure};
 use nobs_core::lab;
 use nobs_core::locate::{locate, Kind, Located, Nodes};
 use nobs_core::loki::Line;
@@ -25,7 +26,7 @@ use nobs_core::sot::{Device, Session, SourceOfTruth};
 use nobs_core::status::{self, Urls, SERVICES};
 use nobs_core::time;
 
-use crate::actions::{fits, flat, pieces, Action, Ask, Row, Target, ACTIONS, SAVE};
+use crate::actions::{fits, flat, pieces, Action, Ask, HandsBack, Row, Target, ACTIONS, SAVE};
 use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
@@ -402,6 +403,7 @@ pub struct Run {
     pub target: Target,
     pub lines: Vec<String>,
     pub output: Option<Vec<String>>,
+    pub(crate) hands_back: HandsBack,
     pub started: Instant,
     pub ended: Option<Instant>,
     pub state: RunState,
@@ -480,7 +482,9 @@ pub enum Question {
     Pending {
         args: Vec<Vec<OsString>>,
         target: Target,
-        saying: Option<&'static str>,
+        text: String,
+        login: Option<Login>,
+        hands_back: HandsBack,
     },
     Quit {
         sessions: Vec<String>,
@@ -491,14 +495,7 @@ pub enum Question {
 impl Question {
     pub fn text(&self) -> String {
         match self {
-            Question::Pending {
-                args, saying: None, ..
-            } => format!("run nobs {}? y/n", joined(args)),
-            Question::Pending {
-                args,
-                saying: Some(saying),
-                ..
-            } => format!("run nobs {}? It {saying}. y/n", joined(args)),
+            Question::Pending { text, .. } => text.clone(),
             Question::Quit { sessions, .. } if sessions.is_empty() => {
                 "an action is running: stop it and quit? y/n".to_string()
             }
@@ -617,13 +614,15 @@ enum Step {
 enum Then {
     Act(&'static Action),
     Terminal,
+    Run(HandsBack),
 }
 
 impl Then {
     fn login(self) -> bool {
         match self {
-            Then::Act(action) => action.login,
+            Then::Act(action) => action.login && matches!(action.ask, Ask::No | Ask::Text),
             Then::Terminal => SHELL.login,
+            Then::Run(_) => true,
         }
     }
 }
@@ -1356,15 +1355,9 @@ impl Model {
     }
 
     fn checking(&self) -> bool {
-        self.run.as_ref().is_some_and(|run| {
-            ACTIONS
-                .iter()
-                .filter(|action| action.row == Row::EveryNode)
-                .any(|action| {
-                    pieces(action, &run.target, self)
-                        .is_some_and(|args| joined(&args) == run.command)
-                })
-        })
+        self.run
+            .as_ref()
+            .is_some_and(|run| run.hands_back == HandsBack::Folder)
     }
 
     fn checked(&mut self, entries: Vec<(String, Result<Vec<String>, String>)>) {
@@ -1400,7 +1393,7 @@ impl Model {
         let command = action.words.join(" ");
         let line = match answer {
             Ok(true) => {
-                let commands = self.start_run(args, target, action.keeps, Login::default());
+                let commands = self.start_run(args, target, action.hands_back, Login::default());
                 if let Some(run) = self.run.as_mut() {
                     run.asked = true;
                 }
@@ -1481,9 +1474,20 @@ impl Model {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match question {
-            Question::Pending { args, target, .. } if yes => {
-                self.start_run(args, target, false, Login::default())
-            }
+            Question::Pending {
+                args,
+                target,
+                login: Some(login),
+                hands_back,
+                ..
+            } if yes => self.login_then(Then::Run(hands_back), args, target, login),
+            Question::Pending {
+                args,
+                target,
+                login: None,
+                hands_back,
+                ..
+            } if yes => self.start_run(args, target, hands_back, Login::default()),
             Question::Pending { args, .. } => {
                 self.notice = Some(format!("not run: {}", words(&args)));
                 Vec::new()
@@ -1520,7 +1524,7 @@ impl Model {
         &mut self,
         args: Vec<Vec<OsString>>,
         target: Target,
-        keeps: bool,
+        hands_back: HandsBack,
         login: Login,
     ) -> Vec<Command> {
         let typed = self.keep_login(&login);
@@ -1529,7 +1533,8 @@ impl Model {
             command: joined(&args),
             target,
             lines: Vec::new(),
-            output: keeps.then(Vec::new),
+            output: (hands_back == HandsBack::Lines).then(Vec::new),
+            hands_back,
             started: self.now,
             ended: None,
             state: RunState::Running,
@@ -1560,17 +1565,23 @@ impl Model {
         } else {
             Login::default()
         };
-        let saying = match action.ask {
+        let text = match action.ask {
             Ask::No => {
-                let mut commands = self.start_run(args, target, action.keeps, login);
-                if action.keeps {
+                let mut commands = self.start_run(args, target, action.hands_back, login);
+                if action.hands_back == HandsBack::Lines {
                     self.tab = Tab::Config;
                     commands.push(Command::OpenTab(Tab::Config));
                 }
                 return commands;
             }
-            Ask::Yes => None,
-            Ask::Saying(saying) => Some(saying),
+            Ask::Yes => format!("run nobs {}? y/n", joined(&args)),
+            Ask::Saying(saying) => format!("run nobs {}? It {saying}. y/n", joined(&args)),
+            Ask::Push => {
+                let Some(text) = self.push_question(&target) else {
+                    return Vec::new();
+                };
+                text
+            }
             Ask::Text => {
                 self.ask(Then::Act(action), args, target, Step::Command, login);
                 return Vec::new();
@@ -1579,9 +1590,27 @@ impl Model {
         self.question = Some(Question::Pending {
             args,
             target,
-            saying,
+            text,
+            login: action.login.then_some(login),
+            hands_back: action.hands_back,
         });
         Vec::new()
+    }
+
+    fn push_question(&self, target: &Target) -> Option<String> {
+        let Target::Device(name) = target else {
+            return None;
+        };
+        let lines = counted(intended::lines(self.intended_text(name)?).count(), "line");
+        let state = match self.agreement(name) {
+            Agreement::Unknown => String::new(),
+            Agreement::Failed => ", state not known".to_string(),
+            Agreement::InSync => ", 0 missing".to_string(),
+            Agreement::Missing(count) => format!(", {count} missing"),
+        };
+        Some(format!(
+            "push the intended configuration to {name}? {lines}{state}; it changes the running configuration of the device. y/n"
+        ))
     }
 
     fn ask(
@@ -1611,12 +1640,20 @@ impl Model {
         target: Target,
     ) -> Vec<Command> {
         let login = self.login.clone();
-        let step = if then.login() {
-            self.asked_step(&login)
-        } else {
-            None
-        };
-        match step {
+        if !then.login() {
+            return self.proceed(then, args, target, login);
+        }
+        self.login_then(then, args, target, login)
+    }
+
+    fn login_then(
+        &mut self,
+        then: Then,
+        args: Vec<Vec<OsString>>,
+        target: Target,
+        login: Login,
+    ) -> Vec<Command> {
+        match self.asked_step(&login) {
             Some(step) => {
                 self.ask(then, args, target, step, login);
                 Vec::new()
@@ -1635,6 +1672,7 @@ impl Model {
         match then {
             Then::Act(action) => self.act(action, args, target, login),
             Then::Terminal => self.open_terminal(args, target, login),
+            Then::Run(hands_back) => self.start_run(args, target, hands_back, login),
         }
     }
 
@@ -2687,10 +2725,12 @@ impl Model {
         })
     }
 
+    pub(crate) fn intended_text(&self, device: &str) -> Option<&str> {
+        self.intended.get(device)?.text.as_deref().ok()
+    }
+
     fn comparison(&self, device: &str) -> Option<(Vec<Checked<'_>>, Option<&Config>)> {
-        let Ok(text) = &self.intended.get(device)?.text else {
-            return None;
-        };
+        let text = self.intended_text(device)?;
         let kept = self.configs.get(device);
         Some((
             compare(text, kept.map_or(&[][..], |kept| &kept.lines)),
@@ -2845,7 +2885,12 @@ impl Model {
             let name = match asked.step {
                 Step::Command => {
                     asked.args.push(vec![OsString::from(text)]);
-                    return self.start_run(asked.args, asked.target, false, asked.typed);
+                    return self.start_run(
+                        asked.args,
+                        asked.target,
+                        HandsBack::Nothing,
+                        asked.typed,
+                    );
                 }
                 Step::User { .. } => device::USER,
                 Step::Password { .. } => device::PASSWORD,
@@ -2858,13 +2903,7 @@ impl Model {
             } else {
                 asked.typed.password = Some(Password::new(value));
             }
-            return match self.asked_step(&asked.typed) {
-                Some(step) => {
-                    self.ask(asked.then, asked.args, asked.target, step, asked.typed);
-                    Vec::new()
-                }
-                None => self.proceed(asked.then, asked.args, asked.target, asked.typed),
-            };
+            return self.login_then(asked.then, asked.args, asked.target, asked.typed);
         }
         if self.filter.typing {
             self.filter.type_key(key.code);
@@ -7401,7 +7440,11 @@ pub(crate) mod tests {
         match row {
             Row::Stack => opened(&["nobs-t-packt"]),
             Row::Device => devices_model(workshop_located("infrahub")),
-            Row::Node | Row::EveryNode => lab_devices_model(),
+            Row::Node | Row::EveryNode => {
+                let mut model = lab_devices_model();
+                model.apply(intended_of(&[(SRL1, Ok(&WANTED)), (SRL2, Ok(&WANTED))]));
+                model
+            }
             Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => book_model(),
             Row::Lab([Nodes::Project, ..]) => nodes_model(&fixture("project-two-node")),
             Row::Lab(_) => nodes_model(&fixture("labcli-example")),
@@ -7700,7 +7743,7 @@ pub(crate) mod tests {
         for action in &ACTIONS {
             let saying = match action.ask {
                 Ask::Saying(saying) => Some(saying),
-                Ask::No | Ask::Yes | Ask::Text => None,
+                Ask::No | Ask::Yes | Ask::Text | Ask::Push => None,
             };
             assert_eq!(saying, agreed_clause(action), "{}", action.key);
             let mut model = on_its_row(action.row);
@@ -7723,7 +7766,8 @@ pub(crate) mod tests {
                 .last()
                 .is_some_and(|word| READING.contains(word))
             {
-                let opened = action.keeps.then_some(Command::OpenTab(Tab::Config));
+                let opened = (action.hands_back == HandsBack::Lines)
+                    .then_some(Command::OpenTab(Tab::Config));
                 let expected: Vec<Command> = [run].into_iter().chain(opened).collect();
                 assert_eq!(commands, expected, "{}", action.key);
                 assert_eq!(model.question(), None, "{}", action.key);
@@ -7732,10 +7776,12 @@ pub(crate) mod tests {
             let clause =
                 agreed_clause(action).map_or(String::new(), |clause| format!(" It {clause}."));
             assert_eq!(commands, [], "{}", action.key);
-            assert_eq!(
-                model.question().unwrap().text(),
-                format!("run nobs {}?{clause} y/n", joined(&args))
-            );
+            if action.ask != Ask::Push {
+                assert_eq!(
+                    model.question().unwrap().text(),
+                    format!("run nobs {}?{clause} y/n", joined(&args))
+                );
+            }
 
             let mut refused = on_its_row(action.row);
             ch(&mut refused, action.key);
@@ -8907,7 +8953,7 @@ pub(crate) mod tests {
             ("no device", no_device),
         ];
         for (name, mut model) in models {
-            for (key, hint) in [('g', "g get config"), ('s', "s run command")] {
+            for (key, hint) in [('g', "g fetch"), ('s', "s run")] {
                 let tab = model.tab();
 
                 assert_eq!(ch(&mut model, key), [], "{name} {key}");
@@ -8929,7 +8975,7 @@ pub(crate) mod tests {
             }
         }
         let line = key_line(&lab_devices_model(), 200).concat();
-        assert!(line.contains("g get config  s run command"), "{line}");
+        assert!(line.contains("g fetch  s run"), "{line}");
 
         let mut busy = devices_model(workshop_located("infrahub"));
         ch(&mut busy, 'm');
@@ -9064,8 +9110,8 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         };
         let lab = lab_devices_model();
-        assert_eq!(named(&lab, "g"), ["get config"]);
-        assert_eq!(named(&lab, "s"), ["run command"]);
+        assert_eq!(named(&lab, "g"), ["fetch"]);
+        assert_eq!(named(&lab, "s"), ["run"]);
         assert_eq!(named(&lab, "G"), ["check all"]);
         assert_eq!(named(&lab, "m"), ["maintenance"]);
 
@@ -9539,15 +9585,296 @@ pub(crate) mod tests {
         );
     }
 
+    const OTHER: [&str; 2] = [
+        "set / system information location nobs-t-x",
+        "set / system information contact nobs-t-y",
+    ];
+
+    fn with_intended(mut model: Model) -> Model {
+        model.apply(intended_of(&[(SRL1, Ok(&WANTED)), (SRL2, Ok(&OTHER))]));
+        model
+    }
+
+    fn push_args(device: &str) -> Vec<OsString> {
+        let save = check_folder().to_string_lossy().into_owned();
+        os(&[
+            "--dir",
+            &book_dir(),
+            "device",
+            "push",
+            "--yes",
+            device,
+            "--save",
+            &save,
+        ])
+    }
+
+    fn push_run(device: &str, login: Login) -> Command {
+        Command::Run {
+            program: PathBuf::from("/bin/nobs"),
+            args: push_args(device),
+            login,
+        }
+    }
+
+    fn asked_text(model: &Model) -> String {
+        model.question().unwrap().text()
+    }
+
     #[test]
-    fn only_g_s_big_g_and_t_reach_a_device_and_no_update_starts_a_command_on_one() {
+    fn p_on_a_node_asks_a_yes_that_names_the_device_its_lines_and_what_is_missing() {
+        let changes = "it changes the running configuration of the device. y/n";
+        let mut model = with_intended(lab_devices_model());
+
+        assert_eq!(ch(&mut model, 'P'), []);
+        assert!(model.run().is_none());
+        assert_eq!(
+            asked_text(&model),
+            format!("push the intended configuration to nobs-t-srl1? 4 lines; {changes}")
+        );
+
+        let cases: [(&[&str], End, &str); 3] = [
+            (&ON_DEVICE, End::Exited(0), "4 lines, 2 missing"),
+            (&WANTED, End::Exited(0), "4 lines, 0 missing"),
+            (&[&refusal()], End::Exited(1), "4 lines, state not known"),
+        ];
+        for (lines, end, counts) in cases {
+            let mut model = with_intended(lab_devices_model());
+            ch(&mut model, 'g');
+            answered(&mut model, lines, end);
+            ch(&mut model, 'P');
+            assert_eq!(
+                asked_text(&model),
+                format!("push the intended configuration to nobs-t-srl1? {counts}; {changes}")
+            );
+        }
+
+        let mut one = lab_devices_model();
+        one.apply(intended_of(&[(SRL1, Ok(&WANTED[..1]))]));
+        ch(&mut one, 'P');
+        assert_eq!(
+            asked_text(&one),
+            format!("push the intended configuration to nobs-t-srl1? 1 line; {changes}")
+        );
+    }
+
+    #[test]
+    fn p_on_the_second_device_asks_for_it_and_y_pushes_it() {
+        let mut model = with_intended(lab_devices_model());
+        ch(&mut model, 'j');
+
+        ch(&mut model, 'P');
+
+        assert_eq!(
+            asked_text(&model),
+            "push the intended configuration to nobs-t-srl2? 2 lines; it changes the running configuration of the device. y/n"
+        );
+        assert_eq!(ch(&mut model, 'y'), [push_run(SRL2, Login::default())]);
+        assert_eq!(model.run().unwrap().words, "device push --yes nobs-t-srl2");
+    }
+
+    #[test]
+    fn y_runs_the_push_with_the_login_typed_before_it_or_asks_the_missing_login_after_it() {
+        let typed = login(Some(USER), Some(SECRET));
+        let mut before = with_intended(asking(None, None));
+        logged_in(&mut before);
+        answered(&mut before, &WANTED, End::Exited(0));
+        assert_eq!(ch(&mut before, 'P'), []);
+        assert!(before.question().is_some());
+
+        assert_eq!(ch(&mut before, 'y'), [push_run(SRL1, typed.clone())]);
+
+        let mut after = with_intended(asking(None, None));
+        assert_eq!(ch(&mut after, 'P'), []);
+        assert!(after.login_entry().is_none());
+        assert!(after.question().is_some());
+        assert_eq!(ch(&mut after, 'y'), []);
+        assert_eq!(key_line(&after, 100), [USER_STEP]);
+        assert_eq!(entered(&mut after, USER), []);
+        assert_eq!(entered(&mut after, SECRET), [push_run(SRL1, typed)]);
+
+        let mut found = with_intended(lab_devices_model());
+        ch(&mut found, 'P');
+        assert_eq!(ch(&mut found, 'y'), [push_run(SRL1, Login::default())]);
+    }
+
+    #[test]
+    fn no_esc_and_every_other_key_than_y_push_nothing_and_ask_no_login() {
+        let keys = [
+            key(KeyCode::Char('n')),
+            key(KeyCode::Esc),
+            key(KeyCode::Enter),
+            key(KeyCode::Char('Y')),
+            key(KeyCode::Char('P')),
+            key(KeyCode::Char('g')),
+            key(KeyCode::Char('j')),
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
+        ];
+        for pressed in keys {
+            let mut model = with_intended(asking(None, None));
+            ch(&mut model, 'P');
+
+            let commands = handle(&mut model, pressed);
+
+            let reaches = commands
+                .iter()
+                .any(|command| matches!(command, Command::Run { .. } | Command::TermOpen { .. }));
+            assert!(!reaches, "{pressed:?}: {commands:?}");
+            assert!(model.run().is_none(), "{pressed:?}");
+            assert_eq!(model.question(), None, "{pressed:?}");
+            assert!(model.login_entry().is_none(), "{pressed:?}");
+            assert_eq!(
+                model.notice(),
+                Some("not run: device push --yes nobs-t-srl1"),
+                "{pressed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_update_answers_the_question_of_a_push() {
+        let mut model = with_intended(lab_devices_model());
+        ch(&mut model, 'P');
+        let updates = [
+            Update::ActionLine("nobs-t-srl1  in sync".to_string()),
+            Update::ActionEnded(End::Exited(0)),
+            Update::Checked(vec![(SRL1.to_string(), Ok(owned(&WANTED)))]),
+            intended_of(&[(SRL1, Ok(&ON_DEVICE))]),
+            Update::Devices(Ok(lab_vars_source("book-lab/containerlab/lab_vars.yml")
+                .devices()
+                .unwrap())),
+            Update::Nodes(Ok(Vec::new())),
+        ];
+        for update in updates {
+            let said = format!("{update:?}");
+            let commands = model.apply(update);
+            let reaches = commands
+                .iter()
+                .any(|command| matches!(command, Command::Run { .. } | Command::TermOpen { .. }));
+            assert!(!reaches, "{said}: {commands:?}");
+            assert!(model.run().is_none(), "{said}");
+        }
+        assert!(model.question().is_some());
+    }
+
+    #[test]
+    fn p_gives_nothing_without_intended_text_in_a_workshop_with_no_lab_or_with_no_device() {
+        let source = workshop_source();
+        let mut no_lab = Model::new(Start {
+            source: Some(source.clone()),
+            home: Workbench::Devices,
+            chooser: false,
+            ..start(vec![stack("a", &[])])
+        });
+        no_lab.apply(Update::Devices(Ok(source.devices().unwrap())));
+        let mut no_device = with_intended(lab_devices_model());
+        no_device.apply(Update::Devices(Ok(Vec::new())));
+        let mut failed_text = lab_devices_model();
+        failed_text.apply(intended_of(&[(SRL1, Err(Failure::Other("x".to_string())))]));
+        let mut workshop = devices_model(workshop_located("infrahub"));
+        workshop.apply(intended_of(&[("srl1", Ok(&WANTED)), ("srl2", Ok(&WANTED))]));
+        no_lab.apply(intended_of(&[("srl1", Ok(&WANTED)), ("srl2", Ok(&WANTED))]));
+        let models = [
+            ("no intended text", lab_devices_model()),
+            ("an error in the text", failed_text),
+            ("workshop", workshop),
+            ("no lab", no_lab),
+            ("no device", no_device),
+        ];
+        for (name, mut model) in models {
+            let tab = model.tab();
+
+            assert_eq!(ch(&mut model, 'P'), [], "{name}");
+
+            assert!(model.run().is_none(), "{name}");
+            assert_eq!(model.question(), None, "{name}");
+            assert!(model.login_entry().is_none(), "{name}");
+            assert_eq!(model.notice(), None, "{name}");
+            assert_eq!(model.tab(), tab, "{name}");
+            let line = key_line(&model, 200).concat();
+            assert!(!line.contains("P push"), "{name}: {line}");
+        }
+        for model in [
+            devices_model(workshop_located("infrahub")),
+            lab_devices_model(),
+        ] {
+            let pushes = help_entries(&model)
+                .into_iter()
+                .filter(|(key, _)| key == "P")
+                .count();
+            assert_eq!(pushes, usize::from(model.lab_with_nodes()));
+        }
+    }
+
+    #[test]
+    fn every_end_of_a_push_collects_the_folder_also_when_the_intended_text_changed_meanwhile() {
+        let ends = [End::Exited(0), End::Exited(1), End::Exited(3), End::Stopped];
+        for end in ends {
+            let mut model = with_intended(lab_devices_model());
+            ch(&mut model, 'P');
+            ch(&mut model, 'y');
+
+            let ended = model.apply(Update::ActionEnded(end));
+
+            assert_eq!(ended, [Command::Collect(check_folder())], "{end:?}");
+        }
+        let mut changed = with_intended(lab_devices_model());
+        ch(&mut changed, 'P');
+        ch(&mut changed, 'y');
+        changed.apply(intended_of(&[(SRL1, Err(Failure::Other("x".to_string())))]));
+
+        let ended = changed.apply(Update::ActionEnded(End::Exited(0)));
+
+        assert_eq!(ended, [Command::Collect(check_folder())]);
+    }
+
+    fn pushed_and_checked(device: &str, fetched: Result<Vec<String>, String>, code: i32) -> Model {
+        let mut model = with_intended(lab_devices_model());
+        at_clock(&mut model, "13:45:08");
+        if device == SRL2 {
+            ch(&mut model, 'j');
+        }
+        ch(&mut model, 'P');
+        ch(&mut model, 'y');
+        assert_eq!(
+            model.apply(Update::ActionEnded(End::Exited(code))),
+            [Command::Collect(check_folder())]
+        );
+        model.apply(Update::Checked(vec![(device.to_string(), fetched)]));
+        model
+    }
+
+    #[test]
+    fn after_a_push_the_cell_and_the_config_header_come_from_its_fetch_with_no_g() {
+        let synced = pushed_and_checked(SRL1, Ok(owned(&WANTED)), 0);
+        assert_eq!(synced.agreement(SRL1), Agreement::InSync);
+        assert_eq!(synced.config_of(SRL1), kept(&WANTED, "13:45:08").as_ref());
+        let view = synced.intended_view().unwrap();
+        assert_eq!((view.fetched, view.missing), (Some("13:45:08"), Some(0)));
+
+        let short = pushed_and_checked(SRL1, Ok(owned(&WANTED[..3])), 3);
+        assert_eq!(short.agreement(SRL1), Agreement::Missing(1));
+        assert_eq!(short.intended_view().unwrap().missing, Some(1));
+
+        let failed = pushed_and_checked(SRL1, Err("no answer in 10 seconds".to_string()), 3);
+        assert_eq!(failed.agreement(SRL1), Agreement::Failed);
+        assert_eq!(failed.fetch_error(SRL1), Some("no answer in 10 seconds"));
+
+        let second = pushed_and_checked(SRL2, Ok(owned(&OTHER)), 0);
+        assert_eq!(second.agreement(SRL2), Agreement::InSync);
+        assert_eq!(second.agreement(SRL1), Agreement::Unknown);
+    }
+
+    #[test]
+    fn only_g_s_big_g_big_p_and_t_reach_a_device_and_no_update_starts_a_command_on_one() {
         let reaching: Vec<char> = ACTIONS
             .iter()
             .chain([&SHELL])
             .filter(|action| action.words.first() == Some(&"device"))
             .map(|action| action.key)
             .collect();
-        assert_eq!(reaching, ['g', 's', 'G', 't']);
+        assert_eq!(reaching, ['g', 's', 'G', 'P', 't']);
 
         let mut model = lab_devices_model();
         model.apply(intended_of(&[(SRL1, Ok(&WANTED))]));
