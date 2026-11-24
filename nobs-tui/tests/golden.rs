@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nobs_core::alertmanager::Alert;
 use nobs_core::containerlab::sudo_refused_line;
-use nobs_core::device::{PASSWORD, USER};
+use nobs_core::device::{error_line, Error as DeviceError, PASSWORD, USER};
 use nobs_core::intended::Failure;
 use nobs_core::lab::{services, Service};
 use nobs_core::lab_vars;
@@ -1199,6 +1199,179 @@ fn the_lab_devices_help_frame_is_pinned() {
     });
 }
 
+fn checked_update(entries: &[(&str, Result<&[&str], &str>)]) -> Update {
+    Update::Checked(
+        entries
+            .iter()
+            .map(|(name, fetched)| {
+                let fetched = fetched
+                    .map(|lines| lines.iter().map(ToString::to_string).collect())
+                    .map_err(str::to_string);
+                (name.to_string(), fetched)
+            })
+            .collect(),
+    )
+}
+
+fn checked_after(model: &mut Shell, update: Update) {
+    press(model, KeyCode::Char('G'));
+    model.apply(Update::ActionEnded(End::Exited(1)));
+    model.apply(update);
+    press(model, KeyCode::Esc);
+}
+
+fn refused_g(mut model: Shell) -> Shell {
+    press(&mut model, KeyCode::Char('g'));
+    let refusal = error_line("nobs-t-srl1", &DeviceError::AuthenticationFailed);
+    model.apply(Update::ActionLine(refusal));
+    model.apply(Update::ActionEnded(End::Exited(1)));
+    press(&mut model, KeyCode::Esc);
+    model
+}
+
+fn checked_differs() -> Shell {
+    let mut model = intended_differs();
+    let synced: Vec<&str> = SRL1_INTENDED.lines().collect();
+    checked_after(
+        &mut model,
+        checked_update(&[
+            ("nobs-t-srl1", Ok(&SRL1_ON_DEVICE)),
+            ("nobs-t-srl2", Ok(&synced)),
+        ]),
+    );
+    model
+}
+
+fn project_devices() -> Shell {
+    devices_model_in(
+        PROJECT_LAB,
+        "expected/lab_vars.yml",
+        "/home/me/nobs-t-project",
+    )
+}
+
+#[test]
+fn the_checked_frame_is_pinned() {
+    golden("devices-checked", checked_differs);
+}
+
+#[test]
+fn the_checking_frame_is_pinned() {
+    let mut model = project_devices();
+    press(&mut model, KeyCode::Char('G'));
+    press(&mut model, KeyCode::Esc);
+    later(&mut model, 3);
+    pinned(model, "devices-checking", 100, 30);
+}
+
+#[test]
+fn the_checked_with_a_failed_device_frame_is_pinned() {
+    let mut model = project_devices();
+    model.apply(intended(Ok(SRL1_INTENDED)));
+    let synced: Vec<&str> = SRL1_INTENDED.lines().collect();
+    checked_after(
+        &mut model,
+        checked_update(&[
+            ("nobs-t-srl1", Ok(&synced)),
+            ("nobs-t-srl2", Err("authentication failed")),
+        ]),
+    );
+    pinned(model, "devices-checked-failed", 100, 30);
+}
+
+#[test]
+fn the_config_after_a_failed_g_frame_is_pinned() {
+    pinned(
+        refused_g(intended_differs()),
+        "devices-config-failed",
+        100,
+        30,
+    );
+}
+
+#[test]
+fn a_check_changes_no_frame_at_60_columns_and_no_frame_of_a_workshop() {
+    let lab = || {
+        let mut model = lab_devices_model();
+        model.apply(intended(Ok(SRL1_INTENDED)));
+        model
+    };
+    let mut checked = lab();
+    checked.apply(checked_update(&[
+        ("nobs-t-srl1", Ok(&SRL1_ON_DEVICE)),
+        ("nobs-t-srl2", Err("authentication failed")),
+    ]));
+    assert_eq!(
+        lines(&render(checked, 60, 15)),
+        lines(&render(lab(), 60, 15))
+    );
+
+    for (width, height) in SIZES {
+        let mut workshop = devices_model();
+        workshop.apply(checked_update(&[
+            ("srl1", Ok(&SRL1_ON_DEVICE)),
+            ("srl2", Ok(&[])),
+        ]));
+        assert_eq!(
+            lines(&render(workshop, width, height)),
+            lines(&render(devices_model(), width, height)),
+            "{width}x{height}"
+        );
+    }
+}
+
+#[test]
+fn the_fetch_failed_line_is_red_stands_for_the_hint_before_a_good_fetch_and_shows_with_no_template()
+{
+    let said = "fetch failed: authentication failed";
+    let buffer = render(refused_g(intended_differs()), 100, 30);
+    let screen = lines(&buffer);
+    let y = screen.iter().position(|row| row.contains(said)).unwrap();
+    let x = u16::try_from(screen[y].chars().position(|letter| letter == '║').unwrap()).unwrap();
+    assert_eq!(buffer[(x + 1, u16::try_from(y).unwrap())].fg, Color::Red);
+
+    let mut unfetched = on_lab_tab(2);
+    unfetched.apply(intended(Ok(SRL1_INTENDED)));
+    let screen = lines(&render(refused_g(unfetched), 100, 30));
+    let y = screen
+        .iter()
+        .position(|row| row.contains("║intended "))
+        .unwrap();
+    assert!(
+        screen[y + 1].contains(&format!("║{said} ")),
+        "{}",
+        screen.join("\n")
+    );
+    assert!(
+        !screen.concat().contains("press g"),
+        "{}",
+        screen.join("\n")
+    );
+
+    let screen = lines(&render(refused_g(on_lab_tab(2)), 100, 30));
+    assert!(screen.iter().any(|row| row.contains(&format!("║{said} "))));
+    assert!(
+        !screen.concat().contains("press g"),
+        "{}",
+        screen.join("\n")
+    );
+
+    let mut bare = config_shown();
+    bare.apply(intended(Err(Failure::NoTemplate(
+        "no template for kind nokia_srlinux: expected templates/srl.j2".to_string(),
+    ))));
+    let screen = lines(&render(refused_g(bare), 100, 30));
+    let y = screen
+        .iter()
+        .position(|row| row.contains("║fetched "))
+        .unwrap();
+    assert!(
+        screen[y + 1].contains(&format!("║{said} ")),
+        "{}",
+        screen.join("\n")
+    );
+}
+
 const PROMPT: &str = "A:nobs-t-x@nobs-t-srl1# ";
 
 fn key(model: &mut Shell, code: KeyCode, modifiers: KeyModifiers) -> Vec<Command> {
@@ -2354,7 +2527,7 @@ fn a_narrow_key_line_ends_in_a_whole_hint() {
 fn asked(action: &Action) -> Shell {
     let mut model = match action.row {
         Row::Stack => services_model(),
-        Row::Device | Row::Node => maintenance_model(false),
+        Row::Device | Row::Node | Row::EveryNode => maintenance_model(false),
         Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => lab_model(),
         Row::Lab([Nodes::Project, ..]) => project_bench(),
         Row::Lab(_) => topology_bench(),

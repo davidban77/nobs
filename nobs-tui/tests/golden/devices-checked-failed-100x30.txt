@@ -1,0 +1,30 @@
+ nobs  nobs-t-project lab  sot lab_vars                                                    13:42:07
+ [1 devices]  2 services  3 observability                                            ? keys  q quit
+╔ devices 2 ═════════════════════════════╗┌ nobs-t-srl1 ───────────────────────────────────────────┐
+║   NAME         KIND  HLTH  SYNC  ALRT  ║│OVERVIEW  interfaces  config  timeline  logs  terminal  │
+║>  nobs-t-srl1  —     —     =        —  ║│kind —   site lab   role edge                           │
+║   nobs-t-srl2  —     —     !        —  ║│maintenance no   sot lab_vars   seen 2s ago             │
+║                                        ║│bgp sessions  1 intended  0 established  1 other        │
+║                                        ║│ 192.0.2.1  ipv4-unicast  —                             │
+║                                        ║│no metrics in this lab                                  │
+║                                        ║│alerts   —                                              │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+╠ alerts — ══════════════════════════════╣│                                                        │
+║no alerts in this lab                   ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+║                                        ║│                                                        │
+╚════════════════════════════════════════╝└────────────────────────────────────────────────────────┘
+ run  device check  exit 1  0s                                                               o open
+ Tab focus  j/k move  / filter  Enter open  r refresh  g get config  s run command  G check all

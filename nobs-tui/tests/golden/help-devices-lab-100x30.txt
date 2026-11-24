@@ -13,9 +13,9 @@
   ║t        type in terminal                      m       maintenance                            ║
   ║- +      timeline window                       g       get config                             ║
   ║x        dismiss the error                     s       run command                            ║
-  ║Esc      close/clear/back                      q       quit; asks if busy                     ║
-  ║Enter    open / pick alert                     Ctrl-C  stop a run, or quit                    ║
-  ║/        filter                                                                               ║
+  ║Esc      close/clear/back                      G       check all                              ║
+  ║Enter    open / pick alert                     q       quit; asks if busy                     ║
+  ║/        filter                                Ctrl-C  stop a run, or quit                    ║
   ║                                                                                              ║
   ║PgUp PgDn  move a page where j and k move                                                     ║
   ║alerts box: Enter picks the device, opens its timeline                                        ║
@@ -27,4 +27,4 @@
 
 
 
- Tab focus  j/k move  / filter  Enter open  r refresh  g get config  s run command
+ Tab focus  j/k move  / filter  Enter open  r refresh  g get config  s run command  G check all

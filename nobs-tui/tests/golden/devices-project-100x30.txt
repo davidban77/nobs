@@ -27,4 +27,4 @@
 ║                                        ║│                                                        │
 ╚════════════════════════════════════════╝└────────────────────────────────────────────────────────┘
  run  none                                                                                   o open
- Tab focus  j/k move  / filter  Enter open  r refresh  g get config  s run command
+ Tab focus  j/k move  / filter  Enter open  r refresh  g get config  s run command  G check all

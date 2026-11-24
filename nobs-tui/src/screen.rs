@@ -21,8 +21,9 @@ use crate::actions::{self, arguments, fits, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    absent, kind_text, Cursor, Focus, IntendedView, LoginEntry, Model, Reach, Run, RunMeasure,
-    RunState, StackKind, StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS, SERVICES_TABS,
+    absent, kind_text, Agreement, Cursor, Focus, IntendedView, LoginEntry, Model, Reach, Run,
+    RunMeasure, RunState, StackKind, StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS,
+    SERVICES_TABS,
 };
 use crate::terminal::SHELL;
 use crate::view;
@@ -1152,7 +1153,8 @@ fn device_rows(
         let health = cell(metrics, row.health.text());
         spans.push(Span::styled(format!("  {health:<4}"), tone(health)));
         if wide {
-            spans.push(Span::styled("  —   ", DIM));
+            let (text, style) = sync_cell(model.agreement(&row.name));
+            spans.push(Span::styled(format!("  {text:<4}"), style));
         }
         let (count, style) = match (alerts, row.alerts) {
             (Reach::Answers, Some((0, _))) => (String::new(), Style::new()),
@@ -1929,40 +1931,72 @@ fn log_row(nanoseconds: i64, device: Option<(&str, usize)>, text: &str, width: u
     )
 }
 
+fn sync_cell(agreement: Agreement) -> (String, Style) {
+    match agreement {
+        Agreement::Unknown => ("—".to_string(), DIM),
+        Agreement::Failed => ("!".to_string(), Style::new().fg(Color::Red)),
+        Agreement::InSync => ("=".to_string(), Style::new()),
+        Agreement::Missing(count) if count >= 1000 => ("999+".to_string(), Style::new()),
+        Agreement::Missing(count) => (format!("+{count}"), Style::new()),
+    }
+}
+
+fn selected_fetch_error(model: &Model) -> Option<&str> {
+    model
+        .config()
+        .and_then(|(device, ..)| model.fetch_error(device))
+}
+
+fn fetch_failed(model: &Model, width: usize) -> Option<Line<'static>> {
+    let words = selected_fetch_error(model)?;
+    Some(Line::styled(
+        fit(&format!("fetch failed: {words}"), width),
+        Style::new().fg(Color::Red),
+    ))
+}
+
 fn config_pane(frame: &mut Frame, area: Rect, model: &Model) {
     let [note, header, rows_area] = config_layout(model, area);
+    let width = usize::from(area.width);
+    let failed = fetch_failed(model, width);
     if let Some(view) = model.intended_view() {
-        intended_pane(frame, header, rows_area, &view);
+        intended_pane(frame, [header, rows_area], &view, failed);
         return;
     }
-    let width = usize::from(area.width);
     if let Some(words) = model.no_template() {
         frame.render_widget(Paragraph::new(fit(words, width)), note);
     }
     let Some((_, kept, lines, scroll)) = model.config() else {
         return;
     };
-    let Some(kept) = kept else {
-        let hint = fitted(vec![(CONFIG_HINT.to_string(), DIM)], width);
-        frame.render_widget(Paragraph::new(hint), header);
+    let fetched = kept.map(|kept| {
+        let said = format!(
+            "fetched {}  {}",
+            kept.fetched,
+            counted(kept.lines.len(), "line")
+        );
+        Line::from(fit(&said, width))
+    });
+    let hint = || fitted(vec![(CONFIG_HINT.to_string(), DIM)], width);
+    let first = fetched.or_else(|| failed.is_none().then(hint));
+    let header_lines: Vec<Line> = first.into_iter().chain(failed).collect();
+    frame.render_widget(Paragraph::new(header_lines), header);
+    if kept.is_none() {
         return;
-    };
-    let fetched = format!(
-        "fetched {}  {}",
-        kept.fetched,
-        counted(kept.lines.len(), "line")
-    );
-    frame.render_widget(Paragraph::new(Line::from(fit(&fetched, width))), header);
+    }
     let rows = lines.iter().map(|line| Line::from(fit(line, width)));
     pane_rows(frame, rows_area, rows, scroll, lines.len());
 }
 
 fn config_layout(model: &Model, area: Rect) -> [Rect; 3] {
-    let header = if model.intended_view().is_some() {
-        2
-    } else {
-        1
-    };
+    let kept = model.config().is_some_and(|(_, kept, ..)| kept.is_some());
+    let below = u16::from(kept && selected_fetch_error(model).is_some());
+    let header = below
+        + if model.intended_view().is_some() {
+            2
+        } else {
+            1
+        };
     Layout::vertical([
         Constraint::Length(u16::from(model.no_template().is_some())),
         Constraint::Length(header),
@@ -1971,28 +2005,38 @@ fn config_layout(model: &Model, area: Rect) -> [Rect; 3] {
     .areas(area)
 }
 
-fn intended_pane(frame: &mut Frame, header: Rect, rows: Rect, view: &IntendedView) {
+fn intended_pane(
+    frame: &mut Frame,
+    [header, rows]: [Rect; 2],
+    view: &IntendedView,
+    failed: Option<Line<'static>>,
+) {
     let width = usize::from(header.width);
     if let Some(error) = &view.error {
-        let lines: Vec<Line> = std::iter::once(INTENDED_ERROR.to_string())
-            .chain(error.lines().flat_map(|line| wrapped(line, width)))
-            .map(Line::from)
+        let words = error.lines().flat_map(|line| wrapped(line, width));
+        let lines: Vec<Line> = std::iter::once(Line::from(INTENDED_ERROR))
+            .chain(failed)
+            .chain(words.map(Line::from))
             .collect();
         frame.render_widget(Paragraph::new(lines), header.union(rows));
         return;
     }
     let first = format!("intended {}  {}", view.since, counted(view.lines, "line"));
-    let second = match view.fetched.zip(view.missing) {
-        Some((fetched, 0)) => Line::from(fit(&format!("fetched {fetched}  none missing"), width)),
-        Some((fetched, missing)) => {
-            Line::from(fit(&format!("fetched {fetched}  {missing} missing"), width))
-        }
-        None => fitted(vec![(INTENDED_HINT.to_string(), DIM)], width),
-    };
-    frame.render_widget(
-        Paragraph::new(vec![Line::from(fit(&first, width)), second]),
-        header,
-    );
+    let fetched = view
+        .fetched
+        .zip(view.missing)
+        .map(|(fetched, missing)| match missing {
+            0 => Line::from(fit(&format!("fetched {fetched}  none missing"), width)),
+            missing => Line::from(fit(&format!("fetched {fetched}  {missing} missing"), width)),
+        });
+    let hint = || fitted(vec![(INTENDED_HINT.to_string(), DIM)], width);
+    let second = fetched.or_else(|| failed.is_none().then(hint));
+    let lines: Vec<Line> = [Line::from(fit(&first, width))]
+        .into_iter()
+        .chain(second)
+        .chain(failed)
+        .collect();
+    frame.render_widget(Paragraph::new(lines), header);
     let shown = view.rows.iter().map(|(mark, line)| {
         let style = match mark {
             '+' => Style::new().fg(Color::Green),
@@ -2691,7 +2735,7 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench && fits(action, model))
-        .filter(|action| action.row != actions::Row::Node || model.lab_with_nodes())
+        .filter(|action| actions::in_its_lab(action.row, model))
         .map(|action| (action.key.to_string(), action.hint));
     let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
     let terminal = workbench == Workbench::Devices && model.lab_with_nodes();
@@ -2874,6 +2918,26 @@ mod tests {
         sonda_rows, stack, start, workshop_located,
     };
     use crate::shell::{handle, stacks, Command, Stack, Start, Update, DEVICE_TABS, WORKBENCHES};
+
+    #[test]
+    fn a_cell_is_four_wide_and_a_count_of_a_thousand_or_more_says_999_plus() {
+        let cells = [
+            Agreement::Unknown,
+            Agreement::Failed,
+            Agreement::InSync,
+            Agreement::Missing(1),
+            Agreement::Missing(999),
+            Agreement::Missing(1000),
+            Agreement::Missing(123_456),
+        ]
+        .map(|agreement| format!("  {:<4}", sync_cell(agreement).0));
+
+        assert_eq!(
+            cells,
+            ["  —   ", "  !   ", "  =   ", "  +1  ", "  +999", "  999+", "  999+"]
+        );
+        assert_eq!(sync_cell(Agreement::Failed).1, Style::new().fg(Color::Red));
+    }
 
     fn tab_text(tabs: &[Tab], open: Tab) -> String {
         tab_line(tabs, open, false, 35)

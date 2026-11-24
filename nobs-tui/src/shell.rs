@@ -12,7 +12,7 @@ use nobs_core::alertmanager::Alert;
 use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::device::{self, Password};
 use nobs_core::env::read_env;
-use nobs_core::intended::{compare, Failure};
+use nobs_core::intended::{compare, missing, Checked, Failure};
 use nobs_core::lab;
 use nobs_core::locate::{locate, Kind, Located, Nodes};
 use nobs_core::loki::Line;
@@ -24,7 +24,7 @@ use nobs_core::sot::{Device, Session, SourceOfTruth};
 use nobs_core::status::{self, Urls, SERVICES};
 use nobs_core::time;
 
-use crate::actions::{fits, flat, pieces, Action, Ask, Row, Target, ACTIONS};
+use crate::actions::{fits, flat, pieces, Action, Ask, Row, Target, ACTIONS, SAVE};
 use crate::book;
 use crate::data::{self, Prompt};
 use crate::devices;
@@ -335,6 +335,7 @@ pub enum Update {
     Nodes(Result<Vec<book::NodeRow>, String>),
     Files(Rendered),
     Intended(Vec<(String, Result<String, Failure>)>),
+    Checked(Vec<(String, Result<Vec<String>, String>)>),
     TermOutput(u64, Vec<u8>),
     TermEnded(u64, i32),
     Asked(Result<bool, String>),
@@ -382,6 +383,7 @@ pub enum Command {
     },
     TermClose(u64),
     AskSudo(Vec<String>),
+    Collect(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,6 +457,18 @@ pub struct IntendedView<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Agreement {
+    Unknown,
+    Failed,
+    InSync,
+    Missing(usize),
+}
+
+pub fn check_folder() -> PathBuf {
+    std::env::temp_dir().join(format!("nobs-check-{}", std::process::id()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigView {
     Intended,
     Running,
@@ -509,6 +523,14 @@ pub fn not_stopped(group: u32) -> String {
     )
 }
 
+fn fetch_failure(device: &str, lines: &[String], code: i32) -> String {
+    let start = device::error_line(device, &device::Error::Library(String::new()));
+    lines.last().map_or_else(
+        || format!("exit {code}"),
+        |line| line.strip_prefix(&start).unwrap_or(line).to_string(),
+    )
+}
+
 pub(crate) const NO_BREAK: char = '\u{a0}';
 
 fn joined(pieces: &[Vec<OsString>]) -> String {
@@ -527,7 +549,13 @@ fn joined(pieces: &[Vec<OsString>]) -> String {
 }
 
 fn words(pieces: &[Vec<OsString>]) -> String {
-    joined(pieces.get(1..).unwrap_or_default())
+    let said: Vec<Vec<OsString>> = pieces
+        .iter()
+        .skip(1)
+        .filter(|piece| piece.first().is_none_or(|flag| flag != SAVE))
+        .cloned()
+        .collect();
+    joined(&said)
 }
 
 #[derive(Default)]
@@ -773,6 +801,7 @@ pub struct Model {
     notice: Option<String>,
     failed: Vec<Target>,
     configs: BTreeMap<String, Config>,
+    fetch_errors: BTreeMap<String, String>,
     chapter: usize,
     nodes: Vec<book::NodeRow>,
     nodes_ok: bool,
@@ -909,6 +938,7 @@ impl Model {
             notice: None,
             failed: Vec::new(),
             configs: BTreeMap::new(),
+            fetch_errors: BTreeMap::new(),
             chapter,
             nodes: Vec::new(),
             nodes_ok: false,
@@ -1278,6 +1308,7 @@ impl Model {
                     })
                     .collect();
             }
+            Update::Checked(entries) => self.checked(entries),
             Update::TermOutput(id, bytes) => self.sessions.output(id, &bytes),
             Update::TermEnded(id, code) => self.sessions.ended(id, code),
         }
@@ -1286,8 +1317,9 @@ impl Model {
 
     fn action_ended(&mut self, end: End) -> Vec<Command> {
         let Some(command) = self.refused_sudo(end) else {
+            let collect = self.checking().then(|| Command::Collect(check_folder()));
             self.end_run(end);
-            return Vec::new();
+            return collect.into_iter().collect();
         };
         self.sessions.leave();
         vec![Command::AskSudo(vec![
@@ -1317,6 +1349,38 @@ impl Model {
                     .filter(|args| joined(args) == run.command)
                     .map(|args| (action, args))
             })
+    }
+
+    fn checking(&self) -> bool {
+        self.run.as_ref().is_some_and(|run| {
+            ACTIONS
+                .iter()
+                .filter(|action| action.row == Row::EveryNode)
+                .any(|action| {
+                    pieces(action, &run.target, self)
+                        .is_some_and(|args| joined(&args) == run.command)
+                })
+        })
+    }
+
+    fn checked(&mut self, entries: Vec<(String, Result<Vec<String>, String>)>) {
+        let refused = device::Error::AuthenticationFailed.to_string();
+        let typed = self.run.as_ref().is_some_and(|run| run.typed);
+        for (device, fetched) in entries {
+            match fetched {
+                Ok(lines) => {
+                    self.fetch_errors.remove(&device);
+                    let fetched = self.clock.clone();
+                    self.configs.insert(device, Config { lines, fetched });
+                }
+                Err(words) => {
+                    if typed && words == refused {
+                        self.login = Login::default();
+                    }
+                    self.fetch_errors.insert(device, words);
+                }
+            }
+        }
     }
 
     fn sudo_answered(&mut self, answer: Result<bool, String>) -> Vec<Command> {
@@ -1361,10 +1425,20 @@ impl Model {
             );
         }
         let output = run.output.take();
-        if let (End::Exited(0), Some(lines), Target::Device(device)) = (end, output, &run.target) {
-            let fetched = self.clock.clone();
-            self.configs
-                .insert(device.clone(), Config { lines, fetched });
+        if let (Some(lines), Target::Device(device)) = (output, &run.target) {
+            match end {
+                End::Exited(0) => {
+                    let fetched = self.clock.clone();
+                    self.configs
+                        .insert(device.clone(), Config { lines, fetched });
+                    self.fetch_errors.remove(device);
+                }
+                End::Exited(code) => {
+                    let words = fetch_failure(device, &run.lines, code);
+                    self.fetch_errors.insert(device.clone(), words);
+                }
+                End::Stopped | End::NotStopped { .. } => {}
+            }
         }
         if end == End::Exited(0) {
             self.failed.retain(|held| *held != run.target);
@@ -1717,7 +1791,7 @@ impl Model {
                 .selected_device()
                 .map(|device| Target::Device(device.name.clone())),
             Row::Chapter => self.selected_chapter().map(Target::Chapter),
-            Row::Lab(_) => Some(Target::Lab),
+            Row::Lab(_) | Row::EveryNode => Some(Target::Lab),
         }
     }
 
@@ -2574,22 +2648,18 @@ impl Model {
         }
         let device = self.selected_device()?;
         let intended = self.intended.get(&device.name)?;
-        let text = match &intended.text {
-            Ok(text) => text,
-            Err(failure) => {
-                return Some(IntendedView {
-                    since: &intended.since,
-                    lines: 0,
-                    fetched: None,
-                    missing: None,
-                    rows: Vec::new(),
-                    scroll: self.config_scroll,
-                    error: Some(failure.to_string()),
-                })
-            }
-        };
-        let kept = self.configs.get(&device.name);
-        let checked = compare(text, kept.map_or(&[][..], |kept| &kept.lines));
+        if let Err(failure) = &intended.text {
+            return Some(IntendedView {
+                since: &intended.since,
+                lines: 0,
+                fetched: None,
+                missing: None,
+                rows: Vec::new(),
+                scroll: self.config_scroll,
+                error: Some(failure.to_string()),
+            });
+        }
+        let (checked, kept) = self.comparison(&device.name)?;
         let rows = checked
             .iter()
             .filter(|checked| self.config_filter.matches(checked.line))
@@ -2604,16 +2674,39 @@ impl Model {
             since: &intended.since,
             lines: checked.len(),
             fetched: kept.map(|kept| kept.fetched.as_str()),
-            missing: kept.map(|_| {
-                checked
-                    .iter()
-                    .filter(|checked| checked.lacking.is_some())
-                    .count()
-            }),
+            missing: kept.map(|_| missing(&checked)),
             rows,
             scroll: self.config_scroll,
             error: None,
         })
+    }
+
+    fn comparison(&self, device: &str) -> Option<(Vec<Checked<'_>>, Option<&Config>)> {
+        let Ok(text) = &self.intended.get(device)?.text else {
+            return None;
+        };
+        let kept = self.configs.get(device);
+        Some((
+            compare(text, kept.map_or(&[][..], |kept| &kept.lines)),
+            kept,
+        ))
+    }
+
+    pub fn agreement(&self, device: &str) -> Agreement {
+        if self.fetch_errors.contains_key(device) {
+            return Agreement::Failed;
+        }
+        match self.comparison(device) {
+            Some((checked, Some(_))) => match missing(&checked) {
+                0 => Agreement::InSync,
+                count => Agreement::Missing(count),
+            },
+            _ => Agreement::Unknown,
+        }
+    }
+
+    pub fn fetch_error(&self, device: &str) -> Option<&str> {
+        self.fetch_errors.get(device).map(String::as_str)
     }
 
     #[cfg(test)]
@@ -3749,6 +3842,7 @@ pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
+    use nobs_core::check::{self, Reading, Verdict};
     use nobs_core::lab_vars;
     use nobs_core::locate::locate;
     use nobs_core::sot::Fixed;
@@ -7296,13 +7390,13 @@ pub(crate) mod tests {
         assert_eq!(model.error(), None);
     }
 
-    const READING: [&str; 5] = ["status", "show", "fetch", "inspect", "render"];
+    const READING: [&str; 6] = ["status", "show", "fetch", "inspect", "render", "check"];
 
     fn on_its_row(row: Row) -> Model {
         match row {
             Row::Stack => opened(&["nobs-t-packt"]),
             Row::Device => devices_model(workshop_located("infrahub")),
-            Row::Node => lab_devices_model(),
+            Row::Node | Row::EveryNode => lab_devices_model(),
             Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => book_model(),
             Row::Lab([Nodes::Project, ..]) => nodes_model(&fixture("project-two-node")),
             Row::Lab(_) => nodes_model(&fixture("labcli-example")),
@@ -7543,7 +7637,7 @@ pub(crate) mod tests {
                 ch(&mut model, '1');
                 model
             }
-            Row::Node => devices_model(workshop_located("infrahub")),
+            Row::Node | Row::EveryNode => devices_model(workshop_located("infrahub")),
             Row::Chapter | Row::Lab(_) => Model::new(Start {
                 lab: Some(workshop_located("infrahub")),
                 home: Workbench::Lab,
@@ -7686,7 +7780,7 @@ pub(crate) mod tests {
                     KeyCode::Esc,
                     KeyCode::Char(']'),
                 ],
-                Row::Node => &[
+                Row::Node | Row::EveryNode => &[
                     KeyCode::Char('j'),
                     KeyCode::Enter,
                     KeyCode::Char(']'),
@@ -8956,7 +9050,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn help_names_g_and_s_in_a_lab_with_nodes_and_m_as_today() {
+    fn help_names_g_s_and_big_g_in_a_lab_with_nodes_and_m_as_today() {
         let named = |model: &Model, key: &str| {
             help_entries(model)
                 .iter()
@@ -8967,11 +9061,13 @@ pub(crate) mod tests {
         let lab = lab_devices_model();
         assert_eq!(named(&lab, "g"), ["get config"]);
         assert_eq!(named(&lab, "s"), ["run command"]);
+        assert_eq!(named(&lab, "G"), ["check all"]);
         assert_eq!(named(&lab, "m"), ["maintenance"]);
 
         let workshop = devices_model(workshop_located("infrahub"));
         assert_eq!(named(&workshop, "g"), Vec::<&str>::new());
         assert_eq!(named(&workshop, "s"), Vec::<&str>::new());
+        assert_eq!(named(&workshop, "G"), Vec::<&str>::new());
         assert_eq!(named(&workshop, "m"), ["maintenance"]);
     }
 
@@ -9091,16 +9187,355 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_failed_g_leaves_the_intended_view_as_it_was() {
+    fn a_failed_g_keeps_the_marks_of_the_last_good_fetch_and_gives_its_error_words() {
         let mut model = on_intended(Ok(&WANTED));
         fetched(&mut model, &ON_DEVICE, "13:45:08");
         let before = format!("{:?}", model.intended_view());
         at_clock(&mut model, "13:47:00");
 
         ch(&mut model, 'g');
-        answered(&mut model, &WANTED, End::Exited(1));
+        answered(&mut model, &[&refusal()], End::Exited(1));
 
         assert_eq!(format!("{:?}", model.intended_view()), before);
+        assert_eq!(
+            model.fetch_error("nobs-t-srl1"),
+            Some("authentication failed")
+        );
+    }
+
+    #[test]
+    fn a_failed_g_with_no_line_gives_its_exit_code_as_the_error_words() {
+        let mut model = on_intended(Ok(&WANTED));
+
+        ch(&mut model, 'g');
+        answered(&mut model, &[], End::Exited(3));
+
+        assert_eq!(model.fetch_error("nobs-t-srl1"), Some("exit 3"));
+    }
+
+    const CEOS: &str = "nobs-t-ceos1";
+    const NO_DRIVER: &str = "no driver for the kind ceos yet";
+
+    fn owned(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(ToString::to_string).collect()
+    }
+
+    fn agreement_after(lines: &[&str]) -> (Agreement, Option<usize>) {
+        let mut model = on_intended(Ok(&WANTED));
+        fetched(&mut model, lines, "13:45:08");
+        let header = model.intended_view().unwrap().missing;
+        (model.agreement(SRL1), header)
+    }
+
+    #[test]
+    fn the_cell_is_the_header_count_for_none_one_and_several_missing() {
+        let one = [WANTED[0], WANTED[1], WANTED[2]];
+
+        assert_eq!(agreement_after(&WANTED), (Agreement::InSync, Some(0)));
+        assert_eq!(agreement_after(&one), (Agreement::Missing(1), Some(1)));
+        assert_eq!(
+            agreement_after(&ON_DEVICE),
+            (Agreement::Missing(2), Some(2))
+        );
+        assert_eq!(agreement_after(&[]), (Agreement::Missing(4), Some(4)));
+    }
+
+    #[test]
+    fn a_thousand_lacking_lines_are_counted_whole_by_the_cell_and_the_header() {
+        let wanted: Vec<String> = (0..1000)
+            .map(|line| format!("set / nobs-t-line {line} on"))
+            .collect();
+        let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
+        let mut model = on_intended(Ok(&wanted));
+
+        fetched(&mut model, &[], "13:45:08");
+
+        assert_eq!(model.agreement(SRL1), Agreement::Missing(1000));
+        assert_eq!(model.intended_view().unwrap().missing, Some(1000));
+    }
+
+    #[test]
+    fn the_cell_is_unknown_before_a_fetch_and_with_no_intended_text() {
+        let mut unread = lab_devices_model();
+        assert_eq!(unread.agreement(SRL1), Agreement::Unknown);
+        fetched(&mut unread, &WANTED, "13:45:08");
+        assert_eq!(unread.agreement(SRL1), Agreement::Unknown);
+
+        assert_eq!(on_intended(Ok(&WANTED)).agreement(SRL1), Agreement::Unknown);
+
+        let failures = [
+            Failure::NoTemplate("no template for kind nokia_srlinux".to_string()),
+            Failure::Other("templates/srl.j2: undefined value".to_string()),
+        ];
+        for failure in failures {
+            let mut model = on_intended(Err(failure.clone()));
+            fetched(&mut model, &WANTED, "13:45:08");
+            assert_eq!(model.agreement(SRL1), Agreement::Unknown, "{failure:?}");
+        }
+    }
+
+    #[test]
+    fn the_cell_follows_a_changed_intended_text_with_no_fetch() {
+        let mut model = on_intended(Ok(&WANTED));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+        assert_eq!(model.agreement(SRL1), Agreement::Missing(2));
+
+        model.apply(intended_of(&[(SRL1, Ok(&[WANTED[0], ON_DEVICE[1]]))]));
+        assert_eq!(model.agreement(SRL1), Agreement::InSync);
+
+        model.apply(intended_of(&[(SRL1, Err(Failure::Other("x".to_string())))]));
+        assert_eq!(model.agreement(SRL1), Agreement::Unknown);
+    }
+
+    #[test]
+    fn a_failed_g_shows_failed_also_with_no_template_and_a_good_g_clears_it() {
+        let mut model = on_intended(Ok(&WANTED));
+        fetched(&mut model, &WANTED, "13:45:08");
+        ch(&mut model, 'g');
+        answered(&mut model, &[&refusal()], End::Exited(1));
+        assert_eq!(model.agreement(SRL1), Agreement::Failed);
+
+        fetched(&mut model, &WANTED, "13:46:00");
+        assert_eq!(model.agreement(SRL1), Agreement::InSync);
+        assert_eq!(model.fetch_error(SRL1), None);
+
+        let no_template = Failure::NoTemplate("no template for kind nokia_srlinux".to_string());
+        let mut bare = on_intended(Err(no_template));
+        ch(&mut bare, 'g');
+        answered(&mut bare, &[&refusal()], End::Exited(1));
+        assert_eq!(bare.agreement(SRL1), Agreement::Failed);
+    }
+
+    #[test]
+    fn a_stopped_g_or_check_marks_no_device_and_keeps_every_cell() {
+        let mut model = on_intended(Ok(&WANTED));
+        fetched(&mut model, &ON_DEVICE, "13:45:08");
+
+        for end in [End::Stopped, End::NotStopped { group: 7 }] {
+            ch(&mut model, 'g');
+            answered(&mut model, &[&refusal()], end);
+            assert_eq!(model.agreement(SRL1), Agreement::Missing(2), "{end:?}");
+            assert_eq!(model.fetch_error(SRL1), None, "{end:?}");
+
+            ch(&mut model, 'G');
+            model.apply(Update::ActionEnded(end));
+            assert_eq!(model.agreement(SRL1), Agreement::Missing(2), "{end:?}");
+        }
+    }
+
+    fn checked_run(model: &mut Model, end: End, entries: Vec<(&str, Result<Vec<String>, String>)>) {
+        ch(model, 'G');
+        assert_eq!(
+            model.apply(Update::ActionEnded(end)),
+            [Command::Collect(check_folder())]
+        );
+        let entries = entries
+            .into_iter()
+            .map(|(name, fetched)| (name.to_string(), fetched))
+            .collect();
+        model.apply(Update::Checked(entries));
+    }
+
+    #[test]
+    fn a_check_fills_each_device_it_names_at_the_clock_and_leaves_every_other_as_it_was() {
+        let mut model = lab_devices_model();
+        let wanted = [SRL1, "nobs-t-srl2", CEOS].map(|name| (name, Ok(&WANTED[..])));
+        model.apply(intended_of(&wanted));
+        at_clock(&mut model, "13:45:08");
+        checked_run(
+            &mut model,
+            End::Exited(1),
+            vec![(SRL1, Ok(owned(&ON_DEVICE)))],
+        );
+        at_clock(&mut model, "13:50:00");
+
+        checked_run(
+            &mut model,
+            End::Exited(1),
+            vec![
+                ("nobs-t-srl2", Ok(owned(&WANTED[..3]))),
+                (CEOS, Err(NO_DRIVER.to_string())),
+            ],
+        );
+
+        assert_eq!(model.agreement(SRL1), Agreement::Missing(2));
+        assert_eq!(model.config_of(SRL1), kept(&ON_DEVICE, "13:45:08").as_ref());
+        assert_eq!(model.fetch_error(SRL1), None);
+        assert_eq!(model.agreement("nobs-t-srl2"), Agreement::Missing(1));
+        assert_eq!(
+            model.config_of("nobs-t-srl2"),
+            kept(&WANTED[..3], "13:50:00").as_ref()
+        );
+        assert_eq!(model.agreement(CEOS), Agreement::Failed);
+        assert_eq!(model.fetch_error(CEOS), Some(NO_DRIVER));
+
+        ch(&mut model, 'j');
+        let view = model.intended_view().unwrap();
+        assert_eq!(model.config().unwrap().0, "nobs-t-srl2");
+        assert_eq!((view.fetched, view.missing), (Some("13:50:00"), Some(1)));
+        assert_eq!(view.rows.last(), Some(&('+', WANTED[3])));
+    }
+
+    #[test]
+    fn the_check_line_and_the_cell_say_the_same_for_the_same_answers() {
+        let text = WANTED.join("\n") + "\n";
+        let answers: [(&str, Result<&[&str], &str>); 4] = [
+            (SRL1, Ok(&WANTED)),
+            ("nobs-t-srl2", Ok(&ON_DEVICE)),
+            ("nobs-t-srl3", Ok(&WANTED[1..])),
+            (CEOS, Err(NO_DRIVER)),
+        ];
+        let mut model = lab_devices_model();
+        model.apply(intended_of(
+            &answers.map(|(name, _)| (name, Ok(&WANTED[..]))),
+        ));
+        let readings: Vec<Reading> = answers
+            .iter()
+            .map(|(name, answer)| Reading {
+                name: name.to_string(),
+                verdict: match answer {
+                    Ok(lines) => {
+                        let lines = owned(lines);
+                        let missing = missing(&compare(&text, &lines));
+                        Verdict::Answered { lines, missing }
+                    }
+                    Err(words) => Verdict::Failed(words.to_string()),
+                },
+            })
+            .collect();
+        let entries = answers
+            .iter()
+            .map(|(name, answer)| (*name, answer.map(owned).map_err(str::to_string)))
+            .collect();
+
+        checked_run(&mut model, End::Exited(1), entries);
+
+        for reading in &readings {
+            let cell = match model.agreement(&reading.name) {
+                Agreement::InSync => "in sync".to_string(),
+                Agreement::Missing(count) => format!("{count} missing"),
+                Agreement::Failed => {
+                    format!("failed: {}", model.fetch_error(&reading.name).unwrap())
+                }
+                Agreement::Unknown => "—".to_string(),
+            };
+            assert_eq!(check::line(0, reading), format!("{}  {cell}", reading.name));
+        }
+    }
+
+    #[test]
+    fn a_typed_login_is_kept_for_a_check_and_forgotten_only_when_a_device_refuses_it() {
+        let typed = || {
+            let mut model = asking(None, None);
+            assert_eq!(ch(&mut model, 'G'), []);
+            entered(&mut model, USER);
+            let commands = entered(&mut model, SECRET);
+            assert!(
+                matches!(&commands[..], [Command::Run { login: given, .. }] if *given == login(Some(USER), Some(SECRET))),
+                "{commands:?}"
+            );
+            model
+        };
+        let mut refused = typed();
+        let mut down = typed();
+
+        checked_run(
+            &mut refused,
+            End::Exited(1),
+            vec![
+                (SRL1, Ok(owned(&WANTED))),
+                (
+                    "nobs-t-srl2",
+                    Err(device::Error::AuthenticationFailed.to_string()),
+                ),
+            ],
+        );
+        checked_run(
+            &mut down,
+            End::Exited(1),
+            vec![("nobs-t-srl2", Err(NO_DRIVER.to_string()))],
+        );
+
+        assert_eq!(ch(&mut refused, 'G'), []);
+        assert_eq!(key_line(&refused, 100), [USER_STEP]);
+        let again = ch(&mut down, 'G');
+        assert!(
+            matches!(&again[..], [Command::Run { login: given, .. }] if *given == login(Some(USER), Some(SECRET))),
+            "{again:?}"
+        );
+    }
+
+    #[test]
+    fn g_big_runs_the_check_with_the_private_folder_and_every_end_of_it_collects_the_folder() {
+        let lab = book_dir();
+        let folder = check_folder();
+        let save = folder.to_string_lossy().into_owned();
+        let ends = [
+            End::Exited(0),
+            End::Exited(1),
+            End::Stopped,
+            End::NotStopped { group: 7 },
+        ];
+        for end in ends {
+            let mut model = lab_devices_model();
+            let commands = ch(&mut model, 'G');
+            assert_eq!(
+                commands,
+                [nobs(&["--dir", &lab, "device", "check", "--save", &save])]
+            );
+            assert_eq!(model.run().unwrap().words, "device check");
+            let ended = model.apply(Update::ActionEnded(end));
+            assert_eq!(ended, [Command::Collect(folder.clone())], "{end:?}");
+        }
+        let mut fetching = lab_devices_model();
+        ch(&mut fetching, 'g');
+        assert_eq!(fetching.apply(Update::ActionEnded(End::Exited(0))), []);
+        assert_eq!(folder.parent(), Some(std::env::temp_dir().as_path()));
+        assert_eq!(
+            folder.file_name().unwrap().to_string_lossy(),
+            format!("nobs-check-{}", std::process::id())
+        );
+    }
+
+    #[test]
+    fn only_g_s_big_g_and_t_reach_a_device_and_no_update_starts_a_command_on_one() {
+        let reaching: Vec<char> = ACTIONS
+            .iter()
+            .chain([&SHELL])
+            .filter(|action| action.words.first() == Some(&"device"))
+            .map(|action| action.key)
+            .collect();
+        assert_eq!(reaching, ['g', 's', 'G', 't']);
+
+        let mut model = lab_devices_model();
+        model.apply(intended_of(&[(SRL1, Ok(&WANTED))]));
+        ch(&mut model, 'G');
+        let updates = [
+            Update::ActionLine("nobs-t-srl1  in sync".to_string()),
+            Update::ActionError("nobs: ssh nobs-t-srl2: no answer in 10 seconds".to_string()),
+            Update::ActionEnded(End::Exited(1)),
+            Update::Checked(vec![
+                (SRL1.to_string(), Ok(owned(&WANTED))),
+                (
+                    CEOS.to_string(),
+                    Err(device::Error::AuthenticationFailed.to_string()),
+                ),
+            ]),
+            intended_of(&[(SRL1, Ok(&ON_DEVICE))]),
+            Update::Devices(Ok(lab_vars_source("book-lab/containerlab/lab_vars.yml")
+                .devices()
+                .unwrap())),
+            Update::Nodes(Ok(Vec::new())),
+        ];
+        for update in updates {
+            let said = format!("{update:?}");
+            let commands = model.apply(update);
+            let reaches = commands
+                .iter()
+                .any(|command| matches!(command, Command::Run { .. } | Command::TermOpen { .. }));
+            assert!(!reaches, "{said}: {commands:?}");
+        }
+        assert_eq!(model.run().unwrap().words, "device check");
     }
 
     #[test]
