@@ -122,14 +122,19 @@ async fn fed(
     lines: &[String],
     limit: Duration,
 ) -> Result<Output, Error> {
-    let (_handle, mut channel) = open(host, port, credentials, limit).await?;
-    within(limit, channel.request_shell(true), host).await?;
-    let mut early = Vec::new();
-    let mut keep = |data: &[u8]| {
-        early.extend_from_slice(data);
-        Ok(())
-    };
-    granted(&mut channel, &mut keep, limit, host).await?;
+    let (_handle, mut channel, early) = async {
+        let (handle, mut channel) = open(host, port, credentials, limit).await?;
+        within(limit, channel.request_shell(true), host).await?;
+        let mut early = Vec::new();
+        let mut keep = |data: &[u8]| {
+            early.extend_from_slice(data);
+            Ok(())
+        };
+        granted(&mut channel, &mut keep, limit, host).await?;
+        Ok((handle, channel, early))
+    }
+    .await
+    .map_err(|error| before_sent(error, host))?;
     let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
     let mut output = async {
         within(limit, channel.data(input.as_bytes()), host).await?;
@@ -144,9 +149,27 @@ async fn fed(
     Ok(output)
 }
 
+fn says_not_known(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::NoAnswer | Error::NoExitStatus | Error::Library(_)
+    )
+}
+
+fn before_sent(error: Error, host: &str) -> Error {
+    if says_not_known(&error) {
+        Error::Unreachable {
+            host: host.to_string(),
+            reason: error.to_string(),
+        }
+    } else {
+        error
+    }
+}
+
 fn once_sent(error: Error) -> Error {
     match error {
-        error @ (Error::NoAnswer | Error::NoExitStatus | Error::Library(_)) => error,
+        error if says_not_known(&error) => error,
         Error::Unreachable { reason, .. } => Error::Library(reason),
         error => Error::Library(error.to_string()),
     }
@@ -328,6 +351,7 @@ mod tests {
     enum Feed {
         Off,
         Refusing,
+        Closing,
         Reading(Vec<u8>),
         Stopped,
     }
@@ -386,8 +410,10 @@ mod tests {
             if password == "hang" {
                 return std::future::pending().await;
             }
-            if user == "nobs-t-refuse-shell" {
-                self.feed = Feed::Refusing;
+            match user {
+                "nobs-t-refuse-shell" => self.feed = Feed::Refusing,
+                "nobs-t-close-before-grant" => self.feed = Feed::Closing,
+                _ => {}
             }
             Ok(if password == "right" {
                 Auth::Accept
@@ -457,8 +483,10 @@ mod tests {
             session: &mut Session,
         ) -> Result<(), Self::Error> {
             if self.term.is_empty() {
-                if matches!(self.feed, Feed::Refusing) {
-                    return session.channel_failure(channel);
+                match self.feed {
+                    Feed::Refusing => return session.channel_failure(channel),
+                    Feed::Closing => return session.close(channel),
+                    _ => {}
                 }
                 self.feed = Feed::Reading(Vec::new());
                 return session.channel_success(channel);
@@ -480,7 +508,7 @@ mod tests {
             session: &mut Session,
         ) -> Result<(), Self::Error> {
             match &mut self.feed {
-                Feed::Off => {}
+                Feed::Off | Feed::Closing => {}
                 Feed::Refusing => {
                     WRITTEN_TO_A_REFUSED_SHELL.fetch_add(data.len(), Ordering::SeqCst);
                     return Ok(());
@@ -577,12 +605,23 @@ mod tests {
     }
 
     fn feed(user: &str, lines: &[&str]) -> Result<Output, Error> {
+        feed_at(device(), user, "right", lines)
+    }
+
+    fn feed_at(port: u16, user: &str, password: &str, lines: &[&str]) -> Result<Output, Error> {
         let credentials = Credentials {
             user: user.to_string(),
-            password: Password::new("right".to_string()),
+            password: Password::new(password.to_string()),
         };
         let lines: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
-        send_at("127.0.0.1", device(), &credentials, &lines, LIMIT)
+        send_at("127.0.0.1", port, &credentials, &lines, LIMIT)
+    }
+
+    fn unreachable_before_sent(reason: &str) -> Result<Output, Error> {
+        Err(Error::Unreachable {
+            host: "127.0.0.1".to_string(),
+            reason: reason.to_string(),
+        })
     }
 
     struct Shell {
@@ -861,6 +900,32 @@ mod tests {
         );
         thread::sleep(LIMIT);
         assert_eq!(WRITTEN_TO_A_REFUSED_SHELL.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_listener_that_never_speaks_is_unreachable_before_any_line_is_sent() {
+        let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent.local_addr().unwrap().port();
+        assert_eq!(
+            feed_at(port, "admin", "right", &["set / a b on"]),
+            unreachable_before_sent("no answer in 10 seconds")
+        );
+    }
+
+    #[test]
+    fn a_login_that_hangs_is_unreachable_before_any_line_is_sent() {
+        assert_eq!(
+            feed_at(device(), "admin", "hang", &["set / a b on"]),
+            unreachable_before_sent("no answer in 10 seconds")
+        );
+    }
+
+    #[test]
+    fn a_channel_closed_before_the_grant_is_unreachable_before_any_line_is_sent() {
+        assert_eq!(
+            feed("nobs-t-close-before-grant", &["set / a b on"]),
+            unreachable_before_sent("the device sent no exit status")
+        );
     }
 
     #[test]

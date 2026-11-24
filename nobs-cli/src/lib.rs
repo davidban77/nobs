@@ -2453,11 +2453,7 @@ fn push_device(
         }
         Ok(Pushed::NotKnown(error)) => {
             let _ = writeln!(err, "{}", device::error_line(name, &error));
-            push_says(
-                err,
-                name,
-                "not known whether the device took the push; run nobs device check",
-            );
+            let _ = writeln!(err, "{}", device::not_known_line(name));
             3
         }
         Ok(Pushed::Taken(output)) => {

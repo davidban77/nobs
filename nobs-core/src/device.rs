@@ -181,6 +181,10 @@ pub fn error_line(name: &str, error: &Error) -> String {
     format!("nobs: ssh {name}: {error}")
 }
 
+pub fn not_known_line(name: &str) -> String {
+    format!("nobs: push {name}: not known whether the device took the push; run nobs device check")
+}
+
 #[cfg(any(test, feature = "fake"))]
 pub struct FakeTransport {
     answers: Vec<(Option<String>, Result<Output, Error>)>,

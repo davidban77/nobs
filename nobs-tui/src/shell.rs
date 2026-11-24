@@ -1320,8 +1320,13 @@ impl Model {
 
     fn action_ended(&mut self, end: End) -> Vec<Command> {
         let Some(command) = self.refused_sudo(end) else {
+            let stopped = matches!(end, End::Stopped | End::NotStopped { .. });
+            let unknown = self.pushed_device().filter(|_| stopped);
             let collect = self.checking().then(|| Command::Collect(check_folder()));
             self.end_run(end);
+            if let (Some(device), Some(run)) = (unknown, self.run.as_mut()) {
+                push_line(run, &mut self.run_view, device::not_known_line(&device));
+            }
             return collect.into_iter().collect();
         };
         self.sessions.leave();
@@ -1358,6 +1363,17 @@ impl Model {
         self.run
             .as_ref()
             .is_some_and(|run| run.hands_back == HandsBack::Folder)
+    }
+
+    fn pushed_device(&self) -> Option<String> {
+        let run = self
+            .run
+            .as_ref()
+            .filter(|run| run.hands_back == HandsBack::Folder)?;
+        match &run.target {
+            Target::Device(name) => Some(name.clone()),
+            _ => None,
+        }
     }
 
     fn checked(&mut self, entries: Vec<(String, Result<Vec<String>, String>)>) {
@@ -9827,6 +9843,42 @@ pub(crate) mod tests {
         let ended = changed.apply(Update::ActionEnded(End::Exited(0)));
 
         assert_eq!(ended, [Command::Collect(check_folder())]);
+    }
+
+    #[test]
+    fn a_stopped_push_says_not_known_for_its_device_collects_its_folder_and_keeps_the_cell() {
+        for end in [End::Stopped, End::NotStopped { group: 7 }] {
+            let mut model = with_intended(lab_devices_model());
+            ch(&mut model, 'j');
+            fetched(&mut model, &OTHER[..1], "13:45:08");
+            ch(&mut model, 'P');
+            ch(&mut model, 'y');
+
+            let ended = model.apply(Update::ActionEnded(end));
+
+            assert_eq!(ended, [Command::Collect(check_folder())], "{end:?}");
+            assert_eq!(
+                model.run().unwrap().lines.last(),
+                Some(&device::not_known_line(SRL2)),
+                "{end:?}"
+            );
+            assert_eq!(model.agreement(SRL2), Agreement::Missing(1), "{end:?}");
+        }
+    }
+
+    #[test]
+    fn a_stopped_check_collects_and_says_nothing_of_a_push() {
+        let mut model = with_intended(lab_devices_model());
+        ch(&mut model, 'G');
+
+        let ended = model.apply(Update::ActionEnded(End::Stopped));
+
+        assert_eq!(ended, [Command::Collect(check_folder())]);
+        let lines = &model.run().unwrap().lines;
+        assert!(
+            !lines.iter().any(|line| line.contains("not known")),
+            "{lines:?}"
+        );
     }
 
     fn pushed_and_checked(device: &str, fetched: Result<Vec<String>, String>, code: i32) -> Model {
