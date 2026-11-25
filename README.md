@@ -2883,9 +2883,9 @@ $ echo $?
 0
 ```
 
-`nobs device render` logs in to no device and writes no file: it prints the text to the standard output. Like the other five commands, it needs a lab with containerlab nodes, not a workshop. Its source of truth is the `containerlab/lab_vars.yml` of the lab folder. In a lab made by `nobs project`, right after `nobs project render`, its output equals `containerlab/configs/<name>.cfg`.
+`nobs device render` logs in to no device and writes no file: it prints the text to the standard output. Like the other commands of the group, it needs a lab with containerlab nodes, not a workshop. Its source of truth is the `containerlab/lab_vars.yml` of the lab folder. In a lab made by `nobs project`, right after `nobs project render`, its output equals `containerlab/configs/<name>.cfg`.
 
-`fetch`, `run`, `shell`, `push` and `check` work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). None of the six commands works in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file. `fetch`, `run`, `shell` and `push` then connect to the container name that containerlab gives the node.
+`fetch`, `run`, `shell`, `push` and `check` work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). None of the `nobs device` commands works in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file. `fetch`, `run`, `shell` and `push` then connect to the container name that containerlab gives the node.
 
 nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing, empty or only spaces, nobs names the two variables and opens no connection. nobs never prints the password.
 

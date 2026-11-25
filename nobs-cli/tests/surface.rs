@@ -111,7 +111,7 @@ fn the_help_pages_name_the_device_group_exactly_its_seven_commands_and_their_wor
     );
     assert!(
         root.contains(
-            "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, push it to the device, or check every device against it"
+            "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, push it to the device, flap one of its interfaces, or check every device against it"
         ),
         "{root}"
     );

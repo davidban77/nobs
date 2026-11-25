@@ -13,7 +13,7 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, sudo_refused_line, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
-use nobs_core::device::{self, Credentials, Flap, Flapped, Pushed, Terminal, Transport};
+use nobs_core::device::{self, Credentials, Flap, Flapped, NotBack, Pushed, Terminal, Transport};
 use nobs_core::env::{load_env, read_env};
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
@@ -150,7 +150,7 @@ pub enum Command {
         command: ProjectCommand,
     },
     #[command(
-        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, push it to the device, or check every device against it"
+        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, push it to the device, flap one of its interfaces, or check every device against it"
     )]
     Device {
         #[command(subcommand)]
@@ -1195,7 +1195,7 @@ pub enum DeviceCommand {
         #[arg(
             long,
             value_name = "N",
-            default_value_t = 1,
+            default_value_t = device::FLAP_COUNT,
             help = "How many times to flap the interface"
         )]
         count: u32,
@@ -2611,9 +2611,15 @@ fn flap_device(
             );
             3
         }
-        Ok(Flapped::NotBack(error)) => {
-            if let Some(error) = error {
-                let _ = writeln!(err, "{}", device::error_line(name, &error));
+        Ok(Flapped::NotBack(last)) => {
+            match last {
+                NotBack::ReadFailed(error) => {
+                    let _ = writeln!(err, "{}", device::error_line(name, &error));
+                }
+                NotBack::Refused(output) => {
+                    pass_through(&output, out, err);
+                }
+                NotBack::StillDisabled => {}
             }
             flap_says(
                 err,
@@ -8967,5 +8973,57 @@ mod tests {
             assert_eq!(flapped.err, err);
             assert_eq!(flapped.code, 4);
         }
+    }
+
+    #[test]
+    fn reads_the_device_refuses_after_the_delay_pass_the_last_refusal_through_and_end_with_4() {
+        set_credentials();
+        let busy = |n: u32| Ok(answer(1, "", &format!("Error: busy {n}\n")));
+        let mut answers = vec![admin_state("enable"), committed()];
+        answers.extend((1..=10).map(busy));
+        let transport = FakeTransport::in_order(answers);
+
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 5, 1),
+            Some(true),
+        );
+
+        assert_eq!(
+            flapped.out,
+            "nobs-t-srl1  ethernet-1/1 down for 5 seconds\n"
+        );
+        assert_eq!(
+            flapped.err,
+            "Error: busy 10\nnobs: flap nobs-t-srl1: not known whether ethernet-1/1 is back\n"
+        );
+        assert_eq!(flapped.code, 4);
+        assert_eq!(transport.calls().len(), 12);
+    }
+
+    #[test]
+    fn a_read_the_device_refuses_then_a_read_that_shows_it_back_ends_with_0() {
+        set_credentials();
+        let transport = FakeTransport::in_order(vec![
+            admin_state("enable"),
+            committed(),
+            Ok(answer(1, "", "Error: busy\n")),
+            admin_state("enable"),
+        ]);
+
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 5, 1),
+            Some(true),
+        );
+
+        assert_eq!(
+            flapped.out,
+            "nobs-t-srl1  ethernet-1/1 down for 5 seconds\nnobs-t-srl1  ethernet-1/1 back\n"
+        );
+        assert_eq!(flapped.err, "");
+        assert_eq!(flapped.code, 0);
     }
 }

@@ -297,6 +297,7 @@ fn session_lines<'a>(
 }
 
 pub const FLAP_DELAY: u64 = 5;
+pub const FLAP_COUNT: u32 = 1;
 pub const FLAP_DELAYS: RangeInclusive<u64> = 1..=300;
 pub const FLAP_COUNTS: RangeInclusive<u32> = 1..=10;
 const BACK_READS: u32 = 10;
@@ -344,8 +345,15 @@ pub enum Flapped {
     Disabled,
     Refused(Output),
     NotKnown(Error),
-    NotBack(Option<Error>),
+    NotBack(NotBack),
     Back,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotBack {
+    ReadFailed(Error),
+    Refused(Output),
+    StillDisabled,
 }
 
 pub fn flap(
@@ -456,17 +464,20 @@ impl Flapper<'_> {
     }
 
     fn not_back(&self, wait: &mut dyn FnMut(Duration)) -> Option<Flapped> {
+        let mut refused = None;
         for read in 1..=BACK_READS {
             if read > 1 {
                 wait(BACK_READ_GAP);
             }
             match self.read() {
-                Err(error) => return Some(Flapped::NotBack(Some(error))),
-                Ok(output) if output.code == 0 && !self.disabled(&output) => return None,
+                Err(error) => return Some(Flapped::NotBack(NotBack::ReadFailed(error))),
+                Ok(output) if output.code != 0 => refused = Some(output),
+                Ok(output) if !self.disabled(&output) => return None,
                 Ok(_) => {}
             }
         }
-        Some(Flapped::NotBack(None))
+        let last = refused.map_or(NotBack::StillDisabled, NotBack::Refused);
+        Some(Flapped::NotBack(last))
     }
 
     fn read(&self) -> Result<Output, Error> {
@@ -1378,7 +1389,7 @@ mod tests {
                     vec![printed(UP), printed(""), Err(error.clone())]
                 ),
                 (
-                    Ok(Flapped::NotBack(Some(error.clone()))),
+                    Ok(Flapped::NotBack(NotBack::ReadFailed(error.clone()))),
                     log(&["yes", READ, &sent, "down 1", "wait 5", READ])
                 ),
                 "{error:?}"
@@ -1397,8 +1408,25 @@ mod tests {
         }
         assert_eq!(
             flapped(&ethernet(5, 2), answers),
-            (Ok(Flapped::NotBack(None)), expected)
+            (Ok(Flapped::NotBack(NotBack::StillDisabled)), expected)
         );
+    }
+
+    #[test]
+    fn ten_reads_with_a_refused_one_and_none_back_are_not_known_back_with_the_last_refusal() {
+        let busy = |n: u32| replied(1, &format!("Error: busy {n}\n"));
+        let mut every_read_refused = vec![printed(UP), printed("")];
+        every_read_refused.extend((1..=10).map(busy));
+        let mut refused_then_disabled = vec![printed(UP), printed(""), busy(1), busy(2)];
+        refused_then_disabled.extend((0..8).map(|_| printed(DOWN)));
+        for (answers, last) in [(every_read_refused, 10), (refused_then_disabled, 2)] {
+            let (flapped, calls) = flapped(&ethernet(5, 2), answers);
+            assert_eq!(
+                flapped,
+                Ok(Flapped::NotBack(NotBack::Refused(busy(last).unwrap())))
+            );
+            assert_eq!(calls.iter().filter(|call| *call == READ).count(), 11);
+        }
     }
 
     #[test]

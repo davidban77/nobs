@@ -1626,7 +1626,7 @@ impl Model {
                 else {
                     return Vec::new();
                 };
-                device::flap_question(name, interface, device::FLAP_DELAY, 1)
+                device::flap_question(name, interface, device::FLAP_DELAY, device::FLAP_COUNT)
             }
             Ask::Text => {
                 self.ask(Then::Act(action), args, target, Step::Command, login);
@@ -9907,7 +9907,7 @@ pub(crate) mod tests {
         assert!(model.run().is_none());
         assert_eq!(
             asked_text(&model),
-            device::flap_question(SRL1, SECOND_PORT, device::FLAP_DELAY, 1)
+            device::flap_question(SRL1, SECOND_PORT, device::FLAP_DELAY, device::FLAP_COUNT)
         );
         assert_eq!(
             ch(&mut model, 'y'),
