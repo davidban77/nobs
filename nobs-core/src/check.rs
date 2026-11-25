@@ -64,13 +64,15 @@ fn verdict_of(
         Err(Failure::Other(words)) => return Ok(Verdict::NoIntendedText(words)),
     };
     let answer = device::step(node, |host, login, driver| {
-        transport.run(host, login, driver.running_config)
+        transport
+            .run(host, login, driver.running_config)
+            .map(|output| (output, driver.reading))
     });
     match answer {
-        Ok(output) if output.code != 0 => Ok(Verdict::Failed(exit_words(output.code))),
-        Ok(output) => {
+        Ok((output, _)) if output.code != 0 => Ok(Verdict::Failed(exit_words(output.code))),
+        Ok((output, reading)) => {
             let lines: Vec<String> = output.stdout.lines().map(str::to_string).collect();
-            let missing = intended::missing(&intended::compare(&intended, &lines));
+            let missing = intended::missing(&intended::compare(&intended, &lines, Some(reading)));
             Ok(Verdict::Answered { lines, missing })
         }
         Err(error @ (Error::AuthenticationFailed | Error::MissingCredentials)) => Err(error),
@@ -565,6 +567,31 @@ mod tests {
             )
         );
         assert_eq!(exit_code(&readings), 1);
+    }
+
+    #[test]
+    fn the_check_reads_the_device_lines_as_the_driver_reads_them() {
+        logged_in();
+        const PRINTED: &str = "set / system information location nobs-t-x\n";
+        const CHANGED: &str = "set / system information location nobs-t-y\n";
+        let nodes = [node("nobs-t-srl1", "srl"), node("nobs-t-srl2", "srl")];
+        let transport = answers(vec![
+            ("nobs-t-srl1", replied(0, PRINTED)),
+            ("nobs-t-srl2", replied(0, CHANGED)),
+        ]);
+        let quoted = |_: &TopologyNode| {
+            Ok("set   /  system information location \"nobs-t-x\"\n".to_string())
+        };
+
+        let (readings, _) = checked(&nodes, &transport, &quoted);
+
+        assert_eq!(
+            readings,
+            [
+                reading("nobs-t-srl1", answered(PRINTED, 0)),
+                reading("nobs-t-srl2", answered(CHANGED, 1)),
+            ]
+        );
     }
 
     #[test]

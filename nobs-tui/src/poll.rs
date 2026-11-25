@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use nobs_core::alertmanager::Alertmanager;
 use nobs_core::compose::Compose;
+use nobs_core::device;
 use nobs_core::intended::intended;
 use nobs_core::lab;
 use nobs_core::locate::Nodes;
@@ -735,7 +736,8 @@ fn intended_texts(files: &LabFiles) -> Update {
             .map(|node| {
                 let source = files.source.as_deref().map_err(String::clone);
                 let text = intended(&files.dir, &node.name, &node.kind, source);
-                (node.name, text)
+                let reading = device::driver(&node.kind).ok().map(|driver| driver.reading);
+                (node.name, text, reading)
             })
             .collect(),
     )
@@ -906,6 +908,8 @@ mod tests {
             "{:?}",
             texts[1].1
         );
+        assert_eq!(texts[0].2, Some(device::Reading::SrLinux));
+        assert_eq!(texts[1].2, None);
     }
 
     #[test]

@@ -1075,7 +1075,13 @@ const SRL1_ON_DEVICE: [&str; 6] = [
 fn intended(text: Result<&str, Failure>) -> Update {
     Update::Intended(
         ["nobs-t-srl1", "nobs-t-srl2"]
-            .map(|name| (name.to_string(), text.clone().map(str::to_string)))
+            .map(|name| {
+                (
+                    name.to_string(),
+                    text.clone().map(str::to_string),
+                    Some(nobs_core::device::Reading::SrLinux),
+                )
+            })
             .into(),
     )
 }
@@ -1285,8 +1291,16 @@ const SRL2_INTENDED: &str =
 fn push_asked() -> Shell {
     let mut model = project_devices();
     model.apply(Update::Intended(vec![
-        ("nobs-t-srl1".to_string(), Ok(SRL1_INTENDED.to_string())),
-        ("nobs-t-srl2".to_string(), Ok(SRL2_INTENDED.to_string())),
+        (
+            "nobs-t-srl1".to_string(),
+            Ok(SRL1_INTENDED.to_string()),
+            Some(nobs_core::device::Reading::SrLinux),
+        ),
+        (
+            "nobs-t-srl2".to_string(),
+            Ok(SRL2_INTENDED.to_string()),
+            Some(nobs_core::device::Reading::SrLinux),
+        ),
     ]));
     let srl1: Vec<&str> = SRL1_INTENDED.lines().take(4).collect();
     let srl2: Vec<&str> = SRL2_INTENDED.lines().take(4).collect();
@@ -1336,6 +1350,7 @@ fn p_changes_no_frame_of_a_workshop() {
             model.apply(Update::Intended(vec![(
                 "srl1".to_string(),
                 Ok(SRL1_INTENDED.to_string()),
+                Some(nobs_core::device::Reading::SrLinux),
             )]));
             model
         };

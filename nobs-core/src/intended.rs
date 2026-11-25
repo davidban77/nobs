@@ -1,7 +1,9 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
+use crate::device::{Reading, Words};
 use crate::render::{Renderer, TEMPLATES};
 use crate::sot::{Error, SourceOfTruth};
 
@@ -58,23 +60,32 @@ pub fn lines(intended: &str) -> impl Iterator<Item = &str> {
         .filter(|line| !line.is_empty())
 }
 
-pub fn compare<'a>(intended: &'a str, fetched: &'a [String]) -> Vec<Checked<'a>> {
-    let device: HashSet<&str> = fetched.iter().map(|line| line.trim()).collect();
-    let stated: HashSet<&str> = lines(intended).collect();
+pub fn compare<'a>(
+    intended: &'a str,
+    fetched: &'a [String],
+    reading: Option<Reading>,
+) -> Vec<Checked<'a>> {
+    let words =
+        |line: &'a str| reading.map_or(Words::Unread(line.trim()), |reading| reading.words(line));
+    let device: Vec<(&str, Words)> = fetched
+        .iter()
+        .map(|line| (line.as_str(), words(line)))
+        .collect();
+    let present: HashSet<&Words> = device.iter().map(|(_, read)| read).collect();
+    let stated: HashSet<Words> = lines(intended).map(words).collect();
     intended
         .lines()
         .map(|line| {
-            let wanted = line.trim();
-            let lacking = (!wanted.is_empty() && !device.contains(wanted)).then(|| {
-                fetched
+            let wanted = words(line);
+            let lacking = (!line.trim().is_empty() && !present.contains(&wanted)).then(|| {
+                device
                     .iter()
-                    .map(String::as_str)
-                    .filter(|candidate| {
-                        let candidate = candidate.trim();
+                    .filter(|(_, candidate)| {
                         !stated.contains(candidate)
                             && head(candidate).is_some()
-                            && head(candidate) == head(wanted)
+                            && head(candidate) == head(&wanted)
                     })
+                    .map(|(candidate, _)| *candidate)
                     .collect()
             });
             Checked { line, lacking }
@@ -89,13 +100,12 @@ pub fn missing(checked: &[Checked<'_>]) -> usize {
         .count()
 }
 
-fn head(line: &str) -> Option<&str> {
-    let quoted = line
-        .strip_suffix('"')
-        .and_then(|open| open.rfind('"'))
-        .unwrap_or(line.len());
-    let cut = line[..quoted].rfind(char::is_whitespace)?;
-    Some(line[..cut].trim_end())
+fn head<'w, 'a>(words: &'w Words<'a>) -> Option<&'w [Cow<'a, str>]> {
+    match words {
+        Words::Read(words) => words.split_last().map(|(_, head)| head),
+        Words::Unread(_) => None,
+    }
+    .filter(|head| !head.is_empty())
 }
 
 #[cfg(test)]
@@ -219,6 +229,8 @@ mod tests {
         );
     }
 
+    const SRL: Option<Reading> = Some(Reading::SrLinux);
+
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
     }
@@ -231,7 +243,7 @@ mod tests {
     fn a_line_on_the_device_is_not_lacking() {
         let fetched = lines("set / a b on");
         assert_eq!(
-            compare("set / a b on\n", &fetched),
+            compare("set / a b on\n", &fetched, SRL),
             [checked("set / a b on", None)]
         );
     }
@@ -240,7 +252,7 @@ mod tests {
     fn white_space_at_both_ends_of_a_line_is_no_difference() {
         let fetched = vec!["set / a b on\r".to_string(), "\tset / c d on  ".to_string()];
         assert_eq!(
-            compare("  set / a b on \nset / c d on", &fetched),
+            compare("  set / a b on \nset / c d on", &fetched, SRL),
             [
                 checked("  set / a b on ", None),
                 checked("set / c d on", None)
@@ -249,11 +261,72 @@ mod tests {
     }
 
     #[test]
-    fn white_space_inside_a_line_is_a_difference() {
+    fn more_space_between_words_is_no_difference() {
         let fetched = lines("set / a b on");
         assert_eq!(
-            compare("set / a  b on", &fetched),
-            [checked("set / a  b on", Some(vec![]))]
+            compare("set / a  b on", &fetched, SRL),
+            [checked("set / a  b on", None)]
+        );
+    }
+
+    const TYPED: &str = "set / system information location \"nobs-t-x\"\nset / interface 'ethernet-1/1' description \"to spine\"\n";
+    const PRINTED: &str = "set / system information location nobs-t-x\nset / interface ethernet-1/1 description \"to spine\"";
+
+    #[test]
+    fn a_line_the_device_prints_in_its_own_form_is_not_lacking_either_way() {
+        let printed = lines(PRINTED);
+        assert_eq!(missing(&compare(TYPED, &printed, SRL)), 0);
+        let typed = lines(TYPED);
+        assert_eq!(missing(&compare(PRINTED, &typed, SRL)), 0);
+    }
+
+    #[test]
+    fn a_quoted_word_inside_a_line_still_finds_the_device_line_as_its_hint() {
+        let fetched = lines("set / interface ethernet-1/1 description uplink");
+        let intended = "set / interface \"ethernet-1/1\" description \"to spine\"";
+        assert_eq!(
+            compare(intended, &fetched, SRL),
+            [checked(
+                intended,
+                Some(vec!["set / interface ethernet-1/1 description uplink"])
+            )]
+        );
+    }
+
+    #[test]
+    fn a_device_line_the_template_states_in_another_form_is_never_a_hint() {
+        let fetched = lines("set / v 10\nset / v 30");
+        assert_eq!(
+            compare("set / v 20\nset / v \"30\"", &fetched, SRL),
+            [
+                checked("set / v 20", Some(vec!["set / v 10"])),
+                checked("set / v \"30\"", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unread_line_is_the_same_only_as_its_own_text_and_has_no_hints() {
+        let fetched = lines("set / d \"a\nset / d a\nset / d b");
+        assert_eq!(
+            compare("set / d \"a\nset / d \"b", &fetched, SRL),
+            [
+                checked("set / d \"a", None),
+                checked("set / d \"b", Some(vec![]))
+            ]
+        );
+    }
+
+    #[test]
+    fn with_no_reading_a_line_is_compared_as_its_text() {
+        let fetched = lines("x a");
+        assert_eq!(
+            compare("x \"a\"", &fetched, None),
+            [checked("x \"a\"", Some(vec![]))]
+        );
+        assert_eq!(
+            compare("x \"a\"", &fetched, SRL),
+            [checked("x \"a\"", None)]
         );
     }
 
@@ -261,7 +334,7 @@ mod tests {
     fn a_lacking_line_with_no_device_line_of_the_same_start_has_no_hints() {
         let fetched = lines("set / a d off\nset / a c\nset / x c on");
         assert_eq!(
-            compare("set / a c on", &fetched),
+            compare("set / a c on", &fetched, SRL),
             [checked("set / a c on", Some(vec![]))]
         );
     }
@@ -270,7 +343,7 @@ mod tests {
     fn a_changed_value_gives_the_device_line_as_its_only_hint() {
         let fetched = lines("set / a b off\nset / z y on");
         assert_eq!(
-            compare("set / a b on\nset / z y on", &fetched),
+            compare("set / a b on\nset / z y on", &fetched, SRL),
             [
                 checked("set / a b on", Some(vec!["set / a b off"])),
                 checked("set / z y on", None)
@@ -282,7 +355,7 @@ mod tests {
     fn every_device_value_of_the_same_start_is_a_hint_in_the_device_order() {
         let fetched = lines("set / v 30\nset / w 1\nset / v 10");
         assert_eq!(
-            compare("set / v 20", &fetched),
+            compare("set / v 20", &fetched, SRL),
             [checked(
                 "set / v 20",
                 Some(vec!["set / v 30", "set / v 10"])
@@ -294,7 +367,7 @@ mod tests {
     fn a_device_line_the_intended_text_also_states_is_never_a_hint() {
         let fetched = lines("set / v 10\nset / v 30");
         assert_eq!(
-            compare("set / v 20\n  set / v 30", &fetched),
+            compare("set / v 20\n  set / v 30", &fetched, SRL),
             [
                 checked("set / v 20", Some(vec!["set / v 10"])),
                 checked("  set / v 30", None)
@@ -306,7 +379,7 @@ mod tests {
     fn a_line_of_one_word_has_no_hints() {
         let fetched = lines("save\n  commit now");
         assert_eq!(
-            compare("commit", &fetched),
+            compare("commit", &fetched, SRL),
             [checked("commit", Some(vec![]))]
         );
     }
@@ -315,7 +388,7 @@ mod tests {
     fn a_value_in_double_quotes_is_one_word() {
         let fetched = lines("set / d \"uplink\"\nset / d \"to spine\" 2\nset / d \"to\"");
         assert_eq!(
-            compare("set / d \"to spine 1\"", &fetched),
+            compare("set / d \"to spine 1\"", &fetched, SRL),
             [checked(
                 "set / d \"to spine 1\"",
                 Some(vec!["set / d \"uplink\"", "set / d \"to\""])
@@ -329,7 +402,8 @@ mod tests {
         assert_eq!(
             compare(
                 "set / a b on\nset / c d on\nset / a b on\nset / c d on",
-                &fetched
+                &fetched,
+                SRL
             ),
             [
                 checked("set / a b on", None),
@@ -344,7 +418,7 @@ mod tests {
     fn an_empty_or_blank_intended_line_is_never_lacking() {
         let fetched = lines("set / a b on");
         assert_eq!(
-            compare("\n  \t\nset / a b on\n", &fetched),
+            compare("\n  \t\nset / a b on\n", &fetched, SRL),
             [
                 checked("", None),
                 checked("  \t", None),
@@ -357,7 +431,11 @@ mod tests {
     fn each_line_of_a_value_that_goes_on_in_further_lines_is_compared_alone() {
         let fetched = lines("-----BEGIN X-----\nnobs-t-body\n-----END X-----");
         assert_eq!(
-            compare("-----BEGIN X-----\nnobs-t-other\n-----END X-----", &fetched),
+            compare(
+                "-----BEGIN X-----\nnobs-t-other\n-----END X-----",
+                &fetched,
+                SRL
+            ),
             [
                 checked("-----BEGIN X-----", None),
                 checked("nobs-t-other", Some(vec![])),
@@ -369,15 +447,16 @@ mod tests {
     #[test]
     fn missing_counts_each_lacking_line_with_or_without_hints_and_no_present_or_blank_one() {
         let fetched = lines("set / a b off\nset / c d on");
-        assert_eq!(missing(&compare("set / c d on\n\n  \t", &fetched)), 0);
+        assert_eq!(missing(&compare("set / c d on\n\n  \t", &fetched, SRL)), 0);
         assert_eq!(
-            missing(&compare("set / a b on\nset / c d on\n", &fetched)),
+            missing(&compare("set / a b on\nset / c d on\n", &fetched, SRL)),
             1
         );
         assert_eq!(
             missing(&compare(
                 "set / a b on\nset / x y on\nset / c d on\nset / a b on",
-                &fetched
+                &fetched,
+                SRL
             )),
             3
         );
@@ -387,7 +466,7 @@ mod tests {
     fn a_device_line_the_template_never_states_is_never_in_the_result() {
         let fetched = lines("set / x y on\nset / a b on\nset / a q on\nset / z");
         assert_eq!(
-            compare("set / a b on", &fetched),
+            compare("set / a b on", &fetched, SRL),
             [checked("set / a b on", None)]
         );
     }

@@ -6867,7 +6867,11 @@ mod tests {
         }
     }
 
-    type Texts = Vec<(String, Result<String, nobs_core::intended::Failure>)>;
+    type Texts = Vec<(
+        String,
+        Result<String, nobs_core::intended::Failure>,
+        Option<nobs_core::device::Reading>,
+    )>;
 
     fn polled_until(
         updates: &std::sync::mpsc::Receiver<nobs_tui::Update>,
@@ -6941,8 +6945,15 @@ mod tests {
         });
         assert_eq!(devices, ["nobs-t-srl1", "nobs-t-srl2"]);
         let srl1 = fs::read_to_string(fixture.join("expected/configs/nobs-t-srl1.cfg")).unwrap();
-        assert_eq!(texts[0], ("nobs-t-srl1".to_string(), Ok(srl1)));
-        for (name, text) in &texts {
+        assert_eq!(
+            texts[0],
+            (
+                "nobs-t-srl1".to_string(),
+                Ok(srl1),
+                Some(nobs_core::device::Reading::SrLinux)
+            )
+        );
+        for (name, text, _) in &texts {
             let text = text.clone().map_err(|failure| failure.to_string());
             assert_eq!(text, command(name), "{name}");
         }
@@ -6956,9 +6967,9 @@ mod tests {
             devices == ["nobs-t-srl1", "nobs-t-srl3"]
                 && texts
                     .iter()
-                    .any(|(name, text)| name == "nobs-t-srl2" && text.is_err())
+                    .any(|(name, text, _)| name == "nobs-t-srl2" && text.is_err())
         });
-        for (name, text) in &texts {
+        for (name, text, _) in &texts {
             let text = text.clone().map_err(|failure| failure.to_string());
             assert_eq!(text, command(name), "{name}");
         }

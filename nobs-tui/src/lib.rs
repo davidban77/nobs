@@ -530,7 +530,7 @@ mod tests {
     use nobs_core::check::{Reading, Verdict};
     use nobs_core::compose::Compose;
     use nobs_core::containerlab::sudo_refused_line;
-    use nobs_core::device::Password;
+    use nobs_core::device::{self, Password};
     use nobs_core::intended::Failure;
     use nobs_core::lab;
     use nobs_core::locate::{locate, Kind, Located};
@@ -2230,7 +2230,7 @@ mod tests {
         };
         Update::Intended(
             ["srl1", "srl2", "ceos1", "srl3"]
-                .map(|name| (name.to_string(), text(name)))
+                .map(|name| (name.to_string(), text(name), Some(device::Reading::SrLinux)))
                 .into(),
         )
     }

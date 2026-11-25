@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 #[cfg(any(test, feature = "fake"))]
 use std::cell::RefCell;
 use std::fmt;
@@ -110,6 +111,72 @@ pub struct Driver {
     pub running_config: &'static str,
     pub open: &'static [&'static str],
     pub commit: &'static str,
+    pub reading: Reading,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Words<'a> {
+    Read(Vec<Cow<'a, str>>),
+    Unread(&'a str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    SrLinux,
+}
+
+const SEPARATORS: [char; 2] = [' ', '\t'];
+
+impl Reading {
+    pub fn words(self, line: &str) -> Words<'_> {
+        let line = line.trim();
+        match self {
+            Reading::SrLinux => srlinux_words(line).map_or(Words::Unread(line), Words::Read),
+        }
+    }
+}
+
+fn srlinux_words(line: &str) -> Option<Vec<Cow<'_, str>>> {
+    let mut words = Vec::new();
+    let mut rest = line;
+    while !rest.is_empty() {
+        let (word, after) = srlinux_word(rest)?;
+        if !after.is_empty() && !after.starts_with(SEPARATORS) {
+            return None;
+        }
+        words.push(word);
+        rest = after.trim_start_matches(SEPARATORS);
+    }
+    Some(words)
+}
+
+fn srlinux_word(text: &str) -> Option<(Cow<'_, str>, &str)> {
+    if let Some(inner) = text.strip_prefix('\'') {
+        let (value, after) = inner.split_once('\'')?;
+        return Some((Cow::Borrowed(value), after));
+    }
+    if let Some(inner) = text.strip_prefix('"') {
+        return double_quoted(inner);
+    }
+    let end = text.find(SEPARATORS).unwrap_or(text.len());
+    let (word, after) = text.split_at(end);
+    (!word.contains(['"', '\'', '\\'])).then_some((Cow::Borrowed(word), after))
+}
+
+fn double_quoted(text: &str) -> Option<(Cow<'_, str>, &str)> {
+    let mut value = String::new();
+    let mut chars = text.char_indices();
+    while let Some((at, letter)) = chars.next() {
+        match letter {
+            '"' => return Some((Cow::Owned(value), &text[at + 1..])),
+            '\\' => match chars.next()? {
+                (_, escaped @ ('"' | '\\')) => value.push(escaped),
+                _ => return None,
+            },
+            _ => value.push(letter),
+        }
+    }
+    None
 }
 
 pub fn driver(kind: &str) -> Result<Driver, Error> {
@@ -118,6 +185,7 @@ pub fn driver(kind: &str) -> Result<Driver, Error> {
             running_config: "info flat",
             open: &["enter candidate private name nobs", "discard stay"],
             commit: "commit now",
+            reading: Reading::SrLinux,
         })
     } else {
         Err(Error::NoDriver(kind.to_string()))
@@ -409,6 +477,7 @@ mod tests {
                     running_config: "info flat",
                     open: &["enter candidate private name nobs", "discard stay"],
                     commit: "commit now",
+                    reading: Reading::SrLinux,
                 }),
                 "{kind}"
             );
@@ -528,6 +597,7 @@ mod tests {
                 running_config: "nobs-t-running",
                 open,
                 commit: "nobs-t-commit",
+                reading: Reading::SrLinux,
             };
             assert_eq!(session_lines(driver, text), sent, "{open:?}");
         }
@@ -646,6 +716,139 @@ mod tests {
             .map(|(host, _)| host)
             .collect();
         assert_eq!(hosts, [host("nobs-t-srl2")]);
+    }
+
+    fn read(line: &str) -> Words<'_> {
+        Reading::SrLinux.words(line)
+    }
+
+    fn read_as(words: &[&str]) -> Words<'static> {
+        Words::Read(
+            words
+                .iter()
+                .map(|word| Cow::Owned(word.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn each_line_typed_in_a_template_reads_as_the_line_the_device_prints() {
+        let pairs = [
+            (
+                "set / system information location \"nobs-t-x\"",
+                "set / system information location nobs-t-x",
+            ),
+            (
+                "set / system information contact \"nobs-t a b\"",
+                "set / system information contact   \"nobs-t a b\"",
+            ),
+            (
+                "set / interface ethernet-1/1 description \"nobs-t:1/2,x=y\"",
+                "set / interface ethernet-1/1 description nobs-t:1/2,x=y",
+            ),
+            (
+                "set / system information location 'nobs-t-single'",
+                "set / system information location nobs-t-single",
+            ),
+            (
+                "set / system information location 'nobs-t \"q\" s'",
+                "set / system information location \"nobs-t \\\"q\\\" s\"",
+            ),
+            (
+                "set / system information contact \"nobs-t it's\"",
+                "set / system information contact  \"nobs-t it's\"",
+            ),
+            (
+                "set / system information contact \"nobs-t #x !y\"",
+                "set / system information contact 'nobs-t #x !y'",
+            ),
+            (
+                "set / system information location \"nobs-t a\\\\b\"",
+                "set / system information location 'nobs-t a\\b'",
+            ),
+            (
+                "set   /   system   information   location   nobs-t-spaces",
+                "set / system information location nobs-t-spaces",
+            ),
+            (
+                "set / interface ethernet-1/1 admin-state \"enable\"",
+                "set / interface ethernet-1/1 admin-state enable",
+            ),
+            (
+                "set / interface \"ethernet-1/1\" description nobs-t-k",
+                "set / interface ethernet-1/1 description nobs-t-k",
+            ),
+            ("set /\tsystem\t name", "set / system name"),
+        ];
+        for (typed, printed) in pairs {
+            assert!(matches!(read(typed), Words::Read(_)), "{typed}");
+            assert_eq!(read(typed), read(printed), "{typed}");
+            assert_eq!(read(printed), read(typed), "{printed}");
+        }
+        assert_eq!(
+            read("set / system information contact \"nobs-t a b\""),
+            read_as(&["set", "/", "system", "information", "contact", "nobs-t a b"])
+        );
+        assert_eq!(
+            read("location \"nobs-t \\\"q\\\" s\""),
+            read_as(&["location", "nobs-t \"q\" s"])
+        );
+        assert_eq!(read("x \"\""), read_as(&["x", ""]));
+    }
+
+    #[test]
+    fn lines_the_device_reads_as_other_words_stay_different() {
+        let pairs = [
+            ("location nobs-t-x", "location nobs-t-y"),
+            ("set / a b on", "set / b a on"),
+            ("location \"nobs-t a b\"", "location \"nobs-t a  b\""),
+            ("location \"nobs-t a b\"", "location nobs-t a b"),
+            ("location nobs-t-Lab", "location nobs-t-lab"),
+            ("x \"\"", "x"),
+        ];
+        for (one, other) in pairs {
+            assert_ne!(read(one), read(other), "{one} / {other}");
+        }
+    }
+
+    #[test]
+    fn a_form_no_device_showed_is_its_own_text_only() {
+        let unread = [
+            ("x \"a b", "x \"a b\""),
+            ("x 'a", "x a"),
+            ("x \"a\\\"", "x \"a\\\"\""),
+            ("x \"a\\", "x a"),
+            ("x a\\", "x a"),
+            ("x \"a\\b\"", "x \"a\\\\b\""),
+            ("x it's", "x its"),
+            ("x a\"b", "x ab"),
+            ("x \"a\"b", "x ab"),
+            ("x 'a'b'", "x ab"),
+        ];
+        for (line, look_alike) in unread {
+            assert_eq!(read(line), Words::Unread(line), "{line}");
+            assert_eq!(read(&format!("  {line}\t")), read(line), "{line}");
+            assert_ne!(read(line), read(look_alike), "{line}");
+        }
+    }
+
+    #[test]
+    fn no_text_of_up_to_five_characters_makes_the_reading_panic() {
+        let letters = ['a', ' ', '\t', '"', '\'', '\\', 'é'];
+        let mut texts = vec![String::new()];
+        for _ in 0..5 {
+            texts = texts
+                .iter()
+                .flat_map(|text| letters.map(|letter| format!("{text}{letter}")))
+                .chain(texts.iter().cloned())
+                .collect();
+            texts.sort();
+            texts.dedup();
+        }
+        for text in &texts {
+            read(text);
+        }
+        assert_eq!(texts.len(), 19608);
     }
 
     #[test]
