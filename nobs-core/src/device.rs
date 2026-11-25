@@ -108,7 +108,7 @@ pub trait Terminal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Driver {
     pub running_config: &'static str,
-    pub enter: &'static str,
+    pub open: &'static [&'static str],
     pub commit: &'static str,
 }
 
@@ -116,7 +116,7 @@ pub fn driver(kind: &str) -> Result<Driver, Error> {
     if lab::SRLINUX_KINDS.contains(&kind) {
         Ok(Driver {
             running_config: "info flat",
-            enter: "enter candidate private",
+            open: &["enter candidate private name nobs", "discard stay"],
             commit: "commit now",
         })
     } else {
@@ -151,18 +151,24 @@ pub fn push(
         if !yes() {
             return Ok(Pushed::Declined);
         }
-        let lines: Vec<String> = std::iter::once(driver.enter)
-            .chain(intended::lines(text))
-            .chain([driver.commit])
-            .map(str::to_string)
-            .collect();
-        match transport.send(host, credentials, &lines) {
+        match transport.send(host, credentials, &session_lines(driver, text)) {
             Ok(output) if output.code == 0 => Ok(Pushed::Taken(output)),
             Ok(output) => Ok(Pushed::Refused(output)),
             Err(error) if error.says_nothing_was_sent() => Err(error),
             Err(error) => Ok(Pushed::NotKnown(error)),
         }
     })
+}
+
+fn session_lines(driver: Driver, text: &str) -> Vec<String> {
+    driver
+        .open
+        .iter()
+        .copied()
+        .chain(intended::lines(text))
+        .chain([driver.commit])
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn credentials() -> Result<Credentials, Error> {
@@ -401,7 +407,7 @@ mod tests {
                 driver(kind),
                 Ok(Driver {
                     running_config: "info flat",
-                    enter: "enter candidate private",
+                    open: &["enter candidate private name nobs", "discard stay"],
                     commit: "commit now",
                 }),
                 "{kind}"
@@ -441,7 +447,7 @@ mod tests {
     }
 
     fn session(lines: &[&str]) -> String {
-        ["enter candidate private"]
+        ["enter candidate private name nobs", "discard stay"]
             .iter()
             .chain(lines)
             .chain(&["commit now"])
@@ -459,7 +465,8 @@ mod tests {
     }
 
     #[test]
-    fn a_push_gives_one_session_enter_then_every_line_of_the_text_in_order_then_commit() {
+    fn a_push_gives_one_session_the_opening_lines_then_every_line_of_the_text_in_order_then_commit()
+    {
         logged_in();
         let cases = [
             ("nobs-t-srl1", "set / a b on\n", session(&["set / a b on"])),
@@ -487,6 +494,42 @@ mod tests {
                 "case {case}"
             );
             assert_eq!(transport.calls(), [(host(name), sent)], "case {case}");
+        }
+    }
+
+    #[test]
+    fn the_session_lines_are_the_driver_opening_lines_in_order_then_the_text_lines_then_its_commit()
+    {
+        let text = "  set / a b on \n\n\tset / c d on\n";
+        let cases: [(&'static [&'static str], &[&str]); 2] = [
+            (
+                &["nobs-t-open-1"],
+                &[
+                    "nobs-t-open-1",
+                    "set / a b on",
+                    "set / c d on",
+                    "nobs-t-commit",
+                ],
+            ),
+            (
+                &["nobs-t-open-1", "nobs-t-open-2", "nobs-t-open-3"],
+                &[
+                    "nobs-t-open-1",
+                    "nobs-t-open-2",
+                    "nobs-t-open-3",
+                    "set / a b on",
+                    "set / c d on",
+                    "nobs-t-commit",
+                ],
+            ),
+        ];
+        for (open, sent) in cases {
+            let driver = Driver {
+                running_config: "nobs-t-running",
+                open,
+                commit: "nobs-t-commit",
+            };
+            assert_eq!(session_lines(driver, text), sent, "{open:?}");
         }
     }
 
