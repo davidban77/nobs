@@ -111,7 +111,7 @@ pub struct Driver {
     pub running_config: &'static str,
     pub open: &'static [&'static str],
     pub commit: &'static str,
-    pub reading: Reading,
+    pub syntax: Syntax,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -121,17 +121,17 @@ pub enum Words<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reading {
+pub enum Syntax {
     SrLinux,
 }
 
 const SEPARATORS: [char; 2] = [' ', '\t'];
 
-impl Reading {
+impl Syntax {
     pub fn words(self, line: &str) -> Words<'_> {
         let line = line.trim();
         match self {
-            Reading::SrLinux => srlinux_words(line).map_or(Words::Unread(line), Words::Read),
+            Syntax::SrLinux => srlinux_words(line).map_or(Words::Unread(line), Words::Read),
         }
     }
 }
@@ -185,7 +185,7 @@ pub fn driver(kind: &str) -> Result<Driver, Error> {
             running_config: "info flat",
             open: &["enter candidate private name nobs", "discard stay"],
             commit: "commit now",
-            reading: Reading::SrLinux,
+            syntax: Syntax::SrLinux,
         })
     } else {
         Err(Error::NoDriver(kind.to_string()))
@@ -477,7 +477,7 @@ mod tests {
                     running_config: "info flat",
                     open: &["enter candidate private name nobs", "discard stay"],
                     commit: "commit now",
-                    reading: Reading::SrLinux,
+                    syntax: Syntax::SrLinux,
                 }),
                 "{kind}"
             );
@@ -597,7 +597,7 @@ mod tests {
                 running_config: "nobs-t-running",
                 open,
                 commit: "nobs-t-commit",
-                reading: Reading::SrLinux,
+                syntax: Syntax::SrLinux,
             };
             assert_eq!(session_lines(driver, text), sent, "{open:?}");
         }
@@ -719,7 +719,7 @@ mod tests {
     }
 
     fn read(line: &str) -> Words<'_> {
-        Reading::SrLinux.words(line)
+        Syntax::SrLinux.words(line)
     }
 
     fn read_as(words: &[&str]) -> Words<'static> {
@@ -833,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn no_text_of_up_to_five_characters_makes_the_reading_panic() {
+    fn no_text_of_up_to_five_characters_makes_the_words_panic() {
         let letters = ['a', ' ', '\t', '"', '\'', '\\', 'é'];
         let mut texts = vec![String::new()];
         for _ in 0..5 {

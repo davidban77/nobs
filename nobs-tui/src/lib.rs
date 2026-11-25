@@ -2230,7 +2230,7 @@ mod tests {
         };
         Update::Intended(
             ["srl1", "srl2", "ceos1", "srl3"]
-                .map(|name| (name.to_string(), text(name), Some(device::Reading::SrLinux)))
+                .map(|name| (name.to_string(), text(name), Some(device::Syntax::SrLinux)))
                 .into(),
         )
     }

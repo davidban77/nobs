@@ -1079,7 +1079,7 @@ fn intended(text: Result<&str, Failure>) -> Update {
                 (
                     name.to_string(),
                     text.clone().map(str::to_string),
-                    Some(nobs_core::device::Reading::SrLinux),
+                    Some(nobs_core::device::Syntax::SrLinux),
                 )
             })
             .into(),
@@ -1294,12 +1294,12 @@ fn push_asked() -> Shell {
         (
             "nobs-t-srl1".to_string(),
             Ok(SRL1_INTENDED.to_string()),
-            Some(nobs_core::device::Reading::SrLinux),
+            Some(nobs_core::device::Syntax::SrLinux),
         ),
         (
             "nobs-t-srl2".to_string(),
             Ok(SRL2_INTENDED.to_string()),
-            Some(nobs_core::device::Reading::SrLinux),
+            Some(nobs_core::device::Syntax::SrLinux),
         ),
     ]));
     let srl1: Vec<&str> = SRL1_INTENDED.lines().take(4).collect();
@@ -1350,7 +1350,7 @@ fn p_changes_no_frame_of_a_workshop() {
             model.apply(Update::Intended(vec![(
                 "srl1".to_string(),
                 Ok(SRL1_INTENDED.to_string()),
-                Some(nobs_core::device::Reading::SrLinux),
+                Some(nobs_core::device::Syntax::SrLinux),
             )]));
             model
         };

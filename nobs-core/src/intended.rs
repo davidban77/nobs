@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
-use crate::device::{Reading, Words};
+use crate::device::{Syntax, Words};
 use crate::render::{Renderer, TEMPLATES};
 use crate::sot::{Error, SourceOfTruth};
 
@@ -63,10 +63,10 @@ pub fn lines(intended: &str) -> impl Iterator<Item = &str> {
 pub fn compare<'a>(
     intended: &'a str,
     fetched: &'a [String],
-    reading: Option<Reading>,
+    syntax: Option<Syntax>,
 ) -> Vec<Checked<'a>> {
     let words =
-        |line: &'a str| reading.map_or(Words::Unread(line.trim()), |reading| reading.words(line));
+        |line: &'a str| syntax.map_or(Words::Unread(line.trim()), |syntax| syntax.words(line));
     let device: Vec<(&str, Words)> = fetched
         .iter()
         .map(|line| (line.as_str(), words(line)))
@@ -229,7 +229,7 @@ mod tests {
         );
     }
 
-    const SRL: Option<Reading> = Some(Reading::SrLinux);
+    const SRL: Option<Syntax> = Some(Syntax::SrLinux);
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn with_no_reading_a_line_is_compared_as_its_text() {
+    fn with_no_syntax_a_line_is_compared_as_its_text() {
         let fetched = lines("x a");
         assert_eq!(
             compare("x \"a\"", &fetched, None),

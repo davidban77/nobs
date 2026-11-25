@@ -6870,7 +6870,7 @@ mod tests {
     type Texts = Vec<(
         String,
         Result<String, nobs_core::intended::Failure>,
-        Option<nobs_core::device::Reading>,
+        Option<nobs_core::device::Syntax>,
     )>;
 
     fn polled_until(
@@ -6950,7 +6950,7 @@ mod tests {
             (
                 "nobs-t-srl1".to_string(),
                 Ok(srl1),
-                Some(nobs_core::device::Reading::SrLinux)
+                Some(nobs_core::device::Syntax::SrLinux)
             )
         );
         for (name, text, _) in &texts {

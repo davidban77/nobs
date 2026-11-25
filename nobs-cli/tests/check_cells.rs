@@ -140,7 +140,7 @@ fn the_check_line_and_the_cell_say_the_same_after_a_walk_saved_and_loaded() {
                 (
                     node.name.clone(),
                     intended_of(node),
-                    Some(device::Reading::SrLinux),
+                    Some(device::Syntax::SrLinux),
                 )
             })
             .collect(),

@@ -736,8 +736,8 @@ fn intended_texts(files: &LabFiles) -> Update {
             .map(|node| {
                 let source = files.source.as_deref().map_err(String::clone);
                 let text = intended(&files.dir, &node.name, &node.kind, source);
-                let reading = device::driver(&node.kind).ok().map(|driver| driver.reading);
-                (node.name, text, reading)
+                let syntax = device::driver(&node.kind).ok().map(|driver| driver.syntax);
+                (node.name, text, syntax)
             })
             .collect(),
     )
@@ -908,7 +908,7 @@ mod tests {
             "{:?}",
             texts[1].1
         );
-        assert_eq!(texts[0].2, Some(device::Reading::SrLinux));
+        assert_eq!(texts[0].2, Some(device::Syntax::SrLinux));
         assert_eq!(texts[1].2, None);
     }
 

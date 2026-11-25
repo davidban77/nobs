@@ -12,7 +12,7 @@ use nobs_core::alertmanager::Alert;
 use nobs_core::check;
 use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::count::counted;
-use nobs_core::device::{self, Password, Reading};
+use nobs_core::device::{self, Password, Syntax};
 use nobs_core::env::read_env;
 use nobs_core::intended::{self, compare, missing, Checked, Failure};
 use nobs_core::lab;
@@ -336,7 +336,7 @@ pub enum Update {
     ActionEnded(run::End),
     Nodes(Result<Vec<book::NodeRow>, String>),
     Files(Rendered),
-    Intended(Vec<(String, Result<String, Failure>, Option<Reading>)>),
+    Intended(Vec<(String, Result<String, Failure>, Option<Syntax>)>),
     Checked(Vec<(String, Result<Vec<String>, String>)>),
     TermOutput(u64, Vec<u8>),
     TermEnded(u64, i32),
@@ -446,7 +446,7 @@ pub struct Config {
 pub struct Intended {
     pub text: Result<String, Failure>,
     pub since: String,
-    pub reading: Option<Reading>,
+    pub syntax: Option<Syntax>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1303,7 +1303,7 @@ impl Model {
             Update::Intended(texts) => {
                 self.intended = texts
                     .into_iter()
-                    .map(|(name, text, reading)| {
+                    .map(|(name, text, syntax)| {
                         let since = match self.intended.get(&name) {
                             Some(kept) if kept.text == text => kept.since.clone(),
                             _ => self.clock.clone(),
@@ -1313,7 +1313,7 @@ impl Model {
                             Intended {
                                 text,
                                 since,
-                                reading,
+                                syntax,
                             },
                         )
                     })
@@ -2773,7 +2773,7 @@ impl Model {
             compare(
                 text,
                 kept.map_or(&[][..], |kept| &kept.lines),
-                intended.reading,
+                intended.syntax,
             ),
             kept,
         ))
@@ -9197,7 +9197,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|(name, text)| {
                     let text = text.clone().map(|lines| lines.join("\n") + "\n");
-                    (name.to_string(), text, Some(Reading::SrLinux))
+                    (name.to_string(), text, Some(Syntax::SrLinux))
                 })
                 .collect(),
         )

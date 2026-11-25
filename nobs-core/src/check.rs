@@ -66,13 +66,14 @@ fn verdict_of(
     let answer = device::step(node, |host, login, driver| {
         transport
             .run(host, login, driver.running_config)
-            .map(|output| (output, driver.reading))
+            .map(|output| (output, driver))
     });
     match answer {
         Ok((output, _)) if output.code != 0 => Ok(Verdict::Failed(exit_words(output.code))),
-        Ok((output, reading)) => {
+        Ok((output, driver)) => {
             let lines: Vec<String> = output.stdout.lines().map(str::to_string).collect();
-            let missing = intended::missing(&intended::compare(&intended, &lines, Some(reading)));
+            let missing =
+                intended::missing(&intended::compare(&intended, &lines, Some(driver.syntax)));
             Ok(Verdict::Answered { lines, missing })
         }
         Err(error @ (Error::AuthenticationFailed | Error::MissingCredentials)) => Err(error),
