@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run twenty-one actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -436,7 +436,7 @@ When the table is not shown, the key line offers only `[ ] view  r refresh`, and
 
 ### Actions
 
-An action is a nobs command that the screen runs for you. There are twenty-three:
+An action is a nobs command that the screen runs for you. This table lists every action:
 
 | Key | Where it works | Command it runs | When you press the key |
 |---|---|---|---|
@@ -451,6 +451,7 @@ An action is a nobs command that the screen runs for you. There are twenty-three
 | `s` | the same as `g` | `nobs --dir <lab folder> device run <device> "<command>"` | asks on the key line for a missing login, then for the command; `Enter` runs it, `Esc` cancels |
 | `G` | the devices workbench, in a lab with containerlab nodes | `nobs --dir <lab folder> device check` | asks for a missing login, then runs; fills the `SYNC` column and the Config tab of every device that answered |
 | `P` | the same as `g`, when the device has an intended configuration, the text of `nobs device render` | `nobs --dir <lab folder> device push --yes <device>` | asks `push the intended configuration to <device>? <n> lines, <k> missing; it changes the running configuration of the device. y/n`, with `, state not known` in place of `, <k> missing` when the last fetch failed, and neither when no fetch is known; after `y`, asks for a missing login, then runs; sends the intended configuration in one commit, then fetches the device again and fills its `SYNC` cell and Config tab |
+| `F` | the Interfaces tab of the devices workbench, in a lab with containerlab nodes, with an interface selected, when the device's kind has a driver (see [Device](#device)) | `nobs --dir <lab folder> device flap --yes <device> <interface>` | asks `flap <interface> of <device>? It goes down for 5 seconds, 1 time; the device brings it back. y/n`; after `y`, asks for a missing login, then runs |
 | `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes, every node and the other chapters' services.` |
 | `P` | the lab workbench; it acts on the whole lab, so it needs no chapter | `nobs --dir <lab folder> lab purge --sudo-no-prompt` | asks `y/n` and says `It takes every scenario down and removes their volumes.` |
@@ -527,7 +528,7 @@ An action that failed:
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`, or until `G` gets a good answer from that device. It lasts while the screen is open.
+When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. `F` acts on an interface and marks no row either. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`, or until `G` gets a good answer from that device. It lasts while the screen is open.
 
 Ctrl-C while an action runs stops it. The title shows `stopping`. The screen starts each action in its own process group: a process group is a program together with every program it starts. The screen sends an interrupt to the whole group. If the group has not ended 5 seconds later, the screen kills it. When the whole group has ended, the title shows `stopped`. Ctrl-C when no action runs closes the screen.
 
@@ -2885,11 +2886,11 @@ $ echo $?
 
 `nobs device render` logs in to no device and writes no file: it prints the text to the standard output. Like the other commands of the group, it needs a lab with containerlab nodes, not a workshop. Its source of truth is the `containerlab/lab_vars.yml` of the lab folder. In a lab made by `nobs project`, right after `nobs project render`, its output equals `containerlab/configs/<name>.cfg`.
 
-`fetch`, `run`, `shell`, `push` and `check` work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). None of the `nobs device` commands works in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file. `fetch`, `run`, `shell` and `push` then connect to the container name that containerlab gives the node.
+The commands that log in to a device work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). None of the `nobs device` commands works in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file. They then connect to the container name that containerlab gives the node.
 
 nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing, empty or only spaces, nobs names the two variables and opens no connection. nobs never prints the password.
 
-In the screen, `g`, `G`, `s` and `P` ask on the key line for what is missing, `P` after its yes: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g`, `G`, `s` or `P`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
+In the screen, `g`, `G`, `s`, `P` and `F` ask on the key line for what is missing, `P` and `F` after their yes: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it at `g`, `G`, `s` or `P`, nobs shows the `authentication failed` line and asks again at the next `g`, `G`, `s`, `P` or `F`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
 
 `fetch`, `run` and `shell` each open one connection. `fetch` and `run` connect, log in, run one command and close the connection. `shell` connects, logs in and keeps the connection until the shell on the device ends. nobs stops with an error when the device sends nothing for 10 seconds at one of these steps: while nobs connects and logs in, while `fetch` or `run` waits for the answer, and while `shell` waits for the device to open the shell. An open shell has no time limit.
 
