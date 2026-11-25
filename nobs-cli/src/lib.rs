@@ -13,7 +13,7 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, sudo_refused_line, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
-use nobs_core::device::{self, Credentials, Pushed, Terminal, Transport};
+use nobs_core::device::{self, Credentials, Flap, Flapped, Pushed, Terminal, Transport};
 use nobs_core::env::{load_env, read_env};
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
@@ -1175,6 +1175,31 @@ pub enum DeviceCommand {
         #[arg(long, value_name = "FOLDER", help = SAVE_HELP)]
         save: Option<PathBuf>,
     },
+    #[command(
+        about = "Take one interface of a device down after a yes; the device brings it back by itself after the delay"
+    )]
+    Flap {
+        #[arg(help = "Node name in the lab's topology file")]
+        name: String,
+        #[arg(help = "The device's own name of the interface, such as ethernet-1/1")]
+        interface: String,
+        #[arg(long, help = "Flap without asking")]
+        yes: bool,
+        #[arg(
+            long,
+            value_name = "SECONDS",
+            default_value_t = device::FLAP_DELAY,
+            help = "The time the interface stays down, and up before the next flap"
+        )]
+        delay: u64,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = 1,
+            help = "How many times to flap the interface"
+        )]
+        count: u32,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -2324,14 +2349,37 @@ fn run_device(
                     node,
                     transport,
                     &|node| node_intended(located, node),
-                    &mut |question| {
-                        if *yes {
-                            Some(true)
-                        } else {
-                            asked_on_terminal(question)
-                        }
-                    },
+                    &mut |question| asked(*yes, question),
                     save.as_deref(),
+                    &mut io::stdout(),
+                    &mut io::stderr(),
+                );
+            }
+            DeviceCommand::Flap {
+                name,
+                interface,
+                yes,
+                delay,
+                count,
+            } => {
+                let node = match topology_node(name, &topology, &nodes) {
+                    Ok(node) => node,
+                    Err(error) => {
+                        flap_says(&mut io::stderr(), name, error);
+                        return 1;
+                    }
+                };
+                let flap = Flap {
+                    interface,
+                    delay: Duration::from_secs(*delay),
+                    count: *count,
+                };
+                return flap_device(
+                    node,
+                    transport,
+                    &flap,
+                    &mut |question| asked(*yes, question),
+                    &mut std::thread::sleep,
                     &mut io::stdout(),
                     &mut io::stderr(),
                 );
@@ -2435,7 +2483,7 @@ fn push_device(
             1
         }
         Ok(Pushed::Declined) if answer.is_none() => {
-            push_says(err, name, "needs a yes; run it in a terminal, or add --yes");
+            push_says(err, name, NEEDS_A_YES);
             1
         }
         Ok(Pushed::Declined) => {
@@ -2478,6 +2526,116 @@ fn push_device(
 
 fn push_says(err: &mut impl Write, name: &str, words: impl std::fmt::Display) {
     let _ = writeln!(err, "nobs: push {name}: {words}");
+}
+
+const NEEDS_A_YES: &str = "needs a yes; run it in a terminal, or add --yes";
+
+fn flap_device(
+    node: &TopologyNode,
+    transport: &dyn Transport,
+    flap: &Flap,
+    ask: &mut dyn FnMut(&str) -> Option<bool>,
+    wait: &mut dyn FnMut(Duration),
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> i32 {
+    let name = &node.name;
+    let interface = flap.interface;
+    let seconds = counted(flap.delay.as_secs(), "second");
+    let mut answer = None;
+    let flapped = device::flap(
+        node,
+        transport,
+        flap,
+        &mut || {
+            answer = ask(&device::flap_question(
+                name,
+                interface,
+                flap.delay.as_secs(),
+                flap.count,
+            ));
+            answer == Some(true)
+        },
+        wait,
+        &mut |_, back| {
+            if back {
+                let _ = writeln!(out, "{name}  {interface} back");
+            } else {
+                let _ = writeln!(out, "{name}  {interface} down for {seconds}");
+            }
+            let _ = out.flush();
+        },
+    );
+    match flapped {
+        Err(error) => {
+            let _ = writeln!(err, "{}", device::error_line(name, &error));
+            1
+        }
+        Ok(Flapped::Declined) if answer.is_none() => {
+            flap_says(err, name, NEEDS_A_YES);
+            1
+        }
+        Ok(Flapped::Declined) => {
+            flap_says(err, name, "not flapped");
+            1
+        }
+        Ok(Flapped::Unfit(unfit)) => {
+            flap_says(err, name, unfit);
+            1
+        }
+        Ok(Flapped::Disabled) => {
+            flap_says(
+                err,
+                name,
+                format_args!("{interface} is disabled already; nothing sent"),
+            );
+            1
+        }
+        Ok(Flapped::Refused(output)) => {
+            pass_through(&output, out, err);
+            flap_says(
+                err,
+                name,
+                "the device refused the flap; its configuration is as before",
+            );
+            1
+        }
+        Ok(Flapped::NotKnown(error)) => {
+            let _ = writeln!(err, "{}", device::error_line(name, &error));
+            flap_says(
+                err,
+                name,
+                format_args!(
+                    "not known whether the device took the flap; it takes it back by itself after {seconds}"
+                ),
+            );
+            3
+        }
+        Ok(Flapped::NotBack(error)) => {
+            if let Some(error) = error {
+                let _ = writeln!(err, "{}", device::error_line(name, &error));
+            }
+            flap_says(
+                err,
+                name,
+                format_args!("not known whether {interface} is back"),
+            );
+            4
+        }
+        Ok(Flapped::Back) => 0,
+    }
+}
+
+fn flap_says(err: &mut impl Write, name: &str, words: impl std::fmt::Display) {
+    let _ = writeln!(err, "nobs: flap {name}: {words}");
+}
+
+fn asked(yes: bool, question: &str) -> Option<bool> {
+    if yes {
+        Some(true)
+    } else {
+        asked_on_terminal(question)
+    }
 }
 
 fn asked_on_terminal(question: &str) -> Option<bool> {
@@ -8439,6 +8597,375 @@ mod tests {
         assert!(says_yes("y\n"));
         for answer in ["Y\n", "yes\n", "\n", "", "n\n"] {
             assert!(!says_yes(answer), "{answer:?}");
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Seen(Rc<RefCell<Vec<u8>>>);
+
+    impl Seen {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.borrow().clone()).unwrap()
+        }
+    }
+
+    impl Write for Seen {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Flapping {
+        code: i32,
+        out: String,
+        err: String,
+        asked: Vec<(String, usize)>,
+        waits: Vec<(u64, String)>,
+    }
+
+    fn flapped_with(
+        transport: &FakeTransport,
+        node: &str,
+        flap: &Flap,
+        answer: Option<bool>,
+    ) -> Flapping {
+        let (_, nodes) = device_lab();
+        let node = nodes.iter().find(|found| found.name == node).unwrap();
+        let (out, mut err) = (Seen::default(), Vec::new());
+        let mut asked = Vec::new();
+        let mut waits = Vec::new();
+        let seen = out.clone();
+        let code = flap_device(
+            node,
+            transport,
+            flap,
+            &mut |question| {
+                asked.push((question.to_string(), transport.calls().len()));
+                answer
+            },
+            &mut |delay| waits.push((delay.as_secs(), seen.text())),
+            &mut out.clone(),
+            &mut err,
+        );
+        Flapping {
+            code,
+            out: out.text(),
+            err: String::from_utf8(err).unwrap(),
+            asked,
+            waits,
+        }
+    }
+
+    fn srl1_flap(interface: &str, delay: u64, count: u32) -> Flap<'_> {
+        Flap {
+            interface,
+            delay: Duration::from_secs(delay),
+            count,
+        }
+    }
+
+    fn admin_state(state: &str) -> Result<Output, device::Error> {
+        Ok(answer(
+            0,
+            &format!("set / interface ethernet-1/1 admin-state {state}\n"),
+            "",
+        ))
+    }
+
+    fn committed() -> Result<Output, device::Error> {
+        Ok(answer(
+            0,
+            "Commit confirmed (automatic rollback in 20 seconds)\n",
+            "",
+        ))
+    }
+
+    fn back_after_one_flap() -> FakeTransport {
+        FakeTransport::in_order(vec![
+            admin_state("enable"),
+            committed(),
+            admin_state("enable"),
+        ])
+    }
+
+    const SRL1_FLAP_QUESTION: &str = "flap ethernet-1/1 of nobs-t-srl1? It goes down for 20 seconds, 3 times; the device brings it back. y/n";
+
+    #[test]
+    fn a_flap_that_worked_prints_a_down_and_a_back_line_on_stdout_for_each_flap_and_ends_with_0() {
+        set_credentials();
+        let mut answers = vec![admin_state("enable")];
+        for _ in 0..3 {
+            answers.extend([committed(), admin_state("enable")]);
+        }
+        let transport = FakeTransport::in_order(answers);
+
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 20, 3),
+            Some(true),
+        );
+
+        assert_eq!(
+            flapped.out,
+            "nobs-t-srl1  ethernet-1/1 down for 20 seconds\nnobs-t-srl1  ethernet-1/1 back\n"
+                .repeat(3)
+        );
+        assert_eq!(flapped.err, "");
+        assert_eq!(flapped.code, 0);
+        assert_eq!(flapped.asked, [(SRL1_FLAP_QUESTION.to_string(), 0)]);
+        assert_eq!(transport.calls().len(), 7);
+    }
+
+    #[test]
+    fn a_delay_of_one_second_says_1_second_in_the_down_line_and_the_question() {
+        set_credentials();
+        let transport = back_after_one_flap();
+
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 1, 1),
+            Some(true),
+        );
+
+        assert_eq!(
+            flapped.out,
+            "nobs-t-srl1  ethernet-1/1 down for 1 second\nnobs-t-srl1  ethernet-1/1 back\n"
+        );
+        assert_eq!(
+            flapped.asked[0].0,
+            "flap ethernet-1/1 of nobs-t-srl1? It goes down for 1 second, 1 time; the device brings it back. y/n"
+        );
+        assert_eq!(flapped.code, 0);
+    }
+
+    #[test]
+    fn the_down_line_is_on_stdout_before_the_wait_of_the_delay_returns() {
+        set_credentials();
+        let transport = back_after_one_flap();
+
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 20, 1),
+            Some(true),
+        );
+
+        assert_eq!(
+            flapped.waits,
+            [(
+                20,
+                "nobs-t-srl1  ethernet-1/1 down for 20 seconds\n".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_no_or_no_terminal_sends_nothing_and_says_why_after_the_question() {
+        set_credentials();
+        let cases = [
+            (Some(false), "nobs: flap nobs-t-srl1: not flapped\n"),
+            (
+                None,
+                "nobs: flap nobs-t-srl1: needs a yes; run it in a terminal, or add --yes\n",
+            ),
+        ];
+        for (answer, line) in cases {
+            let transport = FakeTransport::in_order(Vec::new());
+
+            let flapped = flapped_with(
+                &transport,
+                "nobs-t-srl1",
+                &srl1_flap("ethernet-1/1", 20, 3),
+                answer,
+            );
+
+            assert_eq!(flapped.err, line);
+            assert_eq!(flapped.out, "");
+            assert_eq!(flapped.code, 1);
+            assert_eq!(flapped.asked, [(SRL1_FLAP_QUESTION.to_string(), 0)]);
+            assert!(transport.calls().is_empty());
+        }
+    }
+
+    #[test]
+    fn each_unfit_flap_prints_its_line_never_asks_and_sends_nothing() {
+        set_credentials();
+        let cases = [
+            (
+                "ethernet-1/1 x",
+                5,
+                1,
+                "the interface name must be one word",
+            ),
+            ("mgmt0", 5, 1, "mgmt0 is the management interface"),
+            ("ethernet-1/1", 0, 1, "the delay must be 1 to 300 seconds"),
+            ("ethernet-1/1", 301, 1, "the delay must be 1 to 300 seconds"),
+            ("ethernet-1/1", 5, 0, "the count must be 1 to 10"),
+            ("ethernet-1/1", 5, 11, "the count must be 1 to 10"),
+        ];
+        for (interface, delay, count, words) in cases {
+            let transport = FakeTransport::in_order(Vec::new());
+
+            let flapped = flapped_with(
+                &transport,
+                "nobs-t-srl1",
+                &srl1_flap(interface, delay, count),
+                Some(true),
+            );
+
+            assert_eq!(flapped.err, format!("nobs: flap nobs-t-srl1: {words}\n"));
+            assert_eq!(flapped.out, "");
+            assert_eq!(flapped.code, 1, "{words}");
+            assert!(flapped.asked.is_empty(), "{words}");
+            assert!(transport.calls().is_empty(), "{words}");
+        }
+    }
+
+    #[test]
+    fn a_node_with_no_driver_or_a_failed_first_read_prints_the_ssh_line_and_ends_with_1() {
+        set_credentials();
+        let transport = FakeTransport::in_order(Vec::new());
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-ceos1",
+            &srl1_flap("ethernet-1/1", 5, 1),
+            Some(true),
+        );
+        assert_eq!(
+            flapped.err,
+            "nobs: ssh nobs-t-ceos1: no driver for the kind ceos yet\n"
+        );
+        assert_eq!(flapped.code, 1);
+        assert!(flapped.asked.is_empty());
+
+        let transport = FakeTransport::in_order(vec![Err(device::Error::AuthenticationFailed)]);
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 5, 1),
+            Some(true),
+        );
+        assert_eq!(
+            flapped.err,
+            "nobs: ssh nobs-t-srl1: authentication failed\n"
+        );
+        assert_eq!(flapped.out, "");
+        assert_eq!(flapped.code, 1);
+    }
+
+    #[test]
+    fn an_interface_disabled_already_is_named_and_ends_with_1_after_one_read() {
+        set_credentials();
+        let transport = FakeTransport::in_order(vec![Ok(answer(
+            0,
+            "set / interface ethernet-1/3 admin-state disable\n",
+            "",
+        ))]);
+
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/3", 5, 1),
+            Some(true),
+        );
+
+        assert_eq!(
+            flapped.err,
+            "nobs: flap nobs-t-srl1: ethernet-1/3 is disabled already; nothing sent\n"
+        );
+        assert_eq!(flapped.out, "");
+        assert_eq!(flapped.code, 1);
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[test]
+    fn a_refused_read_or_commit_passes_the_device_words_through_says_as_before_and_ends_with_1() {
+        set_credentials();
+        let refused = || Ok(answer(1, "nobs-t-answer-out\n", "Error: Commit failed\n"));
+        let cases = [vec![refused()], vec![admin_state("enable"), refused()]];
+        for answers in cases {
+            let calls = answers.len();
+            let transport = FakeTransport::in_order(answers);
+
+            let flapped = flapped_with(
+                &transport,
+                "nobs-t-srl1",
+                &srl1_flap("ethernet-9/99", 5, 1),
+                Some(true),
+            );
+
+            assert_eq!(flapped.out, "nobs-t-answer-out\n");
+            assert_eq!(
+                flapped.err,
+                "Error: Commit failed\nnobs: flap nobs-t-srl1: the device refused the flap; its configuration is as before\n"
+            );
+            assert_eq!(flapped.code, 1);
+            assert_eq!(transport.calls().len(), calls);
+        }
+    }
+
+    #[test]
+    fn a_session_that_broke_after_the_lines_went_says_the_device_takes_it_back_and_ends_with_3() {
+        set_credentials();
+        let transport =
+            FakeTransport::in_order(vec![admin_state("enable"), Err(device::Error::NoAnswer)]);
+
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 5, 1),
+            Some(true),
+        );
+
+        assert_eq!(flapped.out, "");
+        assert_eq!(
+            flapped.err,
+            "nobs: ssh nobs-t-srl1: no answer in 10 seconds\nnobs: flap nobs-t-srl1: not known whether the device took the flap; it takes it back by itself after 5 seconds\n"
+        );
+        assert_eq!(flapped.code, 3);
+    }
+
+    #[test]
+    fn a_failed_read_after_the_delay_or_an_interface_still_disabled_is_not_known_back_and_ends_with_4(
+    ) {
+        set_credentials();
+        let not_back = "nobs: flap nobs-t-srl1: not known whether ethernet-1/1 is back\n";
+        let mut still_disabled = vec![admin_state("enable"), committed()];
+        still_disabled.extend((0..10).map(|_| admin_state("disable")));
+        let cases = [
+            (
+                vec![
+                    admin_state("enable"),
+                    committed(),
+                    Err(device::Error::NoAnswer),
+                ],
+                format!("nobs: ssh nobs-t-srl1: no answer in 10 seconds\n{not_back}"),
+            ),
+            (still_disabled, not_back.to_string()),
+        ];
+        for (answers, err) in cases {
+            let transport = FakeTransport::in_order(answers);
+
+            let flapped = flapped_with(
+                &transport,
+                "nobs-t-srl1",
+                &srl1_flap("ethernet-1/1", 5, 1),
+                Some(true),
+            );
+
+            assert_eq!(
+                flapped.out,
+                "nobs-t-srl1  ethernet-1/1 down for 5 seconds\n"
+            );
+            assert_eq!(flapped.err, err);
+            assert_eq!(flapped.code, 4);
         }
     }
 }

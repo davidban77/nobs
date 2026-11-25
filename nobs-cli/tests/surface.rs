@@ -100,10 +100,10 @@ fn the_help_pages_name_the_sonda_group_and_exactly_its_ten_commands() {
     assert_eq!(commands, SONDA_COMMANDS);
 }
 
-const DEVICE_COMMANDS: [&str; 6] = ["fetch", "run", "shell", "render", "push", "check"];
+const DEVICE_COMMANDS: [&str; 7] = ["fetch", "run", "shell", "render", "push", "check", "flap"];
 
 #[test]
-fn the_help_pages_name_the_device_group_exactly_its_six_commands_and_their_words() {
+fn the_help_pages_name_the_device_group_exactly_its_seven_commands_and_their_words() {
     let root = help(&[]);
     assert!(
         commands_block(&root).iter().any(|word| word == "device"),
