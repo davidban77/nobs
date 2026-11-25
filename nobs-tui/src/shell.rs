@@ -12,7 +12,7 @@ use nobs_core::alertmanager::Alert;
 use nobs_core::check;
 use nobs_core::containerlab::sudo_refused_line;
 use nobs_core::count::counted;
-use nobs_core::device::{self, Password};
+use nobs_core::device::{self, Password, Syntax};
 use nobs_core::env::read_env;
 use nobs_core::intended::{self, compare, missing, Checked, Failure};
 use nobs_core::lab;
@@ -336,7 +336,7 @@ pub enum Update {
     ActionEnded(run::End),
     Nodes(Result<Vec<book::NodeRow>, String>),
     Files(Rendered),
-    Intended(Vec<(String, Result<String, Failure>)>),
+    Intended(Vec<(String, Result<String, Failure>, Option<Syntax>)>),
     Checked(Vec<(String, Result<Vec<String>, String>)>),
     TermOutput(u64, Vec<u8>),
     TermEnded(u64, i32),
@@ -446,6 +446,7 @@ pub struct Config {
 pub struct Intended {
     pub text: Result<String, Failure>,
     pub since: String,
+    pub syntax: Option<Syntax>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1302,12 +1303,19 @@ impl Model {
             Update::Intended(texts) => {
                 self.intended = texts
                     .into_iter()
-                    .map(|(name, text)| {
+                    .map(|(name, text, syntax)| {
                         let since = match self.intended.get(&name) {
                             Some(kept) if kept.text == text => kept.since.clone(),
                             _ => self.clock.clone(),
                         };
-                        (name, Intended { text, since })
+                        (
+                            name,
+                            Intended {
+                                text,
+                                since,
+                                syntax,
+                            },
+                        )
                     })
                     .collect();
             }
@@ -2758,10 +2766,15 @@ impl Model {
     }
 
     fn comparison(&self, device: &str) -> Option<(Vec<Checked<'_>>, Option<&Config>)> {
-        let text = self.intended_text(device)?;
+        let intended = self.intended.get(device)?;
+        let text = intended.text.as_deref().ok()?;
         let kept = self.configs.get(device);
         Some((
-            compare(text, kept.map_or(&[][..], |kept| &kept.lines)),
+            compare(
+                text,
+                kept.map_or(&[][..], |kept| &kept.lines),
+                intended.syntax,
+            ),
             kept,
         ))
     }
@@ -9184,7 +9197,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|(name, text)| {
                     let text = text.clone().map(|lines| lines.join("\n") + "\n");
-                    (name.to_string(), text)
+                    (name.to_string(), text, Some(Syntax::SrLinux))
                 })
                 .collect(),
         )
@@ -9330,6 +9343,35 @@ pub(crate) mod tests {
             (Agreement::Missing(2), Some(2))
         );
         assert_eq!(agreement_after(&[]), (Agreement::Missing(4), Some(4)));
+    }
+
+    #[test]
+    fn the_cell_the_count_and_the_marks_read_a_line_as_the_device_reads_it() {
+        let typed = [
+            "set / interface \"ethernet-1/1\" admin-state enable",
+            "set / interface ethernet-1/1 description 'to spine'",
+        ];
+        let printed = [
+            "set / interface ethernet-1/1 admin-state enable",
+            "set / interface ethernet-1/1 description \"to spine\"",
+        ];
+        let mut model = on_intended(Ok(&typed));
+        fetched(&mut model, &printed, "13:45:08");
+        assert_eq!(model.agreement(SRL1), Agreement::InSync);
+        assert_eq!(model.intended_view().unwrap().missing, Some(0));
+        assert_eq!(rows(&model), typed.map(|line| (' ', line)));
+
+        let changed = [
+            printed[0],
+            "set / interface ethernet-1/1 description uplink",
+        ];
+        fetched(&mut model, &changed, "13:46:00");
+        assert_eq!(model.agreement(SRL1), Agreement::Missing(1));
+        assert_eq!(model.intended_view().unwrap().missing, Some(1));
+        assert_eq!(
+            rows(&model),
+            [(' ', typed[0]), ('+', typed[1]), ('-', changed[1])]
+        );
     }
 
     #[test]

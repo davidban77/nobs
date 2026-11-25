@@ -78,6 +78,7 @@ fn book_model() -> Shell {
     model.apply(Update::Intended(vec![(
         DEVICE.to_string(),
         Ok("set / system information location nobs-t-x\n".to_string()),
+        Some(nobs_core::device::Syntax::SrLinux),
     )]));
     model
 }

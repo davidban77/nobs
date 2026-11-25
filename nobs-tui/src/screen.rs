@@ -2906,6 +2906,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use nobs_core::device::Syntax;
     use nobs_core::locate::locate;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -4757,6 +4758,7 @@ mod tests {
         model.apply(Update::Intended(vec![(
             "nobs-t-srl1".to_string(),
             Ok("set / a b on\n".to_string()),
+            Some(Syntax::SrLinux),
         )]));
         press(&mut model, 'g');
         model.apply(Update::ActionLine("set / a b on".to_string()));
@@ -4776,6 +4778,7 @@ mod tests {
         model.apply(Update::Intended(vec![(
             "nobs-t-srl1".to_string(),
             Ok(numbered(40).join("\n")),
+            Some(Syntax::SrLinux),
         )]));
         open_tab(&mut model, Tab::Config);
         focus_tabs(&mut model);
