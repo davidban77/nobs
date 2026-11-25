@@ -1475,13 +1475,22 @@ impl Model {
                 End::Stopped | End::NotStopped { .. } => {}
             }
         }
+        let marked = run.target.device().map_or_else(
+            || run.target.clone(),
+            |name| Target::Device(name.to_string()),
+        );
         if end == End::Exited(0) {
-            self.failed.retain(|held| *held != run.target);
-        } else if !self.failed.contains(&run.target) {
-            self.failed.push(run.target.clone());
+            self.failed.retain(|held| *held != marked);
+        } else if !self.failed.contains(&marked) {
+            self.failed.push(marked);
         }
-        let refused = matches!(&run.target, Target::Device(name)
-            if run.lines.last() == Some(&device::error_line(name, &device::Error::AuthenticationFailed)));
+        let refused = run.target.device().is_some_and(|name| {
+            run.lines.last()
+                == Some(&device::error_line(
+                    name,
+                    &device::Error::AuthenticationFailed,
+                ))
+        });
         if run.typed && end == End::Exited(1) && refused {
             self.login = Login::default();
         }
@@ -9935,6 +9944,40 @@ pub(crate) mod tests {
         let mut found = on_interfaces(lab_devices_model());
         ch(&mut found, 'F');
         assert_eq!(ch(&mut found, 'y'), [flap_run(PORT, Login::default())]);
+    }
+
+    #[test]
+    fn a_typed_login_the_device_refuses_at_f_is_forgotten_and_the_next_f_asks_again() {
+        let typed = login(Some(USER), Some(SECRET));
+        let mut model = on_interfaces(asking(None, None));
+        ch(&mut model, 'F');
+        ch(&mut model, 'y');
+        entered(&mut model, USER);
+        assert_eq!(entered(&mut model, SECRET), [flap_run(PORT, typed)]);
+        model.apply(Update::ActionError(refusal()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        assert_eq!(model.run().unwrap().lines, [refusal()]);
+
+        assert_eq!(ch(&mut model, 'F'), []);
+        assert_eq!(ch(&mut model, 'y'), []);
+        assert_eq!(key_line(&model, 100), [USER_STEP]);
+    }
+
+    #[test]
+    fn a_failed_flap_marks_its_device_row_and_a_flap_that_ends_0_clears_it() {
+        let srl1 = Target::Device(SRL1.to_string());
+        let mut model = on_interfaces(lab_devices_model());
+        ch(&mut model, 'F');
+        ch(&mut model, 'y');
+        answered(&mut model, &["x"], End::Exited(4));
+
+        assert!(model.failed(&srl1));
+
+        ch(&mut model, 'F');
+        ch(&mut model, 'y');
+        answered(&mut model, &[], End::Exited(0));
+
+        assert!(!model.failed(&srl1));
     }
 
     #[test]

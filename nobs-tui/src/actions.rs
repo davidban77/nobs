@@ -352,6 +352,15 @@ pub enum Target {
     Lab,
 }
 
+impl Target {
+    pub(crate) fn device(&self) -> Option<&str> {
+        match self {
+            Target::Device(name) | Target::Interface { device: name, .. } => Some(name),
+            _ => None,
+        }
+    }
+}
+
 fn command_words(action: &Action) -> impl Iterator<Item = Vec<OsString>> {
     action
         .words

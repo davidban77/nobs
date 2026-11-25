@@ -528,7 +528,7 @@ An action that failed:
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. `F` acts on an interface and marks no row either. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`, or until `G` gets a good answer from that device. It lasts while the screen is open.
+When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. `F` acts on an interface, but it marks the row of its device, and a flap on that device that ends with `exit 0` clears the mark. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`, or until `G` gets a good answer from that device. It lasts while the screen is open.
 
 Ctrl-C while an action runs stops it. The title shows `stopping`. The screen starts each action in its own process group: a process group is a program together with every program it starts. The screen sends an interrupt to the whole group. If the group has not ended 5 seconds later, the screen kills it. When the whole group has ended, the title shows `stopped`. Ctrl-C when no action runs closes the screen.
 
@@ -2890,7 +2890,7 @@ The commands that log in to a device work in a lab with containerlab nodes, on t
 
 nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing, empty or only spaces, nobs names the two variables and opens no connection. nobs never prints the password.
 
-In the screen, `g`, `G`, `s`, `P` and `F` ask on the key line for what is missing, `P` and `F` after their yes: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it at `g`, `G`, `s` or `P`, nobs shows the `authentication failed` line and asks again at the next `g`, `G`, `s`, `P` or `F`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
+In the screen, `g`, `G`, `s`, `P` and `F` ask on the key line for what is missing, `P` and `F` after their yes: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g`, `G`, `s`, `P` or `F`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
 
 `fetch`, `run` and `shell` each open one connection. `fetch` and `run` connect, log in, run one command and close the connection. `shell` connects, logs in and keeps the connection until the shell on the device ends. nobs stops with an error when the device sends nothing for 10 seconds at one of these steps: while nobs connects and logs in, while `fetch` or `run` waits for the answer, and while `shell` waits for the device to open the shell. An open shell has no time limit.
 
