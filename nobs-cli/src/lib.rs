@@ -7941,19 +7941,23 @@ mod tests {
         check_lab(name, &[("nobs-t-srl1", "nokia_srlinux")], &[])
     }
 
-    fn srl1_session() -> Vec<(String, String)> {
+    fn srl_sent<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
         let driver = device::driver("nokia_srlinux").unwrap();
-        let sent = driver
+        driver
             .open
             .iter()
             .copied()
-            .chain([
-                "set / system name host-name nobs-t-srl1",
-                "set / interface mgmt0 admin-state enable",
-                driver.commit,
-            ])
+            .chain(lines)
+            .chain([driver.commit])
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n")
+    }
+
+    fn srl1_session() -> Vec<(String, String)> {
+        let sent = srl_sent([
+            "set / system name host-name nobs-t-srl1",
+            "set / interface mgmt0 admin-state enable",
+        ]);
         vec![call(&container("nobs-t-srl1"), &sent)]
     }
 
@@ -8231,15 +8235,7 @@ mod tests {
         for name in ["nobs-t-srl1", "nobs-t-srl2"] {
             let text = rendered(name, &located, &topology, &nodes).unwrap();
             assert!(text.lines().count() > 2, "{text}");
-            let driver = device::driver("nokia_srlinux").unwrap();
-            let sent = driver
-                .open
-                .iter()
-                .copied()
-                .chain(text.lines())
-                .chain([driver.commit])
-                .collect::<Vec<_>>()
-                .join("\n");
+            let sent = srl_sent(text.lines());
             let transport = push_then_fetch(taken(), Ok(answer(0, "", "")));
 
             pushed_with(&lab.0, name, &transport, Some(true), None);
