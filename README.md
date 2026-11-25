@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run twenty-one actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## The screen
 
@@ -436,7 +436,7 @@ When the table is not shown, the key line offers only `[ ] view  r refresh`, and
 
 ### Actions
 
-An action is a nobs command that the screen runs for you. There are twenty-three:
+An action is a nobs command that the screen runs for you. This table lists every action:
 
 | Key | Where it works | Command it runs | When you press the key |
 |---|---|---|---|
@@ -451,6 +451,7 @@ An action is a nobs command that the screen runs for you. There are twenty-three
 | `s` | the same as `g` | `nobs --dir <lab folder> device run <device> "<command>"` | asks on the key line for a missing login, then for the command; `Enter` runs it, `Esc` cancels |
 | `G` | the devices workbench, in a lab with containerlab nodes | `nobs --dir <lab folder> device check` | asks for a missing login, then runs; fills the `SYNC` column and the Config tab of every device that answered |
 | `P` | the same as `g`, when the device has an intended configuration, the text of `nobs device render` | `nobs --dir <lab folder> device push --yes <device>` | asks `push the intended configuration to <device>? <n> lines, <k> missing; it changes the running configuration of the device. y/n`, with `, state not known` in place of `, <k> missing` when the last fetch failed, and neither when no fetch is known; after `y`, asks for a missing login, then runs; sends the intended configuration in one commit, then fetches the device again and fills its `SYNC` cell and Config tab |
+| `F` | the Interfaces tab of the devices workbench, in a lab with containerlab nodes, with an interface selected, when the device's kind has a driver (see [Device](#device)) | `nobs --dir <lab folder> device flap --yes <device> <interface>` | asks `flap <interface> of <device>? It goes down for 5 seconds, 1 time; the device brings it back. y/n`; after `y`, asks for a missing login, then runs with the default delay and count |
 | `D` | the lab workbench, with a chapter selected | `nobs --dir <lab folder> lab deploy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It takes the other chapters' services down.` |
 | `X` | the same as `D` | `nobs --dir <lab folder> lab destroy --sudo-no-prompt -s <chapter>` | asks `y/n` and says `It removes the chapter's volumes, every node and the other chapters' services.` |
 | `P` | the lab workbench; it acts on the whole lab, so it needs no chapter | `nobs --dir <lab folder> lab purge --sudo-no-prompt` | asks `y/n` and says `It takes every scenario down and removes their volumes.` |
@@ -527,7 +528,7 @@ An action that failed:
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`, or until `G` gets a good answer from that device. It lasts while the screen is open.
+When an action does not end with `exit 0`, its row gets the mark `!` in front: the stack, the device or the chapter. `P`, and the keys of a lab without chapters, act on the whole lab, so they mark no row. `F` acts on an interface, but it marks the row of its device, and a flap on that device that ends with `exit 0` clears the mark. On the selected row, `!` takes the place of `>`. The mark stays until an action on that row ends with `exit 0`, or until `G` gets a good answer from that device. It lasts while the screen is open.
 
 Ctrl-C while an action runs stops it. The title shows `stopping`. The screen starts each action in its own process group: a process group is a program together with every program it starts. The screen sends an interrupt to the whole group. If the group has not ended 5 seconds later, the screen kills it. When the whole group has ended, the title shows `stopped`. Ctrl-C when no action runs closes the screen.
 
@@ -559,7 +560,7 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `-` `+` | in the timeline tab, halve or double the time window, between 1 minute and 24 hours; the logs tab and the logs view of the observability workbench use the same window |
 | `u` `d` `X` `R` `p` `s` | in the services workbench, on the selected workshop stack: ask to run `nobs <workshop> up`, `down`, `destroy`, `reset` or `preflight`, or run `status` at once; `down` removes the containers and keeps the volumes (see [Actions](#actions)); in the sonda tab, `d` asks to delete the selected scenario |
 | `m` | ask to set or clear the maintenance flag of the selected device |
-| `g` `s` `G` `P` | in the devices workbench, in a lab with containerlab nodes: `g`, `s` and `G` ask for a missing login first; then `g` runs `nobs device fetch` on the selected device and opens the Config tab, `s` asks for a command on the key line and runs `nobs device run` on it, and `G` runs `nobs device check` on every device and fills the `SYNC` column; `P` asks a yes, then a missing login, and runs `nobs device push` on the selected device (see [Actions](#actions)) |
+| `g` `s` `G` `P` `F` | in the devices workbench, in a lab with containerlab nodes: `g`, `s` and `G` ask for a missing login first; then `g` runs `nobs device fetch` on the selected device and opens the Config tab, `s` asks for a command on the key line and runs `nobs device run` on it, and `G` runs `nobs device check` on every device and fills the `SYNC` column; `P` asks a yes, then a missing login, and runs `nobs device push` on the selected device; `F` on the Interfaces tab asks a yes, then a missing login, and runs `nobs device flap` on the selected interface (see [Actions](#actions)) |
 | `v` `n` `N` | in the Config tab, when the lab has a template for the device's kind: switch the view; move to the next or the previous difference |
 | `D` `X` `P` `R` `U` `B` `S` | in the lab workbench: ask to deploy, destroy, prepare, update or rebuild the selected chapter, or to purge the whole lab; `S` shows the chapter at once (see [Actions](#actions)) |
 | `D` `X` `R` `S` | in the lab workbench of a lab without chapters: ask to deploy or destroy the nodes, write the files at once (only with `nobs_project.yml`), or show the nodes at once (see [A project folder or a hand-written topology](#a-project-folder-or-a-hand-written-topology)) |
@@ -1468,6 +1469,8 @@ The lines that start with `nobs:` go to standard error (the channel for error me
 ### flap-interface, incident and scenarios
 
 `flap-interface` and `incident` make trouble in the lab on purpose, so the dashboards, the alerts and the flows have something to show. `scenarios` lists what is registered. All three talk to the `sonda-server` of the workshop, and none of them makes a Docker call. A scenario is a body of JSON that tells Sonda what to make, how fast and for how long. `POST /scenarios` starts it, and the server answers with an ID, a name and a state. A cascade is one scenario body with several signals that follow each other, for example an interface that goes down and a BGP session that goes down after it. `flap-interface` and `incident` change the lab, because they start scenarios. They never stop or delete one: a cascade ends by itself when its duration is over.
+
+To take a real interface of a lab device down, use `nobs device flap` (see [Device](#device)).
 
 `flap-interface` posts one cascade for an interface and one cascade for each healthy BGP peer on that link (defined below). The interface cascade flaps the interface: it is up for `--up-duration`, then down for `--down-duration`, again and again until `--duration` is over. While the interface is down, its operational state is held at `2` (down). From `--cascade-delay` after it goes down, a log line with the process `UPDOWN` goes to Loki every 2 seconds. A BGP cascade holds the six BGP metrics of one peer at their down values. It is shifted by `--cascade-delay`, so BGP goes down after the interface and comes back with it. The baseline scenarios of the workshop have a `while:` clause, a rule that lets a scenario run only while a condition on another signal holds. The clause names these cascades, so the baselines pause while a cascade runs and resume when it finishes.
 
@@ -2843,7 +2846,7 @@ wrote containerlab/configs/nobs-t-srl2.cfg
 
 ## Device
 
-The `nobs device` group works on the devices of a lab: `check` on every device, the other commands on one. `fetch`, `run` and `shell` log in to the device over SSH, and print what the device answers or open a live shell on it. `check` fetches every device and says which ones lack intended lines. `render` logs in to nothing and prints the intended configuration of the device, the configuration that the lab's template and data give for it. SSH is the usual way to log in to a network device and run a command on it. A shell is a command line, where you type commands one after another. `nobs device shell` opens the device's own shell. When this section says "set in the shell", it means your own shell, where you run nobs. This is not `nobs devices`, which lists the devices of a workshop's source of truth.
+The `nobs device` group works on the devices of a lab: `check` on every device, the other commands on one. `fetch`, `run` and `shell` log in to the device over SSH, and print what the device answers or open a live shell on it. `push` and `flap` log in too, and change the device only after a yes. `check` fetches every device and says which ones lack intended lines. `render` logs in to nothing and prints the intended configuration of the device, the configuration that the lab's template and data give for it. SSH is the usual way to log in to a network device and run a command on it. A shell is a command line, where you type commands one after another. `nobs device shell` opens the device's own shell. When this section says "set in the shell", it means your own shell, where you run nobs. This is not `nobs devices`, which lists the devices of a workshop's source of truth.
 
 | Command | What it does |
 |---|---|
@@ -2853,10 +2856,53 @@ The `nobs device` group works on the devices of a lab: `check` on every device, 
 | `nobs device render NAME` | prints the intended configuration of the device: the lab's template for its kind, filled with its data from the source of truth |
 | `nobs device check` | fetches every device in turn and says which ones lack intended lines; ends with 1 when a device differs or fails; with `--save FOLDER`, also writes what each device answered to a file in this folder, and the folder must not exist |
 | `nobs device push NAME` | sends the intended configuration of the device in one commit after a yes, fetches it again and prints the result line of `check`; ends with 0 only when the device is in sync after it |
+| `nobs device flap NAME INTERFACE` | takes one interface of the device down after a yes, and the device brings it back by itself after the delay; with `--count N` it does it N times; ends with 0 only when the device shows the interface back after each flap |
 
-On the screen, `g`, `s` and `P` on the devices workbench run `fetch`, `run` and `push` for the selected device, and `G` runs `check`.
+On the screen, `g`, `s` and `P` on the devices workbench run `fetch`, `run` and `push` for the selected device, and `G` runs `check`. `F` on the Interfaces tab runs `flap` for the selected interface.
 
 `NAME` is the node name in the lab's topology file. `COMMAND` is one text: put it in quotes, and nobs hands it to the device with its spaces kept.
+
+`nobs device flap NAME INTERFACE` takes one real interface of a lab device down for a short time, so the dashboards, the alerts and the flows have something real to show. `INTERFACE` is the device's own name of the interface, such as `ethernet-1/1`. This is not `nobs <workshop> flap-interface`, which posts made-up telemetry to Sonda and touches no device.
+
+| Option | What it does |
+|---|---|
+| `--delay SECONDS` | the time the interface stays down; with a count above 1, also the time it stays up before the next flap; 1 to 300; default 5 |
+| `--count N` | the number of flaps; 1 to 10; default 1 |
+| `--yes` | flap without the question |
+
+Before nobs sends anything, it asks a question on the standard error, for example `flap ethernet-1/1 of srl1? It goes down for 5 seconds, 1 time; the device brings it back. y/n`. Only `y` is a yes.
+
+For each flap, nobs sends one commit with the device's own timer. The device takes the "down" back by itself when the timer ends, also when nobs stops or the session breaks. nobs never sends an "up" and saves nothing, so a flap leaves no line in the configuration.
+
+For each flap, nobs prints two lines on the standard output: `<name>  <interface> down for <delay>` when the device took the "down", and `<name>  <interface> back` when a read of the device shows the interface no longer disabled. nobs starts to read when the delay ends.
+
+```
+$ nobs device flap srl1 ethernet-1/1 --yes --delay 20
+srl1  ethernet-1/1 down for 20 seconds
+srl1  ethernet-1/1 back
+```
+
+While a timer runs, the device refuses a push or a second flap.
+
+The device's words pass through: its output goes to the standard output of nobs and its error text to the standard error. nobs's own lines go to the standard error:
+
+| Line | When | Exit code |
+|---|---|---|
+| none | the device showed the interface back after each flap | 0 |
+| `nobs: flap <name>: not flapped` | the answer to the question was not `y`; nobs sent nothing | 1 |
+| `nobs: flap <name>: needs a yes; run it in a terminal, or add --yes` | the input is not a terminal and there is no `--yes`; nobs sent nothing | 1 |
+| `nobs: flap <name>: not a node of <topology path>` | the topology file has no node with this name | 1 |
+| `nobs: flap <name>: "<interface>" is not the name of one interface` | the interface name is empty, or holds a character the device could read as more than a name; on SR Linux a name may hold only ASCII letters, digits, `-` and `/`; nobs sent nothing | 1 |
+| `nobs: flap <name>: <interface> is the management interface` | the interface is the management interface of the device, `mgmt0` on SR Linux; nobs sent nothing | 1 |
+| `nobs: flap <name>: the delay must be 1 to 300 seconds` | `--delay` is outside its limits; nobs sent nothing | 1 |
+| `nobs: flap <name>: the count must be 1 to 10` | `--count` is outside its limits; nobs sent nothing | 1 |
+| `nobs: ssh <name>: …` | the node's kind has no driver, the login is missing, or the connection failed before nobs sent the change; the line is one of the `nobs: ssh` lines in the table below | 1 |
+| `nobs: flap <name>: <interface> is disabled already; nothing sent` | the interface was disabled before the flap | 1 |
+| the device's words, then `nobs: flap <name>: the device refused the flap; its configuration is as before` | the device refused the read before the flap, or the commit of a flap | 1 |
+| a `nobs: ssh <name>: …` line, then `nobs: flap <name>: not known whether the device took the flap; it takes it back by itself after <delay>` | the session broke after nobs started to send the change | 3 |
+| `nobs: flap <name>: not known whether <interface> is back`, after the `nobs: ssh <name>: …` line of a failed read, or after the device's words of the last refused read when there is one | after the delay, a read failed, or 10 reads one second apart did not show the interface back | 4 |
+
+A usage error exits with 2.
 
 ```
 $ nobs device fetch srl1
@@ -2878,13 +2924,13 @@ $ echo $?
 0
 ```
 
-`nobs device render` logs in to no device and writes no file: it prints the text to the standard output. Like the other five commands, it needs a lab with containerlab nodes, not a workshop. Its source of truth is the `containerlab/lab_vars.yml` of the lab folder. In a lab made by `nobs project`, right after `nobs project render`, its output equals `containerlab/configs/<name>.cfg`.
+`nobs device render` logs in to no device and writes no file: it prints the text to the standard output. Like the other commands of the group, it needs a lab with containerlab nodes, not a workshop. Its source of truth is the `containerlab/lab_vars.yml` of the lab folder. In a lab made by `nobs project`, right after `nobs project render`, its output equals `containerlab/configs/<name>.cfg`.
 
-`fetch`, `run`, `shell`, `push` and `check` work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). None of the six commands works in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file. `fetch`, `run`, `shell` and `push` then connect to the container name that containerlab gives the node.
+The commands that log in to a device work in a lab with containerlab nodes, on the machine that runs the lab: run them inside `clab` with the Linux binary (see [Commands](#commands)). None of the `nobs device` commands works in a workshop, because Sonda makes its devices, and they are not real devices. nobs finds the lab folder as the other commands do (see [Where nobs runs from](#where-nobs-runs-from)). It finds the node in the topology file, and then connects to the container name that containerlab gives the node.
 
 nobs logs in with a user and a password, on port 22. It reads the user from `NETWORK_AGENT_USER` and the password from `NETWORK_AGENT_PASSWORD`. Put both in the `.env` file of the lab folder. A value set in the shell wins over the `.env` file. When one is missing, empty or only spaces, nobs names the two variables and opens no connection. nobs never prints the password.
 
-In the screen, `g`, `G`, `s` and `P` ask on the key line for what is missing, `P` after its yes: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g`, `G`, `s` or `P`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
+In the screen, `g`, `G`, `s`, `P` and `F` ask on the key line for what is missing, `P` and `F` after their yes: first the user, then the password, which shows as one `•` for each character. nobs keeps a typed login in memory until it quits. When the device refuses it, nobs shows the `authentication failed` line and asks again at the next `g`, `G`, `s`, `P` or `F`. nobs never asks for a login it finds in the shell or the `.env` file. When the device refuses that login, fix it there.
 
 `fetch`, `run` and `shell` each open one connection. `fetch` and `run` connect, log in, run one command and close the connection. `shell` connects, logs in and keeps the connection until the shell on the device ends. nobs stops with an error when the device sends nothing for 10 seconds at one of these steps: while nobs connects and logs in, while `fetch` or `run` waits for the answer, and while `shell` waits for the device to open the shell. An open shell has no time limit.
 
@@ -2892,7 +2938,7 @@ In the screen, `g`, `G`, `s` and `P` ask on the key line for what is missing, `P
 
 A host key is the key a device shows so that the client knows it reaches the right device. nobs does not check the host key of a lab device: it accepts it, as containerlab does for its own nodes.
 
-A driver is the part of nobs that knows the commands of one kind of device. Today only SR Linux has a driver (the kinds `nokia_srlinux` and `srl`). `fetch`, `run` and `shell` need a driver, so `nobs device run` and `nobs device shell` on a node of another kind also stop with the `no driver` line. `render` needs no driver. For SR Linux, `fetch` runs `info flat` on the device. This is the flat form: one `set / ...` line for each setting, the form that the templates of a nobs project write. A value that holds line breaks, such as a certificate, goes on in further lines, because nobs prints what the device sends and changes nothing. To keep the configuration, redirect it to a file: `nobs device fetch srl1 > srl1.cfg`. The configuration holds password hashes, so do not commit that file.
+A driver is the part of nobs that knows the commands of one kind of device. Today only SR Linux has a driver (the kinds `nokia_srlinux` and `srl`). `fetch`, `run`, `shell` and `flap` need a driver, so `nobs device run`, `nobs device shell` and `nobs device flap` on a node of another kind also stop with the `no driver` line. `render` needs no driver. For SR Linux, `fetch` runs `info flat` on the device. This is the flat form: one `set / ...` line for each setting, the form that the templates of a nobs project write. A value that holds line breaks, such as a certificate, goes on in further lines, because nobs prints what the device sends and changes nothing. To keep the configuration, redirect it to a file: `nobs device fetch srl1 > srl1.cfg`. The configuration holds password hashes, so do not commit that file.
 
 What the device says passes through. For `fetch` and `run`, its output goes to the standard output of nobs and its error text to the standard error. For `shell`, nobs writes both to its standard output. For `fetch`, `run` and `shell`, the exit status of the device is the exit code of nobs. nobs's own errors go to the standard error and exit with 1. Each is one line, except the `lab_vars.yml` line of `render`, which may run over several lines:
 

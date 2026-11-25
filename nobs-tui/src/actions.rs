@@ -10,6 +10,7 @@ pub enum Row {
     Device,
     Node,
     EveryNode,
+    Interface,
     Chapter,
     Lab(&'static [Nodes]),
 }
@@ -19,13 +20,13 @@ impl Row {
         match self {
             Row::Chapter => Some(&[Nodes::Chapters]),
             Row::Lab(nodes) => Some(nodes),
-            Row::Stack | Row::Device | Row::Node | Row::EveryNode => None,
+            Row::Stack | Row::Device | Row::Node | Row::EveryNode | Row::Interface => None,
         }
     }
 }
 
 pub(crate) fn in_its_lab(row: Row, model: &Model) -> bool {
-    !matches!(row, Row::Node | Row::EveryNode) || model.lab_with_nodes()
+    !matches!(row, Row::Node | Row::EveryNode | Row::Interface) || model.lab_with_nodes()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,7 @@ pub enum Ask {
     Saying(&'static str),
     Text,
     Push,
+    Flap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +63,7 @@ const OTHER_CHAPTERS_DOWN: &str = "takes the other chapters' services down";
 pub(crate) const SAVE: &str = "--save";
 const WITH_NODES: &[Nodes] = &[Nodes::Project, Nodes::Topology];
 
-pub const ACTIONS: [Action; 23] = [
+pub const ACTIONS: [Action; 24] = [
     Action {
         key: 'u',
         workbench: Workbench::Services,
@@ -317,6 +319,17 @@ pub const ACTIONS: [Action; 23] = [
         hands_back: HandsBack::Folder,
         login: true,
     },
+    Action {
+        key: 'F',
+        workbench: Workbench::Devices,
+        row: Row::Interface,
+        words: &["device", "flap", "--yes"],
+        hint: "flap",
+        ask: Ask::Flap,
+        sudo: false,
+        hands_back: HandsBack::Nothing,
+        login: true,
+    },
 ];
 
 pub(crate) fn fits(action: &Action, model: &Model) -> bool {
@@ -334,8 +347,18 @@ fn fits_nodes(action: &Action, nodes: Option<Nodes>) -> bool {
 pub enum Target {
     Stack(usize),
     Device(String),
+    Interface { device: String, interface: String },
     Chapter(usize),
     Lab,
+}
+
+impl Target {
+    pub(crate) fn device(&self) -> Option<&str> {
+        match self {
+            Target::Device(name) | Target::Interface { device: name, .. } => Some(name),
+            _ => None,
+        }
+    }
 }
 
 fn command_words(action: &Action) -> impl Iterator<Item = Vec<OsString>> {
@@ -401,6 +424,18 @@ pub(crate) fn pieces(
                 .filter(|_| in_its_lab(action.row, model))
                 .filter(|_| action.ask != Ask::Push || model.intended_text(name).is_some())?;
             let args = words.chain([vec![OsString::from(name)]]).collect();
+            (lab.dir.clone().into(), args)
+        }
+        (Row::Interface, Target::Interface { device, interface }) => {
+            let lab = model
+                .located()
+                .filter(|_| in_its_lab(action.row, model) && model.has_driver(device))?;
+            let args = words
+                .chain([
+                    vec![OsString::from(device)],
+                    vec![OsString::from(interface)],
+                ])
+                .collect();
             (lab.dir.clone().into(), args)
         }
         (Row::EveryNode, Target::Lab) => {

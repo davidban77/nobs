@@ -1,8 +1,11 @@
 use std::borrow::Cow;
 #[cfg(any(test, feature = "fake"))]
 use std::cell::RefCell;
+#[cfg(any(test, feature = "fake"))]
+use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, Read, Write};
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
 #[cfg(any(test, feature = "fake"))]
 use std::sync::{Arc, Mutex};
@@ -112,6 +115,31 @@ pub struct Driver {
     pub open: &'static [&'static str],
     pub commit: &'static str,
     pub syntax: Syntax,
+    pub flap: Flapping,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Flapping {
+    pub down: &'static str,
+    pub admin_state: &'static str,
+    pub commit_after: &'static str,
+    pub management: &'static str,
+    pub name_letters: &'static str,
+}
+
+impl Flapping {
+    fn down(&self, interface: &str) -> String {
+        self.down.replace("{}", interface)
+    }
+
+    fn admin_state(&self, interface: &str) -> String {
+        self.admin_state.replace("{}", interface)
+    }
+
+    fn commit_after(&self, delay: Duration) -> String {
+        self.commit_after
+            .replace("{}", &delay.as_secs().to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -186,6 +214,13 @@ pub fn driver(kind: &str) -> Result<Driver, Error> {
             open: &["enter candidate private name nobs", "discard stay"],
             commit: "commit now",
             syntax: Syntax::SrLinux,
+            flap: Flapping {
+                down: "set / interface {} admin-state disable",
+                admin_state: "info flat interface {} admin-state",
+                commit_after: "commit confirmed timeout {}",
+                management: "mgmt0",
+                name_letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/",
+            },
         })
     } else {
         Err(Error::NoDriver(kind.to_string()))
@@ -219,24 +254,247 @@ pub fn push(
         if !yes() {
             return Ok(Pushed::Declined);
         }
-        match transport.send(host, credentials, &session_lines(driver, text)) {
-            Ok(output) if output.code == 0 => Ok(Pushed::Taken(output)),
-            Ok(output) => Ok(Pushed::Refused(output)),
-            Err(error) if error.says_nothing_was_sent() => Err(error),
-            Err(error) => Ok(Pushed::NotKnown(error)),
-        }
+        let lines = session_lines(driver, intended::lines(text), driver.commit);
+        Ok(match sent(transport, host, credentials, &lines)? {
+            Sent::Taken(output) => Pushed::Taken(output),
+            Sent::Refused(output) => Pushed::Refused(output),
+            Sent::NotKnown(error) => Pushed::NotKnown(error),
+        })
     })
 }
 
-fn session_lines(driver: Driver, text: &str) -> Vec<String> {
+enum Sent {
+    Taken(Output),
+    Refused(Output),
+    NotKnown(Error),
+}
+
+fn sent(
+    transport: &dyn Transport,
+    host: &str,
+    credentials: &Credentials,
+    lines: &[String],
+) -> Result<Sent, Error> {
+    match transport.send(host, credentials, lines) {
+        Ok(output) if output.code == 0 => Ok(Sent::Taken(output)),
+        Ok(output) => Ok(Sent::Refused(output)),
+        Err(error) if error.says_nothing_was_sent() => Err(error),
+        Err(error) => Ok(Sent::NotKnown(error)),
+    }
+}
+
+fn session_lines<'a>(
+    driver: Driver,
+    lines: impl Iterator<Item = &'a str>,
+    commit: &'a str,
+) -> Vec<String> {
     driver
         .open
         .iter()
         .copied()
-        .chain(intended::lines(text))
-        .chain([driver.commit])
+        .chain(lines)
+        .chain([commit])
         .map(str::to_string)
         .collect()
+}
+
+pub const FLAP_DELAY: u64 = 5;
+pub const FLAP_COUNT: u32 = 1;
+pub const FLAP_DELAYS: RangeInclusive<u64> = 1..=300;
+pub const FLAP_COUNTS: RangeInclusive<u32> = 1..=10;
+const BACK_READS: u32 = 10;
+const BACK_READ_GAP: Duration = Duration::from_secs(1);
+
+pub struct Flap<'a> {
+    pub interface: &'a str,
+    pub delay: Duration,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unfit {
+    Name(String),
+    Management(&'static str),
+    Delay,
+    Count,
+}
+
+impl fmt::Display for Unfit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Unfit::Name(interface) => {
+                write!(f, "\"{interface}\" is not the name of one interface")
+            }
+            Unfit::Management(name) => write!(f, "{name} is the management interface"),
+            Unfit::Delay => write!(
+                f,
+                "the delay must be {} to {} seconds",
+                FLAP_DELAYS.start(),
+                FLAP_DELAYS.end()
+            ),
+            Unfit::Count => write!(
+                f,
+                "the count must be {} to {}",
+                FLAP_COUNTS.start(),
+                FLAP_COUNTS.end()
+            ),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Flapped {
+    Declined,
+    Unfit(Unfit),
+    Disabled,
+    Refused(Output),
+    NotKnown(Error),
+    NotBack(NotBack),
+    Back,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotBack {
+    ReadFailed(Error),
+    Refused(Output),
+    StillDisabled,
+}
+
+pub fn flap(
+    node: &lab::TopologyNode,
+    transport: &dyn Transport,
+    flap: &Flap,
+    yes: &mut dyn FnMut() -> bool,
+    wait: &mut dyn FnMut(Duration),
+    told: &mut dyn FnMut(u32, bool),
+) -> Result<Flapped, Error> {
+    step(node, |host, credentials, driver| {
+        let flapper = Flapper {
+            transport,
+            host,
+            credentials,
+            driver,
+            flap,
+        };
+        flapper.flapped(yes, wait, told)
+    })
+}
+
+pub fn flap_question(name: &str, interface: &str, delay: u64, count: u32) -> String {
+    format!(
+        "flap {interface} of {name}? It goes down for {}, {}; the device brings it back. y/n",
+        counted(delay, "second"),
+        counted(count, "time")
+    )
+}
+
+fn unfit(driver: Driver, flap: &Flap) -> Option<Unfit> {
+    let interface = flap.interface;
+    if interface.is_empty()
+        || !interface
+            .chars()
+            .all(|c| driver.flap.name_letters.contains(c))
+    {
+        Some(Unfit::Name(interface.to_string()))
+    } else if interface == driver.flap.management {
+        Some(Unfit::Management(driver.flap.management))
+    } else if !FLAP_DELAYS.contains(&flap.delay.as_secs()) {
+        Some(Unfit::Delay)
+    } else if !FLAP_COUNTS.contains(&flap.count) {
+        Some(Unfit::Count)
+    } else {
+        None
+    }
+}
+
+struct Flapper<'a> {
+    transport: &'a dyn Transport,
+    host: &'a str,
+    credentials: &'a Credentials,
+    driver: Driver,
+    flap: &'a Flap<'a>,
+}
+
+impl Flapper<'_> {
+    fn flapped(
+        &self,
+        yes: &mut dyn FnMut() -> bool,
+        wait: &mut dyn FnMut(Duration),
+        told: &mut dyn FnMut(u32, bool),
+    ) -> Result<Flapped, Error> {
+        if let Some(unfit) = unfit(self.driver, self.flap) {
+            return Ok(Flapped::Unfit(unfit));
+        }
+        if !yes() {
+            return Ok(Flapped::Declined);
+        }
+        let before = self.read()?;
+        if before.code != 0 {
+            return Ok(Flapped::Refused(before));
+        }
+        if self.disabled(&before) {
+            return Ok(Flapped::Disabled);
+        }
+        for n in 1..=self.flap.count {
+            if n > 1 {
+                wait(self.flap.delay);
+            }
+            if let Some(end) = self.once(n, wait, told)? {
+                return Ok(end);
+            }
+            told(n, true);
+        }
+        Ok(Flapped::Back)
+    }
+
+    fn once(
+        &self,
+        n: u32,
+        wait: &mut dyn FnMut(Duration),
+        told: &mut dyn FnMut(u32, bool),
+    ) -> Result<Option<Flapped>, Error> {
+        let flapping = self.driver.flap;
+        let down = flapping.down(self.flap.interface);
+        let commit = flapping.commit_after(self.flap.delay);
+        let lines = session_lines(self.driver, [down.as_str()].into_iter(), &commit);
+        match sent(self.transport, self.host, self.credentials, &lines)? {
+            Sent::Taken(_) => {}
+            Sent::Refused(output) => return Ok(Some(Flapped::Refused(output))),
+            Sent::NotKnown(error) => return Ok(Some(Flapped::NotKnown(error))),
+        }
+        told(n, false);
+        wait(self.flap.delay);
+        Ok(self.not_back(wait))
+    }
+
+    fn not_back(&self, wait: &mut dyn FnMut(Duration)) -> Option<Flapped> {
+        let mut refused = None;
+        for read in 1..=BACK_READS {
+            if read > 1 {
+                wait(BACK_READ_GAP);
+            }
+            match self.read() {
+                Err(error) => return Some(Flapped::NotBack(NotBack::ReadFailed(error))),
+                Ok(output) if output.code != 0 => refused = Some(output),
+                Ok(output) if !self.disabled(&output) => return None,
+                Ok(_) => {}
+            }
+        }
+        let last = refused.map_or(NotBack::StillDisabled, NotBack::Refused);
+        Some(Flapped::NotBack(last))
+    }
+
+    fn read(&self) -> Result<Output, Error> {
+        let command = self.driver.flap.admin_state(self.flap.interface);
+        self.transport.run(self.host, self.credentials, &command)
+    }
+
+    fn disabled(&self, read: &Output) -> bool {
+        let syntax = self.driver.syntax;
+        let down = self.driver.flap.down(self.flap.interface);
+        let down = syntax.words(&down);
+        read.stdout.lines().any(|line| syntax.words(line) == down)
+    }
 }
 
 pub fn credentials() -> Result<Credentials, Error> {
@@ -271,35 +529,51 @@ pub fn not_known_line(name: &str) -> String {
 
 #[cfg(any(test, feature = "fake"))]
 pub struct FakeTransport {
-    answers: Vec<(Option<String>, Result<Output, Error>)>,
+    answers: Answers,
     calls: RefCell<Vec<(String, String)>>,
 }
 
 #[cfg(any(test, feature = "fake"))]
+enum Answers {
+    PerHost(Vec<(Option<String>, Result<Output, Error>)>),
+    InOrder(RefCell<VecDeque<Result<Output, Error>>>),
+}
+
+#[cfg(any(test, feature = "fake"))]
 impl FakeTransport {
-    pub fn answering(answer: Result<Output, Error>) -> Self {
+    fn with(answers: Answers) -> Self {
         Self {
-            answers: vec![(None, answer)],
+            answers,
             calls: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn answering(answer: Result<Output, Error>) -> Self {
+        Self::with(Answers::PerHost(vec![(None, answer)]))
     }
 
     pub fn per_host(answers: Vec<(String, Result<Output, Error>)>) -> Self {
-        Self {
-            answers: answers
+        Self::with(Answers::PerHost(
+            answers
                 .into_iter()
                 .map(|(host, answer)| (Some(host), answer))
                 .collect(),
-            calls: RefCell::new(Vec::new()),
-        }
+        ))
+    }
+
+    pub fn in_order(answers: Vec<Result<Output, Error>>) -> Self {
+        Self::with(Answers::InOrder(RefCell::new(answers.into())))
     }
 
     fn answer(&self, host: &str) -> Result<Output, Error> {
-        self.answers
-            .iter()
-            .find(|(known, _)| known.as_deref().is_none_or(|known| known == host))
-            .map(|(_, answer)| answer.clone())
-            .unwrap_or_else(|| panic!("no answer for {host}"))
+        match &self.answers {
+            Answers::PerHost(answers) => answers
+                .iter()
+                .find(|(known, _)| known.as_deref().is_none_or(|known| known == host))
+                .map(|(_, answer)| answer.clone()),
+            Answers::InOrder(answers) => answers.borrow_mut().pop_front(),
+        }
+        .unwrap_or_else(|| panic!("no answer for {host}"))
     }
 
     pub fn calls(&self) -> Vec<(String, String)> {
@@ -478,6 +752,14 @@ mod tests {
                     open: &["enter candidate private name nobs", "discard stay"],
                     commit: "commit now",
                     syntax: Syntax::SrLinux,
+                    flap: Flapping {
+                        down: "set / interface {} admin-state disable",
+                        admin_state: "info flat interface {} admin-state",
+                        commit_after: "commit confirmed timeout {}",
+                        management: "mgmt0",
+                        name_letters:
+                            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/",
+                    },
                 }),
                 "{kind}"
             );
@@ -594,12 +876,14 @@ mod tests {
         ];
         for (open, sent) in cases {
             let driver = Driver {
-                running_config: "nobs-t-running",
                 open,
-                commit: "nobs-t-commit",
-                syntax: Syntax::SrLinux,
+                ..test_driver()
             };
-            assert_eq!(session_lines(driver, text), sent, "{open:?}");
+            assert_eq!(
+                session_lines(driver, intended::lines(text), driver.commit),
+                sent,
+                "{open:?}"
+            );
         }
     }
 
@@ -859,5 +1143,470 @@ mod tests {
         let [(_, sent)] = transport.calls().try_into().unwrap();
         assert!(!sent.contains("save"), "{sent}");
         assert!(!sent.contains("startup"), "{sent}");
+    }
+
+    fn test_driver() -> Driver {
+        Driver {
+            running_config: "nobs-t-running",
+            open: &["nobs-t-open-1"],
+            commit: "nobs-t-commit",
+            syntax: Syntax::SrLinux,
+            flap: Flapping {
+                down: "nobs-t-down {}",
+                admin_state: "nobs-t-read {}",
+                commit_after: "nobs-t-commit-after {}",
+                management: "nobs-t-mgmt",
+                name_letters: "bfgimnost-*",
+            },
+        }
+    }
+
+    const UP: &str = "set / interface ethernet-1/1 admin-state enable\n";
+    const DOWN: &str = "set / interface ethernet-1/1 admin-state disable\n";
+    const READ: &str = "info flat interface ethernet-1/1 admin-state";
+
+    fn printed(stdout: &str) -> Result<Output, Error> {
+        Ok(Output {
+            code: 0,
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+        })
+    }
+
+    fn flap_session(seconds: u64) -> String {
+        format!(
+            "enter candidate private name nobs\ndiscard stay\nset / interface ethernet-1/1 admin-state disable\ncommit confirmed timeout {seconds}"
+        )
+    }
+
+    fn ethernet(delay: u64, count: u32) -> Flap<'static> {
+        Flap {
+            interface: "ethernet-1/1",
+            delay: Duration::from_secs(delay),
+            count,
+        }
+    }
+
+    fn merged(calls: Vec<(String, String)>, marks: Vec<(usize, String)>) -> Vec<String> {
+        let mut log = Vec::new();
+        let mut marks = marks.into_iter().peekable();
+        for (at, (_, text)) in calls.into_iter().enumerate() {
+            while let Some((_, mark)) = marks.next_if(|(before, _)| *before <= at) {
+                log.push(mark);
+            }
+            log.push(text);
+        }
+        log.extend(marks.map(|(_, mark)| mark));
+        log
+    }
+
+    fn flapped_on(
+        node: &lab::TopologyNode,
+        wanted: &Flap,
+        answers: Vec<Result<Output, Error>>,
+        answer: bool,
+    ) -> (Result<Flapped, Error>, Vec<String>) {
+        let transport = FakeTransport::in_order(answers);
+        let marks = RefCell::new(Vec::new());
+        let mark = |text: String| marks.borrow_mut().push((transport.calls().len(), text));
+        let flapped = flap(
+            node,
+            &transport,
+            wanted,
+            &mut || {
+                mark("yes".to_string());
+                answer
+            },
+            &mut |delay| mark(format!("wait {}", delay.as_secs())),
+            &mut |n, back| mark(format!("{} {n}", if back { "back" } else { "down" })),
+        );
+        let calls = transport.calls();
+        assert!(
+            calls.iter().all(|(to, _)| *to == node.container),
+            "{calls:?}"
+        );
+        (flapped, merged(calls, marks.into_inner()))
+    }
+
+    fn flapped(
+        wanted: &Flap,
+        answers: Vec<Result<Output, Error>>,
+    ) -> (Result<Flapped, Error>, Vec<String>) {
+        logged_in();
+        flapped_on(&node("nobs-t-srl1", "srl"), wanted, answers, true)
+    }
+
+    fn log(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|entry| entry.to_string()).collect()
+    }
+
+    #[test]
+    fn one_flap_reads_then_sends_the_down_with_the_delay_as_its_timer_then_waits_and_reads_it_back()
+    {
+        let sent = flap_session(20);
+        assert_eq!(
+            flapped(
+                &ethernet(20, 1),
+                vec![printed(""), printed(""), printed(UP)]
+            ),
+            (
+                Ok(Flapped::Back),
+                log(&["yes", READ, &sent, "down 1", "wait 20", READ, "back 1"])
+            )
+        );
+    }
+
+    #[test]
+    fn three_flaps_send_the_same_lines_each_after_the_read_back_and_the_time_up() {
+        let sent = flap_session(8);
+        let (flapped, calls) = flapped(
+            &ethernet(8, 3),
+            vec![
+                printed(UP),
+                printed(""),
+                printed(UP),
+                printed(""),
+                printed(UP),
+                printed(""),
+                printed(""),
+            ],
+        );
+        assert_eq!(flapped, Ok(Flapped::Back));
+        assert_eq!(
+            calls,
+            log(&[
+                "yes", READ, &sent, "down 1", "wait 8", READ, "back 1", "wait 8", &sent, "down 2",
+                "wait 8", READ, "back 2", "wait 8", &sent, "down 3", "wait 8", READ, "back 3",
+            ])
+        );
+        for call in &calls {
+            for word in ["enable", "save", "startup", "commit now"] {
+                assert!(!call.contains(word), "{call}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_no_after_the_question_sends_nothing() {
+        logged_in();
+        assert_eq!(
+            flapped_on(&node("nobs-t-srl1", "srl"), &ethernet(5, 1), vec![], false),
+            (Ok(Flapped::Declined), log(&["yes"]))
+        );
+    }
+
+    #[test]
+    fn each_unfit_flap_is_refused_with_its_words_before_the_question_and_sends_nothing() {
+        let not_one_interface = [
+            "",
+            "ethernet-1/1 x",
+            "ethernet-1/1\tx",
+            "ethernet-1/1\nshow",
+            "ethernet-1/1\u{7}",
+            "ethernet-1/{1,2}",
+            "ethernet-1/{1..2}",
+            "ethernet-1/*",
+            "*",
+            "ethernet-1/1;",
+            "ethernet-1/1\"",
+            "ethernet-1/é",
+        ];
+        let mut cases: Vec<(&str, u64, u32, Unfit)> = not_one_interface
+            .into_iter()
+            .map(|name| (name, 5, 1, Unfit::Name(name.to_string())))
+            .collect();
+        cases.extend([
+            ("mgmt0", 5, 1, Unfit::Management("mgmt0")),
+            ("ethernet-1/1", 0, 1, Unfit::Delay),
+            ("ethernet-1/1", 301, 1, Unfit::Delay),
+            ("ethernet-1/1", 5, 0, Unfit::Count),
+            ("ethernet-1/1", 5, 11, Unfit::Count),
+        ]);
+        for (interface, delay, count, unfit) in cases {
+            let wanted = Flap {
+                interface,
+                delay: Duration::from_secs(delay),
+                count,
+            };
+            assert_eq!(
+                flapped(&wanted, vec![]),
+                (Ok(Flapped::Unfit(unfit)), vec![]),
+                "{interface:?} {delay} {count}"
+            );
+        }
+        let words = [
+            (
+                Unfit::Name("ethernet-1/*".to_string()),
+                "\"ethernet-1/*\" is not the name of one interface",
+            ),
+            (
+                Unfit::Management("mgmt0"),
+                "mgmt0 is the management interface",
+            ),
+            (Unfit::Delay, "the delay must be 1 to 300 seconds"),
+            (Unfit::Count, "the count must be 1 to 10"),
+        ];
+        for (unfit, words) in words {
+            assert_eq!(unfit.to_string(), words);
+        }
+    }
+
+    #[test]
+    fn the_limits_themselves_are_fit() {
+        let srlinux = driver("srl").unwrap();
+        for (delay, count) in [(1, 1), (300, 10), (1, 10), (300, 1)] {
+            assert_eq!(
+                unfit(srlinux, &ethernet(delay, count)),
+                None,
+                "{delay} {count}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_names_of_one_srlinux_interface_pass_the_name_check() {
+        let srlinux = driver("srl").unwrap();
+        for interface in ["ethernet-1/1", "ethernet-1/1/1", "lag1", "irb0", "system0"] {
+            let wanted = Flap {
+                interface,
+                ..ethernet(5, 1)
+            };
+            assert_eq!(unfit(srlinux, &wanted), None, "{interface}");
+        }
+    }
+
+    #[test]
+    fn an_interface_the_device_shows_disabled_already_is_read_once_and_not_flapped() {
+        let shown = [
+            DOWN,
+            "set / interface \"ethernet-1/1\" admin-state disable",
+            "set / interface ethernet-1/2 admin-state enable\nset /  interface ethernet-1/1 admin-state disable\n",
+        ];
+        for stdout in shown {
+            assert_eq!(
+                flapped(&ethernet(5, 1), vec![printed(stdout)]),
+                (Ok(Flapped::Disabled), log(&["yes", READ])),
+                "{stdout}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_read_or_a_refused_commit_ends_with_the_device_answer_and_sends_no_more() {
+        let refused = replied(
+            1,
+            "Error: There is a commit already in progress for this candidate\n",
+        );
+        assert_eq!(
+            flapped(&ethernet(5, 2), vec![refused.clone()]),
+            (
+                Ok(Flapped::Refused(refused.clone().unwrap())),
+                log(&["yes", READ])
+            )
+        );
+        let sent = flap_session(5);
+        assert_eq!(
+            flapped(&ethernet(5, 2), vec![printed(UP), refused.clone()]),
+            (
+                Ok(Flapped::Refused(refused.unwrap())),
+                log(&["yes", READ, &sent])
+            )
+        );
+    }
+
+    #[test]
+    fn a_read_that_fails_after_the_delay_is_not_known_whether_back() {
+        let sent = flap_session(5);
+        for error in [Error::NoAnswer, Error::AuthenticationFailed] {
+            assert_eq!(
+                flapped(
+                    &ethernet(5, 2),
+                    vec![printed(UP), printed(""), Err(error.clone())]
+                ),
+                (
+                    Ok(Flapped::NotBack(NotBack::ReadFailed(error.clone()))),
+                    log(&["yes", READ, &sent, "down 1", "wait 5", READ])
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_interface_still_disabled_after_ten_reads_one_second_apart_is_not_known_whether_back() {
+        let sent = flap_session(5);
+        let mut answers = vec![printed(UP), printed("")];
+        answers.extend((0..10).map(|_| printed(DOWN)));
+        let mut expected = log(&["yes", READ, &sent, "down 1", "wait 5", READ]);
+        for _ in 1..10 {
+            expected.extend(log(&["wait 1", READ]));
+        }
+        assert_eq!(
+            flapped(&ethernet(5, 2), answers),
+            (Ok(Flapped::NotBack(NotBack::StillDisabled)), expected)
+        );
+    }
+
+    #[test]
+    fn ten_reads_with_a_refused_one_and_none_back_are_not_known_back_with_the_last_refusal() {
+        let busy = |n: u32| replied(1, &format!("Error: busy {n}\n"));
+        let mut every_read_refused = vec![printed(UP), printed("")];
+        every_read_refused.extend((1..=10).map(busy));
+        let mut refused_then_disabled = vec![printed(UP), printed(""), busy(1), busy(2)];
+        refused_then_disabled.extend((0..8).map(|_| printed(DOWN)));
+        for (answers, last) in [(every_read_refused, 10), (refused_then_disabled, 2)] {
+            let (flapped, calls) = flapped(&ethernet(5, 2), answers);
+            assert_eq!(
+                flapped,
+                Ok(Flapped::NotBack(NotBack::Refused(busy(last).unwrap())))
+            );
+            assert_eq!(calls.iter().filter(|call| *call == READ).count(), 11);
+        }
+    }
+
+    #[test]
+    fn a_read_the_device_refuses_after_the_delay_is_read_again() {
+        let sent = flap_session(5);
+        assert_eq!(
+            flapped(
+                &ethernet(5, 1),
+                vec![
+                    printed(UP),
+                    printed(""),
+                    replied(1, "Error: busy\n"),
+                    printed(UP)
+                ]
+            ),
+            (
+                Ok(Flapped::Back),
+                log(&["yes", READ, &sent, "down 1", "wait 5", READ, "wait 1", READ, "back 1"])
+            )
+        );
+    }
+
+    #[test]
+    fn a_session_that_fails_after_the_lines_went_is_not_known_and_reads_nothing_more() {
+        let sent = flap_session(5);
+        for error in [
+            Error::NoAnswer,
+            Error::NoExitStatus,
+            Error::Library("Connection closed by the remote side".to_string()),
+        ] {
+            assert_eq!(
+                flapped(&ethernet(5, 2), vec![printed(UP), Err(error.clone())]),
+                (
+                    Ok(Flapped::NotKnown(error.clone())),
+                    log(&["yes", READ, &sent])
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_that_fails_before_any_line_went_is_an_error() {
+        let sent = flap_session(5);
+        for error in [Error::AuthenticationFailed, Error::NoAnswer] {
+            assert_eq!(
+                flapped(&ethernet(5, 1), vec![Err(error.clone())]),
+                (Err(error.clone()), log(&["yes", READ])),
+                "{error:?}"
+            );
+        }
+        let unreachable = Error::Unreachable {
+            host: host("nobs-t-srl1"),
+            reason: "connection refused".to_string(),
+        };
+        assert_eq!(
+            flapped(&ethernet(5, 1), vec![printed(UP), Err(unreachable.clone())]),
+            (Err(unreachable), log(&["yes", READ, &sent]))
+        );
+    }
+
+    #[test]
+    fn no_driver_or_no_login_never_asks_and_never_reads() {
+        logged_in();
+        assert_eq!(
+            flapped_on(&node("nobs-t-ceos1", "ceos"), &ethernet(5, 1), vec![], true),
+            (Err(Error::NoDriver("ceos".to_string())), vec![])
+        );
+        std::env::remove_var(USER);
+        std::env::remove_var(PASSWORD);
+        assert_eq!(
+            flapped_on(&node("nobs-t-srl1", "srl"), &ethernet(5, 1), vec![], true),
+            (Err(Error::MissingCredentials), vec![])
+        );
+    }
+
+    #[test]
+    fn every_command_text_of_a_flap_is_a_value_of_the_driver() {
+        let credentials = Credentials {
+            user: "admin".to_string(),
+            password: Password::new("nobs-t-not-a-secret".to_string()),
+        };
+        let flapped_with = |interface, answers| {
+            let transport = FakeTransport::in_order(answers);
+            let wanted = Flap {
+                interface,
+                delay: Duration::from_secs(7),
+                count: 1,
+            };
+            let flapper = Flapper {
+                transport: &transport,
+                host: "nobs-t-host",
+                credentials: &credentials,
+                driver: test_driver(),
+                flap: &wanted,
+            };
+            let flapped = flapper.flapped(&mut || true, &mut |_| {}, &mut |_, _| {});
+            let texts: Vec<String> = transport
+                .calls()
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect();
+            (flapped, texts)
+        };
+        assert_eq!(
+            flapped_with("nobs-t-if", vec![printed(""), printed(""), printed(UP)]),
+            (
+                Ok(Flapped::Back),
+                log(&[
+                    "nobs-t-read nobs-t-if",
+                    "nobs-t-open-1\nnobs-t-down nobs-t-if\nnobs-t-commit-after 7",
+                    "nobs-t-read nobs-t-if",
+                ])
+            )
+        );
+        assert_eq!(
+            flapped_with("nobs-t-if", vec![printed("nobs-t-down nobs-t-if\n")]),
+            (Ok(Flapped::Disabled), log(&["nobs-t-read nobs-t-if"]))
+        );
+        assert_eq!(
+            flapped_with("nobs-t-mgmt", vec![]),
+            (Ok(Flapped::Unfit(Unfit::Management("nobs-t-mgmt"))), vec![])
+        );
+        assert_eq!(
+            flapped_with("nobs-t-*", vec![printed("nobs-t-down nobs-t-*\n")]),
+            (Ok(Flapped::Disabled), log(&["nobs-t-read nobs-t-*"]))
+        );
+        assert_eq!(
+            flapped_with("nobs-t-if1", vec![]),
+            (
+                Ok(Flapped::Unfit(Unfit::Name("nobs-t-if1".to_string()))),
+                vec![]
+            )
+        );
+    }
+
+    #[test]
+    fn the_question_names_the_device_the_interface_the_delay_and_the_count() {
+        assert_eq!(
+            flap_question("nobs-t-srl1", "ethernet-1/1", 5, 1),
+            "flap ethernet-1/1 of nobs-t-srl1? It goes down for 5 seconds, 1 time; the device brings it back. y/n"
+        );
+        assert_eq!(
+            flap_question("nobs-t-srl2", "ethernet-1/2", 1, 2),
+            "flap ethernet-1/2 of nobs-t-srl2? It goes down for 1 second, 2 times; the device brings it back. y/n"
+        );
     }
 }

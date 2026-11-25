@@ -1,0 +1,15 @@
+ nobs  book-lab book lab  sot lab_vars             13:42:07
+ [1 devices]  2 services  3 lab  4 obs       ? keys  q quit
+┌ devices 2 ──────────┐╔ nobs-t-srl1 ══════════════════════╗
+│   NAME    HLTH  ALRT│║overview  IFACES  config ›         ║
+│>  nobs-…  —        —│║ NAME          ADMIN  OPER  BGP    ║
+│   nobs-…  —        —│║>ethernet-1/1  —      —     —      ║
+│                     │║                                   ║
+│                     │║                                   ║
+│                     │║                                   ║
+├ alerts — ───────────┤║                                   ║
+│no alerts in this lab│║                                   ║
+│                     │║1 interface  0 differs             ║
+└─────────────────────┘╚═══════════════════════════════════╝
+ run  none                                           o open
+ Tab focus  j/k move  [ ] tab  Esc back  g fetch  s run
