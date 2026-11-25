@@ -1,0 +1,30 @@
+ nobs  book-lab book lab  sot lab_vars                                                     13:42:07
+ [1 devices]  2 services  3 lab  4 observability                                     ? keys  q quit
+┌ devices 2 ─────────────────────────────┐╔ nobs-t-srl1 ═══════════════════════════════════════════╗
+│   NAME         KIND  HLTH  SYNC  ALRT  │║overview  INTERFACES  config  timeline  logs  terminal  ║
+│>  nobs-t-srl1  —     —     —        —  │║ NAME          INTENT  ADMIN  OPER  PEER       BGP      ║
+│   nobs-t-srl2  —     —     —        —  │║>ethernet-1/1  up      —      —     192.0.2.1  —        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+├ alerts — ──────────────────────────────┤║                                                        ║
+│no alerts in this lab                   │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║                                                        ║
+│                                        │║1 interface  0 differs                                  ║
+└────────────────────────────────────────┘╚════════════════════════════════════════════════════════╝
+ run  none                                                                                   o open
+ flap ethernet-1/1 of nobs-t-srl1? It goes down for 5 seconds, 1 time; the device brings it back.
+y/n

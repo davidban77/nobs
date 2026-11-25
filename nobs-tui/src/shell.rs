@@ -1618,6 +1618,16 @@ impl Model {
                 };
                 text
             }
+            Ask::Flap => {
+                let Target::Interface {
+                    device: name,
+                    interface,
+                } = &target
+                else {
+                    return Vec::new();
+                };
+                device::flap_question(name, interface, device::FLAP_DELAY, 1)
+            }
             Ask::Text => {
                 self.ask(Then::Act(action), args, target, Step::Command, login);
                 return Vec::new();
@@ -1870,6 +1880,15 @@ impl Model {
             Row::Device | Row::Node => self
                 .selected_device()
                 .map(|device| Target::Device(device.name.clone())),
+            Row::Interface if self.tab == Tab::Interfaces && self.focus == Focus::Tabs => {
+                let device = self.selected_device()?.name.clone();
+                let interface = self.interfaces().into_iter().nth(self.interface_row())?;
+                Some(Target::Interface {
+                    device,
+                    interface: interface.name,
+                })
+            }
+            Row::Interface => None,
             Row::Chapter => self.selected_chapter().map(Target::Chapter),
             Row::Lab(_) | Row::EveryNode => Some(Target::Lab),
         }
@@ -2759,6 +2778,12 @@ impl Model {
             scroll: self.config_scroll,
             error: None,
         })
+    }
+
+    pub(crate) fn has_driver(&self, name: &str) -> bool {
+        self.nodes
+            .iter()
+            .any(|node| node.name == name && device::driver(&node.kind).is_ok())
     }
 
     pub(crate) fn intended_text(&self, device: &str) -> Option<&str> {
@@ -7486,6 +7511,7 @@ pub(crate) mod tests {
                 model.apply(intended_of(&[(SRL1, Ok(&WANTED)), (SRL2, Ok(&WANTED))]));
                 model
             }
+            Row::Interface => on_interfaces(lab_devices_model()),
             Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => book_model(),
             Row::Lab([Nodes::Project, ..]) => nodes_model(&fixture("project-two-node")),
             Row::Lab(_) => nodes_model(&fixture("labcli-example")),
@@ -7726,7 +7752,9 @@ pub(crate) mod tests {
                 ch(&mut model, '1');
                 model
             }
-            Row::Node | Row::EveryNode => devices_model(workshop_located("infrahub")),
+            Row::Node | Row::EveryNode | Row::Interface => {
+                devices_model(workshop_located("infrahub"))
+            }
             Row::Chapter | Row::Lab(_) => Model::new(Start {
                 lab: Some(workshop_located("infrahub")),
                 home: Workbench::Lab,
@@ -7784,7 +7812,7 @@ pub(crate) mod tests {
         for action in &ACTIONS {
             let saying = match action.ask {
                 Ask::Saying(saying) => Some(saying),
-                Ask::No | Ask::Yes | Ask::Text | Ask::Push => None,
+                Ask::No | Ask::Yes | Ask::Text | Ask::Push | Ask::Flap => None,
             };
             assert_eq!(saying, agreed_clause(action), "{}", action.key);
             let mut model = on_its_row(action.row);
@@ -7817,7 +7845,7 @@ pub(crate) mod tests {
             let clause =
                 agreed_clause(action).map_or(String::new(), |clause| format!(" It {clause}."));
             assert_eq!(commands, [], "{}", action.key);
-            if action.ask != Ask::Push {
+            if !matches!(action.ask, Ask::Push | Ask::Flap) {
                 assert_eq!(
                     model.question().unwrap().text(),
                     format!("run nobs {}?{clause} y/n", joined(&args))
@@ -7879,6 +7907,7 @@ pub(crate) mod tests {
                     KeyCode::Char(']'),
                     KeyCode::Esc,
                 ],
+                Row::Interface => &[KeyCode::Char(']'), KeyCode::Char('['), KeyCode::Esc],
                 Row::Chapter | Row::Lab(_) => &[],
             };
             model.tick(
@@ -9828,6 +9857,167 @@ pub(crate) mod tests {
         assert!(model.question().is_some());
     }
 
+    const PORT: &str = "ethernet-1/1";
+    const SECOND_PORT: &str = "ethernet-1/2";
+
+    fn on_interfaces(mut model: Model) -> Model {
+        model.apply(nodes(&[SRL1, SRL2]));
+        code(&mut model, KeyCode::Enter);
+        ch(&mut model, ']');
+        model
+    }
+
+    fn book_devices(change: impl Fn(&mut Device)) -> Update {
+        let mut devices = lab_vars_source("book-lab/containerlab/lab_vars.yml")
+            .devices()
+            .unwrap();
+        devices.iter_mut().for_each(change);
+        Update::Devices(Ok(devices))
+    }
+
+    fn flap_run(interface: &str, login: Login) -> Command {
+        Command::Run {
+            program: PathBuf::from("/bin/nobs"),
+            args: os(&[
+                "--dir",
+                &book_dir(),
+                "device",
+                "flap",
+                "--yes",
+                SRL1,
+                interface,
+            ]),
+            login,
+        }
+    }
+
+    #[test]
+    fn f_on_the_second_interface_asks_the_question_of_the_core_and_y_flaps_that_interface() {
+        let mut model = lab_devices_model();
+        model.apply(book_devices(|device| {
+            let mut second = device.interfaces[0].clone();
+            second.name = SECOND_PORT.to_string();
+            device.interfaces.push(second);
+        }));
+        let mut model = on_interfaces(model);
+        ch(&mut model, 'j');
+
+        assert_eq!(ch(&mut model, 'F'), []);
+
+        assert!(model.run().is_none());
+        assert_eq!(
+            asked_text(&model),
+            device::flap_question(SRL1, SECOND_PORT, device::FLAP_DELAY, 1)
+        );
+        assert_eq!(
+            ch(&mut model, 'y'),
+            [flap_run(SECOND_PORT, Login::default())]
+        );
+        assert_eq!(
+            model.run().unwrap().words,
+            "device flap --yes nobs-t-srl1 ethernet-1/2"
+        );
+    }
+
+    #[test]
+    fn y_on_a_flap_asks_the_missing_login_and_then_flaps_with_it() {
+        let typed = login(Some(USER), Some(SECRET));
+        let mut model = on_interfaces(asking(None, None));
+
+        assert_eq!(ch(&mut model, 'F'), []);
+        assert!(model.login_entry().is_none());
+        assert!(model.question().is_some());
+        assert_eq!(ch(&mut model, 'y'), []);
+        assert_eq!(key_line(&model, 100), [USER_STEP]);
+        assert_eq!(entered(&mut model, USER), []);
+        assert_eq!(entered(&mut model, SECRET), [flap_run(PORT, typed)]);
+
+        let mut found = on_interfaces(lab_devices_model());
+        ch(&mut found, 'F');
+        assert_eq!(ch(&mut found, 'y'), [flap_run(PORT, Login::default())]);
+    }
+
+    #[test]
+    fn no_esc_and_every_other_key_than_y_flap_nothing_and_ask_no_login() {
+        let keys = [
+            key(KeyCode::Char('n')),
+            key(KeyCode::Esc),
+            key(KeyCode::Enter),
+            key(KeyCode::Char('Y')),
+            key(KeyCode::Char('F')),
+            key(KeyCode::Char('j')),
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
+        ];
+        for pressed in keys {
+            let mut model = on_interfaces(asking(None, None));
+            ch(&mut model, 'F');
+
+            let commands = handle(&mut model, pressed);
+
+            let reaches = commands
+                .iter()
+                .any(|command| matches!(command, Command::Run { .. } | Command::TermOpen { .. }));
+            assert!(!reaches, "{pressed:?}: {commands:?}");
+            assert!(model.run().is_none(), "{pressed:?}");
+            assert_eq!(model.question(), None, "{pressed:?}");
+            assert!(model.login_entry().is_none(), "{pressed:?}");
+            assert_eq!(
+                model.notice(),
+                Some("not run: device flap --yes nobs-t-srl1 ethernet-1/1"),
+                "{pressed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn f_starts_nothing_without_a_row_a_driver_or_a_lab_with_nodes_or_off_the_interfaces_tab() {
+        let mut fitting = on_interfaces(lab_devices_model());
+        assert!(key_line(&fitting, 200).concat().contains("F flap"));
+        ch(&mut fitting, 'F');
+        assert!(fitting.question().is_some());
+
+        let mut no_row = lab_devices_model();
+        no_row.apply(book_devices(|device| device.interfaces.clear()));
+        let mut ceos = on_interfaces(lab_devices_model());
+        ceos.apply(Update::Nodes(Ok(vec![book::NodeRow {
+            name: SRL1.to_string(),
+            kind: "ceos".to_string(),
+            state: Some("running".to_string()),
+        }])));
+        let mut no_nodes = lab_devices_model();
+        code(&mut no_nodes, KeyCode::Enter);
+        ch(&mut no_nodes, ']');
+        let mut workshop = devices_model(workshop_located("infrahub"));
+        let name = workshop.selected_device().unwrap().name.clone();
+        workshop.apply(nodes(&[&name]));
+        code(&mut workshop, KeyCode::Enter);
+        ch(&mut workshop, ']');
+        let mut overview = on_interfaces(lab_devices_model());
+        ch(&mut overview, '[');
+        let mut config = on_interfaces(lab_devices_model());
+        ch(&mut config, ']');
+        let mut list = on_interfaces(lab_devices_model());
+        code(&mut list, KeyCode::Esc);
+        let cases = [
+            ("no row", on_interfaces(no_row)),
+            ("ceos", ceos),
+            ("no nodes", no_nodes),
+            ("workshop", workshop),
+            ("overview", overview),
+            ("config", config),
+            ("list", list),
+        ];
+
+        for (name, mut model) in cases {
+            assert!(!key_line(&model, 200).concat().contains("F flap"), "{name}");
+            assert_eq!(ch(&mut model, 'F'), [], "{name}");
+            assert_eq!(model.question(), None, "{name}");
+            assert!(model.run().is_none(), "{name}");
+            assert!(model.login_entry().is_none(), "{name}");
+        }
+    }
+
     #[test]
     fn p_gives_nothing_without_intended_text_in_a_workshop_with_no_lab_or_with_no_device() {
         let source = workshop_source();
@@ -10027,14 +10217,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_g_s_big_g_big_p_and_t_reach_a_device_and_no_update_starts_a_command_on_one() {
+    fn only_g_s_big_g_big_p_big_f_and_t_reach_a_device_and_no_update_starts_a_command_on_one() {
         let reaching: Vec<char> = ACTIONS
             .iter()
             .chain([&SHELL])
             .filter(|action| action.words.first() == Some(&"device"))
             .map(|action| action.key)
             .collect();
-        assert_eq!(reaching, ['g', 's', 'G', 'P', 't']);
+        assert_eq!(reaching, ['g', 's', 'G', 'P', 'F', 't']);
 
         let mut model = lab_devices_model();
         model.apply(intended_of(&[(SRL1, Ok(&WANTED))]));

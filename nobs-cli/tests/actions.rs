@@ -9,10 +9,12 @@ use nobs_core::locate::{locate, Kind, Located, Nodes};
 use nobs_core::sot::Device;
 use nobs_core::status::Urls;
 use nobs_tui::actions::{arguments, Action, Ask, Row, Target, ACTIONS};
+use nobs_tui::book::NodeRow;
 use nobs_tui::shell::stacks;
 use nobs_tui::{Shell, SondaTarget, Stack, StackKind, Start, Update, Workbench};
 
 const DEVICE: &str = "srl1";
+const INTERFACE: &str = "ethernet-1/1";
 const TEXT: &str = "show version";
 const CHAPTER: &str = "ch1";
 const SUDO_NO_PROMPT: &str = "sudo-no-prompt";
@@ -80,6 +82,11 @@ fn book_model() -> Shell {
         Ok("set / system information location nobs-t-x\n".to_string()),
         Some(nobs_core::device::Syntax::SrLinux),
     )]));
+    model.apply(Update::Nodes(Ok(vec![NodeRow {
+        name: DEVICE.to_string(),
+        kind: "nokia_srlinux".to_string(),
+        state: None,
+    }])));
     model
 }
 
@@ -112,6 +119,13 @@ fn command_line(action: &Action, workshop: &Shell, book: &Shell) -> Vec<OsString
         Row::Device => (workshop, Target::Device(DEVICE.to_string())),
         Row::Node => (book, Target::Device(DEVICE.to_string())),
         Row::EveryNode => (book, Target::Lab),
+        Row::Interface => (
+            book,
+            Target::Interface {
+                device: DEVICE.to_string(),
+                interface: INTERFACE.to_string(),
+            },
+        ),
         Row::Chapter => (
             book,
             Target::Chapter(stack_index(book, StackKind::BookLab, Some(CHAPTER))),
@@ -133,7 +147,7 @@ fn command_line(action: &Action, workshop: &Shell, book: &Shell) -> Vec<OsString
 fn workshop_row(row: Row) -> bool {
     match row {
         Row::Stack | Row::Device => true,
-        Row::Node | Row::EveryNode | Row::Chapter | Row::Lab(_) => false,
+        Row::Node | Row::EveryNode | Row::Interface | Row::Chapter | Row::Lab(_) => false,
     }
 }
 

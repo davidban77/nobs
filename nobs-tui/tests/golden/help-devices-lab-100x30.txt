@@ -14,9 +14,9 @@
   ║- +      timeline window                       s       run                                    ║
   ║x        dismiss the error                     G       check all                              ║
   ║Esc      close/clear/back                      P       push                                   ║
-  ║Enter    open / pick alert                     q       quit; asks if busy                     ║
-  ║/        filter                                Ctrl-C  stop a run, or quit                    ║
-  ║r        refresh now                                                                          ║
+  ║Enter    open / pick alert                     F       flap                                   ║
+  ║/        filter                                q       quit; asks if busy                     ║
+  ║r        refresh now                           Ctrl-C  stop a run, or quit                    ║
   ║                                                                                              ║
   ║PgUp PgDn  move a page where j and k move                                                     ║
   ║alerts box: Enter picks the device, opens its timeline                                        ║

@@ -1196,6 +1196,31 @@ fn the_project_devices_frame_is_pinned() {
     pinned(model, "devices-project", 100, 30);
 }
 
+fn on_lab_interfaces() -> Shell {
+    let mut model = lab_devices_model();
+    model.apply(Update::Nodes(Ok(vec![
+        node("nobs-t-srl1", Some("running")),
+        node("nobs-t-srl2", Some("running")),
+    ])));
+    press(&mut model, KeyCode::Enter);
+    press(&mut model, KeyCode::Char(']'));
+    model
+}
+
+#[test]
+fn the_lab_interfaces_frame_is_pinned() {
+    golden("devices-interfaces-lab", on_lab_interfaces);
+}
+
+#[test]
+fn the_flap_question_frame_is_pinned() {
+    golden("devices-flap-question", || {
+        let mut model = on_lab_interfaces();
+        press(&mut model, KeyCode::Char('F'));
+        model
+    });
+}
+
 #[test]
 fn the_lab_devices_help_frame_is_pinned() {
     golden("help-devices-lab", || {
@@ -2614,7 +2639,7 @@ fn a_narrow_key_line_ends_in_a_whole_hint() {
 fn asked(action: &Action) -> Shell {
     let mut model = match action.row {
         Row::Stack => services_model(),
-        Row::Device | Row::Node | Row::EveryNode => maintenance_model(false),
+        Row::Device | Row::Node | Row::EveryNode | Row::Interface => maintenance_model(false),
         Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => lab_model(),
         Row::Lab([Nodes::Project, ..]) => project_bench(),
         Row::Lab(_) => topology_bench(),
