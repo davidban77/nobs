@@ -69,10 +69,18 @@ fn assert_fails_with(output: &Output, line: &str) {
 #[test]
 fn each_unfit_flap_is_refused_with_its_line_and_exit_1_before_any_connection() {
     let lab = Lab::new("unfit");
-    let cases: [(&[&str], &str); 5] = [
+    let cases: [(&[&str], &str); 7] = [
         (
             &["nobs-t-srl1", "ethernet-1/1 x", "--yes"],
-            "the interface name must be one word",
+            "\"ethernet-1/1 x\" is not the name of one interface",
+        ),
+        (
+            &["nobs-t-srl1", "ethernet-1/{1,2}", "--yes"],
+            "\"ethernet-1/{1,2}\" is not the name of one interface",
+        ),
+        (
+            &["nobs-t-srl1", "*", "--yes"],
+            "\"*\" is not the name of one interface",
         ),
         (
             &["nobs-t-srl1", "mgmt0", "--yes"],

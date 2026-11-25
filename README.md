@@ -2892,7 +2892,7 @@ The device's words pass through: its output goes to the standard output of nobs 
 | `nobs: flap <name>: not flapped` | the answer to the question was not `y`; nobs sent nothing | 1 |
 | `nobs: flap <name>: needs a yes; run it in a terminal, or add --yes` | the input is not a terminal and there is no `--yes`; nobs sent nothing | 1 |
 | `nobs: flap <name>: not a node of <topology path>` | the topology file has no node with this name | 1 |
-| `nobs: flap <name>: the interface name must be one word` | the interface name is empty, or holds a space or a control character; nobs sent nothing | 1 |
+| `nobs: flap <name>: "<interface>" is not the name of one interface` | the interface name is empty, or holds a character the device could read as more than a name; on SR Linux a name may hold only ASCII letters, digits, `-` and `/`; nobs sent nothing | 1 |
 | `nobs: flap <name>: <interface> is the management interface` | the interface is the management interface of the device, `mgmt0` on SR Linux; nobs sent nothing | 1 |
 | `nobs: flap <name>: the delay must be 1 to 300 seconds` | `--delay` is outside its limits; nobs sent nothing | 1 |
 | `nobs: flap <name>: the count must be 1 to 10` | `--count` is outside its limits; nobs sent nothing | 1 |

@@ -8808,7 +8808,7 @@ mod tests {
                 "ethernet-1/1 x",
                 5,
                 1,
-                "the interface name must be one word",
+                "\"ethernet-1/1 x\" is not the name of one interface",
             ),
             ("mgmt0", 5, 1, "mgmt0 is the management interface"),
             ("ethernet-1/1", 0, 1, "the delay must be 1 to 300 seconds"),

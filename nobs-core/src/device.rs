@@ -124,6 +124,7 @@ pub struct Flapping {
     pub admin_state: &'static str,
     pub commit_after: &'static str,
     pub management: &'static str,
+    pub name_letters: &'static str,
 }
 
 impl Flapping {
@@ -218,6 +219,7 @@ pub fn driver(kind: &str) -> Result<Driver, Error> {
                 admin_state: "info flat interface {} admin-state",
                 commit_after: "commit confirmed timeout {}",
                 management: "mgmt0",
+                name_letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/",
             },
         })
     } else {
@@ -309,9 +311,9 @@ pub struct Flap<'a> {
     pub count: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unfit {
-    Name,
+    Name(String),
     Management(&'static str),
     Delay,
     Count,
@@ -320,7 +322,9 @@ pub enum Unfit {
 impl fmt::Display for Unfit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Unfit::Name => f.write_str("the interface name must be one word"),
+            Unfit::Name(interface) => {
+                write!(f, "\"{interface}\" is not the name of one interface")
+            }
             Unfit::Management(name) => write!(f, "{name} is the management interface"),
             Unfit::Delay => write!(
                 f,
@@ -387,11 +391,11 @@ pub fn flap_question(name: &str, interface: &str, delay: u64, count: u32) -> Str
 fn unfit(driver: Driver, flap: &Flap) -> Option<Unfit> {
     let interface = flap.interface;
     if interface.is_empty()
-        || interface
+        || !interface
             .chars()
-            .any(|c| c.is_whitespace() || c.is_control())
+            .all(|c| driver.flap.name_letters.contains(c))
     {
-        Some(Unfit::Name)
+        Some(Unfit::Name(interface.to_string()))
     } else if interface == driver.flap.management {
         Some(Unfit::Management(driver.flap.management))
     } else if !FLAP_DELAYS.contains(&flap.delay.as_secs()) {
@@ -753,6 +757,8 @@ mod tests {
                         admin_state: "info flat interface {} admin-state",
                         commit_after: "commit confirmed timeout {}",
                         management: "mgmt0",
+                        name_letters:
+                            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/",
                     },
                 }),
                 "{kind}"
@@ -1150,6 +1156,7 @@ mod tests {
                 admin_state: "nobs-t-read {}",
                 commit_after: "nobs-t-commit-after {}",
                 management: "nobs-t-mgmt",
+                name_letters: "bfgimnost-*",
             },
         }
     }
@@ -1290,18 +1297,31 @@ mod tests {
 
     #[test]
     fn each_unfit_flap_is_refused_with_its_words_before_the_question_and_sends_nothing() {
-        let cases = [
-            ("ethernet-1/1 x", 5, 1, Unfit::Name),
-            ("ethernet-1/1\tx", 5, 1, Unfit::Name),
-            ("ethernet-1/1\nshow", 5, 1, Unfit::Name),
-            ("", 5, 1, Unfit::Name),
-            ("ethernet-1/1\u{7}", 5, 1, Unfit::Name),
+        let not_one_interface = [
+            "",
+            "ethernet-1/1 x",
+            "ethernet-1/1\tx",
+            "ethernet-1/1\nshow",
+            "ethernet-1/1\u{7}",
+            "ethernet-1/{1,2}",
+            "ethernet-1/{1..2}",
+            "ethernet-1/*",
+            "*",
+            "ethernet-1/1;",
+            "ethernet-1/1\"",
+            "ethernet-1/é",
+        ];
+        let mut cases: Vec<(&str, u64, u32, Unfit)> = not_one_interface
+            .into_iter()
+            .map(|name| (name, 5, 1, Unfit::Name(name.to_string())))
+            .collect();
+        cases.extend([
             ("mgmt0", 5, 1, Unfit::Management("mgmt0")),
             ("ethernet-1/1", 0, 1, Unfit::Delay),
             ("ethernet-1/1", 301, 1, Unfit::Delay),
             ("ethernet-1/1", 5, 0, Unfit::Count),
             ("ethernet-1/1", 5, 11, Unfit::Count),
-        ];
+        ]);
         for (interface, delay, count, unfit) in cases {
             let wanted = Flap {
                 interface,
@@ -1315,7 +1335,10 @@ mod tests {
             );
         }
         let words = [
-            (Unfit::Name, "the interface name must be one word"),
+            (
+                Unfit::Name("ethernet-1/*".to_string()),
+                "\"ethernet-1/*\" is not the name of one interface",
+            ),
             (
                 Unfit::Management("mgmt0"),
                 "mgmt0 is the management interface",
@@ -1337,6 +1360,18 @@ mod tests {
                 None,
                 "{delay} {count}"
             );
+        }
+    }
+
+    #[test]
+    fn the_names_of_one_srlinux_interface_pass_the_name_check() {
+        let srlinux = driver("srl").unwrap();
+        for interface in ["ethernet-1/1", "ethernet-1/1/1", "lag1", "irb0", "system0"] {
+            let wanted = Flap {
+                interface,
+                ..ethernet(5, 1)
+            };
+            assert_eq!(unfit(srlinux, &wanted), None, "{interface}");
         }
     }
 
@@ -1549,6 +1584,17 @@ mod tests {
         assert_eq!(
             flapped_with("nobs-t-mgmt", vec![]),
             (Ok(Flapped::Unfit(Unfit::Management("nobs-t-mgmt"))), vec![])
+        );
+        assert_eq!(
+            flapped_with("nobs-t-*", vec![printed("nobs-t-down nobs-t-*\n")]),
+            (Ok(Flapped::Disabled), log(&["nobs-t-read nobs-t-*"]))
+        );
+        assert_eq!(
+            flapped_with("nobs-t-if1", vec![]),
+            (
+                Ok(Flapped::Unfit(Unfit::Name("nobs-t-if1".to_string()))),
+                vec![]
+            )
         );
     }
 
