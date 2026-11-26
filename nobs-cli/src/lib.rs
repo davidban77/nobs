@@ -2460,6 +2460,10 @@ fn push_device(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> i32 {
+    if !made_folder(save, err) {
+        return 1;
+    }
+    let made = Made(save);
     let name = &node.name;
     let text = match intended_of(node) {
         Ok(text) => text,
@@ -2508,9 +2512,10 @@ fn push_device(
             3
         }
         Ok(Pushed::Taken(output)) => {
+            made.keep();
             pass_through(&output, out, err);
             let _ = writeln!(out, "{}", device::pushed_line(name, count));
-            let fetched = check_devices(
+            let fetched = walk_devices(
                 std::slice::from_ref(node),
                 &|_| Ok(text.clone()),
                 transport,
@@ -2665,12 +2670,46 @@ fn check_devices(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> i32 {
+    if !made_folder(save, err) {
+        return 1;
+    }
+    walk_devices(nodes, intended_of, transport, save, out, err)
+}
+
+fn made_folder(save: Option<&Path>, err: &mut impl Write) -> bool {
     if let Some(folder) = save {
         if let Err(error) = check::make_folder(folder) {
             cannot_make(err, folder, &error);
-            return 1;
+            return false;
         }
     }
+    true
+}
+
+struct Made<'a>(Option<&'a Path>);
+
+impl Made<'_> {
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Made<'_> {
+    fn drop(&mut self) {
+        if let Some(folder) = self.0 {
+            let _ = fs::remove_dir(folder);
+        }
+    }
+}
+
+fn walk_devices(
+    nodes: &[TopologyNode],
+    intended_of: &dyn Fn(&TopologyNode) -> Result<String, Failure>,
+    transport: &dyn Transport,
+    save: Option<&Path>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> i32 {
     let width = check::width(nodes);
     let mut unsaved = false;
     let readings = check::walk(nodes, transport, intended_of, &mut |reading| {
@@ -8383,6 +8422,147 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn a_save_folder_that_cannot_be_made_is_refused_before_the_text_the_question_or_any_line() {
+        set_credentials();
+        let lab = check_lab(
+            "push-save-refused",
+            &[("nobs-t-srl1", "nokia_srlinux"), ("nobs-t-linux1", "linux")],
+            &[],
+        );
+        let exists = lab.0.join("check");
+        fs::create_dir(&exists).unwrap();
+        let no_parent = lab.0.join("none/check");
+        for (case, (name, folder, cause)) in [
+            ("nobs-t-srl1", &exists, "File exists (os error 17)"),
+            ("nobs-t-linux1", &exists, "File exists (os error 17)"),
+            (
+                "nobs-t-srl1",
+                &no_parent,
+                "No such file or directory (os error 2)",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let transport = push_then_fetch(taken(), synced(name));
+
+            let (code, out, err, asked) =
+                pushed_with(&lab.0, name, &transport, Some(true), Some(folder));
+
+            assert_eq!(
+                (code, out.as_str(), err),
+                (
+                    1,
+                    "",
+                    format!("nobs: cannot make {}: {cause}\n", folder.display())
+                ),
+                "case {case}"
+            );
+            assert!(asked.is_empty(), "case {case}");
+            assert!(
+                transport.session.calls().is_empty() && transport.fetch.calls().is_empty(),
+                "case {case}"
+            );
+        }
+        assert!(exists.is_dir());
+    }
+
+    #[test]
+    fn every_end_of_a_push_before_a_line_is_sent_removes_the_save_folder_it_made() {
+        set_credentials();
+        let lab = check_lab(
+            "push-save-removed",
+            &[
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-linux1", "linux"),
+                ("nobs-t-srl9", "srl"),
+                ("x1", "ceos"),
+            ],
+            &["nobs-t-srl9"],
+        );
+        fs::write(lab.0.join("templates/ceos.j2"), CHECK_TEMPLATE).unwrap();
+        let empty = push_lab("push-save-removed-empty");
+        fs::write(empty.0.join("templates/srl.j2"), "\n  \n").unwrap();
+        for (dir, name, answered, line) in [
+            (
+                &lab.0,
+                "nobs-t-linux1",
+                Some(true),
+                "nobs: push nobs-t-linux1: no template for kind linux: expected templates/linux.j2\n",
+            ),
+            (
+                &lab.0,
+                "nobs-t-srl9",
+                Some(true),
+                "nobs: push nobs-t-srl9: device nobs-t-srl9 not found in the source of truth.\n",
+            ),
+            (
+                &empty.0,
+                "nobs-t-srl1",
+                Some(true),
+                "nobs: push nobs-t-srl1: the intended configuration has no line\n",
+            ),
+            (
+                &lab.0,
+                "x1",
+                Some(true),
+                "nobs: ssh x1: no driver for the kind ceos yet\n",
+            ),
+            (
+                &lab.0,
+                "nobs-t-srl1",
+                Some(false),
+                "nobs: push nobs-t-srl1: not pushed\n",
+            ),
+            (
+                &lab.0,
+                "nobs-t-srl1",
+                None,
+                "nobs: push nobs-t-srl1: needs a yes; run it in a terminal, or add --yes\n",
+            ),
+        ] {
+            let folder = dir.join("check");
+            let transport = push_then_fetch(taken(), synced(name));
+
+            let (code, out, err, _) = pushed_with(dir, name, &transport, answered, Some(&folder));
+
+            assert_eq!(
+                (code, out.as_str(), err.as_str()),
+                (1, "", line),
+                "{name} {answered:?}"
+            );
+            assert!(!folder.exists(), "{name} {answered:?}");
+            assert!(transport.session.calls().is_empty(), "{name} {answered:?}");
+        }
+    }
+
+    #[test]
+    fn a_taken_push_keeps_its_save_folder_also_when_the_file_cannot_be_made() {
+        set_credentials();
+        let name = "nobs-t-srl2/nobs-t-sub";
+        let lab = check_lab("push-save-kept", &[(name, "srl")], &[]);
+        let folder = lab.0.join("check");
+        let transport = push_then_fetch(taken(), synced(name));
+
+        let (code, out, err, _) = pushed_with(&lab.0, name, &transport, Some(true), Some(&folder));
+
+        assert_eq!(
+            out,
+            format!("nobs-t-answer-out\n{name}  pushed 2 lines\n{name}  in sync\n")
+        );
+        assert_eq!(
+            err,
+            format!(
+                "nobs-t-answer-err\nnobs: cannot make {}: No such file or directory (os error 2)\n",
+                folder.join("nobs-t-srl2/nobs-t-sub.config").display()
+            )
+        );
+        assert_eq!(code, 3);
+        assert!(folder.is_dir());
+        assert!(saved_names(&folder).is_empty());
     }
 
     #[test]
