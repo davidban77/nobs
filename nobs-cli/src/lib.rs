@@ -1191,9 +1191,8 @@ pub enum DeviceCommand {
             value_name = "SECONDS",
             default_value_t = device::FLAP_DELAY,
             help = format!(
-                "The time the interface stays down, and up before the next flap; {} to {} seconds",
-                device::FLAP_DELAYS.start(),
-                device::FLAP_DELAYS.end()
+                "The time the interface stays down, and up before the next flap; {}",
+                device::delay_limits()
             )
         )]
         delay: u64,
@@ -1202,9 +1201,8 @@ pub enum DeviceCommand {
             value_name = "N",
             default_value_t = device::FLAP_COUNT,
             help = format!(
-                "How many times to flap the interface; {} to {}",
-                device::FLAP_COUNTS.start(),
-                device::FLAP_COUNTS.end()
+                "How many times to flap the interface; {}",
+                device::count_limits()
             )
         )]
         count: u32,

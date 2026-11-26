@@ -149,7 +149,7 @@ pub enum Words<'a> {
 }
 
 impl Words<'_> {
-    pub fn of(syntax: Option<Syntax>, line: &str) -> Words<'_> {
+    pub(crate) fn of(syntax: Option<Syntax>, line: &str) -> Words<'_> {
         let line = line.trim();
         match syntax {
             Some(Syntax::SrLinux) => srlinux_words(line).map_or(Words::Unread(line), Words::Read),
@@ -327,20 +327,18 @@ impl fmt::Display for Unfit {
                 write!(f, "\"{interface}\" is not the name of one interface")
             }
             Unfit::Management(name) => write!(f, "{name} is the management interface"),
-            Unfit::Delay => write!(
-                f,
-                "the delay must be {} to {} seconds",
-                FLAP_DELAYS.start(),
-                FLAP_DELAYS.end()
-            ),
-            Unfit::Count => write!(
-                f,
-                "the count must be {} to {}",
-                FLAP_COUNTS.start(),
-                FLAP_COUNTS.end()
-            ),
+            Unfit::Delay => write!(f, "the delay must be {}", delay_limits()),
+            Unfit::Count => write!(f, "the count must be {}", count_limits()),
         }
     }
+}
+
+pub fn delay_limits() -> String {
+    format!("{} to {} seconds", FLAP_DELAYS.start(), FLAP_DELAYS.end())
+}
+
+pub fn count_limits() -> String {
+    format!("{} to {}", FLAP_COUNTS.start(), FLAP_COUNTS.end())
 }
 
 #[derive(Debug, PartialEq, Eq)]
