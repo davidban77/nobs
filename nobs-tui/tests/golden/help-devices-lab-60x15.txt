@@ -8,8 +8,8 @@
   ║t        type in terminal  G       check all          ║
   ║x        dismiss the error P       push               ║
   ║Esc      close/clear/back  F       flap               ║
+  ║Enter    open / pick alert q       quit; asks if busy ║
   ║PgUp PgDn  move a page where j and k move             ║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
-  ║j/k more                                              ║
-  ╚═════════════════════════════════════════════════ ↓3 ═╝
- Tab focus  j/k move  / filter  Enter open  r refresh
+  ╚═════════════════════════════════════════════════ ↓2 ═╝
+ j/k more  ? close  Esc close

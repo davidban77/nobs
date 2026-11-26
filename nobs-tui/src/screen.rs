@@ -2557,6 +2557,17 @@ pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
 }
 
 fn key_hints(model: &Model, wide: bool) -> Vec<String> {
+    if model.help() {
+        return [
+            (model.help_can_scroll(), HELP_MORE),
+            (true, "? close"),
+            (true, "Esc close"),
+        ]
+        .into_iter()
+        .filter(|(offered, _)| *offered)
+        .map(|(_, hint)| hint.to_string())
+        .collect();
+    }
     if model.chooser() {
         return ["j/k select", "Enter open", "q quit"]
             .map(String::from)
@@ -2685,7 +2696,9 @@ fn key_hints(model: &Model, wide: bool) -> Vec<String> {
             .chain([terminal_hint(model)])
             .collect(),
         (Workbench::Services, Focus::Lines, _) => {
-            owned(tab_hints(model, true)).chain(actions).collect()
+            owned(tab_hints(model, model.sonda().details_can_scroll()))
+                .chain(actions)
+                .collect()
         }
     };
     hints
@@ -2739,13 +2752,15 @@ fn observability_hints(model: &Model) -> Vec<(bool, &'static str)> {
     let offered = if model.tab() == Tab::Logs {
         lab_hints(model)
     } else {
-        let (listed, opens) = if model.tab() == Tab::Metrics {
+        let (steps, listed, opens) = if model.tab() == Tab::Metrics {
             (
+                model.metrics_can_step(),
                 model.metrics_listed(),
                 model.marked_metrics_device().is_some(),
             )
         } else {
             (
+                model.alerts_can_step(),
                 !model.shown_alerts().is_empty(),
                 model
                     .selected_alert()
@@ -2753,7 +2768,7 @@ fn observability_hints(model: &Model) -> Vec<(bool, &'static str)> {
             )
         };
         vec![
-            (listed, "j/k move"),
+            (steps, "j/k move"),
             (listed, "/ filter"),
             (true, "[ ] view"),
             (opens, "Enter open the device"),
@@ -2767,22 +2782,16 @@ fn observability_hints(model: &Model) -> Vec<(bool, &'static str)> {
 }
 
 fn lab_hints(model: &Model) -> Vec<(bool, &'static str)> {
-    if !model.lab_can_pause() {
-        return vec![(true, "[ ] view"), (true, "r refresh")];
-    }
-    if model.lab_logs().1 {
-        return vec![
-            (true, "f pause"),
-            (model.lab_can_filter(), "/ filter"),
-            (true, "[ ] view"),
-            (true, "r refresh"),
-        ];
-    }
+    let pauses = model.lab_can_pause();
+    let following = model.lab_logs().1;
     vec![
-        (true, "f follow"),
+        (pauses && following, "f pause"),
+        (pauses && !following, "f follow"),
         (model.lab_can_move(), "j/k move"),
         (model.lab_can_filter(), "/ filter"),
         (model.lab_enter_device().is_some(), "Enter open the device"),
+        (true, "[ ] view"),
+        (true, "r refresh"),
     ]
 }
 
@@ -2906,7 +2915,6 @@ struct HelpLayout {
     room: u16,
     note_rows: u16,
     note_row: u16,
-    fits: bool,
 }
 
 fn help_layout(model: &Model, body: Rect) -> HelpLayout {
@@ -2946,7 +2954,7 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
             .max(rows);
         (rows, note_row)
     } else {
-        let room = inner.height.saturating_sub(note_rows + 1);
+        let room = inner.height.saturating_sub(note_rows);
         (room, room)
     };
     HelpLayout {
@@ -2958,7 +2966,6 @@ fn help_layout(model: &Model, body: Rect) -> HelpLayout {
         room,
         note_rows,
         note_row,
-        fits,
     }
 }
 
@@ -2981,7 +2988,6 @@ fn help(frame: &mut Frame, area: Rect, model: &Model) {
         room,
         note_rows,
         note_row,
-        fits,
     } = help_layout(model, area);
     frame.render_widget(Clear, area);
     let name = model.workbench().title(true);
@@ -3016,12 +3022,6 @@ fn help(frame: &mut Frame, area: Rect, model: &Model) {
         Paragraph::new(notes.join("\n")).wrap(Wrap { trim: false }),
         column(0, note_row, inner.width, note_rows),
     );
-    if !fits {
-        frame.render_widget(
-            Paragraph::new(HELP_MORE),
-            column(0, inner.height.saturating_sub(1), inner.width, 1),
-        );
-    }
 }
 
 fn help_column(entries: &[(String, &str)]) -> String {
@@ -3967,9 +3967,9 @@ mod tests {
                 .unwrap()
                 .clone()
         };
-        for mark in ["↓6", "↑1 ↓5", "↑2 ↓4"] {
-            let rows = drawn(&mut model, 60, 15);
+        for mark in ["↓5", "↑1 ↓4", "↑2 ↓3"] {
             model.set_help_overflow(help_overflow(&model, Rect::new(0, 0, 60, 15)));
+            let rows = drawn(&mut model, 60, 15);
             let screen = rows.join("\n");
 
             assert!(
@@ -4233,12 +4233,18 @@ mod tests {
         press(&mut model, 'j');
         let elsewhere = key_line(&model, 100);
 
-        assert_eq!(following, [" f pause  / filter  [ ] view  r refresh"]);
+        assert_eq!(
+            following,
+            [" f pause  j/k move  / filter  [ ] view  r refresh"]
+        );
         assert_eq!(
             in_the_lab,
-            [" f follow  j/k move  / filter  Enter open the device"]
+            [" f follow  j/k move  / filter  Enter open the device  [ ] view  r refresh"]
         );
-        assert_eq!(elsewhere, [" f follow  j/k move  / filter"]);
+        assert_eq!(
+            elsewhere,
+            [" f follow  j/k move  / filter  [ ] view  r refresh"]
+        );
     }
 
     #[test]
@@ -4642,7 +4648,7 @@ mod tests {
                 "keys",
                 Holder::Keys,
                 || moved(devices_bench(), '?', 1),
-                6,
+                7,
                 8,
             ),
             ("entry", Holder::Entry, boxed_entry, 4, 19),
@@ -5687,19 +5693,13 @@ mod tests {
                 let height = if width == 60 { 15 } else { 30 };
                 let rows = drawn(&mut sonda, width, height);
                 screens.push(rows.join("\n"));
-                let tab_row = rows
-                    .iter()
-                    .find_map(|row| row.split_once("│q quit"))
-                    .map(|(_, row)| format!("q quit{}", row.trim_end_matches('│').trim_end()));
+                let tab_row = sonda_row(&rows);
                 let scenarios = rows.iter().any(|row| row.contains("│╔"));
                 let details = rows.iter().any(|row| row.ends_with("═╗│"));
                 seen.push((sonda.focus(), doubles(&rows), scenarios, details, tab_row));
             }
             if sonda.focus() == Focus::Lines {
-                assert_eq!(
-                    key_line(&sonda, 60),
-                    [" Tab focus  j/k move  [ ] tab  Esc back"]
-                );
+                assert_eq!(key_line(&sonda, 60), [" Tab focus  [ ] tab  Esc back"]);
             }
             focus_tabs(&mut sonda);
         }
@@ -5715,14 +5715,14 @@ mod tests {
                     untitled(),
                     true,
                     false,
-                    row("q quit  j/k select  r refresh")
+                    row("q quit  r refresh  l load")
                 ),
                 (
                     Focus::Tabs,
                     untitled(),
                     true,
                     false,
-                    row("q quit  j/k select  r refresh  l load  d delete")
+                    row("q quit  r refresh  l load  d delete")
                 ),
                 (
                     Focus::Lines,
@@ -6603,6 +6603,17 @@ mod tests {
         named: bool,
         acts: bool,
         size: (u16, u16),
+        row: fn(&[String]) -> String,
+    }
+
+    fn last_row(rows: &[String]) -> String {
+        rows.last().cloned().unwrap_or_default()
+    }
+
+    fn sonda_row(rows: &[String]) -> Option<String> {
+        rows.iter()
+            .find_map(|row| row.split_once("│q quit"))
+            .map(|(_, row)| format!("q quit{}", row.trim_end_matches('│').trim_end()))
     }
 
     fn pin(
@@ -6621,6 +6632,7 @@ mod tests {
             named,
             acts,
             size: (100, 30),
+            row: last_row,
         }
     }
 
@@ -7300,11 +7312,362 @@ mod tests {
         ]
     }
 
+    fn paused_lab(count: i64) -> Model {
+        moved(lab_logs_of(count), 'f', 1)
+    }
+
+    fn one_metric() -> Model {
+        let mut model = on_view(Tab::Metrics);
+        "/srl1".chars().for_each(|key| press(&mut model, key));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        model
+    }
+
+    fn observability_keys() -> Vec<Pinned> {
+        use KeyCode::{Char, Enter, Tab as Next};
+        vec![
+            pin(
+                "observability logs, following, two lines",
+                || lab_logs_of(2),
+                Char('j'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, following, one line",
+                || lab_logs_of(1),
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            pin(
+                "observability logs, paused, two lines",
+                || paused_lab(2),
+                Char('j'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, paused, one line",
+                || paused_lab(1),
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            pin(
+                "observability logs, following",
+                || lab_logs_of(2),
+                Char('f'),
+                "f pause",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, paused",
+                || paused_lab(2),
+                Char('f'),
+                "f follow",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, paused",
+                || paused_lab(2),
+                Char('/'),
+                "/ filter",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, no lines",
+                || lab_logs_of(0),
+                Char('/'),
+                "/ filter",
+                false,
+                false,
+            ),
+            pin(
+                "observability logs, paused on a lab device",
+                || paused_lab(2),
+                Enter,
+                "Enter open the device",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, following",
+                || lab_logs_of(2),
+                Enter,
+                "Enter open the device",
+                false,
+                false,
+            ),
+            pin(
+                "observability logs, following",
+                || lab_logs_of(2),
+                Char(']'),
+                "[ ] view",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, paused",
+                || paused_lab(2),
+                Char(']'),
+                "[ ] view",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, paused",
+                || paused_lab(2),
+                Char('r'),
+                "r refresh",
+                true,
+                true,
+            ),
+            pin(
+                "observability logs, no run pane",
+                || lab_logs_of(2),
+                Next,
+                "Tab focus",
+                false,
+                false,
+            ),
+            pin(
+                "observability alerts, two alerts",
+                || moved(alerts_of(2), '3', 1),
+                Char('j'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
+                "observability alerts, one alert",
+                || moved(alerts_of(1), '3', 1),
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            pin(
+                "observability alerts, one alert",
+                || moved(alerts_of(1), '3', 1),
+                Char('/'),
+                "/ filter",
+                true,
+                true,
+            ),
+            pin(
+                "observability alerts, no alerts",
+                || moved(alerts_of(0), '3', 1),
+                Char('/'),
+                "/ filter",
+                false,
+                false,
+            ),
+            pin(
+                "observability alerts, one alert of a lab device",
+                || moved(alerts_of(1), '3', 1),
+                Enter,
+                "Enter open the device",
+                true,
+                true,
+            ),
+            pin(
+                "observability alerts, no alerts",
+                || moved(alerts_of(0), '3', 1),
+                Enter,
+                "Enter open the device",
+                false,
+                false,
+            ),
+            pin(
+                "observability alerts",
+                || moved(alerts_of(1), '3', 1),
+                Char(']'),
+                "[ ] view",
+                true,
+                true,
+            ),
+            pin(
+                "observability alerts",
+                || moved(alerts_of(1), '3', 1),
+                Char('r'),
+                "r refresh",
+                true,
+                true,
+            ),
+            pin(
+                "observability metrics, two devices",
+                || on_view(Tab::Metrics),
+                Char('j'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
+                "observability metrics, the filter leaves one device",
+                one_metric,
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            pin(
+                "observability metrics",
+                || on_view(Tab::Metrics),
+                Char('/'),
+                "/ filter",
+                true,
+                true,
+            ),
+            pin(
+                "observability metrics",
+                || on_view(Tab::Metrics),
+                Enter,
+                "Enter open the device",
+                true,
+                true,
+            ),
+            pin(
+                "observability metrics",
+                || on_view(Tab::Metrics),
+                Char(']'),
+                "[ ] view",
+                true,
+                true,
+            ),
+        ]
+    }
+
+    fn sonda_row_keys() -> Vec<Pinned> {
+        use KeyCode::Char;
+        let row = |pinned: Pinned| Pinned {
+            row: |rows| sonda_row(rows).unwrap_or_default(),
+            ..pinned
+        };
+        vec![
+            pin(
+                "sonda row, two scenarios",
+                || sonda_of(2),
+                Char('j'),
+                "j/k select",
+                true,
+                true,
+            ),
+            pin(
+                "sonda row, one scenario",
+                || sonda_of(1),
+                Char('j'),
+                "j/k select",
+                false,
+                false,
+            ),
+            pin(
+                "sonda row, one scenario",
+                || sonda_of(1),
+                Char('d'),
+                "d delete",
+                true,
+                true,
+            ),
+            pin(
+                "sonda row, no scenarios",
+                || sonda_of(0),
+                Char('d'),
+                "d delete",
+                false,
+                false,
+            ),
+            pin("sonda row", || sonda_of(1), Char('l'), "l load", true, true),
+            pin(
+                "sonda row",
+                || sonda_of(1),
+                Char('r'),
+                "r refresh",
+                true,
+                true,
+            ),
+            pin("sonda row", || sonda_of(1), Char('q'), "q quit", true, true),
+        ]
+        .into_iter()
+        .map(row)
+        .collect()
+    }
+
+    fn overlay_keys() -> Vec<Pinned> {
+        use KeyCode::{Char, Esc};
+        let open = || moved(devices_bench(), '?', 1);
+        let narrow = |pinned: Pinned| Pinned {
+            size: (60, 15),
+            ..pinned
+        };
+        vec![
+            narrow(pin(
+                "overlay, list longer than the box",
+                open,
+                Char('j'),
+                "j/k more",
+                true,
+                true,
+            )),
+            pin(
+                "overlay, list fits",
+                open,
+                Char('j'),
+                "j/k more",
+                false,
+                false,
+            ),
+            narrow(pin(
+                "overlay, list longer than the box",
+                open,
+                Char('?'),
+                "? close",
+                true,
+                true,
+            )),
+            pin("overlay, list fits", open, Esc, "Esc close", true, true),
+        ]
+    }
+
     fn pinned_keys() -> Vec<Pinned> {
         use KeyCode::{Char, Enter, Esc, Tab as Next};
         device_keys()
             .into_iter()
+            .chain(observability_keys())
+            .chain(sonda_row_keys())
+            .chain(overlay_keys())
             .chain(vec![
+                pin(
+                    "sonda details, longer than the pane",
+                    long_details,
+                    Char('j'),
+                    "j/k move",
+                    true,
+                    true,
+                ),
+                pin(
+                    "sonda details, the details fit",
+                    || {
+                        tabbed(
+                            sonda_details(r#"{"state":"running"}"#, r#"{"name":"cpu"}"#),
+                            1,
+                        )
+                    },
+                    Char('j'),
+                    "j/k move",
+                    false,
+                    false,
+                ),
                 pin(
                     "run, output longer than the pane",
                     || run_focused(40, false),
@@ -7678,6 +8041,29 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn the_open_overlay_names_only_its_own_keys_and_the_line_behind_comes_back_when_it_closes() {
+        for (width, height, open) in [
+            (60, 15, " j/k more  ? close  Esc close"),
+            (100, 30, " ? close  Esc close"),
+        ] {
+            for close in [KeyCode::Char('?'), KeyCode::Esc] {
+                let mut model = devices_bench();
+                let line = |model: &mut Model| {
+                    looped(model, Rect::new(0, 0, width, height));
+                    last_row(&settled(model, width, height))
+                };
+                let behind = line(&mut model);
+                press(&mut model, '?');
+                let opened = line(&mut model);
+                handle(&mut model, KeyEvent::new(close, KeyModifiers::NONE));
+
+                assert_eq!(opened.trim_end(), open, "{width}x{height}");
+                assert_eq!(line(&mut model), behind, "{width}x{height} {close:?}");
+            }
+        }
+    }
+
     fn names_hint(line: &str, hint: &str) -> bool {
         line.split("  ").any(|shown| shown.trim() == hint)
     }
@@ -7692,7 +8078,7 @@ mod tests {
             };
             let mut model = (case.build)();
             let before = frame(&mut model);
-            let line = before.last().cloned().unwrap_or_default();
+            let line = (case.row)(&before);
             let commands = handle(&mut model, KeyEvent::new(case.key, KeyModifiers::NONE));
             let acted = !commands.is_empty() || frame(&mut model) != before;
             assert_eq!(

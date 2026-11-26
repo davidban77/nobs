@@ -350,8 +350,8 @@ fn loop_turns<B: Backend, W: Write, R: FnMut(bool) -> io::Result<()>>(
         settle(model, area);
         let inside = screen::terminal_size(model, area);
         send(model.set_terminal_size(inside), actions, wires, pollers);
-        terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         measure(model, area);
+        terminal.draw(|frame| draw(frame, model)).map_err(failed)?;
         if let Some(key) = next_key(pace(model).1)? {
             send(handle(model, key), actions, wires, pollers);
             send(model.ask_changes(), actions, wires, pollers);
@@ -3193,7 +3193,17 @@ mod tests {
             );
         }
         assert!(rows.iter().any(|row| row.contains("j/k more")), "{screen}");
-        assert!(rows[13].contains("═ ↓3 ═╝"), "{screen}");
+        assert!(rows[13].contains("═ ↓2 ═╝"), "{screen}");
+    }
+
+    #[test]
+    fn the_first_frame_after_the_question_mark_names_j_k_more_when_the_list_is_longer() {
+        let mut model = lab_model();
+
+        let rows = help_turn(&mut model, (60, 15), &[ch('o'), ch('?')]);
+
+        assert!(limit(&model, (60, 15)) > 0);
+        assert_eq!(rows[14].trim_end(), " j/k more  ? close  Esc close");
     }
 
     #[test]

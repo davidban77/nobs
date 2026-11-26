@@ -12,4 +12,4 @@
 │srl1  BgpSessionNotUp││                                   │
 └─────────────────────┘└────────────────────────────── ↓4 ─┘
  run  none                                           o open
- Esc close
+ j/k move  Esc close

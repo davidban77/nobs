@@ -27,4 +27,4 @@
 
 
 
- Tab focus  j/k move  / filter  Enter open  r refresh
+ ? close  Esc close

@@ -27,4 +27,4 @@
 │                              ││q quit  r refresh  l load  d delete                               │
 └──────────────────────────────┘└──────────────────────────────────────────────────────────────────┘
  run  none                                                                                   o open
- Tab focus  j/k move  [ ] tab  Esc back
+ Tab focus  [ ] tab  Esc back

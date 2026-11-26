@@ -2559,7 +2559,19 @@ impl Model {
     }
 
     pub(crate) fn lab_can_move(&self) -> bool {
-        self.lab_lines_shown() && self.marked_lab_row().is_some()
+        self.lab_lines_shown() && self.lab_logs.shown().len() > 1
+    }
+
+    pub(crate) fn alerts_can_step(&self) -> bool {
+        self.visible_alerts().len() > 1
+    }
+
+    pub(crate) fn metrics_can_step(&self) -> bool {
+        self.visible_metric_devices().len() > 1
+    }
+
+    pub(crate) fn help_can_scroll(&self) -> bool {
+        self.help_overflow > 0
     }
 
     pub(crate) fn lab_pane_can_step(&self) -> bool {
@@ -3411,10 +3423,13 @@ impl Model {
     }
 
     fn details_key(&mut self, key: KeyEvent) -> Vec<Command> {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.sonda.move_details(true),
-            KeyCode::Char('k') | KeyCode::Up => self.sonda.move_details(false),
+        let down = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => true,
+            KeyCode::Char('k') | KeyCode::Up => false,
             _ => return self.sonda_key(key),
+        };
+        if self.sonda.details_can_scroll() {
+            self.sonda.move_details(down);
         }
         Vec::new()
     }
@@ -3539,8 +3554,8 @@ impl Model {
             KeyCode::Char(']') => self.view = step(&OBSERVABILITY_TABS, self.view, true),
             _ if self.view == Tab::Logs => return self.lab_logs_key(code),
             _ if self.view == Tab::Metrics => return self.metrics_key(code),
-            KeyCode::Char('j') | KeyCode::Down => self.step_alert(true),
-            KeyCode::Char('k') | KeyCode::Up => self.step_alert(false),
+            KeyCode::Char('j') | KeyCode::Down if self.alerts_can_step() => self.step_alert(true),
+            KeyCode::Char('k') | KeyCode::Up if self.alerts_can_step() => self.step_alert(false),
             KeyCode::Char('/') if !self.shown_alerts().is_empty() => self.alert_filter.start(),
             KeyCode::Enter => {
                 let index = self
@@ -3555,14 +3570,13 @@ impl Model {
 
     fn lab_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
         let following = self.lab_logs.following;
-        let lines = if self.lab_lines_shown() {
-            self.lab_logs.shown().len()
-        } else {
-            0
-        };
-        if let Some(commands) =
-            self.leave_newest(code, true, following, lines > 1, Model::lab_logs_key)
-        {
+        if let Some(commands) = self.leave_newest(
+            code,
+            true,
+            following,
+            self.lab_can_move(),
+            Model::lab_logs_key,
+        ) {
             return commands;
         }
         match code {
@@ -3580,8 +3594,8 @@ impl Model {
 
     fn metrics_key(&mut self, code: KeyCode) -> Vec<Command> {
         let down = match code {
-            KeyCode::Char('j') | KeyCode::Down => true,
-            KeyCode::Char('k') | KeyCode::Up => false,
+            KeyCode::Char('j') | KeyCode::Down if self.metrics_can_step() => true,
+            KeyCode::Char('k') | KeyCode::Up if self.metrics_can_step() => false,
             KeyCode::Char('/') if self.metrics_listed() => {
                 self.metrics_filter.start();
                 return Vec::new();
@@ -3964,10 +3978,12 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     if model.help {
         match key.code {
             KeyCode::Char('?') | KeyCode::Esc => model.help = false,
-            KeyCode::Char('j') => {
+            KeyCode::Char('j') if model.help_can_scroll() => {
                 model.help_scroll = (model.help_scroll + 1).min(model.help_overflow);
             }
-            KeyCode::Char('k') => model.help_scroll = model.help_scroll.saturating_sub(1),
+            KeyCode::Char('k') if model.help_can_scroll() => {
+                model.help_scroll = model.help_scroll.saturating_sub(1);
+            }
             _ => {}
         }
         return Vec::new();
