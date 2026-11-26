@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write};
+use std::os::fd::RawFd;
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -54,6 +55,11 @@ impl Terminals for Ptys {
             .map_err(io::Error::other)?;
         let mut output = pair.master.try_clone_reader().map_err(io::Error::other)?;
         let input = pair.master.take_writer().map_err(io::Error::other)?;
+        let fd = pair
+            .master
+            .as_raw_fd()
+            .ok_or_else(|| io::Error::other("the terminal has no file"))?;
+        set_nonblocking(fd)?;
         let mut command = CommandBuilder::new(child.program);
         command.args(child.args);
         command.cwd(dir);
@@ -71,8 +77,15 @@ impl Terminals for Ptys {
         let reaping = Arc::clone(&reaped);
         let reader = thread::spawn(move || {
             let mut buffer = [0; 4096];
-            while let Ok(read @ 1..) = output.read(&mut buffer) {
-                let _ = out.send(Update::TermOutput(id, buffer[..read].to_vec()));
+            loop {
+                match output.read(&mut buffer) {
+                    Ok(read @ 1..) => {
+                        let _ = out.send(Update::TermOutput(id, buffer[..read].to_vec()));
+                    }
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock && wait_for_data(fd) => {}
+                    _ => break,
+                }
             }
             let code = loop {
                 let mut reaped = reaping.lock().unwrap_or_else(PoisonError::into_inner);
@@ -91,7 +104,7 @@ impl Terminals for Ptys {
             };
             let _ = out.send(Update::TermEnded(id, code));
         });
-        let (writes, writer) = spawn_writer(input);
+        let (writes, writer) = spawn_writer(input, fd);
         Ok(Box::new(Pty {
             master: pair.master,
             writes: Some(writes),
@@ -103,15 +116,58 @@ impl Terminals for Ptys {
     }
 }
 
-fn spawn_writer(mut input: Box<dyn Write + Send>) -> (Sender<Vec<u8>>, JoinHandle<()>) {
+fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn wait_for_data(fd: RawFd) -> bool {
+    poll_all(&mut [watch(fd, libc::POLLIN)])
+}
+
+fn wait_for_room(fd: RawFd) -> bool {
+    let mut fds = [watch(fd, libc::POLLOUT)];
+    poll_all(&mut fds) && fds[0].revents & libc::POLLOUT != 0
+}
+
+fn watch(fd: RawFd, events: libc::c_short) -> libc::pollfd {
+    libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    }
+}
+
+fn poll_all(fds: &mut [libc::pollfd]) -> bool {
+    while unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } == -1 {
+        if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return false;
+        }
+    }
+    true
+}
+
+fn write_whole(input: &mut dyn Write, mut bytes: &[u8], fd: RawFd) -> bool {
+    while !bytes.is_empty() {
+        match input.write(bytes) {
+            Ok(0) => return false,
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock && wait_for_room(fd) => {}
+            Err(_) => return false,
+        }
+    }
+    input.flush().is_ok()
+}
+
+fn spawn_writer(mut input: Box<dyn Write + Send>, fd: RawFd) -> (Sender<Vec<u8>>, JoinHandle<()>) {
     let (writes, queue) = mpsc::channel::<Vec<u8>>();
     let writer = thread::spawn(move || {
         for bytes in queue {
-            if input
-                .write_all(&bytes)
-                .and_then(|()| input.flush())
-                .is_err()
-            {
+            if !write_whole(&mut *input, &bytes, fd) {
                 return;
             }
         }
@@ -428,7 +484,7 @@ pub(crate) mod tests {
 
     fn bare(killer: Killer, reaped: bool, input: Box<dyn Write + Send>) -> Pty {
         let pair = native_pty_system().openpty(pty_size((24, 80))).unwrap();
-        let (writes, writer) = spawn_writer(input);
+        let (writes, writer) = spawn_writer(input, pair.master.as_raw_fd().unwrap());
         Pty {
             master: pair.master,
             writes: Some(writes),
