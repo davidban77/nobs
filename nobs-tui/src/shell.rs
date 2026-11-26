@@ -10371,6 +10371,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn in_a_workshop_g_s_big_g_big_p_and_big_f_give_no_command_and_no_notice() {
+        for key in ['g', 's', 'G', 'P', 'F'] {
+            let mut model = devices_model(workshop_located("infrahub"));
+            let name = model.selected_device().unwrap().name.clone();
+            model.apply(nodes(&[&name]));
+            model.apply(intended_of(&[(&name, Ok(&WANTED))]));
+            if key == 'F' {
+                code(&mut model, KeyCode::Enter);
+                ch(&mut model, ']');
+            }
+
+            assert_eq!(ch(&mut model, key), [], "{key}");
+
+            assert_eq!(model.notice(), None, "{key}");
+            assert_eq!(model.question(), None, "{key}");
+            assert_eq!(model.entry(), None, "{key}");
+            assert!(model.login_entry().is_none(), "{key}");
+            assert!(model.run().is_none(), "{key}");
+        }
+    }
+
+    #[test]
     fn p_gives_nothing_without_intended_text_in_a_workshop_with_no_lab_or_with_no_device() {
         let source = workshop_source();
         let mut no_lab = Model::new(Start {

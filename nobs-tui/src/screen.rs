@@ -6264,6 +6264,28 @@ mod tests {
         nodes_model(&fixture("labcli-example"))
     }
 
+    fn project() -> Model {
+        nodes_model(&fixture("project-two-node"))
+    }
+
+    fn templated(mut model: Model) -> Model {
+        let name = model.selected_device().unwrap().name.clone();
+        model.apply(Update::Intended(vec![(
+            name,
+            Ok("set / a b on\n".to_string()),
+            Some(Syntax::SrLinux),
+        )]));
+        model
+    }
+
+    fn templated_lab() -> Model {
+        templated(lab_devices_model())
+    }
+
+    fn templated_workshop() -> Model {
+        templated(workshop())
+    }
+
     fn book_without_chapters() -> Model {
         let dir = fixture("book-lab");
         let located = locate(&dir, Some(&dir)).unwrap();
@@ -6342,9 +6364,22 @@ mod tests {
     #[test]
     fn each_entry_of_the_work_list_is_listed_only_in_a_lab_that_has_its_thing() {
         use Workbench::{Devices, Lab, Observability, Services};
-        let cases: [(Workbench, &str, Build, Build); 30] = [
+        let cases: [(Workbench, &str, Build, Build); 39] = [
             (Devices, "m  maintenance", workshop, lab_devices_model),
             (Devices, "g  fetch", lab_devices_model, topology),
+            (Devices, "G  check all", topology, workshop),
+            (
+                Devices,
+                "v  intended or running config",
+                templated_lab,
+                templated_workshop,
+            ),
+            (
+                Devices,
+                "n N  next/previous difference",
+                templated_lab,
+                templated_workshop,
+            ),
             (Devices, "s  run", lab_devices_model, topology),
             (Devices, "t  type in terminal", lab_devices_model, topology),
             (Devices, "P  push", lab_devices_model, topology),
@@ -6398,21 +6433,26 @@ mod tests {
             (Lab, "B  rebuild", book_model, book_without_chapters),
             (Lab, "X  destroy", book_model, book_without_chapters),
             (Lab, "S  show", book_model, book_without_chapters),
+            (Lab, "P  purge", book_model, topology),
+            (Lab, "D  deploy", project, book_without_chapters),
+            (Lab, "D  deploy", topology, book_without_chapters),
+            (Lab, "R  render", project, topology),
+            (Lab, "X  destroy", topology, book_without_chapters),
+            (Lab, "S  show", project, book_without_chapters),
         ];
-        for (workbench, entry, with, without) in cases {
+        let mut wrong = Vec::new();
+        for (case, (workbench, entry, with, without)) in cases.into_iter().enumerate() {
             let entry = entry.to_string();
 
-            assert!(
-                shown(with(), workbench).contains(&entry),
-                "{entry} with the thing"
-            );
-            assert!(
-                !shown(without(), workbench).contains(&entry),
-                "{entry} without the thing"
-            );
+            if !shown(with(), workbench).contains(&entry) {
+                wrong.push(format!("case {case}: {entry} with the thing"));
+            }
+            if shown(without(), workbench).contains(&entry) {
+                wrong.push(format!("case {case}: {entry} without the thing"));
+            }
         }
+        assert_eq!(wrong, Vec::<String>::new());
         assert!(shown(no_services(), Services).contains(&"Enter  open the row".to_string()));
-        assert!(shown(topology(), Devices).contains(&"G  check all".to_string()));
     }
 
     #[test]
