@@ -1,17 +1,19 @@
 use std::io::{self, Read, Write};
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::run::{login_vars, Invocation};
 use crate::shell::Update;
 
 const REAP_PAUSE: Duration = Duration::from_millis(5);
+const HANGUP_GRACE: Duration = Duration::from_millis(200);
 
 pub trait Terminals: Send + Sync {
     fn open(
@@ -37,6 +39,7 @@ struct Pty {
     writes: Option<Sender<Vec<u8>>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     reaped: Arc<Mutex<bool>>,
+    wake: Option<UnixStream>,
     reader: Option<JoinHandle<()>>,
     writer: Option<JoinHandle<()>>,
 }
@@ -60,6 +63,9 @@ impl Terminals for Ptys {
             .as_raw_fd()
             .ok_or_else(|| io::Error::other("the terminal has no file"))?;
         set_nonblocking(fd)?;
+        let (wake, woken) = UnixStream::pair()?;
+        woken.set_nonblocking(true)?;
+        let writer_woken = woken.try_clone()?;
         let mut command = CommandBuilder::new(child.program);
         command.args(child.args);
         command.cwd(dir);
@@ -77,39 +83,46 @@ impl Terminals for Ptys {
         let reaping = Arc::clone(&reaped);
         let reader = thread::spawn(move || {
             let mut buffer = [0; 4096];
-            loop {
-                match output.read(&mut buffer) {
-                    Ok(read @ 1..) => {
+            let mut open = true;
+            let mut closed = None;
+            let code = loop {
+                if closed.is_none() && is_woken(&woken) {
+                    closed = Some(Instant::now());
+                }
+                let got = if open {
+                    read_once(&mut *output, &mut buffer)
+                } else {
+                    Got::End
+                };
+                match got {
+                    Got::Bytes(read) => {
                         let _ = out.send(Update::TermOutput(id, buffer[..read].to_vec()));
                     }
-                    Err(error)
-                        if error.kind() == io::ErrorKind::WouldBlock && wait_for_data(fd) => {}
-                    _ => break,
+                    Got::Nothing => {}
+                    Got::End => open = false,
                 }
-            }
-            let code = loop {
-                let mut reaped = reaping.lock().unwrap_or_else(PoisonError::into_inner);
-                match process.try_wait() {
-                    Ok(None) => {}
-                    waited => {
-                        *reaped = true;
-                        break waited
-                            .ok()
-                            .flatten()
-                            .map_or(1, |status| status.exit_code() as i32);
+                if open && closed.is_none() {
+                    if got == Got::Nothing {
+                        wait_for_data(fd, &woken);
                     }
+                    continue;
                 }
-                drop(reaped);
-                thread::sleep(REAP_PAUSE);
+                if let Some(code) = reap(&mut *process, &reaping, closed) {
+                    break code;
+                }
+                if !matches!(got, Got::Bytes(_)) {
+                    thread::sleep(REAP_PAUSE);
+                }
             };
             let _ = out.send(Update::TermEnded(id, code));
         });
-        let (writes, writer) = spawn_writer(input, fd);
+        let (writes, writer) = spawn_writer(input, fd, writer_woken);
         Ok(Box::new(Pty {
             master: pair.master,
             writes: Some(writes),
             killer,
             reaped,
+            wake: Some(wake),
             reader: Some(reader),
             writer: Some(writer),
         }))
@@ -124,13 +137,65 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-fn wait_for_data(fd: RawFd) -> bool {
-    poll_all(&mut [watch(fd, libc::POLLIN)])
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Got {
+    Bytes(usize),
+    Nothing,
+    End,
 }
 
-fn wait_for_room(fd: RawFd) -> bool {
-    let mut fds = [watch(fd, libc::POLLOUT)];
-    poll_all(&mut fds) && fds[0].revents & libc::POLLOUT != 0
+fn read_once(output: &mut dyn Read, buffer: &mut [u8]) -> Got {
+    match output.read(buffer) {
+        Ok(read @ 1..) => Got::Bytes(read),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Got::Nothing,
+        _ => Got::End,
+    }
+}
+
+fn is_woken(mut woken: &UnixStream) -> bool {
+    matches!(woken.read(&mut [0]), Ok(0))
+}
+
+fn reap(
+    process: &mut (dyn Child + Send + Sync),
+    reaped: &Mutex<bool>,
+    closed: Option<Instant>,
+) -> Option<i32> {
+    let mut reaped = reaped.lock().unwrap_or_else(PoisonError::into_inner);
+    match process.try_wait() {
+        Ok(None) => {
+            if let (Some(at), Some(pid)) = (closed, process.process_id()) {
+                if at.elapsed() >= HANGUP_GRACE {
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                }
+            }
+            None
+        }
+        waited => {
+            *reaped = true;
+            Some(
+                waited
+                    .ok()
+                    .flatten()
+                    .map_or(1, |status| status.exit_code() as i32),
+            )
+        }
+    }
+}
+
+fn wait_for_data(fd: RawFd, woken: &UnixStream) {
+    poll_all(&mut [
+        watch(fd, libc::POLLIN),
+        watch(woken.as_raw_fd(), libc::POLLIN),
+    ]);
+}
+
+fn wait_for_room(fd: RawFd, woken: &UnixStream) -> bool {
+    let mut fds = [
+        watch(fd, libc::POLLOUT),
+        watch(woken.as_raw_fd(), libc::POLLIN),
+    ];
+    poll_all(&mut fds) && fds[1].revents == 0 && fds[0].revents & libc::POLLOUT != 0
 }
 
 fn watch(fd: RawFd, events: libc::c_short) -> libc::pollfd {
@@ -150,24 +215,29 @@ fn poll_all(fds: &mut [libc::pollfd]) -> bool {
     true
 }
 
-fn write_whole(input: &mut dyn Write, mut bytes: &[u8], fd: RawFd) -> bool {
+fn write_whole(input: &mut dyn Write, mut bytes: &[u8], fd: RawFd, woken: &UnixStream) -> bool {
     while !bytes.is_empty() {
         match input.write(bytes) {
             Ok(0) => return false,
             Ok(written) => bytes = &bytes[written..],
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock && wait_for_room(fd) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock && wait_for_room(fd, woken) => {
+            }
             Err(_) => return false,
         }
     }
     input.flush().is_ok()
 }
 
-fn spawn_writer(mut input: Box<dyn Write + Send>, fd: RawFd) -> (Sender<Vec<u8>>, JoinHandle<()>) {
+fn spawn_writer(
+    mut input: Box<dyn Write + Send>,
+    fd: RawFd,
+    woken: UnixStream,
+) -> (Sender<Vec<u8>>, JoinHandle<()>) {
     let (writes, queue) = mpsc::channel::<Vec<u8>>();
     let writer = thread::spawn(move || {
         for bytes in queue {
-            if !write_whole(&mut *input, &bytes, fd) {
+            if !write_whole(&mut *input, &bytes, fd, &woken) {
                 return;
             }
         }
@@ -201,6 +271,7 @@ impl Wire for Pty {
         }
         drop(reaped);
         self.writes = None;
+        self.wake = None;
     }
 }
 
@@ -449,6 +520,88 @@ pub(crate) mod tests {
         ));
     }
 
+    fn pid_in(seen: &str) -> libc::pid_t {
+        seen.trim()
+            .strip_prefix("pid=")
+            .and_then(|pid| pid.parse().ok())
+            .unwrap_or_else(|| panic!("{seen:?}"))
+    }
+
+    fn gone_within(pid: libc::pid_t, bound: Duration) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < bound {
+            if unsafe { libc::kill(pid, 0) } == -1
+                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                return true;
+            }
+            thread::sleep(REAP_PAUSE);
+        }
+        false
+    }
+
+    #[test]
+    fn close_ends_in_time_while_a_grandchild_that_ignores_the_hangup_holds_the_terminal() {
+        let (mut wire, updates) = open(
+            &[
+                "-c",
+                "(trap '' HUP; exec sleep 10) & echo pid=$!; exec sleep 10",
+            ],
+            (24, 80),
+            &Login::default(),
+        );
+        let grandchild = pid_in(&output_until(&updates, "\n"));
+
+        let started = Instant::now();
+        wire.close();
+        drop(wire);
+        let took = started.elapsed();
+        unsafe { libc::kill(grandchild, libc::SIGKILL) };
+
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        let left: Vec<Update> = updates.try_iter().collect();
+        assert!(
+            matches!(left.last(), Some(Update::TermEnded(7, _))),
+            "{left:?}"
+        );
+        assert!(gone_within(grandchild, WAIT));
+    }
+
+    #[test]
+    fn close_ends_in_time_a_child_that_ignores_the_hangup() {
+        let (mut wire, updates) = open(
+            &["-c", "trap '' HUP; echo pid=$$; exec sleep 10"],
+            (24, 80),
+            &Login::default(),
+        );
+        let pid = pid_in(&output_until(&updates, "\n"));
+
+        let started = Instant::now();
+        wire.close();
+        drop(wire);
+        let took = started.elapsed();
+
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    #[test]
+    fn a_write_larger_than_the_terminal_holds_reaches_a_reading_child_whole() {
+        let (mut wire, updates) = open(
+            &["-c", "stty raw -echo; echo ready; head -c 262144 | wc -c"],
+            (24, 80),
+            &Login::default(),
+        );
+        output_until(&updates, "ready");
+
+        wire.write(&[b'x'; 262_144]);
+        let (seen, code) = end(&updates);
+
+        assert!(seen.contains("262144"), "{seen:?}");
+        assert_eq!(code, 0);
+    }
+
     #[derive(Debug, Clone, Default)]
     struct Killer(Arc<AtomicUsize>);
 
@@ -484,12 +637,14 @@ pub(crate) mod tests {
 
     fn bare(killer: Killer, reaped: bool, input: Box<dyn Write + Send>) -> Pty {
         let pair = native_pty_system().openpty(pty_size((24, 80))).unwrap();
-        let (writes, writer) = spawn_writer(input, pair.master.as_raw_fd().unwrap());
+        let (wake, woken) = UnixStream::pair().unwrap();
+        let (writes, writer) = spawn_writer(input, pair.master.as_raw_fd().unwrap(), woken);
         Pty {
             master: pair.master,
             writes: Some(writes),
             killer: Box::new(killer),
             reaped: Arc::new(Mutex::new(reaped)),
+            wake: Some(wake),
             reader: None,
             writer: Some(writer),
         }
