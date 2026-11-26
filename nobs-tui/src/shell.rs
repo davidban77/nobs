@@ -289,6 +289,19 @@ pub enum Reach {
     NoAnswer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Need {
+    Service(status::Service),
+    AnyOf(&'static [Need]),
+    ComposeServices,
+    WorkshopStack,
+    Workshop,
+    Devices,
+    LabNodes,
+    Nodes(&'static [Nodes]),
+    Chapters,
+}
+
 pub(crate) fn absent(reach: Reach, word: &str) -> Option<String> {
     match reach {
         Reach::NotInLab => Some(format!("no {word} in this lab")),
@@ -1000,10 +1013,22 @@ impl Model {
     }
 
     pub fn reach(&self, service: status::Service) -> Reach {
+        self.reach_in(
+            service,
+            |index| self.lab.is_some() || index == self.selected,
+            |index| index == self.selected,
+        )
+    }
+
+    fn reach_in(
+        &self,
+        service: status::Service,
+        counted: impl Fn(usize) -> bool,
+        sonda_counted: impl Fn(usize) -> bool,
+    ) -> Reach {
         let compose = status::row(service).compose;
-        let of_the_lab = |index: &usize| self.lab.is_some() || *index == self.selected;
         let holders: Vec<&StackState> = (0..self.stacks.len())
-            .filter(of_the_lab)
+            .filter(|index| counted(*index))
             .filter(|index| {
                 self.defined[*index]
                     .as_ref()
@@ -1015,7 +1040,7 @@ impl Model {
             .iter()
             .any(|state| matches!(state, StackState::Up { .. }));
         let unknown = (0..self.stacks.len())
-            .filter(of_the_lab)
+            .filter(|index| counted(*index))
             .any(|index| watched(&self.stacks[index]) && self.defined[index].is_none())
             || holders
                 .iter()
@@ -1027,10 +1052,9 @@ impl Model {
             return Reach::StackDown;
         }
         let set = match service {
-            status::Service::Sonda => self
-                .stacks
-                .get(self.selected)
-                .is_some_and(|stack| sonda_set(self.server.as_deref(), stack)),
+            status::Service::Sonda => (0..self.stacks.len())
+                .filter(|index| sonda_counted(*index))
+                .any(|index| sonda_set(self.server.as_deref(), &self.stacks[index])),
             _ => self.urls.is_set(service),
         };
         if !up && !set {
@@ -1045,6 +1069,34 @@ impl Model {
             Reach::NoAnswer
         } else {
             Reach::Answers
+        }
+    }
+
+    pub(crate) fn has(&self, needs: &[Need]) -> bool {
+        needs.iter().all(|need| self.holds(*need))
+    }
+
+    fn holds(&self, need: Need) -> bool {
+        match need {
+            Need::Service(service) => self.reach_in(service, |_| true, |_| true) != Reach::NotInLab,
+            Need::AnyOf(needs) => needs.iter().any(|need| self.holds(*need)),
+            Need::ComposeServices => self
+                .stacks
+                .iter()
+                .zip(&self.states)
+                .any(|(stack, state)| watched(stack) && state.total() != Some(0)),
+            Need::WorkshopStack => self
+                .stacks
+                .iter()
+                .any(|stack| stack.kind == StackKind::Workshop),
+            Need::Workshop => matches!(
+                self.lab.as_ref().map(|lab| &lab.kind),
+                Some(Kind::Workshop(_))
+            ),
+            Need::Devices => self.source || self.source_error.is_some(),
+            Need::LabNodes => self.lab_with_nodes(),
+            Need::Nodes(kinds) => self.nodes_from.is_some_and(|nodes| kinds.contains(&nodes)),
+            Need::Chapters => !self.chapters().is_empty(),
         }
     }
 
@@ -7470,6 +7522,193 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_service_is_had_in_every_state_but_not_in_the_lab() {
+        let mut model = Model::new(start(vec![stack("a", &[])]));
+        let logs = [Need::Service(status::Service::Logs)];
+        let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
+        let seen = |model: &Model| (model.reach(status::Service::Logs), model.has(&logs));
+        let mut states = vec![seen(&model)];
+
+        model.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
+        states.push(seen(&model));
+        model.apply(every_service_up(0));
+        states.push(seen(&model));
+        model.apply(Update::LabLogs(Err("refused".to_string())));
+        states.push(seen(&model));
+        model.apply(listing(0, Ok(Vec::new())));
+        states.push(seen(&model));
+
+        assert_eq!(
+            states,
+            [
+                (Reach::Unknown, true),
+                (Reach::StackDown, true),
+                (Reach::Answers, true),
+                (Reach::NoAnswer, true),
+                (Reach::NotInLab, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn any_of_holds_when_one_of_its_needs_holds() {
+        let mut model = Model::new(start(vec![stack("a", &[])]));
+        let metrics = status::row(status::Service::Metrics).compose;
+
+        model.apply(Update::Services(
+            0,
+            defined(&[metrics]),
+            Ok(vec![row(metrics, RUNNING)]),
+        ));
+
+        assert!(model.has(&[Need::AnyOf(&[
+            Need::Service(status::Service::Logs),
+            Need::Service(status::Service::Metrics)
+        ])]));
+        assert!(!model.has(&[Need::AnyOf(&[
+            Need::Service(status::Service::Logs),
+            Need::Service(status::Service::Alerts)
+        ])]));
+        assert!(model.has(&[Need::AnyOf(&[
+            Need::Devices,
+            Need::Service(status::Service::Metrics)
+        ])]));
+        assert!(!model.has(&[Need::AnyOf(&[])]));
+    }
+
+    #[test]
+    fn a_service_need_is_asked_over_every_stack_of_the_list_not_the_selected_one() {
+        let mut model = Model::new(start(vec![stack("a", &[]), stack("b", &[]), sonda_stack()]));
+        let seen = |model: &Model| {
+            [
+                (
+                    status::Service::Metrics,
+                    Need::Service(status::Service::Metrics),
+                ),
+                (
+                    status::Service::Sonda,
+                    Need::Service(status::Service::Sonda),
+                ),
+            ]
+            .map(|(service, need)| (model.reach(service), model.has(&[need])))
+        };
+        model.apply(Update::Services(
+            1,
+            defined(&["prometheus"]),
+            Ok(vec![row("prometheus", RUNNING)]),
+        ));
+        model.apply(Update::Services(0, defined(&[]), Ok(Vec::new())));
+
+        let at_a = seen(&model);
+        ch(&mut model, 'j');
+        let at_b = seen(&model);
+
+        assert_eq!(at_a, [(Reach::NotInLab, true), (Reach::NotInLab, true)]);
+        assert_eq!(at_b, [(Reach::Answers, true), (Reach::NotInLab, true)]);
+    }
+
+    #[test]
+    fn compose_services_are_had_unless_every_watched_stack_has_none() {
+        let compose = [Need::ComposeServices];
+        let mut model = Model::new(start(vec![stack("a", &[]), stack("b", &[]), sonda_stack()]));
+        let before_an_answer = model.has(&compose);
+
+        model.apply(listing(0, Ok(Vec::new())));
+        let one_empty = model.has(&compose);
+        model.apply(listing(1, Ok(Vec::new())));
+        let every_one_empty = model.has(&compose);
+
+        assert_eq!(
+            (before_an_answer, one_empty, every_one_empty),
+            (true, true, false)
+        );
+        assert!(!Model::new(start(vec![sonda_stack()])).has(&compose));
+    }
+
+    #[test]
+    fn a_filter_in_the_stacks_list_changes_no_need() {
+        let mut model = opened(&["a", "b"]);
+        model.apply(every_service_up(0));
+        model.apply(listing(1, Ok(Vec::new())));
+        let needs = [Need::ComposeServices, Need::Service(status::Service::Logs)];
+        let before = needs.map(|need| model.has(&[need]));
+
+        filtered(&mut model, "b");
+
+        assert_eq!(model.visible_stacks(), [1]);
+        assert_eq!(before, [true, true]);
+        assert_eq!(needs.map(|need| model.has(&[need])), before);
+    }
+
+    #[test]
+    fn a_workshop_stack_is_had_when_any_stack_of_the_list_is_a_workshop() {
+        let workshop_stack = [Need::WorkshopStack];
+
+        assert!(Model::new(start(vec![sonda_stack(), stack("a", &[])])).has(&workshop_stack));
+        assert!(!Model::new(start(vec![sonda_stack()])).has(&workshop_stack));
+        assert!(!book_model().has(&workshop_stack));
+    }
+
+    #[test]
+    fn a_workshop_is_had_only_when_the_lab_is_a_workshop() {
+        let workshop = [Need::Workshop];
+
+        assert!(devices_model(workshop_located("infrahub")).has(&workshop));
+        assert!(!lab_devices_model().has(&workshop));
+        assert!(!Model::new(start(vec![stack("a", &[])])).has(&workshop));
+    }
+
+    #[test]
+    fn devices_are_had_with_a_source_even_one_that_failed_to_open() {
+        let devices = [Need::Devices];
+        let failed = Model::new(Start {
+            source_error: Some("refused".to_string()),
+            ..start(vec![stack("a", &[])])
+        });
+
+        assert!(devices_model(workshop_located("infrahub")).has(&devices));
+        assert!(failed.has(&devices));
+        assert!(!Model::new(start(vec![stack("a", &[])])).has(&devices));
+    }
+
+    #[test]
+    fn lab_nodes_are_had_only_in_a_lab_with_nodes() {
+        let lab_nodes = [Need::LabNodes];
+
+        assert!(lab_devices_model().has(&lab_nodes));
+        assert!(!devices_model(workshop_located("infrahub")).has(&lab_nodes));
+    }
+
+    #[test]
+    fn nodes_are_had_only_when_they_come_from_one_of_the_kinds() {
+        let book = book_model();
+        let workshop = devices_model(workshop_located("infrahub"));
+
+        assert!(book.has(&[Need::Nodes(&[Nodes::Chapters])]));
+        assert!(!book.has(&[Need::Nodes(&[Nodes::Project, Nodes::Topology])]));
+        assert!(!workshop.has(&[Need::Nodes(&[
+            Nodes::Chapters,
+            Nodes::Project,
+            Nodes::Topology
+        ])]));
+    }
+
+    #[test]
+    fn chapters_are_had_only_with_a_book_lab_stack() {
+        assert!(book_model().has(&[Need::Chapters]));
+        assert!(!devices_model(workshop_located("infrahub")).has(&[Need::Chapters]));
+    }
+
+    #[test]
+    fn every_need_must_be_had() {
+        let model = devices_model(workshop_located("infrahub"));
+
+        assert!(model.has(&[]));
+        assert!(model.has(&[Need::Workshop, Need::Devices]));
+        assert!(!model.has(&[Need::Workshop, Need::LabNodes]));
+    }
+
+    #[test]
     fn a_stopped_sonda_poller_gives_no_answer() {
         let mut model = sonda_tab();
         let before = model.reach(status::Service::Sonda);
@@ -7546,7 +7785,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn nodes_model(dir: &Path) -> Model {
+    pub(crate) fn nodes_model(dir: &Path) -> Model {
         let located = locate(dir, Some(dir)).unwrap();
         let stacks = stacks(Some(&located), vec![]).unwrap();
         Model::new(Start {

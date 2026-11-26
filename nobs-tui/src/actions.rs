@@ -2,7 +2,7 @@ use std::ffi::OsString;
 
 use nobs_core::locate::{Kind, Nodes};
 
-use crate::shell::{check_folder, Model, StackKind, Workbench};
+use crate::shell::{check_folder, Model, Need, StackKind, Workbench};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
@@ -16,17 +16,23 @@ pub enum Row {
 }
 
 impl Row {
-    pub(crate) fn needs(self) -> Option<&'static [Nodes]> {
+    pub(crate) fn needs(self) -> Vec<Need> {
         match self {
-            Row::Chapter => Some(&[Nodes::Chapters]),
-            Row::Lab(nodes) => Some(nodes),
-            Row::Stack | Row::Device | Row::Node | Row::EveryNode | Row::Interface => None,
+            Row::Stack => vec![Need::WorkshopStack],
+            Row::Device => vec![Need::Workshop, Need::Devices],
+            Row::Node | Row::Interface => vec![Need::LabNodes, Need::Devices],
+            Row::EveryNode => vec![Need::LabNodes],
+            Row::Chapter => vec![Need::Nodes(&[Nodes::Chapters]), Need::Chapters],
+            Row::Lab(nodes) => vec![Need::Nodes(nodes)],
         }
     }
-}
 
-pub(crate) fn in_its_lab(row: Row, model: &Model) -> bool {
-    !matches!(row, Row::Node | Row::EveryNode | Row::Interface) || model.lab_with_nodes()
+    fn lab_needs(self) -> Vec<Need> {
+        self.needs()
+            .into_iter()
+            .filter(|need| matches!(need, Need::LabNodes | Need::Nodes(_)))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,14 +339,7 @@ pub const ACTIONS: [Action; 24] = [
 ];
 
 pub(crate) fn fits(action: &Action, model: &Model) -> bool {
-    fits_nodes(action, model.nodes_from())
-}
-
-fn fits_nodes(action: &Action, nodes: Option<Nodes>) -> bool {
-    action
-        .row
-        .needs()
-        .is_none_or(|needs| nodes.is_some_and(|nodes| needs.contains(&nodes)))
+    model.has(&action.row.lab_needs())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,7 +420,7 @@ pub(crate) fn pieces(
         (Row::Node, Target::Device(name)) => {
             let lab = model
                 .located()
-                .filter(|_| in_its_lab(action.row, model))
+                .filter(|_| fits(action, model))
                 .filter(|_| action.ask != Ask::Push || model.intended_text(name).is_some())?;
             let args = words.chain([vec![OsString::from(name)]]).collect();
             (lab.dir.clone().into(), args)
@@ -429,7 +428,7 @@ pub(crate) fn pieces(
         (Row::Interface, Target::Interface { device, interface }) => {
             let lab = model
                 .located()
-                .filter(|_| in_its_lab(action.row, model) && model.has_driver(device))?;
+                .filter(|_| fits(action, model) && model.has_driver(device))?;
             let args = words
                 .chain([
                     vec![OsString::from(device)],
@@ -439,7 +438,7 @@ pub(crate) fn pieces(
             (lab.dir.clone().into(), args)
         }
         (Row::EveryNode, Target::Lab) => {
-            let lab = model.located().filter(|_| in_its_lab(action.row, model))?;
+            let lab = model.located().filter(|_| fits(action, model))?;
             (lab.dir.clone().into(), words.collect())
         }
         (Row::Chapter, Target::Chapter(index)) => {
@@ -471,6 +470,7 @@ mod tests {
     use crossterm::event::KeyCode;
 
     use super::*;
+    use crate::shell::tests::{fixture, nodes_model, stack, start};
     use crate::shell::WORKBENCHES;
 
     const GLOBAL_KEYS: [KeyCode; 7] = [
@@ -538,18 +538,21 @@ mod tests {
     #[test]
     fn each_workbench_has_unique_action_keys_in_each_lab_that_no_fixed_key_of_it_uses() {
         let labs = [
-            None,
-            Some(Nodes::Chapters),
-            Some(Nodes::Project),
-            Some(Nodes::Topology),
+            ("no lab", Model::new(start(vec![stack("a", &[])]))),
+            ("book-lab", nodes_model(&fixture("book-lab"))),
+            (
+                "project-two-node",
+                nodes_model(&fixture("project-two-node")),
+            ),
+            ("labcli-example", nodes_model(&fixture("labcli-example"))),
         ];
         for workbench in WORKBENCHES {
             let fixed = fixed_keys(workbench);
-            for lab in labs {
+            for (lab, model) in &labs {
                 let mut seen = Vec::new();
                 for action in ACTIONS
                     .iter()
-                    .filter(|action| action.workbench == workbench && fits_nodes(action, lab))
+                    .filter(|action| action.workbench == workbench && fits(action, model))
                 {
                     assert!(
                         !seen.contains(&action.key),

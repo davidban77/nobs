@@ -17,11 +17,11 @@ use nobs_core::project::Rendered;
 use nobs_core::status::{row, Service};
 use nobs_core::time;
 
-use crate::actions::{self, arguments, fits, Target, ACTIONS};
+use crate::actions::{arguments, fits, Target, ACTIONS};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    absent, kind_text, Agreement, Cursor, Focus, IntendedView, LoginEntry, Model, Reach, Run,
+    absent, kind_text, Agreement, Cursor, Focus, IntendedView, LoginEntry, Model, Need, Reach, Run,
     RunMeasure, RunState, StackKind, StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS,
     SERVICES_TABS,
 };
@@ -40,71 +40,105 @@ const VIEW_RUNNING: &str = "v running";
 const VIEW_INTENDED: &str = "v intended";
 const DIFFERENCE_NARROW: &str = "n N difference";
 const DIFFERENCE_WIDE: &str = "n N next/previous difference";
-const HELP_CONFIG: [(&str, &str); 2] = [
-    ("v", "intended or running config"),
-    ("n N", "next/previous difference"),
+const HELP_CONFIG: [(&str, &str, &[Need]); 2] = [
+    (
+        "v",
+        "intended or running config",
+        &[Need::LabNodes, Need::Devices],
+    ),
+    (
+        "n N",
+        "next/previous difference",
+        &[Need::LabNodes, Need::Devices],
+    ),
 ];
 const TERMINAL_HINT: &str = "press t to open a shell on";
 const HELP_QUIT_SESSION: &str = "quit; asks if busy";
 const HELP_TERMINAL: &str = "type in terminal";
 const PANE_HINTS: [&str; 4] = ["/ filter", "j/k scroll", "[ ] tab", "Esc back to list"];
-const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
-const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
+const HELP_DEVICES_NOTE: (&str, &[Need]) = (
+    "alerts box: Enter picks the device, opens its timeline",
+    &[Need::Service(Service::Alerts)],
+);
+const HELP_SONDA: (&str, &[Need]) = (
+    "sonda tab: Tab details  l load  d delete  r refresh",
+    &[Need::Service(Service::Sonda)],
+);
 const HELP_RUN: &str = "run pane, after Tab: j/k scroll  f follow  Esc fold";
 const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
 const HELP_PAGE: &str = "PgUp PgDn  move a page where j and k move";
-const HELP_QUIT: [(&str, &str); 2] = [
-    ("q", "quit; asks in a run"),
-    ("Ctrl-C", "stop a run, or quit"),
+const HELP_QUIT: [(&str, &str, &[Need]); 2] = [
+    ("q", "quit; asks in a run", &[]),
+    ("Ctrl-C", "stop a run, or quit", &[]),
 ];
-const HELP: [(&str, &str); 12] = [
-    ("Tab", "focus list/tabs"),
-    ("j k ↑ ↓", "move"),
-    ("[ ]", "other tab"),
-    ("Enter", "open the row"),
-    ("/", "filter"),
-    ("r", "refresh now"),
-    ("l", "service logs"),
-    ("f", "follow/pause logs"),
-    ("o", "run pane"),
-    ("x", "dismiss the error"),
-    ("?", "close"),
-    ("Esc", "close/clear/back"),
+const HELP: [(&str, &str, &[Need]); 12] = [
+    ("Tab", "focus list/tabs", &[]),
+    ("j k ↑ ↓", "move", &[]),
+    ("[ ]", "other tab", &[]),
+    ("Enter", "open the row", &[]),
+    ("/", "filter", &[]),
+    ("r", "refresh now", &[]),
+    ("l", "service logs", &[Need::ComposeServices]),
+    ("f", "follow/pause logs", &[Need::ComposeServices]),
+    ("o", "run pane", &[]),
+    ("x", "dismiss the error", &[]),
+    ("?", "close", &[]),
+    ("Esc", "close/clear/back", &[]),
 ];
-const HELP_DEVICES: [(&str, &str); 12] = [
-    ("Tab", "focus list/tabs"),
-    ("j k ↑ ↓", "move"),
-    ("[ ]", "other tab"),
-    ("- +", "timeline window"),
-    ("x", "dismiss the error"),
-    ("Esc", "close/clear/back"),
-    ("Enter", "open / pick alert"),
-    ("/", "filter"),
-    ("r", "refresh now"),
-    ("f", "follow/pause logs"),
-    ("o", "run pane"),
-    ("?", "close"),
+const HELP_DEVICES: [(&str, &str, &[Need]); 12] = [
+    ("Tab", "focus list/tabs", &[]),
+    ("j k ↑ ↓", "move", &[]),
+    ("[ ]", "other tab", &[]),
+    (
+        "- +",
+        "timeline window",
+        &[Need::AnyOf(&[
+            Need::Service(Service::Alerts),
+            Need::Service(Service::Logs),
+            Need::Service(Service::Flows),
+        ])],
+    ),
+    ("x", "dismiss the error", &[]),
+    ("Esc", "close/clear/back", &[]),
+    (
+        "Enter",
+        "open / pick alert",
+        &[Need::AnyOf(&[
+            Need::Devices,
+            Need::Service(Service::Alerts),
+        ])],
+    ),
+    ("/", "filter", &[]),
+    ("r", "refresh now", &[]),
+    ("f", "follow/pause logs", &[Need::Service(Service::Logs)]),
+    ("o", "run pane", &[]),
+    ("?", "close", &[]),
 ];
-const HELP_LAB: [(&str, &str); 7] = [
-    ("Tab", "focus next pane"),
-    ("j k ↑ ↓", "move"),
-    ("r", "refresh now"),
-    ("o", "run pane"),
-    ("x", "dismiss the error"),
-    ("?", "close"),
-    ("Esc", "close/fold/back"),
+const HELP_LAB: [(&str, &str, &[Need]); 7] = [
+    ("Tab", "focus next pane", &[]),
+    ("j k ↑ ↓", "move", &[]),
+    ("r", "refresh now", &[]),
+    ("o", "run pane", &[]),
+    ("x", "dismiss the error", &[]),
+    ("?", "close", &[]),
+    ("Esc", "close/fold/back", &[]),
 ];
-const HELP_OBSERVABILITY: [(&str, &str); 10] = [
-    ("Tab", "focus"),
-    ("j k ↑ ↓", "move"),
-    ("[ ]", "other view"),
-    ("/", "filter"),
-    ("Enter", "open the device"),
-    ("r", "refresh now"),
-    ("o", "run pane"),
-    ("x", "dismiss the error"),
-    ("Esc", "close/clear/back"),
-    ("?", "close"),
+const VIEWS: &[Need] = &[Need::AnyOf(&[
+    Need::Service(Service::Alerts),
+    Need::Service(Service::Logs),
+    Need::Service(Service::Metrics),
+])];
+const HELP_OBSERVABILITY: [(&str, &str, &[Need]); 10] = [
+    ("Tab", "focus", &[]),
+    ("j k ↑ ↓", "move", VIEWS),
+    ("[ ]", "other view", &[]),
+    ("/", "filter", VIEWS),
+    ("Enter", "open the device", VIEWS),
+    ("r", "refresh now", &[]),
+    ("o", "run pane", &[]),
+    ("x", "dismiss the error", &[]),
+    ("Esc", "close/clear/back", &[]),
+    ("?", "close", &[]),
 ];
 const KEYS_HINT: &str = "? keys  q quit";
 const STATE_WIDTH: usize = 9;
@@ -2723,7 +2757,7 @@ fn entry_line(label: &str, text: &str, keys: [&str; 2], width: usize) -> Vec<Str
 
 pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
     let workbench = model.workbench();
-    let fixed: &[(&str, &str)] = match workbench {
+    let fixed: &[(&str, &str, &[Need])] = match workbench {
         Workbench::Devices => &HELP_DEVICES,
         Workbench::Services => &HELP,
         Workbench::Lab => &HELP_LAB,
@@ -2735,9 +2769,8 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
     let actions = ACTIONS
         .iter()
         .filter(|action| action.workbench == workbench && fits(action, model))
-        .filter(|action| actions::in_its_lab(action.row, model))
         .map(|action| (action.key.to_string(), action.hint));
-    let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
+    let owned = |&(key, meaning, _): &(&str, &'static str, &[Need])| (key.to_string(), meaning);
     let terminal = workbench == Workbench::Devices && model.lab_with_nodes();
     let fixed = fixed.iter().flat_map(|entry| {
         let after = terminal && entry.0 == "[ ]";
@@ -2748,7 +2781,7 @@ pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
             .map(owned);
         std::iter::once(owned(entry)).chain(typed).chain(views)
     });
-    let quit = HELP_QUIT.iter().map(|&(key, meaning)| match key {
+    let quit = HELP_QUIT.iter().map(|&(key, meaning, _)| match key {
         "q" if model.lab_with_nodes() => (key.to_string(), HELP_QUIT_SESSION),
         _ => (key.to_string(), meaning),
     });
@@ -2775,8 +2808,8 @@ struct HelpLayout {
 fn help_layout(model: &Model, body: Rect) -> HelpLayout {
     let entries = help_entries(model);
     let mut notes = match model.workbench() {
-        Workbench::Devices => vec![HELP_DEVICES_NOTE],
-        Workbench::Services => vec![HELP_SONDA],
+        Workbench::Devices => vec![HELP_DEVICES_NOTE.0],
+        Workbench::Services => vec![HELP_SONDA.0],
         Workbench::Lab | Workbench::Observability => vec![],
     };
     notes.insert(0, HELP_PAGE);
@@ -2912,6 +2945,7 @@ mod tests {
     use ratatui::Terminal;
 
     use super::*;
+    use crate::actions;
     use crate::book::NodeRow;
     use crate::data;
     use crate::shell::tests::{
@@ -5233,7 +5267,7 @@ mod tests {
         assert!(entries.contains(&("Esc".to_string(), "close/fold/back")));
         assert!(HELP_LAB
             .iter()
-            .all(|(_, meaning)| meaning.chars().count() <= 17));
+            .all(|(_, meaning, _)| meaning.chars().count() <= 17));
     }
 
     #[test]
