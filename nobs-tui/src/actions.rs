@@ -15,12 +15,14 @@ pub enum Row {
     Lab(&'static [Nodes]),
 }
 
+pub(crate) const NODE_DEVICE: &[Need] = &[Need::LabNodes, Need::Devices];
+
 impl Row {
     pub(crate) fn needs(self) -> Vec<Need> {
         match self {
             Row::Stack => vec![Need::WorkshopStack],
             Row::Device => vec![Need::Workshop, Need::Devices],
-            Row::Node | Row::Interface => vec![Need::LabNodes, Need::Devices],
+            Row::Node | Row::Interface => NODE_DEVICE.to_vec(),
             Row::EveryNode => vec![Need::LabNodes],
             Row::Chapter => vec![Need::Nodes(&[Nodes::Chapters]), Need::Chapters],
             Row::Lab(nodes) => vec![Need::Nodes(nodes)],

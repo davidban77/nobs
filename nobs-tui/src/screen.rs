@@ -17,7 +17,7 @@ use nobs_core::project::Rendered;
 use nobs_core::status::{row, Service};
 use nobs_core::time;
 
-use crate::actions::{arguments, Target, ACTIONS};
+use crate::actions::{arguments, Target, ACTIONS, NODE_DEVICE};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
@@ -41,16 +41,8 @@ const VIEW_INTENDED: &str = "v intended";
 const DIFFERENCE_NARROW: &str = "n N difference";
 const DIFFERENCE_WIDE: &str = "n N next/previous difference";
 const HELP_CONFIG: [(&str, &str, &[Need]); 2] = [
-    (
-        "v",
-        "intended or running config",
-        &[Need::LabNodes, Need::Devices],
-    ),
-    (
-        "n N",
-        "next/previous difference",
-        &[Need::LabNodes, Need::Devices],
-    ),
+    ("v", "intended or running config", NODE_DEVICE),
+    ("n N", "next/previous difference", NODE_DEVICE),
 ];
 const TERMINAL_HINT: &str = "press t to open a shell on";
 const HELP_QUIT_SESSION: &str = "quit; asks if busy";
@@ -6350,7 +6342,7 @@ mod tests {
     #[test]
     fn each_entry_of_the_work_list_is_listed_only_in_a_lab_that_has_its_thing() {
         use Workbench::{Devices, Lab, Observability, Services};
-        let cases: [(Workbench, &str, Build, Build); 28] = [
+        let cases: [(Workbench, &str, Build, Build); 30] = [
             (Devices, "m  maintenance", workshop, lab_devices_model),
             (Devices, "g  fetch", lab_devices_model, topology),
             (Devices, "s  run", lab_devices_model, topology),
@@ -6404,6 +6396,8 @@ mod tests {
             (Lab, "R  prepare", book_model, book_without_chapters),
             (Lab, "U  update", book_model, book_without_chapters),
             (Lab, "B  rebuild", book_model, book_without_chapters),
+            (Lab, "X  destroy", book_model, book_without_chapters),
+            (Lab, "S  show", book_model, book_without_chapters),
         ];
         for (workbench, entry, with, without) in cases {
             let entry = entry.to_string();
