@@ -2993,6 +2993,7 @@ The exit code of a push:
 
 - 0: the device took the push and is in sync.
 - 1: nothing was pushed and the device is as before. This happens when:
+  - the folder is a workshop, or the lab's topology file is missing or cannot be read;
   - the name is not a node of the lab;
   - the `--save` folder cannot be made;
   - the node has no template, or its intended text has an error or no line;

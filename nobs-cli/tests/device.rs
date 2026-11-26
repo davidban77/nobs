@@ -60,6 +60,7 @@ fn in_dir<'a>(dir: &'a Path, args: &[&'a str]) -> Vec<&'a str> {
 fn outside_a_lab_the_device_commands_exit_1_with_the_locate_line() {
     let made = Lab::new("device-no-lab");
     let bare = made.0.clone();
+    fs::create_dir_all(bare.join("containerlab")).unwrap();
     for args in four("nobs-t-srl1") {
         assert_fails_with(
             &with_credentials(&bare, &args),
