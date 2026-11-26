@@ -3501,23 +3501,28 @@ impl Model {
     }
 
     fn step_cursor(&mut self, down: bool) -> Vec<Command> {
+        self.leave_hidden_alert();
         let visible = self.visible_devices();
-        let next = match (self.cursor, down) {
-            (Cursor::Device(at), true) => visible
+        let next = match (self.drawn_cursor(), down) {
+            (None, _) => visible
+                .first()
+                .map(|index| Cursor::Device(*index))
+                .or_else(|| (!self.shown_alerts().is_empty()).then_some(Cursor::Alert(0))),
+            (Some(Cursor::Device(at)), true) => visible
                 .iter()
                 .find(|index| **index > at)
                 .map(|index| Cursor::Device(*index))
                 .or_else(|| (!self.shown_alerts().is_empty()).then_some(Cursor::Alert(0))),
-            (Cursor::Device(at), false) => visible
+            (Some(Cursor::Device(at)), false) => visible
                 .iter()
                 .rev()
                 .find(|index| **index < at)
                 .map(|index| Cursor::Device(*index)),
-            (Cursor::Alert(at), true) => {
+            (Some(Cursor::Alert(at)), true) => {
                 (at + 1 < self.shown_alerts().len()).then_some(Cursor::Alert(at + 1))
             }
-            (Cursor::Alert(0), false) => visible.last().map(|index| Cursor::Device(*index)),
-            (Cursor::Alert(at), false) => Some(Cursor::Alert(at - 1)),
+            (Some(Cursor::Alert(0)), false) => visible.last().map(|index| Cursor::Device(*index)),
+            (Some(Cursor::Alert(at)), false) => Some(Cursor::Alert(at - 1)),
         };
         let Some(next) = next else {
             return Vec::new();
@@ -3534,10 +3539,14 @@ impl Model {
         self.select_device(index)
     }
 
-    fn show_cursor(&mut self) -> Vec<Command> {
+    fn leave_hidden_alert(&mut self) {
         if matches!(self.cursor, Cursor::Alert(at) if at >= self.shown_alerts().len()) {
             self.cursor = Cursor::Device(self.device);
         }
+    }
+
+    fn show_cursor(&mut self) -> Vec<Command> {
+        self.leave_hidden_alert();
         let mut commands = Vec::new();
         let stacks = self.visible_stacks();
         if let Some(&first) = stacks.first().filter(|_| !stacks.contains(&self.selected)) {
@@ -9241,6 +9250,60 @@ pub(crate) mod tests {
             "{:?}",
             model.cursor()
         );
+    }
+
+    fn on_second_alert() -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(srl1_alerts(2));
+        for _ in 0..3 {
+            ch(&mut model, 'j');
+        }
+        assert_eq!(model.cursor(), Cursor::Alert(1));
+        model
+    }
+
+    #[test]
+    fn after_the_alert_rows_stop_being_drawn_j_and_k_step_onto_a_drawn_row() {
+        let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
+        let gone = || {
+            [
+                Update::Stopped("alerts".to_string()),
+                Update::Services(0, defined(&names), Ok(Vec::new())),
+            ]
+        };
+        for pressed in ['j', 'k'] {
+            for (case, update) in gone().into_iter().enumerate() {
+                let mut model = on_second_alert();
+                model.apply(update);
+                assert!(model.shown_alerts().is_empty());
+                assert!(model.devices_can_step());
+
+                ch(&mut model, pressed);
+
+                assert_eq!(
+                    model.drawn_cursor(),
+                    Some(model.cursor()),
+                    "{pressed} {case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn after_the_alert_rows_stop_being_drawn_under_a_filter_hiding_the_selected_device_j_steps_onto_a_shown_device(
+    ) {
+        let mut model = on_second_alert();
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        ch(&mut model, '/');
+        ch(&mut model, '1');
+        code(&mut model, KeyCode::Enter);
+        model.apply(Update::Stopped("alerts".to_string()));
+        assert!(model.devices_can_step());
+
+        let commands = ch(&mut model, 'j');
+
+        assert_eq!(commands, [Command::SelectDevice("srl1".to_string())]);
+        assert_eq!(model.cursor(), Cursor::Device(0));
     }
 
     #[test]
