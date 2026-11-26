@@ -27,4 +27,4 @@
 ║                                                                                                  ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
  run  none                                                                                   o open
- t connect again  j/k scroll
+ t connect again  j/k scroll  [ ] tab

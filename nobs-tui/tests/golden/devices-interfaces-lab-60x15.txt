@@ -12,4 +12,4 @@
 │                     │║1 interface  0 differs             ║
 └─────────────────────┘╚═══════════════════════════════════╝
  run  none                                           o open
- Tab focus  j/k move  [ ] tab  Esc back  g fetch  s run
+ Tab focus  [ ] tab  Esc back  g fetch  s run  G check all

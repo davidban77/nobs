@@ -12,4 +12,4 @@
 │                     │║ set / network-in…ce ethernet-1/1.0║
 └─────────────────────┘╚═══════════════════════════════════╝
  run  none                                           o open
- v running  n N difference  / filter  j/k scroll  [ ] tab
+ v running  / filter  j/k scroll  [ ] tab  Esc back to list

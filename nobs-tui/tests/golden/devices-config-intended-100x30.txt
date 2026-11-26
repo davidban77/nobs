@@ -27,4 +27,4 @@
 │                                        │║                                                        ║
 └────────────────────────────────────────┘╚════════════════════════════════════════════════════════╝
  run  none                                                                                   o open
- v running  n N next/previous difference  / filter  j/k scroll  [ ] tab  Esc back to list  g fetch
+ v running  / filter  j/k scroll  [ ] tab  Esc back to list  g fetch  s run  G check all  P push

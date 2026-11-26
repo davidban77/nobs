@@ -27,4 +27,4 @@
 ║nobs-t-line 37                                                                                    ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
  run  none                                                                                   o open
- t type in the terminal  j/k scroll  c close session
+ t type in the terminal  j/k scroll  c close session  [ ] tab
