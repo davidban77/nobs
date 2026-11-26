@@ -2463,7 +2463,9 @@ fn push_device(
     if !made_folder(save, err) {
         return 1;
     }
-    let made = Made(save);
+    if let Some(folder) = save {
+        let _ = fs::remove_dir(folder);
+    }
     let name = &node.name;
     let text = match intended_of(node) {
         Ok(text) => text,
@@ -2512,10 +2514,9 @@ fn push_device(
             3
         }
         Ok(Pushed::Taken(output)) => {
-            made.keep();
             pass_through(&output, out, err);
             let _ = writeln!(out, "{}", device::pushed_line(name, count));
-            let fetched = walk_devices(
+            let fetched = check_devices(
                 std::slice::from_ref(node),
                 &|_| Ok(text.clone()),
                 transport,
@@ -2673,43 +2674,6 @@ fn check_devices(
     if !made_folder(save, err) {
         return 1;
     }
-    walk_devices(nodes, intended_of, transport, save, out, err)
-}
-
-fn made_folder(save: Option<&Path>, err: &mut impl Write) -> bool {
-    if let Some(folder) = save {
-        if let Err(error) = check::make_folder(folder) {
-            cannot_make(err, folder, &error);
-            return false;
-        }
-    }
-    true
-}
-
-struct Made<'a>(Option<&'a Path>);
-
-impl Made<'_> {
-    fn keep(mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for Made<'_> {
-    fn drop(&mut self) {
-        if let Some(folder) = self.0 {
-            let _ = fs::remove_dir(folder);
-        }
-    }
-}
-
-fn walk_devices(
-    nodes: &[TopologyNode],
-    intended_of: &dyn Fn(&TopologyNode) -> Result<String, Failure>,
-    transport: &dyn Transport,
-    save: Option<&Path>,
-    out: &mut impl Write,
-    err: &mut impl Write,
-) -> i32 {
     let width = check::width(nodes);
     let mut unsaved = false;
     let readings = check::walk(nodes, transport, intended_of, &mut |reading| {
@@ -2724,6 +2688,16 @@ fn walk_devices(
         }
     });
     check::exit_code(&readings).max(i32::from(unsaved))
+}
+
+fn made_folder(save: Option<&Path>, err: &mut impl Write) -> bool {
+    if let Some(folder) = save {
+        if let Err(error) = check::make_folder(folder) {
+            cannot_make(err, folder, &error);
+            return false;
+        }
+    }
+    true
 }
 
 fn cannot_make(err: &mut impl Write, path: &Path, error: &io::Error) {
@@ -6079,7 +6053,12 @@ fn network_word(action: NetworkAction) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    mod listing {
+        include!("../tests/support/listing.rs");
+    }
+
     use super::*;
+    use listing::listing;
     use nobs_core::device::{FakeTerminal, FakeTransport};
     use nobs_core::runner::FakeRunner;
     use std::cell::RefCell;
@@ -8468,6 +8447,24 @@ mod tests {
             );
         }
         assert!(exists.is_dir());
+    }
+
+    #[test]
+    fn a_push_whose_save_folder_cannot_be_made_leaves_the_disk_as_it_was() {
+        set_credentials();
+        let lab = push_lab("push-save-untouched");
+        fs::create_dir(lab.0.join("check")).unwrap();
+        fs::write(lab.0.join("check/nobs-t-mine"), "nobs-t-kept\n").unwrap();
+        for folder in [lab.0.join("check"), lab.0.join("none/check")] {
+            let before = listing(&lab.0);
+            let transport = push_then_fetch(taken(), synced("nobs-t-srl1"));
+
+            let (code, ..) =
+                pushed_with(&lab.0, "nobs-t-srl1", &transport, Some(true), Some(&folder));
+
+            assert_eq!(code, 1, "{}", folder.display());
+            assert_eq!(listing(&lab.0), before, "{}", folder.display());
+        }
     }
 
     #[test]
