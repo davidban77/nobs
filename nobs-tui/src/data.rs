@@ -138,8 +138,8 @@ impl Model {
             }
             Prompt::None => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
-                KeyCode::Char('j') | KeyCode::Down => return self.step(1),
-                KeyCode::Char('k') | KeyCode::Up => return self.step(-1),
+                KeyCode::Char('j') | KeyCode::Down if self.can_step() => return self.step(1),
+                KeyCode::Char('k') | KeyCode::Up if self.can_step() => return self.step(-1),
                 KeyCode::Char('r') => return vec![Command::Refresh],
                 KeyCode::Char('l') => self.prompt = Prompt::Path(String::new()),
                 KeyCode::Char('d') => {
@@ -163,6 +163,10 @@ impl Model {
 
     pub fn selected(&self) -> Option<&ScenarioRow> {
         self.selected.and_then(|index| self.rows.get(index))
+    }
+
+    pub fn can_step(&self) -> bool {
+        self.rows.len() > 1
     }
 
     pub fn stats_body(&self) -> Option<&str> {
@@ -210,6 +214,10 @@ impl Model {
 
     pub(crate) fn details_scroll(&self) -> usize {
         self.details_scroll
+    }
+
+    pub(crate) fn details_can_scroll(&self) -> bool {
+        self.details_overflow > 0
     }
 
     pub(crate) fn set_details_overflow(&mut self, lines: usize) {

@@ -1268,21 +1268,15 @@ impl Model {
                 self.alerts_ok = true;
                 self.clear_error(error_source(status::Service::Alerts));
                 if let Cursor::Alert(at) = self.cursor {
-                    return match self.alerts.len() {
-                        0 => {
-                            self.cursor = Cursor::Device(self.device);
-                            self.show_cursor()
-                        }
-                        len => {
-                            self.cursor = Cursor::Alert(at.min(len - 1));
-                            Vec::new()
-                        }
-                    };
+                    let last = self.shown_alerts().len().saturating_sub(1);
+                    self.cursor = Cursor::Alert(at.min(last));
+                    return self.show_cursor();
                 }
             }
             Update::Alerts(Err(text)) => {
                 self.alerts_ok = false;
                 self.fail(error_source(status::Service::Alerts), text);
+                return self.show_cursor();
             }
             Update::DeviceLogs(device, Ok(lines)) => {
                 self.clear_error(error_source(status::Service::Logs));
@@ -1832,6 +1826,9 @@ impl Model {
     }
 
     fn type_in_terminal(&mut self) -> Vec<Command> {
+        if !self.can_type_in_terminal() {
+            return Vec::new();
+        }
         let Some(target) = self.action_target(SHELL.row) else {
             return Vec::new();
         };
@@ -1899,13 +1896,19 @@ impl Model {
         else {
             return Vec::new();
         };
-        match code {
+        let up = match code {
             KeyCode::Char('c') => {
                 return self.sessions.close(id, Closed::ByYou).into_iter().collect();
             }
-            KeyCode::Char('k') | KeyCode::Up => self.sessions.scroll(&device, true, 1),
-            KeyCode::Char('j') | KeyCode::Down => self.sessions.scroll(&device, false, 1),
-            _ => {}
+            KeyCode::Char('k') | KeyCode::Up => true,
+            KeyCode::Char('j') | KeyCode::Down => false,
+            _ => return Vec::new(),
+        };
+        if self
+            .drawn_session()
+            .is_some_and(terminal::Session::can_scroll)
+        {
+            self.sessions.scroll(&device, up, 1);
         }
         Vec::new()
     }
@@ -1948,12 +1951,9 @@ impl Model {
 
     pub(crate) fn action_target(&self, row: Row) -> Option<Target> {
         match row {
-            Row::Stack
-                if self.focus == Focus::List || matches!(self.tab, Tab::Overview | Tab::Logs) =>
-            {
-                Some(Target::Stack(self.selected))
-            }
+            Row::Stack if self.stack_actions_reach() => self.stack_drawn().map(Target::Stack),
             Row::Stack => None,
+            Row::Device | Row::Node if !self.device_drawn() => None,
             Row::Device | Row::Node => self
                 .selected_device()
                 .map(|device| Target::Device(device.name.clone())),
@@ -1978,11 +1978,10 @@ impl Model {
         let action = ACTIONS.iter().find(|action| {
             action.key == typed && action.workbench == self.workbench && fits(action, self)
         })?;
-        let target = self.action_target(action.row);
-        if action.row == Row::Stack && target.is_none() {
+        if action.row == Row::Stack && !self.stack_actions_reach() {
             return None;
         }
-        let Some(target) = target else {
+        let Some(target) = self.action_target(action.row) else {
             return Some(Vec::new());
         };
         let running = self.active().map(|run| run.words.clone());
@@ -2010,6 +2009,9 @@ impl Model {
     }
 
     fn lab_key(&mut self, code: KeyCode) -> Vec<Command> {
+        if !self.lab_pane_can_step() {
+            return Vec::new();
+        }
         if self.focus == Focus::Lines {
             match code {
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -2553,7 +2555,180 @@ impl Model {
     }
 
     pub(crate) fn lab_can_move(&self) -> bool {
-        self.lab_lines_shown() && self.marked_lab_row().is_some()
+        self.lab_lines_shown() && self.lab_logs.shown().len() > 1
+    }
+
+    pub(crate) fn alerts_can_step(&self) -> bool {
+        self.visible_alerts().len() > 1
+    }
+
+    pub(crate) fn alerts_listed(&self) -> bool {
+        !self.shown_alerts().is_empty()
+    }
+
+    pub(crate) fn alert_opens(&self) -> Option<usize> {
+        self.selected_alert()
+            .and_then(|alert| self.alert_device(alert))
+    }
+
+    pub(crate) fn metrics_can_step(&self) -> bool {
+        self.visible_metric_devices().len() > 1
+    }
+
+    pub(crate) fn help_can_scroll(&self) -> bool {
+        self.help_overflow > 0
+    }
+
+    pub(crate) fn lab_pane_can_step(&self) -> bool {
+        match self.focus {
+            Focus::Lines => self.lab_overflow > 0,
+            Focus::Tabs => self.nodes.len() > 1,
+            Focus::List | Focus::Run => self.chapters().iter().any(|index| *index != self.chapter),
+        }
+    }
+
+    pub(crate) fn stacks_can_step(&self) -> bool {
+        self.visible_stacks()
+            .iter()
+            .any(|index| *index != self.selected)
+    }
+
+    pub(crate) fn stack_drawn(&self) -> Option<usize> {
+        self.visible_stacks()
+            .contains(&self.selected)
+            .then_some(self.selected)
+    }
+
+    fn stack_actions_reach(&self) -> bool {
+        self.focus == Focus::List || matches!(self.tab, Tab::Overview | Tab::Logs)
+    }
+
+    fn device_drawn(&self) -> bool {
+        (self.workbench, self.focus) != (Workbench::Devices, Focus::List)
+            || self.visible_devices().contains(&self.device)
+    }
+
+    pub(crate) fn can_open_logs(&self) -> bool {
+        self.stack_drawn().is_some() && !self.services.is_empty()
+    }
+
+    pub(crate) fn services_can_step(&self) -> bool {
+        self.services.len() > 1
+    }
+
+    pub(crate) fn logs_open(&self) -> bool {
+        self.logs.is_some()
+    }
+
+    pub(crate) fn logs_following(&self) -> bool {
+        self.logs.as_ref().is_some_and(|logs| logs.following)
+    }
+
+    pub(crate) fn logs_can_scroll(&self) -> bool {
+        self.logs.as_ref().is_some_and(|logs| logs.shown() > 1)
+    }
+
+    pub(crate) fn run_can_scroll(&self) -> bool {
+        self.run_overflow() > 0
+    }
+
+    pub(crate) fn run_can_follow(&self) -> bool {
+        self.run_scroll() < self.run_overflow()
+    }
+
+    pub(crate) fn devices_can_step(&self) -> bool {
+        let cursor = self.drawn_cursor();
+        let devices = self.visible_devices().into_iter().map(Cursor::Device);
+        let alerts = (0..self.shown_alerts().len()).map(Cursor::Alert);
+        devices.chain(alerts).any(|row| Some(row) != cursor)
+    }
+
+    fn drawn_cursor(&self) -> Option<Cursor> {
+        let drawn = match self.cursor {
+            Cursor::Device(at) => self.visible_devices().contains(&at),
+            Cursor::Alert(at) => at < self.shown_alerts().len(),
+        };
+        drawn.then_some(self.cursor)
+    }
+
+    pub(crate) fn cursor_opens(&self) -> Option<(usize, Tab)> {
+        match self.drawn_cursor()? {
+            Cursor::Device(index) => Some((index, Tab::Overview)),
+            Cursor::Alert(at) => self
+                .alert_device(&self.shown_alerts()[at])
+                .map(|index| (index, Tab::Timeline)),
+        }
+    }
+
+    pub(crate) fn can_type_in_terminal(&self) -> bool {
+        let Some(target) = self.action_target(SHELL.row) else {
+            return false;
+        };
+        let Target::Device(device) = &target else {
+            return false;
+        };
+        let resumes = self.session_of(device).is_some_and(|session| {
+            matches!(
+                session.state,
+                terminal::State::Connecting { .. } | terminal::State::Connected { .. }
+            )
+        });
+        resumes || pieces(&SHELL, &target, self).is_some()
+    }
+
+    pub(crate) fn in_session(&self) -> bool {
+        self.sessions.typed().is_some()
+    }
+
+    pub(crate) fn overview_can_scroll(&self) -> bool {
+        self.overview_overflow > 0
+    }
+
+    pub(crate) fn interfaces_can_step(&self) -> bool {
+        self.interfaces().len() > 1
+    }
+
+    pub(crate) fn timeline_can_step(&self) -> bool {
+        self.timeline().len() > 1
+    }
+
+    pub(crate) fn timeline_opens(&self) -> bool {
+        !self.timeline().is_empty()
+    }
+
+    pub(crate) fn popup_can_scroll(&self) -> bool {
+        self.popup.is_some() && self.popup_overflow > 0
+    }
+
+    pub(crate) fn device_logs_following(&self) -> bool {
+        self.device_logs.following
+    }
+
+    pub(crate) fn device_logs_can_scroll(&self) -> bool {
+        self.device_logs.shown().len() > 1
+    }
+
+    fn config_rows(&self) -> (usize, Option<Vec<usize>>) {
+        match self.intended_view() {
+            Some(view) => (
+                view.rows.len(),
+                Some(
+                    (0..view.rows.len())
+                        .filter(|row| view.rows[*row].0 == '+')
+                        .collect(),
+                ),
+            ),
+            None => (
+                self.config().map_or(0, |(_, _, shown, _)| shown.len()),
+                None,
+            ),
+        }
+    }
+
+    pub(crate) fn config_moves(&self) -> (Option<bool>, bool) {
+        let (shown, differences) = self.config_rows();
+        let jumps = differences.map(|rows| rows.iter().any(|row| *row != self.config_scroll));
+        (jumps, shown > 1)
     }
 
     pub(crate) fn lab_enter_device(&self) -> Option<usize> {
@@ -3177,7 +3352,7 @@ impl Model {
     }
 
     fn escape(&mut self, key: KeyEvent) -> Vec<Command> {
-        if self.run_pane {
+        if self.run_pane() {
             self.fold_pane();
             return Vec::new();
         }
@@ -3209,8 +3384,17 @@ impl Model {
     }
 
     fn run_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let follows = code == KeyCode::Char('f');
+        let acts = if follows {
+            self.run_can_follow()
+        } else {
+            self.run_can_scroll()
+        };
+        if !acts {
+            return Vec::new();
+        }
         let view = &mut self.run_view;
-        if code == KeyCode::Char('f') {
+        if follows {
             view.scroll = view.overflow;
         } else {
             scroll_step(code, &mut view.scroll, view.overflow + 1);
@@ -3255,10 +3439,13 @@ impl Model {
     }
 
     fn details_key(&mut self, key: KeyEvent) -> Vec<Command> {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.sonda.move_details(true),
-            KeyCode::Char('k') | KeyCode::Up => self.sonda.move_details(false),
+        let down = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => true,
+            KeyCode::Char('k') | KeyCode::Up => false,
             _ => return self.sonda_key(key),
+        };
+        if self.sonda.details_can_scroll() {
+            self.sonda.move_details(down);
         }
         Vec::new()
     }
@@ -3300,8 +3487,12 @@ impl Model {
 
     fn device_list_key(&mut self, code: KeyCode) -> Vec<Command> {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => return self.step_cursor(true),
-            KeyCode::Char('k') | KeyCode::Up => return self.step_cursor(false),
+            KeyCode::Char('j') | KeyCode::Down if self.devices_can_step() => {
+                return self.step_cursor(true)
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.devices_can_step() => {
+                return self.step_cursor(false)
+            }
             KeyCode::Char('/') => self.device_filter.start(),
             KeyCode::Enter => return self.enter_cursor(),
             _ => {}
@@ -3310,23 +3501,28 @@ impl Model {
     }
 
     fn step_cursor(&mut self, down: bool) -> Vec<Command> {
+        self.leave_hidden_alert();
         let visible = self.visible_devices();
-        let next = match (self.cursor, down) {
-            (Cursor::Device(at), true) => visible
+        let next = match (self.drawn_cursor(), down) {
+            (None, _) => visible
+                .first()
+                .map(|index| Cursor::Device(*index))
+                .or_else(|| (!self.shown_alerts().is_empty()).then_some(Cursor::Alert(0))),
+            (Some(Cursor::Device(at)), true) => visible
                 .iter()
                 .find(|index| **index > at)
                 .map(|index| Cursor::Device(*index))
-                .or_else(|| (!self.alerts.is_empty()).then_some(Cursor::Alert(0))),
-            (Cursor::Device(at), false) => visible
+                .or_else(|| (!self.shown_alerts().is_empty()).then_some(Cursor::Alert(0))),
+            (Some(Cursor::Device(at)), false) => visible
                 .iter()
                 .rev()
                 .find(|index| **index < at)
                 .map(|index| Cursor::Device(*index)),
-            (Cursor::Alert(at), true) => {
-                (at + 1 < self.alerts.len()).then_some(Cursor::Alert(at + 1))
+            (Some(Cursor::Alert(at)), true) => {
+                (at + 1 < self.shown_alerts().len()).then_some(Cursor::Alert(at + 1))
             }
-            (Cursor::Alert(0), false) => visible.last().map(|index| Cursor::Device(*index)),
-            (Cursor::Alert(at), false) => Some(Cursor::Alert(at - 1)),
+            (Some(Cursor::Alert(0)), false) => visible.last().map(|index| Cursor::Device(*index)),
+            (Some(Cursor::Alert(at)), false) => Some(Cursor::Alert(at - 1)),
         };
         let Some(next) = next else {
             return Vec::new();
@@ -3343,7 +3539,14 @@ impl Model {
         self.select_device(index)
     }
 
+    fn leave_hidden_alert(&mut self) {
+        if matches!(self.cursor, Cursor::Alert(at) if at >= self.shown_alerts().len()) {
+            self.cursor = Cursor::Device(self.device);
+        }
+    }
+
     fn show_cursor(&mut self) -> Vec<Command> {
+        self.leave_hidden_alert();
         let mut commands = Vec::new();
         let stacks = self.visible_stacks();
         if let Some(&first) = stacks.first().filter(|_| !stacks.contains(&self.selected)) {
@@ -3359,25 +3562,9 @@ impl Model {
     }
 
     fn enter_cursor(&mut self) -> Vec<Command> {
-        match self.cursor {
-            Cursor::Device(index) if index < self.devices.len() => {
-                let mut commands = self.select_device(index);
-                self.focus = Focus::Tabs;
-                self.tab = Tab::Overview;
-                commands.push(Command::OpenTab(Tab::Overview));
-                commands
-            }
-            Cursor::Device(_) => Vec::new(),
-            Cursor::Alert(at) => {
-                match self
-                    .alerts
-                    .get(at)
-                    .and_then(|alert| self.alert_device(alert))
-                {
-                    Some(index) => self.open_device_on(index, Tab::Timeline),
-                    None => Vec::new(),
-                }
-            }
+        match self.cursor_opens() {
+            Some((index, tab)) => self.open_device_on(index, tab),
+            None => Vec::new(),
         }
     }
 
@@ -3395,15 +3582,10 @@ impl Model {
             KeyCode::Char(']') => self.view = step(&OBSERVABILITY_TABS, self.view, true),
             _ if self.view == Tab::Logs => return self.lab_logs_key(code),
             _ if self.view == Tab::Metrics => return self.metrics_key(code),
-            KeyCode::Char('j') | KeyCode::Down => self.step_alert(true),
-            KeyCode::Char('k') | KeyCode::Up => self.step_alert(false),
-            KeyCode::Char('/') if !self.shown_alerts().is_empty() => self.alert_filter.start(),
-            KeyCode::Enter => {
-                let index = self
-                    .selected_alert()
-                    .and_then(|alert| self.alert_device(alert));
-                return self.open_in_devices(index, Tab::Timeline);
-            }
+            KeyCode::Char('j') | KeyCode::Down if self.alerts_can_step() => self.step_alert(true),
+            KeyCode::Char('k') | KeyCode::Up if self.alerts_can_step() => self.step_alert(false),
+            KeyCode::Char('/') if self.alerts_listed() => self.alert_filter.start(),
+            KeyCode::Enter => return self.open_in_devices(self.alert_opens(), Tab::Timeline),
             _ => {}
         }
         Vec::new()
@@ -3411,13 +3593,13 @@ impl Model {
 
     fn lab_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
         let following = self.lab_logs.following;
-        let lines = if self.lab_lines_shown() {
-            self.lab_logs.shown().len()
-        } else {
-            0
-        };
-        if let Some(commands) = self.leave_newest(code, true, following, lines, Model::lab_logs_key)
-        {
+        if let Some(commands) = self.leave_newest(
+            code,
+            true,
+            following,
+            self.lab_can_move(),
+            Model::lab_logs_key,
+        ) {
             return commands;
         }
         match code {
@@ -3435,8 +3617,8 @@ impl Model {
 
     fn metrics_key(&mut self, code: KeyCode) -> Vec<Command> {
         let down = match code {
-            KeyCode::Char('j') | KeyCode::Down => true,
-            KeyCode::Char('k') | KeyCode::Up => false,
+            KeyCode::Char('j') | KeyCode::Down if self.metrics_can_step() => true,
+            KeyCode::Char('k') | KeyCode::Up if self.metrics_can_step() => false,
             KeyCode::Char('/') if self.metrics_listed() => {
                 self.metrics_filter.start();
                 return Vec::new();
@@ -3479,6 +3661,7 @@ impl Model {
             return Vec::new();
         };
         self.workbench = Workbench::Devices;
+        self.device_filter = Filter::default();
         self.cursor = Cursor::Device(index);
         self.open_device_on(index, tab)
     }
@@ -3503,10 +3686,10 @@ impl Model {
 
     fn device_overview_key(&mut self, code: KeyCode) -> Vec<Command> {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down if self.overview_can_scroll() => {
                 self.overview_scroll = (self.overview_scroll + 1).min(self.overview_overflow);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if self.overview_can_scroll() => {
                 self.overview_scroll = self.overview_scroll.saturating_sub(1);
             }
             _ => {}
@@ -3518,8 +3701,12 @@ impl Model {
         let last = self.interfaces().len().saturating_sub(1);
         let row = self.interface_row();
         match code {
-            KeyCode::Char('j') | KeyCode::Down => self.interface_row = (row + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.interface_row = row.saturating_sub(1),
+            KeyCode::Char('j') | KeyCode::Down if self.interfaces_can_step() => {
+                self.interface_row = (row + 1).min(last);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.interfaces_can_step() => {
+                self.interface_row = row.saturating_sub(1);
+            }
             _ => {}
         }
         Vec::new()
@@ -3530,19 +3717,21 @@ impl Model {
         let last = entries.len().saturating_sub(1);
         let row = self.timeline_row();
         match code {
-            KeyCode::Char('j') | KeyCode::Down if self.popup.is_some() => {
+            KeyCode::Char('j') | KeyCode::Down if self.popup_can_scroll() => {
                 self.popup_scroll = (self.popup_scroll + 1).min(self.popup_overflow);
             }
-            KeyCode::Char('k') | KeyCode::Up if self.popup.is_some() => {
+            KeyCode::Char('k') | KeyCode::Up if self.popup_can_scroll() => {
                 self.popup_scroll = self.popup_scroll.saturating_sub(1);
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j' | 'k') | KeyCode::Down | KeyCode::Up | KeyCode::Enter
+                if self.popup.is_some() => {}
+            KeyCode::Char('j') | KeyCode::Down if self.timeline_can_step() => {
                 self.timeline_row = (row + 1).min(last);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if self.timeline_can_step() => {
                 self.timeline_row = row.saturating_sub(1);
             }
-            KeyCode::Enter if self.popup.is_none() => {
+            KeyCode::Enter if self.timeline_opens() => {
                 self.popup = entries.get(row).cloned();
                 self.popup_scroll = 0;
             }
@@ -3560,10 +3749,10 @@ impl Model {
     }
 
     fn device_logs_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let following = self.device_logs.following;
-        let lines = self.shown_device_logs().len();
+        let following = self.device_logs_following();
+        let scrolls = self.device_logs_can_scroll();
         if let Some(commands) =
-            self.leave_newest(code, true, following, lines, Model::device_logs_key)
+            self.leave_newest(code, true, following, scrolls, Model::device_logs_key)
         {
             return commands;
         }
@@ -3576,7 +3765,7 @@ impl Model {
                 return vec![Command::FollowDevice(following)];
             }
             KeyCode::Char('/') => self.device_logs.filter.start(),
-            _ if !self.device_logs.following => {
+            _ if scrolls && !self.device_logs.following => {
                 let shown = self.shown_device_logs().len();
                 scroll_step(code, &mut self.logs_scroll, shown);
             }
@@ -3586,18 +3775,10 @@ impl Model {
     }
 
     fn config_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let (shown, differences): (usize, Vec<usize>) = match self.intended_view() {
-            Some(view) => (
-                view.rows.len(),
-                (0..view.rows.len())
-                    .filter(|row| view.rows[*row].0 == '+')
-                    .collect(),
-            ),
-            None => (
-                self.config().map_or(0, |(_, _, shown, _)| shown.len()),
-                Vec::new(),
-            ),
-        };
+        let (shown, differences) = self.config_rows();
+        let differences = differences.unwrap_or_default();
+        let (jumps, scrolls) = self.config_moves();
+        let jumps = jumps == Some(true);
         let scroll = self.config_scroll;
         match code {
             KeyCode::Char('/') => self.config_filter.start(),
@@ -3608,28 +3789,33 @@ impl Model {
                 };
                 self.config_scroll = 0;
             }
-            KeyCode::Char('n') => {
+            KeyCode::Char('n') if jumps => {
                 if let Some(row) = differences.iter().find(|row| **row > scroll) {
                     self.config_scroll = *row;
                 }
             }
-            KeyCode::Char('N') => {
+            KeyCode::Char('N') if jumps => {
                 if let Some(row) = differences.iter().rev().find(|row| **row < scroll) {
                     self.config_scroll = *row;
                 }
             }
-            _ => scroll_step(code, &mut self.config_scroll, shown),
+            _ if scrolls => scroll_step(code, &mut self.config_scroll, shown),
+            _ => {}
         }
         Vec::new()
     }
 
     fn list_key(&mut self, code: KeyCode) -> Vec<Command> {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => return self.step_stack(true),
-            KeyCode::Char('k') | KeyCode::Up => return self.step_stack(false),
+            KeyCode::Char('j') | KeyCode::Down if self.stacks_can_step() => {
+                return self.step_stack(true)
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.stacks_can_step() => {
+                return self.step_stack(false)
+            }
             KeyCode::Char('/') => self.filter.start(),
-            KeyCode::Enter => self.focus = Focus::Tabs,
-            KeyCode::Char('l') if !self.services.is_empty() => return self.open_logs(),
+            KeyCode::Enter if self.stack_drawn().is_some() => self.focus = Focus::Tabs,
+            KeyCode::Char('l') if self.can_open_logs() => return self.open_logs(),
             _ => {}
         }
         Vec::new()
@@ -3656,9 +3842,13 @@ impl Model {
     fn overview_key(&mut self, code: KeyCode) -> Vec<Command> {
         let last = self.services.len().saturating_sub(1);
         match code {
-            KeyCode::Char('j') | KeyCode::Down => self.service = (self.service + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.service = self.service.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Char('l') if !self.services.is_empty() => {
+            KeyCode::Char('j') | KeyCode::Down if self.services_can_step() => {
+                self.service = (self.service + 1).min(last);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.services_can_step() => {
+                self.service = self.service.saturating_sub(1);
+            }
+            KeyCode::Enter | KeyCode::Char('l') if self.can_open_logs() => {
                 return self.open_logs();
             }
             _ => {}
@@ -3671,7 +3861,7 @@ impl Model {
         code: KeyCode,
         newest_first: bool,
         following: bool,
-        lines: usize,
+        scrolls: bool,
         keys: fn(&mut Model, KeyCode) -> Vec<Command>,
     ) -> Option<Vec<Command>> {
         let away = if newest_first {
@@ -3679,7 +3869,7 @@ impl Model {
         } else {
             matches!(code, KeyCode::Char('k') | KeyCode::Up)
         };
-        if !(away && following && lines > 1) {
+        if !(away && following && scrolls) {
             return None;
         }
         let mut commands = keys(self, KeyCode::Char('f'));
@@ -3688,11 +3878,13 @@ impl Model {
     }
 
     fn logs_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let (following, lines) = self
-            .logs
-            .as_ref()
-            .map_or((false, 0), |logs| (logs.following, logs.shown()));
-        if let Some(commands) = self.leave_newest(code, false, following, lines, Model::logs_key) {
+        if !self.logs_open() {
+            return Vec::new();
+        }
+        let scrolls = self.logs_can_scroll();
+        let following = self.logs_following();
+        if let Some(commands) = self.leave_newest(code, false, following, scrolls, Model::logs_key)
+        {
             return commands;
         }
         let Some(logs) = self.logs.as_mut() else {
@@ -3707,10 +3899,10 @@ impl Model {
                 return vec![Command::Follow(logs.following)];
             }
             KeyCode::Char('/') => logs.filter.start(),
-            KeyCode::Char('j') | KeyCode::Down if !logs.following => {
+            KeyCode::Char('j') | KeyCode::Down if scrolls && !logs.following => {
                 logs.scroll = logs.scroll.saturating_sub(1);
             }
-            KeyCode::Char('k') | KeyCode::Up if !logs.following => {
+            KeyCode::Char('k') | KeyCode::Up if scrolls && !logs.following => {
                 logs.scroll = (logs.scroll + 1).min(logs.shown().saturating_sub(1));
             }
             _ => {}
@@ -3768,7 +3960,7 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         return Vec::new();
     }
     model.notice = None;
-    if model.sessions.typed().is_some() {
+    if model.in_session() {
         return model.typed_key(key);
     }
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -3813,10 +4005,12 @@ fn take_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     if model.help {
         match key.code {
             KeyCode::Char('?') | KeyCode::Esc => model.help = false,
-            KeyCode::Char('j') => {
+            KeyCode::Char('j') if model.help_can_scroll() => {
                 model.help_scroll = (model.help_scroll + 1).min(model.help_overflow);
             }
-            KeyCode::Char('k') => model.help_scroll = model.help_scroll.saturating_sub(1),
+            KeyCode::Char('k') if model.help_can_scroll() => {
+                model.help_scroll = model.help_scroll.saturating_sub(1);
+            }
             _ => {}
         }
         return Vec::new();
@@ -4777,6 +4971,38 @@ pub(crate) mod tests {
         ])));
         ch(&mut model, '3');
         model
+    }
+
+    fn assert_enter_opens_srl1_on_a_drawn_row(mut model: Model) {
+        code(&mut model, KeyCode::Enter);
+
+        assert_eq!(model.workbench(), Workbench::Devices);
+        assert_eq!(model.device_filter.text, None);
+        let Cursor::Device(index) = model.cursor else {
+            panic!("the cursor is not on a device");
+        };
+        assert_eq!(model.devices[index].name, "srl1");
+        assert!(model.visible_devices().contains(&index));
+    }
+
+    #[test]
+    fn enter_on_an_alert_clears_a_devices_filter_that_hides_the_device() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(three_alerts())));
+        ch(&mut model, '/');
+        for typed in "srl2".chars() {
+            ch(&mut model, typed);
+        }
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.device_filter.text.as_deref(), Some("srl2"));
+        ch(&mut model, '3');
+
+        assert_enter_opens_srl1_on_a_drawn_row(model);
+    }
+
+    #[test]
+    fn enter_on_an_alert_without_a_devices_filter_opens_the_device_as_before() {
+        assert_enter_opens_srl1_on_a_drawn_row(observability_model(three_alerts()));
     }
 
     #[test]
@@ -8187,7 +8413,7 @@ pub(crate) mod tests {
                 code(&mut model, *step);
                 popup |= model.popup();
                 let line = key_line(&model, 200).concat();
-                let shown = usize::from(offered(action, &model));
+                let shown = usize::from(offered(action, &model) && !model.popup());
                 assert_eq!(
                     line.matches(&hint).count(),
                     shown,
@@ -8981,6 +9207,139 @@ pub(crate) mod tests {
             panic!("cursor not on a device: {:?}", model.cursor());
         };
         assert!(model.visible_devices().contains(&at));
+    }
+
+    fn acts(model: &mut Model, pressed: KeyCode) -> bool {
+        let state = |model: &Model| {
+            format!(
+                "{} {:?} {} {} {:?}",
+                snapshot(model),
+                model.notice(),
+                model.question().is_some(),
+                model.login_entry().is_some(),
+                model.cursor()
+            )
+        };
+        let before = state(model);
+        let commands = code(model, pressed);
+        !commands.is_empty() || state(model) != before
+    }
+
+    fn hidden_by_zz(mut model: Model) -> Model {
+        ch(&mut model, '/');
+        typed(&mut model, "zz");
+        code(&mut model, KeyCode::Enter);
+        model
+    }
+
+    #[test]
+    fn with_no_alert_answer_the_cursor_leaves_the_alert_rows_and_j_cannot_reach_them() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        assert!(matches!(model.cursor(), Cursor::Device(_)));
+        for _ in 0..3 {
+            ch(&mut model, 'j');
+        }
+
+        assert!(
+            matches!(model.cursor(), Cursor::Device(_)),
+            "{:?}",
+            model.cursor()
+        );
+    }
+
+    fn on_second_alert() -> Model {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(srl1_alerts(2));
+        for _ in 0..3 {
+            ch(&mut model, 'j');
+        }
+        assert_eq!(model.cursor(), Cursor::Alert(1));
+        model
+    }
+
+    #[test]
+    fn after_the_alert_rows_stop_being_drawn_j_and_k_step_onto_a_drawn_row() {
+        let names: Vec<&str> = SERVICES.iter().map(|row| row.compose).collect();
+        let gone = || {
+            [
+                Update::Stopped("alerts".to_string()),
+                Update::Services(0, defined(&names), Ok(Vec::new())),
+            ]
+        };
+        for pressed in ['j', 'k'] {
+            for (case, update) in gone().into_iter().enumerate() {
+                let mut model = on_second_alert();
+                model.apply(update);
+                assert!(model.shown_alerts().is_empty());
+                assert!(model.devices_can_step());
+
+                ch(&mut model, pressed);
+
+                assert_eq!(
+                    model.drawn_cursor(),
+                    Some(model.cursor()),
+                    "{pressed} {case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn after_the_alert_rows_stop_being_drawn_under_a_filter_hiding_the_selected_device_j_steps_onto_a_shown_device(
+    ) {
+        let mut model = on_second_alert();
+        assert_eq!(model.selected_device().unwrap().name, "srl2");
+        ch(&mut model, '/');
+        ch(&mut model, '1');
+        code(&mut model, KeyCode::Enter);
+        model.apply(Update::Stopped("alerts".to_string()));
+        assert!(model.devices_can_step());
+
+        let commands = ch(&mut model, 'j');
+
+        assert_eq!(commands, [Command::SelectDevice("srl1".to_string())]);
+        assert_eq!(model.cursor(), Cursor::Device(0));
+    }
+
+    #[test]
+    fn with_the_filter_hiding_every_device_enter_opens_nothing() {
+        let mut model = hidden_by_zz(devices_model(workshop_located("infrahub")));
+        assert!(model.visible_devices().is_empty());
+
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+
+        assert_eq!(model.focus(), Focus::List);
+    }
+
+    #[test]
+    fn with_the_cursor_on_nothing_the_row_keys_and_the_row_actions_do_nothing() {
+        let services = || {
+            let mut model = opened(&["nobs-t-packt"]);
+            model.apply(listing(0, Ok(vec![row("grafana", "running")])));
+            model
+        };
+        let devices = || devices_model(workshop_located("infrahub"));
+        let cases: [(fn() -> Model, KeyCode); 7] = [
+            (services, KeyCode::Char('l')),
+            (services, KeyCode::Enter),
+            (services, KeyCode::Char('u')),
+            (devices, KeyCode::Enter),
+            (devices, KeyCode::Char('m')),
+            (lab_devices_model, KeyCode::Char('t')),
+            (lab_devices_model, KeyCode::Char('g')),
+        ];
+        for (build, pressed) in cases {
+            let mut shown = build();
+            let mut hidden = hidden_by_zz(build());
+
+            assert!(acts(&mut shown, pressed), "shown: {pressed:?}");
+            assert!(!acts(&mut hidden, pressed), "hidden: {pressed:?}");
+        }
     }
 
     #[test]
@@ -10812,6 +11171,8 @@ pub(crate) mod tests {
         };
         let line = |model: &Model, width| key_line(model, width).concat();
         let mut model = on_intended(Ok(&WANTED));
+        assert!(line(&model, 100).starts_with(" v running  / filter"));
+        fetched(&mut model, &ON_DEVICE, "13:46:00");
         assert!(line(&model, 60).starts_with(" v running  n N difference  / filter"));
         assert!(line(&model, 100).starts_with(" v running  n N next/previous difference  / filter"));
         assert_eq!(

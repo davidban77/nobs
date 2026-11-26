@@ -14,7 +14,8 @@ use crate::screen::{
 };
 
 const SELECT: &str = "j/k select";
-const KEYS: [&str; 5] = ["q quit", SELECT, "r refresh", "l load", "d delete"];
+const DELETE: &str = "d delete";
+const KEYS: [&str; 5] = ["q quit", SELECT, "r refresh", "l load", DELETE];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Part {
@@ -240,7 +241,11 @@ fn bottom_line(model: &Model, now: Instant, width: usize, details_focused: bool)
             None => {
                 let keys: Vec<String> = KEYS
                     .into_iter()
-                    .filter(|key| !details_focused || *key != SELECT)
+                    .filter(|key| match *key {
+                        SELECT => !details_focused && model.can_step(),
+                        DELETE => model.selected().is_some(),
+                        _ => true,
+                    })
                     .map(String::from)
                     .collect();
                 whole_hints(&keys, width).trim_start().to_string()

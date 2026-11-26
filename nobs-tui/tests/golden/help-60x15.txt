@@ -7,9 +7,9 @@
   ║[ ]      other tab         d       down               ║
   ║Enter    open the row      X       destroy            ║
   ║/        filter            R       reset              ║
+  ║r        refresh now       p       preflight          ║
   ║PgUp PgDn  move a page where j and k move             ║
   ║sonda tab: Tab details  l load  d delete  r refresh   ║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
-  ║j/k more                                              ║
-  ╚═════════════════════════════════════════════════ ↓5 ═╝
- Tab focus  j/k move  / filter  l logs  r refresh  u up
+  ╚═════════════════════════════════════════════════ ↓4 ═╝
+ j/k more  ? close  Esc close

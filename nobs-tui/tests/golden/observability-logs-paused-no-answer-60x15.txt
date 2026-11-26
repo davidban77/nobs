@@ -12,4 +12,4 @@
 ║                                                          ║
 ╚ metrics ok  logs ?  alerts ok ═══════════════════════════╝
  run  none                                           o open
- f follow
+ f follow  [ ] view  r refresh

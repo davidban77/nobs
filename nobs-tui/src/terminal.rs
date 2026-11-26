@@ -82,6 +82,18 @@ impl Session {
         let bytes = keys::bytes(key, self.screen.screen().application_cursor())?;
         Some(Command::TermWrite { id: self.id, bytes })
     }
+
+    pub(crate) fn can_scroll(&self) -> bool {
+        let (State::Connected { up } | State::Closed { up, .. }) = self.state else {
+            return false;
+        };
+        if up > 0 {
+            return true;
+        }
+        let mut probe = self.screen.screen().clone();
+        probe.set_scrollback(1);
+        probe.scrollback() > 0
+    }
 }
 
 pub(crate) struct Sessions {

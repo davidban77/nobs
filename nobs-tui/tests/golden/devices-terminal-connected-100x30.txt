@@ -27,4 +27,4 @@
 ║                                                                                                  ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
  run  none                                                                                   o open
- t type in the terminal  j/k scroll  c close session
+ t type in the terminal  c close session  [ ] tab

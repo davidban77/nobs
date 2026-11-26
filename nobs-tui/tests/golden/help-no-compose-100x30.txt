@@ -27,4 +27,4 @@
 
 
 
- Tab focus  j/k move  / filter  l logs  r refresh
+ ? close  Esc close

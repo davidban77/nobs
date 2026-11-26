@@ -27,4 +27,4 @@
 ║                                        ║│                                                        │
 ╚════════════════════════════════════════╝└────────────────────────────────────────────────────────┘
  run  device check  running 5s                                                               o open
- Tab focus  j/k move  / filter  Enter open  r refresh  g fetch  s run  G check all
+ Tab focus  j/k move  / filter  Enter open  r refresh  g fetch  s run  G check all  t terminal

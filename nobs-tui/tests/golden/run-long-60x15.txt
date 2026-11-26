@@ -12,4 +12,4 @@
 │-workshops/workshops/packt nobs-t-packt up                │
 │ Container nobs-t-packt-sonda-1  Starting                 │
 └──────────────────────────────────────────────────────────┘
- Tab focus  j/k move  / filter  l logs  r refresh  u up
+ Tab focus  / filter  r refresh  u up  d down  X destroy

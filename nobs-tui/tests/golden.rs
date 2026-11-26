@@ -22,8 +22,8 @@ use nobs_tui::actions::{Action, Ask, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
 use nobs_tui::shell::{stacks, Health, Reach};
 use nobs_tui::{
-    data, draw, handle, settle, view, Command, End, Focus, Shell, SondaTarget, Stack, StackKind,
-    Start, Update, Workbench,
+    data, draw, handle, measure, settle, view, Command, End, Focus, Shell, SondaTarget, Stack,
+    StackKind, Start, Update, Workbench,
 };
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -725,6 +725,7 @@ fn row_has_no_green(buffer: &Buffer, y: u16) -> bool {
 fn render(mut model: Shell, width: u16, height: u16) -> Buffer {
     let now = model.now() + Duration::from_secs(2);
     model.tick(now, clock(), (width, height));
+    measure(&mut model, Rect::new(0, 0, width, height));
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| draw(frame, &model)).unwrap();
     terminal.backend().buffer().clone()
@@ -848,7 +849,7 @@ fn the_sonda_top_line_ends_at_a_whole_word_and_its_key_row_at_a_whole_hint_at_60
         rows[4]
     );
     assert!(
-        rows[11].ends_with("││q quit  j/k select  r refresh      │"),
+        rows[11].ends_with("││q quit  r refresh  l load          │"),
         "{}",
         rows[11]
     );
@@ -950,9 +951,9 @@ fn the_sonda_key_line_shows_only_with_the_focus_on_the_tabs() {
     let on_tabs = lines(&render(sonda_model(), 100, 30)).join("\n");
     let on_list = lines(&render(off_the_tabs, 100, 30)).join("\n");
 
-    assert!(on_tabs.contains("q quit  j/k select"), "{on_tabs}");
+    assert!(on_tabs.contains("q quit  r refresh"), "{on_tabs}");
     assert!(on_list.contains("SONDA"), "{on_list}");
-    assert!(!on_list.contains("q quit  j/k select"), "{on_list}");
+    assert!(!on_list.contains("q quit  r refresh"), "{on_list}");
 }
 
 #[test]
@@ -1746,7 +1747,7 @@ fn without_a_compose_file() -> Shell {
 
 #[test]
 fn the_services_frame_of_a_lab_without_a_compose_file_is_pinned() {
-    pinned(without_a_compose_file(), "services-no-compose", 100, 30);
+    golden("services-no-compose", without_a_compose_file);
 }
 
 #[test]

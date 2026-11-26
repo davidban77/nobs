@@ -8,8 +8,8 @@
   ║o        run pane          B       rebuild            ║
   ║x        dismiss the error S       show               ║
   ║?        close             q       quit; asks if busy ║
+  ║Esc      close/fold/back   Ctrl-C  stop a run, or quit║
   ║PgUp PgDn  move a page where j and k move             ║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
-  ║j/k more                                              ║
-  ╚═════════════════════════════════════════════════ ↓2 ═╝
- Tab focus  j/k move  D deploy  X destroy  P purge
+  ╚═════════════════════════════════════════════════ ↓1 ═╝
+ j/k more  ? close  Esc close

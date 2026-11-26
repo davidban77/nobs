@@ -27,4 +27,4 @@
 
 
 
- Tab focus  j/k move  / filter  Enter open  r refresh  g fetch  s run  G check all
+ ? close  Esc close

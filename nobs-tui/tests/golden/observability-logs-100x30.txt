@@ -27,4 +27,4 @@
 ║                                                                                                  ║
 ╚ metrics ok  logs ok  alerts ok ══════════════════════════════════════════════════════════════════╝
  run  none                                                                                   o open
- f pause  / filter  [ ] view  r refresh
+ f pause  j/k move  / filter  [ ] view  r refresh

@@ -12,4 +12,4 @@
 ║                                                          ║
 ║                                                          ║
 ╚══════════════════════════════════════════════════════════╝
- j/k scroll  Tab focus  Esc fold
+ Tab focus  Esc fold
