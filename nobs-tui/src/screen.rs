@@ -17,11 +17,11 @@ use nobs_core::project::Rendered;
 use nobs_core::status::{row, Service};
 use nobs_core::time;
 
-use crate::actions::{self, arguments, fits, Target, ACTIONS};
+use crate::actions::{arguments, Target, ACTIONS, NODE_DEVICE};
 use crate::devices;
 use crate::run::End;
 use crate::shell::{
-    absent, kind_text, Agreement, Cursor, Focus, IntendedView, LoginEntry, Model, Reach, Run,
+    absent, kind_text, Agreement, Cursor, Focus, IntendedView, LoginEntry, Model, Need, Reach, Run,
     RunMeasure, RunState, StackKind, StackState, Tab, Workbench, NO_BREAK, OBSERVABILITY_TABS,
     SERVICES_TABS,
 };
@@ -40,71 +40,98 @@ const VIEW_RUNNING: &str = "v running";
 const VIEW_INTENDED: &str = "v intended";
 const DIFFERENCE_NARROW: &str = "n N difference";
 const DIFFERENCE_WIDE: &str = "n N next/previous difference";
-const HELP_CONFIG: [(&str, &str); 2] = [
-    ("v", "intended or running config"),
-    ("n N", "next/previous difference"),
+const HELP_CONFIG: [(&str, &str, &[Need]); 2] = [
+    ("v", "intended or running config", NODE_DEVICE),
+    ("n N", "next/previous difference", NODE_DEVICE),
 ];
 const TERMINAL_HINT: &str = "press t to open a shell on";
 const HELP_QUIT_SESSION: &str = "quit; asks if busy";
 const HELP_TERMINAL: &str = "type in terminal";
 const PANE_HINTS: [&str; 4] = ["/ filter", "j/k scroll", "[ ] tab", "Esc back to list"];
-const HELP_DEVICES_NOTE: &str = "alerts box: Enter picks the device, opens its timeline";
-const HELP_SONDA: &str = "sonda tab: Tab details  l load  d delete  r refresh";
+const HELP_DEVICES_NOTE: (&str, &[Need]) = (
+    "alerts box: Enter picks the device, opens its timeline",
+    &[Need::Service(Service::Alerts)],
+);
+const HELP_SONDA: (&str, &[Need]) = (
+    "sonda tab: Tab details  l load  d delete  r refresh",
+    &[Need::Service(Service::Sonda)],
+);
 const HELP_RUN: &str = "run pane, after Tab: j/k scroll  f follow  Esc fold";
 const HELP_MARK: &str = "↑3 ↓13   3 rows hidden above, 13 below";
 const HELP_PAGE: &str = "PgUp PgDn  move a page where j and k move";
-const HELP_QUIT: [(&str, &str); 2] = [
-    ("q", "quit; asks in a run"),
-    ("Ctrl-C", "stop a run, or quit"),
+const HELP_QUIT: [(&str, &str, &[Need]); 2] = [
+    ("q", "quit; asks in a run", &[]),
+    ("Ctrl-C", "stop a run, or quit", &[]),
 ];
-const HELP: [(&str, &str); 12] = [
-    ("Tab", "focus list/tabs"),
-    ("j k ↑ ↓", "move"),
-    ("[ ]", "other tab"),
-    ("Enter", "open the row"),
-    ("/", "filter"),
-    ("r", "refresh now"),
-    ("l", "service logs"),
-    ("f", "follow/pause logs"),
-    ("o", "run pane"),
-    ("x", "dismiss the error"),
-    ("?", "close"),
-    ("Esc", "close/clear/back"),
+const HELP: [(&str, &str, &[Need]); 12] = [
+    ("Tab", "focus list/tabs", &[]),
+    ("j k ↑ ↓", "move", &[]),
+    ("[ ]", "other tab", &[]),
+    ("Enter", "open the row", &[]),
+    ("/", "filter", &[]),
+    ("r", "refresh now", &[]),
+    ("l", "service logs", &[Need::ComposeServices]),
+    ("f", "follow/pause logs", &[Need::ComposeServices]),
+    ("o", "run pane", &[]),
+    ("x", "dismiss the error", &[]),
+    ("?", "close", &[]),
+    ("Esc", "close/clear/back", &[]),
 ];
-const HELP_DEVICES: [(&str, &str); 12] = [
-    ("Tab", "focus list/tabs"),
-    ("j k ↑ ↓", "move"),
-    ("[ ]", "other tab"),
-    ("- +", "timeline window"),
-    ("x", "dismiss the error"),
-    ("Esc", "close/clear/back"),
-    ("Enter", "open / pick alert"),
-    ("/", "filter"),
-    ("r", "refresh now"),
-    ("f", "follow/pause logs"),
-    ("o", "run pane"),
-    ("?", "close"),
+const HELP_DEVICES: [(&str, &str, &[Need]); 12] = [
+    ("Tab", "focus list/tabs", &[]),
+    ("j k ↑ ↓", "move", &[]),
+    ("[ ]", "other tab", &[]),
+    (
+        "- +",
+        "timeline window",
+        &[Need::AnyOf(&[
+            Need::Service(Service::Alerts),
+            Need::Service(Service::Logs),
+            Need::Service(Service::Flows),
+        ])],
+    ),
+    ("x", "dismiss the error", &[]),
+    ("Esc", "close/clear/back", &[]),
+    (
+        "Enter",
+        "open / pick alert",
+        &[Need::AnyOf(&[
+            Need::Devices,
+            Need::Service(Service::Alerts),
+        ])],
+    ),
+    ("/", "filter", &[]),
+    ("r", "refresh now", &[]),
+    ("f", "follow/pause logs", &[Need::Service(Service::Logs)]),
+    ("o", "run pane", &[]),
+    ("?", "close", &[]),
 ];
-const HELP_LAB: [(&str, &str); 7] = [
-    ("Tab", "focus next pane"),
-    ("j k ↑ ↓", "move"),
-    ("r", "refresh now"),
-    ("o", "run pane"),
-    ("x", "dismiss the error"),
-    ("?", "close"),
-    ("Esc", "close/fold/back"),
+const HELP_LAB: [(&str, &str, &[Need]); 7] = [
+    ("Tab", "focus next pane", &[]),
+    ("j k ↑ ↓", "move", &[]),
+    ("r", "refresh now", &[]),
+    ("o", "run pane", &[]),
+    ("x", "dismiss the error", &[]),
+    ("?", "close", &[]),
+    ("Esc", "close/fold/back", &[]),
 ];
-const HELP_OBSERVABILITY: [(&str, &str); 10] = [
-    ("Tab", "focus"),
-    ("j k ↑ ↓", "move"),
-    ("[ ]", "other view"),
-    ("/", "filter"),
-    ("Enter", "open the device"),
-    ("r", "refresh now"),
-    ("o", "run pane"),
-    ("x", "dismiss the error"),
-    ("Esc", "close/clear/back"),
-    ("?", "close"),
+const VIEWS: &[Need] = &[Need::AnyOf(&[
+    Need::Service(Service::Alerts),
+    Need::Service(Service::Logs),
+    Need::Service(Service::Metrics),
+])];
+const HELP_OBSERVABILITY: [(&str, &str, &[Need]); 11] = [
+    ("Tab", "focus", &[]),
+    ("j k ↑ ↓", "move", VIEWS),
+    ("[ ]", "other view", &[]),
+    ("/", "filter", VIEWS),
+    ("Enter", "open the device", VIEWS),
+    ("r", "refresh now", &[]),
+    ("f", "follow/pause logs", &[Need::Service(Service::Logs)]),
+    ("o", "run pane", &[]),
+    ("x", "dismiss the error", &[]),
+    ("Esc", "close/clear/back", &[]),
+    ("?", "close", &[]),
 ];
 const KEYS_HINT: &str = "? keys  q quit";
 const STATE_WIDTH: usize = 9;
@@ -2721,37 +2748,52 @@ fn entry_line(label: &str, text: &str, keys: [&str; 2], width: usize) -> Vec<Str
     rows
 }
 
-pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
-    let workbench = model.workbench();
-    let fixed: &[(&str, &str)] = match workbench {
+fn help_table(workbench: Workbench) -> &'static [(&'static str, &'static str, &'static [Need])] {
+    match workbench {
         Workbench::Devices => &HELP_DEVICES,
         Workbench::Services => &HELP,
         Workbench::Lab => &HELP_LAB,
         Workbench::Observability => &HELP_OBSERVABILITY,
-    };
+    }
+}
+
+fn help_note(workbench: Workbench) -> Option<(&'static str, &'static [Need])> {
+    match workbench {
+        Workbench::Devices => Some(HELP_DEVICES_NOTE),
+        Workbench::Services => Some(HELP_SONDA),
+        Workbench::Lab | Workbench::Observability => None,
+    }
+}
+
+pub(crate) fn help_entries(model: &Model) -> Vec<(String, &'static str)> {
+    let workbench = model.workbench();
+    let fixed = help_table(workbench);
     let switch: Vec<String> = workbench_keys(model)
         .map(|(key, _)| key.to_string())
         .collect();
     let actions = ACTIONS
         .iter()
-        .filter(|action| action.workbench == workbench && fits(action, model))
-        .filter(|action| actions::in_its_lab(action.row, model))
+        .filter(|action| action.workbench == workbench && model.has(&action.row.needs()))
         .map(|action| (action.key.to_string(), action.hint));
-    let owned = |&(key, meaning): &(&str, &'static str)| (key.to_string(), meaning);
-    let terminal = workbench == Workbench::Devices && model.lab_with_nodes();
-    let fixed = fixed.iter().flat_map(|entry| {
-        let after = terminal && entry.0 == "[ ]";
-        let typed = after.then(|| (SHELL.key.to_string(), HELP_TERMINAL));
+    let owned = |&(key, meaning, _): &(&str, &'static str, &[Need])| (key.to_string(), meaning);
+    let listed = |entry: &&(&str, &'static str, &[Need])| model.has(entry.2);
+    let fixed = fixed.iter().filter(listed).flat_map(|entry| {
+        let after = workbench == Workbench::Devices && entry.0 == "[ ]";
+        let typed = (after && model.has(&SHELL.row.needs()))
+            .then(|| (SHELL.key.to_string(), HELP_TERMINAL));
         let views = HELP_CONFIG
             .iter()
-            .filter(move |_| after && model.has_template())
+            .filter(move |entry| after && listed(entry) && model.has_template())
             .map(owned);
         std::iter::once(owned(entry)).chain(typed).chain(views)
     });
-    let quit = HELP_QUIT.iter().map(|&(key, meaning)| match key {
-        "q" if model.lab_with_nodes() => (key.to_string(), HELP_QUIT_SESSION),
-        _ => (key.to_string(), meaning),
-    });
+    let quit = HELP_QUIT
+        .iter()
+        .filter(listed)
+        .map(|&(key, meaning, _)| match key {
+            "q" if model.lab_with_nodes() => (key.to_string(), HELP_QUIT_SESSION),
+            _ => (key.to_string(), meaning),
+        });
     [(switch.join(" "), "switch workbench")]
         .into_iter()
         .chain(fixed)
@@ -2774,11 +2816,11 @@ struct HelpLayout {
 
 fn help_layout(model: &Model, body: Rect) -> HelpLayout {
     let entries = help_entries(model);
-    let mut notes = match model.workbench() {
-        Workbench::Devices => vec![HELP_DEVICES_NOTE],
-        Workbench::Services => vec![HELP_SONDA],
-        Workbench::Lab | Workbench::Observability => vec![],
-    };
+    let mut notes: Vec<&str> = help_note(model.workbench())
+        .filter(|(_, needs)| model.has(needs))
+        .map(|(note, _)| note)
+        .into_iter()
+        .collect();
     notes.insert(0, HELP_PAGE);
     if model.run_drawn() {
         notes.push(HELP_RUN);
@@ -2912,11 +2954,13 @@ mod tests {
     use ratatui::Terminal;
 
     use super::*;
+    use crate::actions;
     use crate::book::NodeRow;
     use crate::data;
     use crate::shell::tests::{
-        alert, defined, devices_model, every_service_up, fixture, lab_devices_model, listing, row,
-        sonda_rows, stack, start, workshop_located,
+        alert, book_model, defined, devices_model, every_service_up, filtered, fixture,
+        lab_devices_model, listing, nodes_model, row, sonda_rows, sonda_tab, stack, start,
+        workshop_located,
     };
     use crate::shell::{handle, stacks, Command, Stack, Start, Update, DEVICE_TABS, WORKBENCHES};
 
@@ -5233,7 +5277,7 @@ mod tests {
         assert!(entries.contains(&("Esc".to_string(), "close/fold/back")));
         assert!(HELP_LAB
             .iter()
-            .all(|(_, meaning)| meaning.chars().count() <= 17));
+            .all(|(_, meaning, _)| meaning.chars().count() <= 17));
     }
 
     #[test]
@@ -6141,5 +6185,330 @@ mod tests {
                 assert!(!named(&folded), "{}", folded.join("\n"));
             }
         }
+    }
+
+    fn go(model: &mut Model, workbench: Workbench) {
+        let at = model
+            .workbenches()
+            .iter()
+            .position(|bench| *bench == workbench)
+            .unwrap();
+        press(
+            model,
+            char::from_digit(u32::try_from(at + 1).unwrap(), 10).unwrap(),
+        );
+    }
+
+    fn listed(model: &Model) -> Vec<String> {
+        let layout = help_layout(model, Rect::new(0, 0, 100, 30));
+        layout
+            .entries
+            .into_iter()
+            .map(|(key, meaning)| format!("{key}  {meaning}"))
+            .chain(layout.notes.into_iter().map(str::to_string))
+            .collect()
+    }
+
+    fn shown(mut model: Model, workbench: Workbench) -> Vec<String> {
+        go(&mut model, workbench);
+        listed(&model)
+    }
+
+    fn every_overlay(model: &mut Model) -> Vec<Vec<String>> {
+        let here = model.workbench();
+        let overlays = model
+            .workbenches()
+            .into_iter()
+            .map(|workbench| {
+                go(model, workbench);
+                listed(model)
+            })
+            .collect();
+        go(model, here);
+        overlays
+    }
+
+    fn unlisted() -> Model {
+        Model::new(Start {
+            chooser: false,
+            ..start(vec![stack("a", &[])])
+        })
+    }
+
+    fn no_services() -> Model {
+        let mut model = unlisted();
+        model.apply(listing(0, Ok(Vec::new())));
+        model
+    }
+
+    fn only(service: Service) -> Model {
+        let mut model = unlisted();
+        let name = nobs_core::status::row(service).compose;
+        model.apply(Update::Services(
+            0,
+            defined(&[name]),
+            Ok(vec![row(name, "running")]),
+        ));
+        model
+    }
+
+    fn alerts_only() -> Model {
+        only(Service::Alerts)
+    }
+
+    fn workshop() -> Model {
+        devices_model(workshop_located("infrahub"))
+    }
+
+    fn topology() -> Model {
+        nodes_model(&fixture("labcli-example"))
+    }
+
+    fn project() -> Model {
+        nodes_model(&fixture("project-two-node"))
+    }
+
+    fn templated(mut model: Model) -> Model {
+        let name = model.selected_device().unwrap().name.clone();
+        model.apply(Update::Intended(vec![(
+            name,
+            Ok("set / a b on\n".to_string()),
+            Some(Syntax::SrLinux),
+        )]));
+        model
+    }
+
+    fn templated_lab() -> Model {
+        templated(lab_devices_model())
+    }
+
+    fn templated_workshop() -> Model {
+        templated(workshop())
+    }
+
+    fn book_without_chapters() -> Model {
+        let dir = fixture("book-lab");
+        let located = locate(&dir, Some(&dir)).unwrap();
+        Model::new(Start {
+            nodes: located.nodes(),
+            topology: Some(located.topology()),
+            lab: Some(located),
+            home: Workbench::Lab,
+            chooser: false,
+            ..start(Vec::new())
+        })
+    }
+
+    #[test]
+    fn every_entry_and_note_follows_its_need() {
+        let labs: [(&str, Build); 9] = [
+            ("no lab before an answer", unlisted),
+            ("no lab with no services", no_services),
+            ("no lab with only alerts", alerts_only),
+            ("a workshop", workshop),
+            ("the book lab with devices", lab_devices_model),
+            ("the book lab", book_model),
+            ("the book lab with no chapters", book_without_chapters),
+            ("a topology lab", topology),
+            ("sonda", sonda_tab),
+        ];
+        for (lab, build) in labs {
+            for workbench in build().workbenches() {
+                let mut model = build();
+                go(&mut model, workbench);
+                let carriers: Vec<(String, bool)> = help_table(workbench)
+                    .iter()
+                    .chain(&HELP_QUIT)
+                    .map(|(key, _, needs)| (key.to_string(), model.has(needs)))
+                    .chain(
+                        ACTIONS
+                            .iter()
+                            .chain([&SHELL])
+                            .filter(|action| action.workbench == workbench)
+                            .map(|action| (action.key.to_string(), model.has(&action.row.needs()))),
+                    )
+                    .chain(
+                        HELP_CONFIG
+                            .iter()
+                            .filter(|_| workbench == Workbench::Devices)
+                            .map(|(key, _, needs)| {
+                                (key.to_string(), model.has(needs) && model.has_template())
+                            }),
+                    )
+                    .collect();
+                let layout = help_layout(&model, Rect::new(0, 0, 100, 30));
+
+                for (key, _) in &carriers {
+                    let had = carriers
+                        .iter()
+                        .filter(|(carrier, had)| carrier == key && *had)
+                        .count();
+                    let seen = layout
+                        .entries
+                        .iter()
+                        .filter(|(entry, _)| entry == key)
+                        .count();
+                    assert_eq!(seen, had, "{key} in the {workbench:?} overlay of {lab}");
+                }
+                if let Some((note, needs)) = help_note(workbench) {
+                    assert_eq!(
+                        layout.notes.contains(&note),
+                        model.has(needs),
+                        "{note} in {lab}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_entry_of_the_work_list_is_listed_only_in_a_lab_that_has_its_thing() {
+        use Workbench::{Devices, Lab, Observability, Services};
+        let cases: [(Workbench, &str, Build, Build); 39] = [
+            (Devices, "m  maintenance", workshop, lab_devices_model),
+            (Devices, "g  fetch", lab_devices_model, topology),
+            (Devices, "G  check all", topology, workshop),
+            (
+                Devices,
+                "v  intended or running config",
+                templated_lab,
+                templated_workshop,
+            ),
+            (
+                Devices,
+                "n N  next/previous difference",
+                templated_lab,
+                templated_workshop,
+            ),
+            (Devices, "s  run", lab_devices_model, topology),
+            (Devices, "t  type in terminal", lab_devices_model, topology),
+            (Devices, "P  push", lab_devices_model, topology),
+            (Devices, "F  flap", lab_devices_model, topology),
+            (
+                Devices,
+                "Enter  open / pick alert",
+                lab_devices_model,
+                no_services,
+            ),
+            (
+                Devices,
+                "Enter  open / pick alert",
+                alerts_only,
+                no_services,
+            ),
+            (Devices, "- +  timeline window", workshop, no_services),
+            (Devices, "f  follow/pause logs", workshop, no_services),
+            (
+                Devices,
+                "alerts box: Enter picks the device, opens its timeline",
+                workshop,
+                no_services,
+            ),
+            (Services, "l  service logs", workshop, no_services),
+            (Services, "f  follow/pause logs", workshop, no_services),
+            (Services, "u  up", workshop, book_model),
+            (Services, "d  down", workshop, book_model),
+            (Services, "X  destroy", workshop, book_model),
+            (Services, "R  reset", workshop, book_model),
+            (Services, "p  preflight", workshop, book_model),
+            (Services, "s  status", workshop, book_model),
+            (
+                Services,
+                "sonda tab: Tab details  l load  d delete  r refresh",
+                sonda_tab,
+                no_services,
+            ),
+            (Observability, "/  filter", workshop, no_services),
+            (
+                Observability,
+                "Enter  open the device",
+                workshop,
+                no_services,
+            ),
+            (Observability, "j k ↑ ↓  move", workshop, no_services),
+            (Observability, "f  follow/pause logs", workshop, no_services),
+            (Lab, "D  deploy", book_model, book_without_chapters),
+            (Lab, "R  prepare", book_model, book_without_chapters),
+            (Lab, "U  update", book_model, book_without_chapters),
+            (Lab, "B  rebuild", book_model, book_without_chapters),
+            (Lab, "X  destroy", book_model, book_without_chapters),
+            (Lab, "S  show", book_model, book_without_chapters),
+            (Lab, "P  purge", book_model, topology),
+            (Lab, "D  deploy", project, book_without_chapters),
+            (Lab, "D  deploy", topology, book_without_chapters),
+            (Lab, "R  render", project, topology),
+            (Lab, "X  destroy", topology, book_without_chapters),
+            (Lab, "S  show", project, book_without_chapters),
+        ];
+        let mut wrong = Vec::new();
+        for (case, (workbench, entry, with, without)) in cases.into_iter().enumerate() {
+            let entry = entry.to_string();
+
+            if !shown(with(), workbench).contains(&entry) {
+                wrong.push(format!("case {case}: {entry} with the thing"));
+            }
+            if shown(without(), workbench).contains(&entry) {
+                wrong.push(format!("case {case}: {entry} without the thing"));
+            }
+        }
+        assert_eq!(wrong, Vec::<String>::new());
+        assert!(shown(no_services(), Services).contains(&"Enter  open the row".to_string()));
+    }
+
+    #[test]
+    fn the_overlay_does_not_follow_the_moment() {
+        let names: Vec<&str> = nobs_core::status::SERVICES
+            .iter()
+            .map(|row| row.compose)
+            .collect();
+        let mut one = unlisted();
+        let unknown = every_overlay(&mut one);
+        one.apply(Update::Services(0, defined(&names), Ok(Vec::new())));
+        let down = every_overlay(&mut one);
+        one.apply(every_service_up(0));
+        one.apply(Update::LabLogs(Err("refused".to_string())));
+        let no_answer = every_overlay(&mut one);
+
+        assert_eq!(one.reach(Service::Logs), Reach::NoAnswer);
+        assert_eq!(down, unknown);
+        assert_eq!(no_answer, unknown);
+
+        let mut two = Model::new(Start {
+            chooser: false,
+            ..start(vec![stack("a", &[]), stack("b", &[])])
+        });
+        two.apply(every_service_up(0));
+        two.apply(listing(1, Ok(Vec::new())));
+        let at_a = every_overlay(&mut two);
+        press(&mut two, 'j');
+        let at_b = every_overlay(&mut two);
+        filtered(&mut two, "b");
+        let only_b = every_overlay(&mut two);
+
+        assert_eq!(two.selected_stack(), 1);
+        assert_eq!(two.visible_stacks(), [1]);
+        assert_eq!(at_b, at_a);
+        assert_eq!(only_b, at_a);
+
+        let mut devices = workshop();
+        let first = every_overlay(&mut devices);
+        press(&mut devices, 'j');
+        let moved = every_overlay(&mut devices);
+        filtered(&mut devices, "nothing-matches");
+        let hidden = every_overlay(&mut devices);
+        devices.apply(Update::Devices(Ok(Vec::new())));
+        let empty = every_overlay(&mut devices);
+
+        assert_eq!(moved, first);
+        assert_eq!(hidden, first);
+        assert_eq!(empty, first);
+    }
+
+    #[test]
+    fn f_is_in_the_observability_overlay_only_with_a_logs_service() {
+        let follow = "f  follow/pause logs".to_string();
+
+        assert!(shown(only(Service::Logs), Workbench::Observability).contains(&follow));
+        assert!(!shown(only(Service::Metrics), Workbench::Observability).contains(&follow));
     }
 }

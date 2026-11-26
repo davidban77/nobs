@@ -6,7 +6,7 @@
   ║j k ↑ ↓  move              f       follow/pause logs  ║
   ║[ ]      other tab         o       run pane           ║
   ║- +      timeline window   ?       close              ║
-  ║x        dismiss the error m       maintenance        ║
+  ║x        dismiss the error q       quit; asks in a run║
   ║PgUp PgDn  move a page where j and k move             ║
   ║alerts box: Enter picks the device, opens its timeline║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
