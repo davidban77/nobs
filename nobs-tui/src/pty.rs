@@ -587,6 +587,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_child_that_ends_on_the_hangup_is_never_killed() {
+        let (mut wire, updates) = open(
+            &[
+                "-c",
+                "trap 'sleep 0.05; exit 5' HUP; echo ready; while :; do :; done",
+            ],
+            (24, 80),
+            &Login::default(),
+        );
+        output_until(&updates, "ready");
+
+        wire.close();
+        drop(wire);
+
+        let left: Vec<Update> = updates.try_iter().collect();
+        assert!(
+            matches!(left.last(), Some(Update::TermEnded(7, 5))),
+            "{left:?}"
+        );
+    }
+
+    #[test]
     fn a_write_larger_than_the_terminal_holds_reaches_a_reading_child_whole() {
         let (mut wire, updates) = open(
             &["-c", "stty raw -echo; echo ready; head -c 262144 | wc -c"],
