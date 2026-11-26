@@ -165,7 +165,7 @@ fn the_push_help_gives_its_row_its_arguments_and_the_save_words_of_check() {
         "Usage: nobs device push [OPTIONS] <NAME>",
         "  <NAME>  Node name in the lab's topology file",
         "      --yes            Push without asking",
-        "      --save <FOLDER>  Also write what each device answered to a file in this folder; the folder must not exist",
+        "      --save <FOLDER>  Also write each configuration nobs fetches, or why the fetch failed, to a file in this folder; the folder must not exist",
     ] {
         assert!(push.contains(words), "{push}");
     }

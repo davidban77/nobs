@@ -181,8 +181,8 @@ fn the_flap_help_gives_its_row_its_arguments_and_its_defaults() {
         "  <NAME>       Node name in the lab's topology file",
         "  <INTERFACE>  The device's own name of the interface, such as ethernet-1/1",
         "      --yes              Flap without asking",
-        "      --delay <SECONDS>  The time the interface stays down, and up before the next flap [default: 5]",
-        "      --count <N>        How many times to flap the interface [default: 1]",
+        "      --delay <SECONDS>  The time the interface stays down, and up before the next flap; 1 to 300 seconds [default: 5]",
+        "      --count <N>        How many times to flap the interface; 1 to 10 [default: 1]",
     ] {
         assert!(help.contains(words), "{help}");
     }

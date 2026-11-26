@@ -48,8 +48,7 @@ use nobs_ssh::Ssh;
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
 
-const SAVE_HELP: &str =
-    "Also write what each device answered to a file in this folder; the folder must not exist";
+const SAVE_HELP: &str = "Also write each configuration nobs fetches, or why the fetch failed, to a file in this folder; the folder must not exist";
 
 const DASH: &str = "—";
 
@@ -152,7 +151,7 @@ pub enum Command {
         command: ProjectCommand,
     },
     #[command(
-        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, push it to the device, flap one of its interfaces, or check every device against it"
+        about = "Commands for the devices of a lab: fetch, run, shell, render, push, flap and check"
     )]
     Device {
         #[command(subcommand)]
@@ -1191,14 +1190,22 @@ pub enum DeviceCommand {
             long,
             value_name = "SECONDS",
             default_value_t = device::FLAP_DELAY,
-            help = "The time the interface stays down, and up before the next flap"
+            help = format!(
+                "The time the interface stays down, and up before the next flap; {} to {} seconds",
+                device::FLAP_DELAYS.start(),
+                device::FLAP_DELAYS.end()
+            )
         )]
         delay: u64,
         #[arg(
             long,
             value_name = "N",
             default_value_t = device::FLAP_COUNT,
-            help = "How many times to flap the interface"
+            help = format!(
+                "How many times to flap the interface; {} to {}",
+                device::FLAP_COUNTS.start(),
+                device::FLAP_COUNTS.end()
+            )
         )]
         count: u32,
     },
@@ -6470,6 +6477,35 @@ mod tests {
                 assert!(old.is_hide_set(), "{:?}", old.get_long());
             }
         }
+    }
+
+    #[test]
+    fn the_flap_help_gives_the_limits_of_the_constants_the_check_uses() {
+        let command = Cli::command();
+        let flap = command
+            .find_subcommand("device")
+            .and_then(|device| device.find_subcommand("flap"))
+            .unwrap();
+        let help = |id: &str| {
+            flap.get_arguments()
+                .find(|argument| argument.get_id() == id)
+                .and_then(|argument| argument.get_help())
+                .unwrap_or_else(|| panic!("no help for {id}"))
+                .to_string()
+        };
+        let delays = format!(
+            "; {} to {} seconds",
+            device::FLAP_DELAYS.start(),
+            device::FLAP_DELAYS.end()
+        );
+        let counts = format!(
+            "; {} to {}",
+            device::FLAP_COUNTS.start(),
+            device::FLAP_COUNTS.end()
+        );
+
+        assert!(help("delay").ends_with(&delays), "{}", help("delay"));
+        assert!(help("count").ends_with(&counts), "{}", help("count"));
     }
 
     #[test]
