@@ -27,4 +27,4 @@
 
 
 
- Tab focus  j/k move  D deploy  X destroy  R render  S show  r refresh  o pane
+ Tab focus  D deploy  X destroy  R render  S show  r refresh  o pane

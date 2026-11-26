@@ -2010,6 +2010,9 @@ impl Model {
     }
 
     fn lab_key(&mut self, code: KeyCode) -> Vec<Command> {
+        if !self.lab_pane_can_step() {
+            return Vec::new();
+        }
         if self.focus == Focus::Lines {
             match code {
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -2554,6 +2557,54 @@ impl Model {
 
     pub(crate) fn lab_can_move(&self) -> bool {
         self.lab_lines_shown() && self.marked_lab_row().is_some()
+    }
+
+    pub(crate) fn lab_pane_can_step(&self) -> bool {
+        match self.focus {
+            Focus::Lines => self.lab_overflow > 0,
+            Focus::Tabs => self.nodes.len() > 1,
+            Focus::List | Focus::Run => self.chapters().iter().any(|index| *index != self.chapter),
+        }
+    }
+
+    pub(crate) fn stacks_can_step(&self) -> bool {
+        self.visible_stacks()
+            .iter()
+            .any(|index| *index != self.selected)
+    }
+
+    pub(crate) fn stack_drawn(&self) -> Option<usize> {
+        self.visible_stacks()
+            .contains(&self.selected)
+            .then_some(self.selected)
+    }
+
+    pub(crate) fn can_open_logs(&self) -> bool {
+        self.stack_drawn().is_some() && !self.services.is_empty()
+    }
+
+    pub(crate) fn services_can_step(&self) -> bool {
+        self.services.len() > 1
+    }
+
+    pub(crate) fn logs_open(&self) -> bool {
+        self.logs.is_some()
+    }
+
+    pub(crate) fn logs_following(&self) -> bool {
+        self.logs.as_ref().is_some_and(|logs| logs.following)
+    }
+
+    pub(crate) fn logs_can_scroll(&self) -> bool {
+        self.logs.as_ref().is_some_and(|logs| logs.shown() > 1)
+    }
+
+    pub(crate) fn run_can_scroll(&self) -> bool {
+        self.run_overflow() > 0
+    }
+
+    pub(crate) fn run_can_follow(&self) -> bool {
+        self.run_scroll() < self.run_overflow()
     }
 
     pub(crate) fn lab_enter_device(&self) -> Option<usize> {
@@ -3177,7 +3228,7 @@ impl Model {
     }
 
     fn escape(&mut self, key: KeyEvent) -> Vec<Command> {
-        if self.run_pane {
+        if self.run_pane() {
             self.fold_pane();
             return Vec::new();
         }
@@ -3209,8 +3260,17 @@ impl Model {
     }
 
     fn run_key(&mut self, code: KeyCode) -> Vec<Command> {
+        let follows = code == KeyCode::Char('f');
+        let acts = if follows {
+            self.run_can_follow()
+        } else {
+            self.run_can_scroll()
+        };
+        if !acts {
+            return Vec::new();
+        }
         let view = &mut self.run_view;
-        if code == KeyCode::Char('f') {
+        if follows {
             view.scroll = view.overflow;
         } else {
             scroll_step(code, &mut view.scroll, view.overflow + 1);
@@ -3416,7 +3476,8 @@ impl Model {
         } else {
             0
         };
-        if let Some(commands) = self.leave_newest(code, true, following, lines, Model::lab_logs_key)
+        if let Some(commands) =
+            self.leave_newest(code, true, following, lines > 1, Model::lab_logs_key)
         {
             return commands;
         }
@@ -3563,7 +3624,7 @@ impl Model {
         let following = self.device_logs.following;
         let lines = self.shown_device_logs().len();
         if let Some(commands) =
-            self.leave_newest(code, true, following, lines, Model::device_logs_key)
+            self.leave_newest(code, true, following, lines > 1, Model::device_logs_key)
         {
             return commands;
         }
@@ -3625,11 +3686,15 @@ impl Model {
 
     fn list_key(&mut self, code: KeyCode) -> Vec<Command> {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => return self.step_stack(true),
-            KeyCode::Char('k') | KeyCode::Up => return self.step_stack(false),
+            KeyCode::Char('j') | KeyCode::Down if self.stacks_can_step() => {
+                return self.step_stack(true)
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.stacks_can_step() => {
+                return self.step_stack(false)
+            }
             KeyCode::Char('/') => self.filter.start(),
             KeyCode::Enter => self.focus = Focus::Tabs,
-            KeyCode::Char('l') if !self.services.is_empty() => return self.open_logs(),
+            KeyCode::Char('l') if self.can_open_logs() => return self.open_logs(),
             _ => {}
         }
         Vec::new()
@@ -3656,9 +3721,13 @@ impl Model {
     fn overview_key(&mut self, code: KeyCode) -> Vec<Command> {
         let last = self.services.len().saturating_sub(1);
         match code {
-            KeyCode::Char('j') | KeyCode::Down => self.service = (self.service + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.service = self.service.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Char('l') if !self.services.is_empty() => {
+            KeyCode::Char('j') | KeyCode::Down if self.services_can_step() => {
+                self.service = (self.service + 1).min(last);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.services_can_step() => {
+                self.service = self.service.saturating_sub(1);
+            }
+            KeyCode::Enter | KeyCode::Char('l') if self.can_open_logs() => {
                 return self.open_logs();
             }
             _ => {}
@@ -3671,7 +3740,7 @@ impl Model {
         code: KeyCode,
         newest_first: bool,
         following: bool,
-        lines: usize,
+        scrolls: bool,
         keys: fn(&mut Model, KeyCode) -> Vec<Command>,
     ) -> Option<Vec<Command>> {
         let away = if newest_first {
@@ -3679,7 +3748,7 @@ impl Model {
         } else {
             matches!(code, KeyCode::Char('k') | KeyCode::Up)
         };
-        if !(away && following && lines > 1) {
+        if !(away && following && scrolls) {
             return None;
         }
         let mut commands = keys(self, KeyCode::Char('f'));
@@ -3688,11 +3757,13 @@ impl Model {
     }
 
     fn logs_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let (following, lines) = self
-            .logs
-            .as_ref()
-            .map_or((false, 0), |logs| (logs.following, logs.shown()));
-        if let Some(commands) = self.leave_newest(code, false, following, lines, Model::logs_key) {
+        if !self.logs_open() {
+            return Vec::new();
+        }
+        let scrolls = self.logs_can_scroll();
+        let following = self.logs_following();
+        if let Some(commands) = self.leave_newest(code, false, following, scrolls, Model::logs_key)
+        {
             return commands;
         }
         let Some(logs) = self.logs.as_mut() else {
@@ -3707,10 +3778,10 @@ impl Model {
                 return vec![Command::Follow(logs.following)];
             }
             KeyCode::Char('/') => logs.filter.start(),
-            KeyCode::Char('j') | KeyCode::Down if !logs.following => {
+            KeyCode::Char('j') | KeyCode::Down if scrolls && !logs.following => {
                 logs.scroll = logs.scroll.saturating_sub(1);
             }
-            KeyCode::Char('k') | KeyCode::Up if !logs.following => {
+            KeyCode::Char('k') | KeyCode::Up if scrolls && !logs.following => {
                 logs.scroll = (logs.scroll + 1).min(logs.shown().saturating_sub(1));
             }
             _ => {}

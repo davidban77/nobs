@@ -2556,29 +2556,39 @@ pub(crate) fn key_line(model: &Model, width: usize) -> Vec<String> {
 }
 
 fn key_hints(model: &Model, wide: bool) -> Vec<String> {
-    let listed = |fixed: Vec<&'static str>| fixed.into_iter().map(ToString::to_string);
     if model.chooser() {
-        return listed(vec!["j/k select", "Enter open", "q quit"]).collect();
+        return ["j/k select", "Enter open", "q quit"]
+            .map(String::from)
+            .to_vec();
     }
-    let actions = action_hints(model);
-    let fixed = match (model.workbench(), model.focus(), model.tab()) {
-        (_, Focus::Run, _) => {
-            let moved = model.run_scroll() < model.run_overflow();
-            return listed(vec!["j/k scroll"])
-                .chain(moved.then(|| "f follow".to_string()))
-                .chain(listed(vec!["Tab focus", FOLD]))
-                .collect();
+    let actions = action_hints(model).into_iter().map(|hint| (true, hint));
+    let hints: Vec<(bool, String)> = match (model.workbench(), model.focus(), model.tab()) {
+        (_, Focus::Run, _) => owned(vec![
+            (model.run_can_scroll(), "j/k scroll"),
+            (model.run_can_follow(), "f follow"),
+            (true, "Tab focus"),
+            (true, FOLD),
+        ])
+        .collect(),
+        (Workbench::Lab, ..) => owned(vec![
+            (true, "Tab focus"),
+            (model.lab_pane_can_step(), "j/k move"),
+        ])
+        .chain(actions)
+        .chain(owned(vec![(true, "r refresh"), (true, "o pane")]))
+        .collect(),
+        (Workbench::Observability, ..) => {
+            owned(observability_hints(model)).chain(actions).collect()
         }
-        (Workbench::Lab, ..) => {
-            return listed(vec!["Tab focus", "j/k move"])
-                .chain(actions)
-                .chain(listed(vec!["r refresh", "o pane"]))
-                .collect();
-        }
-        (Workbench::Observability, ..) => observability_hints(model),
-        (Workbench::Services, Focus::List, _) => {
-            vec!["Tab focus", "j/k move", "/ filter", "l logs", "r refresh"]
-        }
+        (Workbench::Services, Focus::List, _) => owned(vec![
+            (true, "Tab focus"),
+            (model.stacks_can_step(), "j/k move"),
+            (true, "/ filter"),
+            (model.can_open_logs(), "l logs"),
+            (true, "r refresh"),
+        ])
+        .chain(actions)
+        .collect(),
         (
             Workbench::Services,
             Focus::Tabs,
@@ -2589,55 +2599,95 @@ fn key_hints(model: &Model, wide: bool) -> Vec<String> {
             | Tab::Alerts
             | Tab::Metrics
             | Tab::Terminal,
-        ) => {
-            vec!["Tab focus", "j/k move", "[ ] tab", "Enter logs", "Esc back"]
-        }
+        ) => owned([
+            (true, "Tab focus"),
+            (model.services_can_step(), "j/k move"),
+            (true, "[ ] tab"),
+            (model.can_open_logs(), "Enter logs"),
+            esc(model, "Esc back"),
+        ])
+        .chain(actions)
+        .collect(),
         (Workbench::Services, Focus::Tabs, Tab::Logs) => {
-            log_hints(matches!(model.logs(), Some((_, _, false, _))))
+            let following = model.logs_open().then(|| model.logs_following());
+            owned(log_hints(model, following, model.logs_can_scroll()))
+                .chain(actions)
+                .collect()
         }
-        (Workbench::Services, Focus::Tabs, Tab::Sonda) => vec!["Tab focus", "[ ] tab", "Esc back"],
-        (Workbench::Devices, Focus::List, _) => {
-            vec![
-                "Tab focus",
-                "j/k move",
-                "/ filter",
-                "Enter open",
-                "r refresh",
-            ]
-        }
+        (Workbench::Services, Focus::Tabs, Tab::Sonda) => owned([
+            (true, "Tab focus"),
+            (true, "[ ] tab"),
+            esc(model, "Esc back"),
+        ])
+        .chain(actions)
+        .collect(),
+        (Workbench::Devices, Focus::List, _) => owned([
+            (true, "Tab focus"),
+            (true, "j/k move"),
+            (true, "/ filter"),
+            (true, "Enter open"),
+            (true, "r refresh"),
+        ])
+        .chain(actions)
+        .collect(),
         (Workbench::Devices, Focus::Tabs, Tab::Timeline) if model.popup() => {
-            vec!["j/k move", "Esc close"]
+            owned([(true, "j/k move"), esc(model, "Esc close")])
+                .chain(actions)
+                .collect()
         }
-        (Workbench::Devices, Focus::Tabs, Tab::Timeline) => vec![
-            "j/k move",
-            "Enter full text",
-            "- + window",
-            "[ ] tab",
-            "Esc back",
-        ],
+        (Workbench::Devices, Focus::Tabs, Tab::Timeline) => owned([
+            (true, "j/k move"),
+            (true, "Enter full text"),
+            (true, "- + window"),
+            (true, "[ ] tab"),
+            esc(model, "Esc back"),
+        ])
+        .chain(actions)
+        .collect(),
         (Workbench::Devices, Focus::Tabs, Tab::Logs) => {
-            log_hints(matches!(model.device_logs(), Some((_, _, false, _))))
+            let paused = matches!(model.device_logs(), Some((_, _, false, _)));
+            owned(log_hints(model, Some(!paused), true))
+                .chain(actions)
+                .collect()
         }
         (Workbench::Devices, Focus::Tabs, Tab::Config) => {
-            return listed(view_hints(model, wide))
-                .chain(listed(PANE_HINTS.to_vec()))
+            owned(view_hints(model, wide).into_iter().map(|hint| (true, hint)))
+                .chain(owned(pane_hints(model, true, true)))
                 .chain(actions)
-                .collect();
+                .collect()
         }
-        (Workbench::Devices, Focus::Tabs, Tab::Terminal) => {
-            return match model.drawn_session() {
-                Some(session) => listed(session.state.keys().to_vec()).collect(),
-                None => vec![
-                    format!("{} {}", SHELL.key, SHELL.hint),
-                    PANE_HINTS[2].to_string(),
-                ],
-            };
-        }
-        (Workbench::Services, Focus::Lines, _) | (Workbench::Devices, _, _) => {
-            vec!["Tab focus", "j/k move", "[ ] tab", "Esc back"]
-        }
+        (Workbench::Devices, Focus::Tabs, Tab::Terminal) => match model.drawn_session() {
+            Some(session) => owned(session.state.keys().iter().map(|hint| (true, *hint))).collect(),
+            None => vec![
+                (true, format!("{} {}", SHELL.key, SHELL.hint)),
+                (true, PANE_HINTS[2].to_string()),
+            ],
+        },
+        (Workbench::Services, Focus::Lines, _) | (Workbench::Devices, _, _) => owned([
+            (true, "Tab focus"),
+            (true, "j/k move"),
+            (true, "[ ] tab"),
+            esc(model, "Esc back"),
+        ])
+        .chain(actions)
+        .collect(),
     };
-    listed(fixed).chain(actions).collect()
+    hints
+        .into_iter()
+        .filter_map(|(offered, hint)| offered.then_some(hint))
+        .collect()
+}
+
+fn owned(
+    pairs: impl IntoIterator<Item = (bool, &'static str)>,
+) -> impl Iterator<Item = (bool, String)> {
+    pairs
+        .into_iter()
+        .map(|(offered, hint)| (offered, hint.to_string()))
+}
+
+fn esc(model: &Model, words: &'static str) -> (bool, &'static str) {
+    (true, if model.run_pane() { FOLD } else { words })
 }
 
 fn view_hints(model: &Model, wide: bool) -> Vec<&'static str> {
@@ -2656,7 +2706,7 @@ fn view_hints(model: &Model, wide: bool) -> Vec<&'static str> {
     }
 }
 
-fn observability_hints(model: &Model) -> Vec<&'static str> {
+fn observability_hints(model: &Model) -> Vec<(bool, &'static str)> {
     let offered = if model.tab() == Tab::Logs {
         lab_hints(model)
     } else {
@@ -2684,7 +2734,6 @@ fn observability_hints(model: &Model) -> Vec<&'static str> {
     [(model.run_drawn(), "Tab focus")]
         .into_iter()
         .chain(offered)
-        .filter_map(|(offered, hint)| offered.then_some(hint))
         .collect()
 }
 
@@ -2708,9 +2757,26 @@ fn lab_hints(model: &Model) -> Vec<(bool, &'static str)> {
     ]
 }
 
-fn log_hints(paused: bool) -> Vec<&'static str> {
-    let follow = if paused { "f follow" } else { "f pause" };
-    [follow].into_iter().chain(PANE_HINTS).collect()
+fn log_hints(model: &Model, following: Option<bool>, scrolls: bool) -> Vec<(bool, &'static str)> {
+    let follow = if following == Some(true) {
+        "f pause"
+    } else {
+        "f follow"
+    };
+    [(following.is_some(), follow)]
+        .into_iter()
+        .chain(pane_hints(model, following.is_some(), scrolls))
+        .collect()
+}
+
+fn pane_hints(model: &Model, filters: bool, scrolls: bool) -> [(bool, &'static str); 4] {
+    let [filter, scroll, tab, back] = PANE_HINTS;
+    [
+        (filters, filter),
+        (scrolls, scroll),
+        (true, tab),
+        esc(model, back),
+    ]
 }
 
 pub(crate) fn whole_hints(hints: &[String], width: usize) -> String {
@@ -5244,9 +5310,8 @@ mod tests {
     #[test]
     fn the_key_line_and_the_help_name_tab_and_j_k_for_each_lab_focus_and_the_device_tabs() {
         let lab_line = " Tab focus  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show";
-        let mut lab = lab_bench(1);
-        assert_eq!(key_line(&lab, 100), [lab_line], "chapters");
-        focus_tabs(&mut lab);
+        assert_eq!(key_line(&lab_bench(2), 100), [lab_line], "chapters");
+        let lab = nodes_of(2);
         assert_eq!(lab.focus(), Focus::Tabs);
         assert_eq!(key_line(&lab, 100), [lab_line], "nodes");
 
@@ -5385,18 +5450,7 @@ mod tests {
 
     #[test]
     fn j_on_the_lab_overview_draws_the_hidden_line_and_marks_the_lines_above() {
-        let mut model = lab_bench(1);
-        press(&mut model, 'D');
-        press(&mut model, 'y');
-        model.apply(Update::ActionLine(REFUSAL.to_string()));
-        model.apply(Update::ActionEnded(End::Exited(1)));
-        model.apply(Update::Services(
-            0,
-            defined(&["grafana"]),
-            Err("exit 1".to_string()),
-        ));
-        focus_tabs(&mut model);
-        focus_tabs(&mut model);
+        let mut model = long_lines_pane();
 
         let before = drawn(&mut model, 60, 15);
         model.set_lab_overflow(lab_overflow(&model, Rect::new(0, 0, 60, 15)));
@@ -6143,6 +6197,7 @@ mod tests {
 
     #[test]
     fn with_the_focus_in_the_run_pane_the_key_line_holds_its_keys_and_f_only_while_moved_up() {
+        let fits = " Tab focus  Esc fold";
         let at_end = " j/k scroll  Tab focus  Esc fold";
         let moved_up = " j/k scroll  f follow  Tab focus  Esc fold";
         for bench in benches() {
@@ -6150,7 +6205,7 @@ mod tests {
                 let mut model = staged(&bench, bench.tabs[0].0, false, Keys::Hints, true);
                 tab_to_run(&mut model, width, height);
                 let rows = settled(&mut model, width, height);
-                assert_eq!(rows[rows.len() - 1], at_end, "{}", rows.join("\n"));
+                assert_eq!(rows[rows.len() - 1], fits, "{}", rows.join("\n"));
             }
         }
         let mut model = answered(&numbered(40));
@@ -6510,5 +6565,530 @@ mod tests {
 
         assert!(shown(only(Service::Logs), Workbench::Observability).contains(&follow));
         assert!(!shown(only(Service::Metrics), Workbench::Observability).contains(&follow));
+    }
+
+    struct Pinned {
+        view: &'static str,
+        build: fn() -> Model,
+        key: KeyCode,
+        hint: &'static str,
+        named: bool,
+        acts: bool,
+        size: (u16, u16),
+    }
+
+    fn pin(
+        view: &'static str,
+        build: fn() -> Model,
+        key: KeyCode,
+        hint: &'static str,
+        named: bool,
+        acts: bool,
+    ) -> Pinned {
+        Pinned {
+            view,
+            build,
+            key,
+            hint,
+            named,
+            acts,
+            size: (100, 30),
+        }
+    }
+
+    fn stack_list(stacks: usize, services: usize) -> Model {
+        let mut model = Model::new(start(many_stacks(stacks)));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        model.apply(Update::Services(0, names(services), Ok(Vec::new())));
+        if model.focus() != Focus::List {
+            focus_tabs(&mut model);
+        }
+        assert_eq!(model.focus(), Focus::List);
+        model
+    }
+
+    fn stack_tabs(services: usize) -> Model {
+        let mut model = stack_list(1, services);
+        focus_tabs(&mut model);
+        assert_eq!((model.focus(), model.tab()), (Focus::Tabs, Tab::Overview));
+        model
+    }
+
+    fn hidden_stack() -> Model {
+        let mut model = stack_list(1, 1);
+        filtered(&mut model, "zz");
+        model
+    }
+
+    fn pane_open(mut model: Model) -> Model {
+        press(&mut model, 'o');
+        assert!(model.run_pane());
+        model
+    }
+
+    fn run_focused(lines: usize, up: bool) -> Model {
+        let mut model = answered(&numbered(lines));
+        tab_to_run(&mut model, 100, 30);
+        settled(&mut model, 100, 30);
+        if up {
+            press(&mut model, 'k');
+        }
+        model
+    }
+
+    fn lines_pane() -> Model {
+        let mut model = lab_bench(1);
+        focus_tabs(&mut model);
+        focus_tabs(&mut model);
+        assert_eq!(model.focus(), Focus::Lines);
+        model
+    }
+
+    fn long_lines_pane() -> Model {
+        let mut model = lab_bench(1);
+        press(&mut model, 'D');
+        press(&mut model, 'y');
+        model.apply(Update::ActionLine(REFUSAL.to_string()));
+        model.apply(Update::ActionEnded(End::Exited(1)));
+        model.apply(Update::Services(
+            0,
+            defined(&["grafana"]),
+            Err("exit 1".to_string()),
+        ));
+        focus_tabs(&mut model);
+        focus_tabs(&mut model);
+        assert_eq!(model.focus(), Focus::Lines);
+        model
+    }
+
+    fn two_lines() -> Model {
+        services_log_of(vec!["one".to_string(), "two".to_string()])
+    }
+
+    fn one_line() -> Model {
+        services_log_of(vec!["one".to_string()])
+    }
+
+    fn paused(mut model: Model) -> Model {
+        press(&mut model, 'f');
+        assert!(!model.logs_following());
+        model
+    }
+
+    fn services_on_device_logs() -> Model {
+        let mut model = devices_bench();
+        open_tab(&mut model, Tab::Logs);
+        focus_tabs(&mut model);
+        press(&mut model, '2');
+        let shown = (model.workbench(), model.focus(), model.tab());
+        assert_eq!(shown, (Workbench::Services, Focus::Tabs, Tab::Logs));
+        assert!(!model.logs_open());
+        model
+    }
+
+    fn pinned_keys() -> Vec<Pinned> {
+        use KeyCode::{Char, Enter, Esc, Tab as Next};
+        vec![
+            pin(
+                "run, output longer than the pane",
+                || run_focused(40, false),
+                Char('k'),
+                "j/k scroll",
+                true,
+                true,
+            ),
+            pin(
+                "run, output fits",
+                || run_focused(3, false),
+                Char('k'),
+                "j/k scroll",
+                false,
+                false,
+            ),
+            pin(
+                "run, moved up",
+                || run_focused(40, true),
+                Char('f'),
+                "f follow",
+                true,
+                true,
+            ),
+            pin(
+                "run, at the newest line",
+                || run_focused(40, false),
+                Char('f'),
+                "f follow",
+                false,
+                false,
+            ),
+            pin(
+                "run",
+                || run_focused(3, false),
+                Next,
+                "Tab focus",
+                true,
+                true,
+            ),
+            pin("run", || run_focused(3, false), Esc, "Esc fold", true, true),
+            pin(
+                "lab chapters, two chapters",
+                || lab_bench(2),
+                Char('k'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
+                "lab chapters, one chapter",
+                || lab_bench(1),
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            pin(
+                "lab nodes, two nodes",
+                || nodes_of(2),
+                Char('j'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
+                "lab nodes, one node",
+                || nodes_of(1),
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            Pinned {
+                size: (60, 15),
+                ..pin(
+                    "lab lines, text longer than the pane",
+                    long_lines_pane,
+                    Char('j'),
+                    "j/k move",
+                    true,
+                    true,
+                )
+            },
+            pin(
+                "lab lines, text fits",
+                lines_pane,
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            pin("lab", || lab_bench(1), Next, "Tab focus", true, true),
+            pin("lab", || lab_bench(1), Char('r'), "r refresh", true, true),
+            pin("lab", || lab_bench(1), Char('o'), "o pane", true, true),
+            pin("lab", || lab_bench(1), Char('D'), "D deploy", true, true),
+            pin(
+                "services list, two stacks",
+                || stack_list(2, 1),
+                Char('j'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
+                "services list, one stack",
+                || stack_list(1, 1),
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            pin(
+                "services list, a stack with services",
+                || stack_list(1, 1),
+                Char('l'),
+                "l logs",
+                true,
+                true,
+            ),
+            pin(
+                "services list, no services",
+                || stack_list(1, 0),
+                Char('l'),
+                "l logs",
+                false,
+                false,
+            ),
+            pin(
+                "services list, the filter hides the stack",
+                hidden_stack,
+                Char('l'),
+                "l logs",
+                false,
+                false,
+            ),
+            pin(
+                "services list",
+                || stack_list(1, 1),
+                Next,
+                "Tab focus",
+                true,
+                true,
+            ),
+            pin(
+                "services list",
+                || stack_list(1, 1),
+                Char('/'),
+                "/ filter",
+                true,
+                true,
+            ),
+            pin(
+                "services list",
+                || stack_list(1, 1),
+                Char('r'),
+                "r refresh",
+                true,
+                true,
+            ),
+            pin(
+                "services list",
+                || stack_list(1, 1),
+                Char('u'),
+                "u up",
+                true,
+                true,
+            ),
+            pin(
+                "services tabs, two services",
+                || stack_tabs(2),
+                Char('j'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
+                "services tabs, one service",
+                || stack_tabs(1),
+                Char('j'),
+                "j/k move",
+                false,
+                false,
+            ),
+            pin(
+                "services tabs, one service",
+                || stack_tabs(1),
+                Enter,
+                "Enter logs",
+                true,
+                true,
+            ),
+            pin(
+                "services tabs, no services",
+                || stack_tabs(0),
+                Enter,
+                "Enter logs",
+                false,
+                false,
+            ),
+            pin(
+                "services tabs",
+                || stack_tabs(1),
+                Next,
+                "Tab focus",
+                true,
+                true,
+            ),
+            pin(
+                "services tabs",
+                || stack_tabs(1),
+                Char(']'),
+                "[ ] tab",
+                true,
+                true,
+            ),
+            pin(
+                "services tabs",
+                || stack_tabs(1),
+                Esc,
+                "Esc back",
+                true,
+                true,
+            ),
+            pin(
+                "services tabs, run pane open",
+                || pane_open(stack_tabs(1)),
+                Esc,
+                "Esc back",
+                false,
+                true,
+            ),
+            pin(
+                "services tabs, run pane open",
+                || pane_open(stack_tabs(1)),
+                Esc,
+                "Esc fold",
+                true,
+                true,
+            ),
+            pin(
+                "services tabs",
+                || stack_tabs(1),
+                Char('u'),
+                "u up",
+                true,
+                true,
+            ),
+            pin(
+                "services logs, following, two lines",
+                two_lines,
+                Char('k'),
+                "j/k scroll",
+                true,
+                true,
+            ),
+            pin(
+                "services logs, following, one line",
+                one_line,
+                Char('k'),
+                "j/k scroll",
+                false,
+                false,
+            ),
+            pin(
+                "services logs, paused, two lines",
+                || paused(two_lines()),
+                Char('k'),
+                "j/k scroll",
+                true,
+                true,
+            ),
+            pin(
+                "services logs, paused, one line",
+                || paused(one_line()),
+                Char('k'),
+                "j/k scroll",
+                false,
+                false,
+            ),
+            pin(
+                "services logs, following",
+                two_lines,
+                Char('f'),
+                "f pause",
+                true,
+                true,
+            ),
+            pin(
+                "services logs, paused",
+                || paused(two_lines()),
+                Char('f'),
+                "f follow",
+                true,
+                true,
+            ),
+            pin(
+                "services logs, no logs open",
+                services_on_device_logs,
+                Char('f'),
+                "f pause",
+                false,
+                false,
+            ),
+            pin(
+                "services logs, no logs open",
+                services_on_device_logs,
+                Char('/'),
+                "/ filter",
+                false,
+                false,
+            ),
+            pin(
+                "services logs",
+                two_lines,
+                Char('/'),
+                "/ filter",
+                true,
+                true,
+            ),
+            pin("services logs", two_lines, Char(']'), "[ ] tab", true, true),
+            pin(
+                "services logs",
+                two_lines,
+                Esc,
+                "Esc back to list",
+                true,
+                true,
+            ),
+            pin(
+                "services logs, run pane open",
+                || pane_open(two_lines()),
+                Esc,
+                "Esc back to list",
+                false,
+                true,
+            ),
+            pin(
+                "services logs, run pane open",
+                || pane_open(two_lines()),
+                Esc,
+                "Esc fold",
+                true,
+                true,
+            ),
+            pin(
+                "services sonda",
+                || sonda_of(1),
+                Next,
+                "Tab focus",
+                true,
+                true,
+            ),
+            pin(
+                "services sonda",
+                || sonda_of(1),
+                Char(']'),
+                "[ ] tab",
+                true,
+                true,
+            ),
+            pin(
+                "services sonda",
+                || sonda_of(1),
+                Esc,
+                "Esc back",
+                true,
+                true,
+            ),
+        ]
+    }
+
+    fn names_hint(line: &str, hint: &str) -> bool {
+        line.split("  ").any(|shown| shown.trim() == hint)
+    }
+
+    #[test]
+    fn a_key_of_the_view_is_named_exactly_when_its_press_does_something() {
+        for case in pinned_keys() {
+            let (width, height) = case.size;
+            let frame = |model: &mut Model| {
+                looped(model, Rect::new(0, 0, width, height));
+                settled(model, width, height)
+            };
+            let mut model = (case.build)();
+            let before = frame(&mut model);
+            let line = before.last().cloned().unwrap_or_default();
+            let commands = handle(&mut model, KeyEvent::new(case.key, KeyModifiers::NONE));
+            let acted = !commands.is_empty() || frame(&mut model) != before;
+            assert_eq!(
+                (names_hint(&line, case.hint), acted),
+                (case.named, case.acts),
+                "{}: {}\n{}",
+                case.view,
+                case.hint,
+                before.join("\n")
+            );
+        }
     }
 }

@@ -12,4 +12,4 @@
 ║$ nobs --dir /home/me/ws/autocon5 autocon5 up             ║
 ║ Step 01  done                                            ║
 ╚══════════════════════════════════════════════════════════╝
- j/k scroll  Tab focus  Esc fold
+ Tab focus  Esc fold

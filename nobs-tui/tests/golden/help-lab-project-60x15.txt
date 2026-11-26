@@ -12,4 +12,4 @@
   ║PgUp PgDn  move a page where j and k move             ║
   ║↑3 ↓13   3 rows hidden above, 13 below                ║
   ╚══════════════════════════════════════════════════════╝
- Tab focus  j/k move  D deploy  X destroy  R render  S show
+ Tab focus  D deploy  X destroy  R render  S show  r refresh
