@@ -1747,7 +1747,7 @@ fn without_a_compose_file() -> Shell {
 
 #[test]
 fn the_services_frame_of_a_lab_without_a_compose_file_is_pinned() {
-    pinned(without_a_compose_file(), "services-no-compose", 100, 30);
+    golden("services-no-compose", without_a_compose_file);
 }
 
 #[test]

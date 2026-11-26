@@ -12,4 +12,4 @@
 ║                                                          ║
 ╚══════════════════════════════════════════════════════════╝
  run  none                                           o open
- t connect again  j/k scroll  [ ] tab
+ t connect again  [ ] tab

@@ -1268,7 +1268,7 @@ impl Model {
                 self.alerts_ok = true;
                 self.clear_error(error_source(status::Service::Alerts));
                 if let Cursor::Alert(at) = self.cursor {
-                    return match self.alerts.len() {
+                    return match self.shown_alerts().len() {
                         0 => {
                             self.cursor = Cursor::Device(self.device);
                             self.show_cursor()
@@ -1283,6 +1283,7 @@ impl Model {
             Update::Alerts(Err(text)) => {
                 self.alerts_ok = false;
                 self.fail(error_source(status::Service::Alerts), text);
+                return self.show_cursor();
             }
             Update::DeviceLogs(device, Ok(lines)) => {
                 self.clear_error(error_source(status::Service::Logs));
@@ -1896,9 +1897,9 @@ impl Model {
     }
 
     fn terminal_key(&mut self, code: KeyCode) -> Vec<Command> {
-        let Some((id, device)) = self
+        let Some((id, device, scrolls)) = self
             .drawn_session()
-            .map(|session| (session.id, session.device.clone()))
+            .map(|session| (session.id, session.device.clone(), session.can_scroll()))
         else {
             return Vec::new();
         };
@@ -1906,8 +1907,10 @@ impl Model {
             KeyCode::Char('c') => {
                 return self.sessions.close(id, Closed::ByYou).into_iter().collect();
             }
-            KeyCode::Char('k') | KeyCode::Up => self.sessions.scroll(&device, true, 1),
-            KeyCode::Char('j') | KeyCode::Down => self.sessions.scroll(&device, false, 1),
+            KeyCode::Char('k') | KeyCode::Up if scrolls => self.sessions.scroll(&device, true, 1),
+            KeyCode::Char('j') | KeyCode::Down if scrolls => {
+                self.sessions.scroll(&device, false, 1)
+            }
             _ => {}
         }
         Vec::new()
@@ -1951,12 +1954,9 @@ impl Model {
 
     pub(crate) fn action_target(&self, row: Row) -> Option<Target> {
         match row {
-            Row::Stack
-                if self.focus == Focus::List || matches!(self.tab, Tab::Overview | Tab::Logs) =>
-            {
-                Some(Target::Stack(self.selected))
-            }
+            Row::Stack if self.stack_actions_reach() => self.stack_drawn().map(Target::Stack),
             Row::Stack => None,
+            Row::Device | Row::Node if !self.device_drawn() => None,
             Row::Device | Row::Node => self
                 .selected_device()
                 .map(|device| Target::Device(device.name.clone())),
@@ -1981,11 +1981,10 @@ impl Model {
         let action = ACTIONS.iter().find(|action| {
             action.key == typed && action.workbench == self.workbench && fits(action, self)
         })?;
-        let target = self.action_target(action.row);
-        if action.row == Row::Stack && target.is_none() {
+        if action.row == Row::Stack && !self.stack_actions_reach() {
             return None;
         }
-        let Some(target) = target else {
+        let Some(target) = self.action_target(action.row) else {
             return Some(Vec::new());
         };
         let running = self.active().map(|run| run.words.clone());
@@ -2592,6 +2591,15 @@ impl Model {
         self.visible_stacks()
             .contains(&self.selected)
             .then_some(self.selected)
+    }
+
+    fn stack_actions_reach(&self) -> bool {
+        self.focus == Focus::List || matches!(self.tab, Tab::Overview | Tab::Logs)
+    }
+
+    fn device_drawn(&self) -> bool {
+        (self.workbench, self.focus) != (Workbench::Devices, Focus::List)
+            || self.visible_devices().contains(&self.device)
     }
 
     pub(crate) fn can_open_logs(&self) -> bool {
@@ -3491,14 +3499,14 @@ impl Model {
                 .iter()
                 .find(|index| **index > at)
                 .map(|index| Cursor::Device(*index))
-                .or_else(|| (!self.alerts.is_empty()).then_some(Cursor::Alert(0))),
+                .or_else(|| (!self.shown_alerts().is_empty()).then_some(Cursor::Alert(0))),
             (Cursor::Device(at), false) => visible
                 .iter()
                 .rev()
                 .find(|index| **index < at)
                 .map(|index| Cursor::Device(*index)),
             (Cursor::Alert(at), true) => {
-                (at + 1 < self.alerts.len()).then_some(Cursor::Alert(at + 1))
+                (at + 1 < self.shown_alerts().len()).then_some(Cursor::Alert(at + 1))
             }
             (Cursor::Alert(0), false) => visible.last().map(|index| Cursor::Device(*index)),
             (Cursor::Alert(at), false) => Some(Cursor::Alert(at - 1)),
@@ -3519,6 +3527,9 @@ impl Model {
     }
 
     fn show_cursor(&mut self) -> Vec<Command> {
+        if matches!(self.cursor, Cursor::Alert(at) if at >= self.shown_alerts().len()) {
+            self.cursor = Cursor::Device(self.device);
+        }
         let mut commands = Vec::new();
         let stacks = self.visible_stacks();
         if let Some(&first) = stacks.first().filter(|_| !stacks.contains(&self.selected)) {
@@ -3787,7 +3798,7 @@ impl Model {
                 return self.step_stack(false)
             }
             KeyCode::Char('/') => self.filter.start(),
-            KeyCode::Enter => self.focus = Focus::Tabs,
+            KeyCode::Enter if self.stack_drawn().is_some() => self.focus = Focus::Tabs,
             KeyCode::Char('l') if self.can_open_logs() => return self.open_logs(),
             _ => {}
         }
@@ -9148,6 +9159,85 @@ pub(crate) mod tests {
             panic!("cursor not on a device: {:?}", model.cursor());
         };
         assert!(model.visible_devices().contains(&at));
+    }
+
+    fn acts(model: &mut Model, pressed: KeyCode) -> bool {
+        let state = |model: &Model| {
+            format!(
+                "{} {:?} {} {} {:?}",
+                snapshot(model),
+                model.notice(),
+                model.question().is_some(),
+                model.login_entry().is_some(),
+                model.cursor()
+            )
+        };
+        let before = state(model);
+        let commands = code(model, pressed);
+        !commands.is_empty() || state(model) != before
+    }
+
+    fn hidden_by_zz(mut model: Model) -> Model {
+        ch(&mut model, '/');
+        typed(&mut model, "zz");
+        code(&mut model, KeyCode::Enter);
+        model
+    }
+
+    #[test]
+    fn with_no_alert_answer_the_cursor_leaves_the_alert_rows_and_j_cannot_reach_them() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        ch(&mut model, 'j');
+        ch(&mut model, 'j');
+        assert_eq!(model.cursor(), Cursor::Alert(0));
+
+        model.apply(Update::Alerts(Err("refused".to_string())));
+        assert!(matches!(model.cursor(), Cursor::Device(_)));
+        for _ in 0..3 {
+            ch(&mut model, 'j');
+        }
+
+        assert!(
+            matches!(model.cursor(), Cursor::Device(_)),
+            "{:?}",
+            model.cursor()
+        );
+    }
+
+    #[test]
+    fn with_the_filter_hiding_every_device_enter_opens_nothing() {
+        let mut model = hidden_by_zz(devices_model(workshop_located("infrahub")));
+        assert!(model.visible_devices().is_empty());
+
+        assert_eq!(code(&mut model, KeyCode::Enter), []);
+
+        assert_eq!(model.focus(), Focus::List);
+    }
+
+    #[test]
+    fn with_the_cursor_on_nothing_the_row_keys_and_the_row_actions_do_nothing() {
+        let services = || {
+            let mut model = opened(&["nobs-t-packt"]);
+            model.apply(listing(0, Ok(vec![row("grafana", "running")])));
+            model
+        };
+        let devices = || devices_model(workshop_located("infrahub"));
+        let cases: [(fn() -> Model, KeyCode); 7] = [
+            (services, KeyCode::Char('l')),
+            (services, KeyCode::Enter),
+            (services, KeyCode::Char('u')),
+            (devices, KeyCode::Enter),
+            (devices, KeyCode::Char('m')),
+            (lab_devices_model, KeyCode::Char('t')),
+            (lab_devices_model, KeyCode::Char('g')),
+        ];
+        for (build, pressed) in cases {
+            let mut shown = build();
+            let mut hidden = hidden_by_zz(build());
+
+            assert!(acts(&mut shown, pressed), "shown: {pressed:?}");
+            assert!(!acts(&mut hidden, pressed), "hidden: {pressed:?}");
+        }
     }
 
     #[test]

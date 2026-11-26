@@ -2674,9 +2674,18 @@ fn key_hints(model: &Model, wide: bool) -> Vec<String> {
             .chain([terminal_hint(model)])
             .collect(),
         (Workbench::Devices, Focus::Tabs, Tab::Terminal) => match model.drawn_session() {
-            Some(session) => owned(session.state.keys().iter().map(|hint| (true, *hint)))
+            Some(session) => {
+                let scrolls = session.can_scroll();
+                owned(
+                    session
+                        .state
+                        .keys()
+                        .iter()
+                        .map(|hint| (*hint != PANE_HINTS[1] || scrolls, *hint)),
+                )
                 .chain(owned([(!model.in_session(), PANE_HINTS[2])]))
-                .collect(),
+                .collect()
+            }
             None => vec![
                 (
                     model.can_type_in_terminal(),
@@ -3046,6 +3055,7 @@ mod tests {
     use nobs_core::device::Syntax;
     use nobs_core::locate::locate;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::Terminal;
 
     use super::*;
@@ -6771,6 +6781,14 @@ mod tests {
     }
 
     fn session(closed: bool) -> Model {
+        session_after(closed, b"A:srl1# ")
+    }
+
+    fn long_session() -> Model {
+        session_after(false, "line\r\n".repeat(60).as_bytes())
+    }
+
+    fn session_after(closed: bool, output: &[u8]) -> Model {
         let mut model = lab_devices_model();
         let id = handle(
             &mut model,
@@ -6782,7 +6800,7 @@ mod tests {
             _ => None,
         })
         .unwrap();
-        model.apply(Update::TermOutput(id, b"A:srl1# ".to_vec()));
+        model.apply(Update::TermOutput(id, output.to_vec()));
         handle(
             &mut model,
             KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
@@ -7300,6 +7318,22 @@ mod tests {
                 "t connect again",
                 true,
                 true,
+            ),
+            pin(
+                "devices terminal, a session with lines above the screen",
+                long_session,
+                Char('k'),
+                "j/k scroll",
+                true,
+                true,
+            ),
+            pin(
+                "devices terminal, a session with nothing to scroll",
+                || session(false),
+                Char('k'),
+                "j/k scroll",
+                false,
+                false,
             ),
             pin(
                 "devices terminal, session closed",
@@ -8090,5 +8124,66 @@ mod tests {
                 before.join("\n")
             );
         }
+    }
+
+    fn hint_keys(hint: &str) -> Vec<KeyCode> {
+        let mut keys = Vec::new();
+        for token in hint.split_whitespace() {
+            let letters: Vec<char> = token.chars().collect();
+            match (token, letters.as_slice()) {
+                ("Tab", _) => keys.push(KeyCode::Tab),
+                ("Enter", _) => keys.push(KeyCode::Enter),
+                ("Esc", _) => keys.push(KeyCode::Esc),
+                (_, [one]) => keys.push(KeyCode::Char(*one)),
+                (_, [one, '/', other]) => {
+                    keys.extend([KeyCode::Char(*one), KeyCode::Char(*other)]);
+                }
+                _ => break,
+            }
+        }
+        assert!(!keys.is_empty(), "no key in the hint {hint:?}");
+        keys
+    }
+
+    fn painted_buffer(model: &mut Model, (width, height): (u16, u16)) -> Buffer {
+        looped(model, Rect::new(0, 0, width, height));
+        model.tick(model.now(), UNIX_EPOCH, (width, height));
+        crate::settle(model, Rect::new(0, 0, width, height));
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, model)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn every_hint_of_the_line_names_a_key_whose_press_does_something() {
+        let mut walked = Vec::new();
+        for case in pinned_keys() {
+            let state = (case.build as usize, case.size, case.row as usize);
+            if walked.contains(&state) {
+                continue;
+            }
+            walked.push(state);
+            let mut shown = (case.build)();
+            let rows = settled_rows(&mut shown, case.size);
+            let line = (case.row)(&rows);
+            for hint in line
+                .split("  ")
+                .map(str::trim)
+                .filter(|hint| !hint.is_empty())
+            {
+                let acts = hint_keys(hint).into_iter().any(|key| {
+                    let mut model = (case.build)();
+                    let before = painted_buffer(&mut model, case.size);
+                    let commands = handle(&mut model, KeyEvent::new(key, KeyModifiers::NONE));
+                    !commands.is_empty() || painted_buffer(&mut model, case.size) != before
+                });
+                assert!(acts, "{}: {hint} does nothing\n{line}", case.view);
+            }
+        }
+    }
+
+    fn settled_rows(model: &mut Model, (width, height): (u16, u16)) -> Vec<String> {
+        looped(model, Rect::new(0, 0, width, height));
+        settled(model, width, height)
     }
 }
