@@ -13,7 +13,9 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, sudo_refused_line, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
-use nobs_core::device::{self, Credentials, Flap, Flapped, NotBack, Pushed, Terminal, Transport};
+use nobs_core::device::{
+    self, Credentials, Flap, Flapped, NotBack, Pushed, Terminal, Transport, Turn,
+};
 use nobs_core::env::{load_env, read_env};
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
@@ -46,8 +48,7 @@ use nobs_ssh::Ssh;
 
 const SERVICES_HELP: &str = "Services to act on; all of them when none is given";
 
-const SAVE_HELP: &str =
-    "Also write what each device answered to a file in this folder; the folder must not exist";
+const SAVE_HELP: &str = "Also write each configuration nobs fetches, or why the fetch failed, to a file in this folder; the folder must not exist";
 
 const DASH: &str = "—";
 
@@ -150,7 +151,7 @@ pub enum Command {
         command: ProjectCommand,
     },
     #[command(
-        about = "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, push it to the device, flap one of its interfaces, or check every device against it"
+        about = "Commands for the devices of a lab: fetch, run, shell, render, push, flap and check"
     )]
     Device {
         #[command(subcommand)]
@@ -1189,14 +1190,20 @@ pub enum DeviceCommand {
             long,
             value_name = "SECONDS",
             default_value_t = device::FLAP_DELAY,
-            help = "The time the interface stays down, and up before the next flap"
+            help = format!(
+                "The time the interface stays down, and up before the next flap; {}",
+                device::delay_limits()
+            )
         )]
         delay: u64,
         #[arg(
             long,
             value_name = "N",
             default_value_t = device::FLAP_COUNT,
-            help = "How many times to flap the interface"
+            help = format!(
+                "How many times to flap the interface; {}",
+                device::count_limits()
+            )
         )]
         count: u32,
     },
@@ -2341,7 +2348,7 @@ fn run_device(
                 let node = match topology_node(name, &topology, &nodes) {
                     Ok(node) => node,
                     Err(error) => {
-                        push_says(&mut io::stderr(), name, error);
+                        device_says(&mut io::stderr(), PUSH, name, error);
                         return 1;
                     }
                 };
@@ -2365,7 +2372,7 @@ fn run_device(
                 let node = match topology_node(name, &topology, &nodes) {
                     Ok(node) => node,
                     Err(error) => {
-                        flap_says(&mut io::stderr(), name, error);
+                        device_says(&mut io::stderr(), FLAP, name, error);
                         return 1;
                     }
                 };
@@ -2458,17 +2465,23 @@ fn push_device(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> i32 {
+    if !made_folder(save, err) {
+        return 1;
+    }
+    if let Some(folder) = save {
+        let _ = fs::remove_dir(folder);
+    }
     let name = &node.name;
     let text = match intended_of(node) {
         Ok(text) => text,
         Err(failure) => {
-            push_says(err, name, failure);
+            device_says(err, PUSH, name, failure);
             return 1;
         }
     };
     let count = intended::lines(&text).count();
     if count == 0 {
-        push_says(err, name, "the intended configuration has no line");
+        device_says(err, PUSH, name, "the intended configuration has no line");
         return 1;
     }
     let lines = counted(count, "line");
@@ -2483,17 +2496,18 @@ fn push_device(
             1
         }
         Ok(Pushed::Declined) if answer.is_none() => {
-            push_says(err, name, NEEDS_A_YES);
+            device_says(err, PUSH, name, NEEDS_A_YES);
             1
         }
         Ok(Pushed::Declined) => {
-            push_says(err, name, "not pushed");
+            device_says(err, PUSH, name, "not pushed");
             1
         }
         Ok(Pushed::Refused(output)) => {
             pass_through(&output, out, err);
-            push_says(
+            device_says(
                 err,
+                PUSH,
                 name,
                 "the device refused the push; its configuration is as before",
             );
@@ -2524,8 +2538,11 @@ fn push_device(
     }
 }
 
-fn push_says(err: &mut impl Write, name: &str, words: impl std::fmt::Display) {
-    let _ = writeln!(err, "nobs: push {name}: {words}");
+const PUSH: &str = "push";
+const FLAP: &str = "flap";
+
+fn device_says(err: &mut impl Write, verb: &str, name: &str, words: impl std::fmt::Display) {
+    let _ = writeln!(err, "nobs: {verb} {name}: {words}");
 }
 
 const NEEDS_A_YES: &str = "needs a yes; run it in a terminal, or add --yes";
@@ -2548,22 +2565,15 @@ fn flap_device(
         transport,
         flap,
         &mut || {
-            answer = ask(&device::flap_question(
-                name,
-                interface,
-                flap.delay.as_secs(),
-                flap.count,
-            ));
+            answer = ask(&device::flap_question(name, flap));
             answer == Some(true)
         },
         wait,
-        &mut |_, back| {
-            if back {
-                let _ = writeln!(out, "{name}  {interface} back");
-            } else {
-                let _ = writeln!(out, "{name}  {interface} down for {seconds}");
-            }
-            let _ = out.flush();
+        &mut |_, turn| {
+            let _ = match turn {
+                Turn::Down => writeln!(out, "{name}  {interface} down for {seconds}"),
+                Turn::Back => writeln!(out, "{name}  {interface} back"),
+            };
         },
     );
     match flapped {
@@ -2572,20 +2582,21 @@ fn flap_device(
             1
         }
         Ok(Flapped::Declined) if answer.is_none() => {
-            flap_says(err, name, NEEDS_A_YES);
+            device_says(err, FLAP, name, NEEDS_A_YES);
             1
         }
         Ok(Flapped::Declined) => {
-            flap_says(err, name, "not flapped");
+            device_says(err, FLAP, name, "not flapped");
             1
         }
         Ok(Flapped::Unfit(unfit)) => {
-            flap_says(err, name, unfit);
+            let _ = writeln!(err, "{}", device::unfit_line(name, &unfit));
             1
         }
         Ok(Flapped::Disabled) => {
-            flap_says(
+            device_says(
                 err,
+                FLAP,
                 name,
                 format_args!("{interface} is disabled already; nothing sent"),
             );
@@ -2593,8 +2604,9 @@ fn flap_device(
         }
         Ok(Flapped::Refused(output)) => {
             pass_through(&output, out, err);
-            flap_says(
+            device_says(
                 err,
+                FLAP,
                 name,
                 "the device refused the flap; its configuration is as before",
             );
@@ -2602,8 +2614,9 @@ fn flap_device(
         }
         Ok(Flapped::NotKnown(error)) => {
             let _ = writeln!(err, "{}", device::error_line(name, &error));
-            flap_says(
+            device_says(
                 err,
+                FLAP,
                 name,
                 format_args!(
                     "not known whether the device took the flap; it takes it back by itself after {seconds}"
@@ -2621,8 +2634,9 @@ fn flap_device(
                 }
                 NotBack::StillDisabled => {}
             }
-            flap_says(
+            device_says(
                 err,
+                FLAP,
                 name,
                 format_args!("not known whether {interface} is back"),
             );
@@ -2630,10 +2644,6 @@ fn flap_device(
         }
         Ok(Flapped::Back) => 0,
     }
-}
-
-fn flap_says(err: &mut impl Write, name: &str, words: impl std::fmt::Display) {
-    let _ = writeln!(err, "nobs: flap {name}: {words}");
 }
 
 fn asked(yes: bool, question: &str) -> Option<bool> {
@@ -2666,17 +2676,13 @@ fn check_devices(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> i32 {
-    if let Some(folder) = save {
-        if let Err(error) = check::make_folder(folder) {
-            cannot_make(err, folder, &error);
-            return 1;
-        }
+    if !made_folder(save, err) {
+        return 1;
     }
     let width = check::width(nodes);
     let mut unsaved = false;
     let readings = check::walk(nodes, transport, intended_of, &mut |reading| {
         let _ = writeln!(out, "{}", check::line(width, reading));
-        let _ = out.flush();
         if let Some(folder) = save {
             if let Err(error) = check::save(folder, reading) {
                 if let Some(path) = check::file(folder, reading) {
@@ -2687,6 +2693,16 @@ fn check_devices(
         }
     });
     check::exit_code(&readings).max(i32::from(unsaved))
+}
+
+fn made_folder(save: Option<&Path>, err: &mut impl Write) -> bool {
+    if let Some(folder) = save {
+        if let Err(error) = check::make_folder(folder) {
+            cannot_make(err, folder, &error);
+            return false;
+        }
+    }
+    true
 }
 
 fn cannot_make(err: &mut impl Write, path: &Path, error: &io::Error) {
@@ -6042,7 +6058,12 @@ fn network_word(action: NetworkAction) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    mod listing {
+        include!("../tests/support/listing.rs");
+    }
+
     use super::*;
+    use listing::listing;
     use nobs_core::device::{FakeTerminal, FakeTransport};
     use nobs_core::runner::FakeRunner;
     use std::cell::RefCell;
@@ -6454,6 +6475,27 @@ mod tests {
                 assert!(old.is_hide_set(), "{:?}", old.get_long());
             }
         }
+    }
+
+    #[test]
+    fn the_flap_help_gives_the_limits_of_the_constants_the_check_uses() {
+        let command = Cli::command();
+        let flap = command
+            .find_subcommand("device")
+            .and_then(|device| device.find_subcommand("flap"))
+            .unwrap();
+        let help = |id: &str| {
+            flap.get_arguments()
+                .find(|argument| argument.get_id() == id)
+                .and_then(|argument| argument.get_help())
+                .unwrap_or_else(|| panic!("no help for {id}"))
+                .to_string()
+        };
+        let delays = format!("; {}", device::delay_limits());
+        let counts = format!("; {}", device::count_limits());
+
+        assert!(help("delay").ends_with(&delays), "{}", help("delay"));
+        assert!(help("count").ends_with(&counts), "{}", help("count"));
     }
 
     #[test]
@@ -8388,6 +8430,165 @@ mod tests {
     }
 
     #[test]
+    fn a_save_folder_that_cannot_be_made_is_refused_before_the_text_the_question_or_any_line() {
+        set_credentials();
+        let lab = check_lab(
+            "push-save-refused",
+            &[("nobs-t-srl1", "nokia_srlinux"), ("nobs-t-linux1", "linux")],
+            &[],
+        );
+        let exists = lab.0.join("check");
+        fs::create_dir(&exists).unwrap();
+        let no_parent = lab.0.join("none/check");
+        for (case, (name, folder, cause)) in [
+            ("nobs-t-srl1", &exists, "File exists (os error 17)"),
+            ("nobs-t-linux1", &exists, "File exists (os error 17)"),
+            (
+                "nobs-t-srl1",
+                &no_parent,
+                "No such file or directory (os error 2)",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let transport = push_then_fetch(taken(), synced(name));
+
+            let (code, out, err, asked) =
+                pushed_with(&lab.0, name, &transport, Some(true), Some(folder));
+
+            assert_eq!(
+                (code, out.as_str(), err),
+                (
+                    1,
+                    "",
+                    format!("nobs: cannot make {}: {cause}\n", folder.display())
+                ),
+                "case {case}"
+            );
+            assert!(asked.is_empty(), "case {case}");
+            assert!(
+                transport.session.calls().is_empty() && transport.fetch.calls().is_empty(),
+                "case {case}"
+            );
+        }
+        assert!(exists.is_dir());
+    }
+
+    #[test]
+    fn a_push_whose_save_folder_cannot_be_made_leaves_the_disk_as_it_was() {
+        set_credentials();
+        let lab = push_lab("push-save-untouched");
+        fs::create_dir(lab.0.join("check")).unwrap();
+        fs::write(lab.0.join("check/nobs-t-mine"), "nobs-t-kept\n").unwrap();
+        for folder in [lab.0.join("check"), lab.0.join("none/check")] {
+            let before = listing(&lab.0);
+            let transport = push_then_fetch(taken(), synced("nobs-t-srl1"));
+
+            let (code, ..) =
+                pushed_with(&lab.0, "nobs-t-srl1", &transport, Some(true), Some(&folder));
+
+            assert_eq!(code, 1, "{}", folder.display());
+            assert_eq!(listing(&lab.0), before, "{}", folder.display());
+        }
+    }
+
+    #[test]
+    fn every_end_of_a_push_before_a_line_is_sent_removes_the_save_folder_it_made() {
+        set_credentials();
+        let lab = check_lab(
+            "push-save-removed",
+            &[
+                ("nobs-t-srl1", "nokia_srlinux"),
+                ("nobs-t-linux1", "linux"),
+                ("nobs-t-srl9", "srl"),
+                ("x1", "ceos"),
+            ],
+            &["nobs-t-srl9"],
+        );
+        fs::write(lab.0.join("templates/ceos.j2"), CHECK_TEMPLATE).unwrap();
+        let empty = push_lab("push-save-removed-empty");
+        fs::write(empty.0.join("templates/srl.j2"), "\n  \n").unwrap();
+        for (dir, name, answered, line) in [
+            (
+                &lab.0,
+                "nobs-t-linux1",
+                Some(true),
+                "nobs: push nobs-t-linux1: no template for kind linux: expected templates/linux.j2\n",
+            ),
+            (
+                &lab.0,
+                "nobs-t-srl9",
+                Some(true),
+                "nobs: push nobs-t-srl9: device nobs-t-srl9 not found in the source of truth.\n",
+            ),
+            (
+                &empty.0,
+                "nobs-t-srl1",
+                Some(true),
+                "nobs: push nobs-t-srl1: the intended configuration has no line\n",
+            ),
+            (
+                &lab.0,
+                "x1",
+                Some(true),
+                "nobs: ssh x1: no driver for the kind ceos yet\n",
+            ),
+            (
+                &lab.0,
+                "nobs-t-srl1",
+                Some(false),
+                "nobs: push nobs-t-srl1: not pushed\n",
+            ),
+            (
+                &lab.0,
+                "nobs-t-srl1",
+                None,
+                "nobs: push nobs-t-srl1: needs a yes; run it in a terminal, or add --yes\n",
+            ),
+        ] {
+            let folder = dir.join("check");
+            let transport = push_then_fetch(taken(), synced(name));
+
+            let (code, out, err, _) = pushed_with(dir, name, &transport, answered, Some(&folder));
+
+            assert_eq!(
+                (code, out.as_str(), err.as_str()),
+                (1, "", line),
+                "{name} {answered:?}"
+            );
+            assert!(!folder.exists(), "{name} {answered:?}");
+            assert!(transport.session.calls().is_empty(), "{name} {answered:?}");
+        }
+    }
+
+    #[test]
+    fn a_taken_push_keeps_its_save_folder_also_when_the_file_cannot_be_made() {
+        set_credentials();
+        let name = "nobs-t-srl2/nobs-t-sub";
+        let lab = check_lab("push-save-kept", &[(name, "srl")], &[]);
+        let folder = lab.0.join("check");
+        let transport = push_then_fetch(taken(), synced(name));
+
+        let (code, out, err, _) = pushed_with(&lab.0, name, &transport, Some(true), Some(&folder));
+
+        assert_eq!(
+            out,
+            format!("nobs-t-answer-out\n{name}  pushed 2 lines\n{name}  in sync\n")
+        );
+        assert_eq!(
+            err,
+            format!(
+                "nobs-t-answer-err\nnobs: cannot make {}: No such file or directory (os error 2)\n",
+                folder.join("nobs-t-srl2/nobs-t-sub.config").display()
+            )
+        );
+        assert_eq!(code, 3);
+        assert!(folder.is_dir());
+        assert!(saved_names(&folder).is_empty());
+    }
+
+    #[test]
     fn the_session_gets_the_lines_of_device_render_in_order_for_each_device_of_the_project() {
         set_credentials();
         let lab = project_lab(
@@ -8409,8 +8610,8 @@ mod tests {
         let mut texts = Vec::new();
         for name in ["nobs-t-srl1", "nobs-t-srl2"] {
             let text = rendered(name, &located, &topology, &nodes).unwrap();
-            assert!(text.lines().count() > 2, "{text}");
-            let sent = srl_sent(text.lines());
+            assert!(intended::lines(&text).count() > 2, "{text}");
+            let sent = srl_sent(intended::lines(&text));
             let transport = push_then_fetch(taken(), Ok(answer(0, "", "")));
 
             pushed_with(&lab.0, name, &transport, Some(true), None);
@@ -8798,6 +8999,25 @@ mod tests {
             assert_eq!(flapped.asked, [(SRL1_FLAP_QUESTION.to_string(), 0)]);
             assert!(transport.calls().is_empty());
         }
+    }
+
+    #[test]
+    fn the_push_and_the_flap_lines_name_their_own_verb() {
+        set_credentials();
+        let lab = push_lab("push-own-verb");
+        let transport = FakeTransport::in_order(Vec::new());
+
+        let (_, _, pushed, _) = pushed_with(&lab.0, "nobs-t-srl1", &transport, None, None);
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 20, 3),
+            None,
+        );
+
+        let words = "nobs-t-srl1: needs a yes; run it in a terminal, or add --yes\n";
+        assert_eq!(pushed, format!("nobs: push {words}"));
+        assert_eq!(flapped.err, format!("nobs: flap {words}"));
     }
 
     #[test]

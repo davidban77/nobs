@@ -1,23 +1,15 @@
-use std::fs;
+#[path = "support/device_lab.rs"]
+mod device_lab;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const TEST_PASSWORD: &str = "nobs-t-not-a-secret";
+use device_lab::{assert_fails_with, stderr, Lab, TEST_PASSWORD};
 
 const TEMPLATE: &str =
     "set / system name host-name {{ name }}\nset / interface mgmt0 admin-state enable\n";
 
-struct Lab(PathBuf);
-
 impl Lab {
-    fn new(name: &str) -> Lab {
-        let root =
-            PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cli-device-push-{name}"));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        Lab(root.canonicalize().unwrap())
-    }
-
     fn with(name: &str, kind: &str, template: &str) -> Lab {
         let lab = Lab::new(name);
         lab.write("nobs.toml", "kind = \"lab\"\n");
@@ -33,18 +25,6 @@ impl Lab {
         );
         lab.write("templates/srl.j2", template);
         lab
-    }
-
-    fn write(&self, relative: &str, text: &str) {
-        let path = self.0.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
-    }
-}
-
-impl Drop for Lab {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -66,22 +46,6 @@ fn push(dir: &Path, args: &[&str], password: Option<&str>) -> Output {
     let mut line = vec!["--dir", dir.to_str().unwrap(), "device", "push"];
     line.extend(args);
     nobs(dir, &line, password)
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn assert_fails_with(output: &Output, line: &str) {
-    let stderr = stderr(output);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert_eq!(stderr, format!("{line}\n"));
-    assert!(
-        output.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(!stderr.contains(TEST_PASSWORD));
 }
 
 #[test]
@@ -201,7 +165,7 @@ fn the_push_help_gives_its_row_its_arguments_and_the_save_words_of_check() {
         "Usage: nobs device push [OPTIONS] <NAME>",
         "  <NAME>  Node name in the lab's topology file",
         "      --yes            Push without asking",
-        "      --save <FOLDER>  Also write what each device answered to a file in this folder; the folder must not exist",
+        "      --save <FOLDER>  Also write each configuration nobs fetches, or why the fetch failed, to a file in this folder; the folder must not exist",
     ] {
         assert!(push.contains(words), "{push}");
     }

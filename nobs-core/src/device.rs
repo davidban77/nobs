@@ -143,9 +143,19 @@ impl Flapping {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Words<'a> {
+pub(crate) enum Words<'a> {
     Read(Vec<Cow<'a, str>>),
     Unread(&'a str),
+}
+
+impl Words<'_> {
+    pub(crate) fn of(syntax: Option<Syntax>, line: &str) -> Words<'_> {
+        let line = line.trim();
+        match syntax {
+            Some(Syntax::SrLinux) => srlinux_words(line).map_or(Words::Unread(line), Words::Read),
+            None => Words::Unread(line),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,15 +164,6 @@ pub enum Syntax {
 }
 
 const SEPARATORS: [char; 2] = [' ', '\t'];
-
-impl Syntax {
-    pub fn words(self, line: &str) -> Words<'_> {
-        let line = line.trim();
-        match self {
-            Syntax::SrLinux => srlinux_words(line).map_or(Words::Unread(line), Words::Read),
-        }
-    }
-}
 
 fn srlinux_words(line: &str) -> Option<Vec<Cow<'_, str>>> {
     let mut words = Vec::new();
@@ -300,8 +301,8 @@ fn session_lines<'a>(
 
 pub const FLAP_DELAY: u64 = 5;
 pub const FLAP_COUNT: u32 = 1;
-pub const FLAP_DELAYS: RangeInclusive<u64> = 1..=300;
-pub const FLAP_COUNTS: RangeInclusive<u32> = 1..=10;
+pub(crate) const FLAP_DELAYS: RangeInclusive<u64> = 1..=300;
+pub(crate) const FLAP_COUNTS: RangeInclusive<u32> = 1..=10;
 const BACK_READS: u32 = 10;
 const BACK_READ_GAP: Duration = Duration::from_secs(1);
 
@@ -326,20 +327,18 @@ impl fmt::Display for Unfit {
                 write!(f, "\"{interface}\" is not the name of one interface")
             }
             Unfit::Management(name) => write!(f, "{name} is the management interface"),
-            Unfit::Delay => write!(
-                f,
-                "the delay must be {} to {} seconds",
-                FLAP_DELAYS.start(),
-                FLAP_DELAYS.end()
-            ),
-            Unfit::Count => write!(
-                f,
-                "the count must be {} to {}",
-                FLAP_COUNTS.start(),
-                FLAP_COUNTS.end()
-            ),
+            Unfit::Delay => write!(f, "the delay must be {}", delay_limits()),
+            Unfit::Count => write!(f, "the count must be {}", count_limits()),
         }
     }
+}
+
+pub fn delay_limits() -> String {
+    format!("{} to {} seconds", FLAP_DELAYS.start(), FLAP_DELAYS.end())
+}
+
+pub fn count_limits() -> String {
+    format!("{} to {}", FLAP_COUNTS.start(), FLAP_COUNTS.end())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -360,35 +359,44 @@ pub enum NotBack {
     StillDisabled,
 }
 
+pub enum Turn {
+    Down,
+    Back,
+}
+
 pub fn flap(
     node: &lab::TopologyNode,
     transport: &dyn Transport,
     flap: &Flap,
     yes: &mut dyn FnMut() -> bool,
     wait: &mut dyn FnMut(Duration),
-    told: &mut dyn FnMut(u32, bool),
+    told: &mut dyn FnMut(u32, Turn),
 ) -> Result<Flapped, Error> {
-    step(node, |host, credentials, driver| {
-        let flapper = Flapper {
-            transport,
-            host,
-            credentials,
-            driver,
-            flap,
-        };
-        flapper.flapped(yes, wait, told)
-    })
+    let driver = driver(&node.kind)?;
+    if let Some(unfit) = unfit(driver, flap) {
+        return Ok(Flapped::Unfit(unfit));
+    }
+    let credentials = credentials()?;
+    let flapper = Flapper {
+        transport,
+        host: &node.container,
+        credentials: &credentials,
+        driver,
+        flap,
+    };
+    flapper.flapped(yes, wait, told)
 }
 
-pub fn flap_question(name: &str, interface: &str, delay: u64, count: u32) -> String {
+pub fn flap_question(name: &str, flap: &Flap) -> String {
     format!(
-        "flap {interface} of {name}? It goes down for {}, {}; the device brings it back. y/n",
-        counted(delay, "second"),
-        counted(count, "time")
+        "flap {} of {name}? It goes down for {}, {}; the device brings it back. y/n",
+        flap.interface,
+        counted(flap.delay.as_secs(), "second"),
+        counted(flap.count, "time")
     )
 }
 
-fn unfit(driver: Driver, flap: &Flap) -> Option<Unfit> {
+pub fn unfit(driver: Driver, flap: &Flap) -> Option<Unfit> {
     let interface = flap.interface;
     if interface.is_empty()
         || !interface
@@ -420,11 +428,8 @@ impl Flapper<'_> {
         &self,
         yes: &mut dyn FnMut() -> bool,
         wait: &mut dyn FnMut(Duration),
-        told: &mut dyn FnMut(u32, bool),
+        told: &mut dyn FnMut(u32, Turn),
     ) -> Result<Flapped, Error> {
-        if let Some(unfit) = unfit(self.driver, self.flap) {
-            return Ok(Flapped::Unfit(unfit));
-        }
         if !yes() {
             return Ok(Flapped::Declined);
         }
@@ -442,7 +447,7 @@ impl Flapper<'_> {
             if let Some(end) = self.once(n, wait, told)? {
                 return Ok(end);
             }
-            told(n, true);
+            told(n, Turn::Back);
         }
         Ok(Flapped::Back)
     }
@@ -451,7 +456,7 @@ impl Flapper<'_> {
         &self,
         n: u32,
         wait: &mut dyn FnMut(Duration),
-        told: &mut dyn FnMut(u32, bool),
+        told: &mut dyn FnMut(u32, Turn),
     ) -> Result<Option<Flapped>, Error> {
         let flapping = self.driver.flap;
         let down = flapping.down(self.flap.interface);
@@ -462,7 +467,7 @@ impl Flapper<'_> {
             Sent::Refused(output) => return Ok(Some(Flapped::Refused(output))),
             Sent::NotKnown(error) => return Ok(Some(Flapped::NotKnown(error))),
         }
-        told(n, false);
+        told(n, Turn::Down);
         wait(self.flap.delay);
         Ok(self.not_back(wait))
     }
@@ -490,10 +495,12 @@ impl Flapper<'_> {
     }
 
     fn disabled(&self, read: &Output) -> bool {
-        let syntax = self.driver.syntax;
+        let syntax = Some(self.driver.syntax);
         let down = self.driver.flap.down(self.flap.interface);
-        let down = syntax.words(&down);
-        read.stdout.lines().any(|line| syntax.words(line) == down)
+        let down = Words::of(syntax, &down);
+        read.stdout
+            .lines()
+            .any(|line| Words::of(syntax, line) == down)
     }
 }
 
@@ -521,6 +528,10 @@ pub fn error_line(name: &str, error: &Error) -> String {
 
 pub fn pushed_line(name: &str, count: usize) -> String {
     format!("{name}  pushed {}", counted(count, "line"))
+}
+
+pub fn unfit_line(name: &str, unfit: &Unfit) -> String {
+    format!("nobs: flap {name}: {unfit}")
 }
 
 pub fn not_known_line(name: &str) -> String {
@@ -1003,7 +1014,7 @@ mod tests {
     }
 
     fn read(line: &str) -> Words<'_> {
-        Syntax::SrLinux.words(line)
+        Words::of(Some(Syntax::SrLinux), line)
     }
 
     fn read_as(words: &[&str]) -> Words<'static> {
@@ -1218,7 +1229,13 @@ mod tests {
                 answer
             },
             &mut |delay| mark(format!("wait {}", delay.as_secs())),
-            &mut |n, back| mark(format!("{} {n}", if back { "back" } else { "down" })),
+            &mut |n, turn| {
+                let turn = match turn {
+                    Turn::Down => "down",
+                    Turn::Back => "back",
+                };
+                mark(format!("{turn} {n}"));
+            },
         );
         let calls = transport.calls();
         assert!(
@@ -1349,6 +1366,18 @@ mod tests {
         for (unfit, words) in words {
             assert_eq!(unfit.to_string(), words);
         }
+    }
+
+    #[test]
+    fn the_limit_words_give_the_ends_of_the_limits() {
+        assert_eq!(
+            delay_limits(),
+            format!("{} to {} seconds", FLAP_DELAYS.start(), FLAP_DELAYS.end())
+        );
+        assert_eq!(
+            count_limits(),
+            format!("{} to {}", FLAP_COUNTS.start(), FLAP_COUNTS.end())
+        );
     }
 
     #[test]
@@ -1539,6 +1568,53 @@ mod tests {
     }
 
     #[test]
+    fn with_no_login_an_unfit_flap_gives_its_own_line_and_a_node_with_no_driver_its_error() {
+        std::env::remove_var(USER);
+        std::env::remove_var(PASSWORD);
+        let cases = [
+            (
+                Flap {
+                    interface: "ethernet-1/1 x",
+                    ..ethernet(5, 1)
+                },
+                Unfit::Name("ethernet-1/1 x".to_string()),
+                "nobs: flap nobs-t-srl1: \"ethernet-1/1 x\" is not the name of one interface",
+            ),
+            (
+                Flap {
+                    interface: "mgmt0",
+                    ..ethernet(5, 1)
+                },
+                Unfit::Management("mgmt0"),
+                "nobs: flap nobs-t-srl1: mgmt0 is the management interface",
+            ),
+            (
+                ethernet(301, 1),
+                Unfit::Delay,
+                "nobs: flap nobs-t-srl1: the delay must be 1 to 300 seconds",
+            ),
+            (
+                ethernet(5, 11),
+                Unfit::Count,
+                "nobs: flap nobs-t-srl1: the count must be 1 to 10",
+            ),
+        ];
+        for (wanted, unfit, line) in cases {
+            assert_eq!(
+                flapped_on(&node("nobs-t-srl1", "srl"), &wanted, vec![], true),
+                (Ok(Flapped::Unfit(unfit.clone())), vec![]),
+                "{line}"
+            );
+            assert_eq!(unfit_line("nobs-t-srl1", &unfit), line);
+            assert_eq!(
+                flapped_on(&node("nobs-t-ceos1", "ceos"), &wanted, vec![], true),
+                (Err(Error::NoDriver("ceos".to_string())), vec![]),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
     fn every_command_text_of_a_flap_is_a_value_of_the_driver() {
         let credentials = Credentials {
             user: "admin".to_string(),
@@ -1558,7 +1634,10 @@ mod tests {
                 driver: test_driver(),
                 flap: &wanted,
             };
-            let flapped = flapper.flapped(&mut || true, &mut |_| {}, &mut |_, _| {});
+            let flapped = match unfit(flapper.driver, flapper.flap) {
+                Some(unfit) => Ok(Flapped::Unfit(unfit)),
+                None => flapper.flapped(&mut || true, &mut |_| {}, &mut |_, _| {}),
+            };
             let texts: Vec<String> = transport
                 .calls()
                 .into_iter()
@@ -1600,12 +1679,17 @@ mod tests {
 
     #[test]
     fn the_question_names_the_device_the_interface_the_delay_and_the_count() {
+        let flap = |interface, delay, count| Flap {
+            interface,
+            delay: Duration::from_secs(delay),
+            count,
+        };
         assert_eq!(
-            flap_question("nobs-t-srl1", "ethernet-1/1", 5, 1),
+            flap_question("nobs-t-srl1", &flap("ethernet-1/1", 5, 1)),
             "flap ethernet-1/1 of nobs-t-srl1? It goes down for 5 seconds, 1 time; the device brings it back. y/n"
         );
         assert_eq!(
-            flap_question("nobs-t-srl2", "ethernet-1/2", 1, 2),
+            flap_question("nobs-t-srl2", &flap("ethernet-1/2", 1, 2)),
             "flap ethernet-1/2 of nobs-t-srl2? It goes down for 1 second, 2 times; the device brings it back. y/n"
         );
     }

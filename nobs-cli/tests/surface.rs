@@ -111,7 +111,7 @@ fn the_help_pages_name_the_device_group_exactly_its_seven_commands_and_their_wor
     );
     assert!(
         root.contains(
-            "Fetch the configuration of a lab device, run one command on it, open a shell on it over SSH, print its intended configuration, push it to the device, flap one of its interfaces, or check every device against it"
+            "Commands for the devices of a lab: fetch, run, shell, render, push, flap and check"
         ),
         "{root}"
     );
@@ -155,7 +155,7 @@ fn the_device_check_help_gives_its_about_and_the_save_flag_words() {
     let check = help(&["device", "check"]);
     assert!(
         check.contains(
-            "--save <FOLDER>  Also write what each device answered to a file in this folder; the folder must not exist"
+            "--save <FOLDER>  Also write each configuration nobs fetches, or why the fetch failed, to a file in this folder; the folder must not exist"
         ),
         "{check}"
     );
