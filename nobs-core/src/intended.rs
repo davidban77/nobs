@@ -65,8 +65,7 @@ pub fn compare<'a>(
     fetched: &'a [String],
     syntax: Option<Syntax>,
 ) -> Vec<Checked<'a>> {
-    let words =
-        |line: &'a str| syntax.map_or(Words::Unread(line.trim()), |syntax| syntax.words(line));
+    let words = |line: &'a str| Words::of(syntax, line);
     let device: Vec<(&str, Words)> = fetched
         .iter()
         .map(|line| (line.as_str(), words(line)))

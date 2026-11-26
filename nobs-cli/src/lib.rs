@@ -13,7 +13,9 @@ use nobs_core::compose::{network_args, Compose, NetworkAction};
 use nobs_core::containerlab::{env_names, sudo_refused_line, Containerlab};
 use nobs_core::count::{counted, noun};
 use nobs_core::cycle::{self, decision_record, Group};
-use nobs_core::device::{self, Credentials, Flap, Flapped, NotBack, Pushed, Terminal, Transport};
+use nobs_core::device::{
+    self, Credentials, Flap, Flapped, NotBack, Pushed, Terminal, Transport, Turn,
+};
 use nobs_core::env::{load_env, read_env};
 use nobs_core::evidence::{self, decode_admin, decode_oper, rca_record, value_text, Metrics};
 use nobs_core::grafana::Grafana;
@@ -2341,7 +2343,7 @@ fn run_device(
                 let node = match topology_node(name, &topology, &nodes) {
                     Ok(node) => node,
                     Err(error) => {
-                        push_says(&mut io::stderr(), name, error);
+                        device_says(&mut io::stderr(), PUSH, name, error);
                         return 1;
                     }
                 };
@@ -2365,7 +2367,7 @@ fn run_device(
                 let node = match topology_node(name, &topology, &nodes) {
                     Ok(node) => node,
                     Err(error) => {
-                        flap_says(&mut io::stderr(), name, error);
+                        device_says(&mut io::stderr(), FLAP, name, error);
                         return 1;
                     }
                 };
@@ -2462,13 +2464,13 @@ fn push_device(
     let text = match intended_of(node) {
         Ok(text) => text,
         Err(failure) => {
-            push_says(err, name, failure);
+            device_says(err, PUSH, name, failure);
             return 1;
         }
     };
     let count = intended::lines(&text).count();
     if count == 0 {
-        push_says(err, name, "the intended configuration has no line");
+        device_says(err, PUSH, name, "the intended configuration has no line");
         return 1;
     }
     let lines = counted(count, "line");
@@ -2483,17 +2485,18 @@ fn push_device(
             1
         }
         Ok(Pushed::Declined) if answer.is_none() => {
-            push_says(err, name, NEEDS_A_YES);
+            device_says(err, PUSH, name, NEEDS_A_YES);
             1
         }
         Ok(Pushed::Declined) => {
-            push_says(err, name, "not pushed");
+            device_says(err, PUSH, name, "not pushed");
             1
         }
         Ok(Pushed::Refused(output)) => {
             pass_through(&output, out, err);
-            push_says(
+            device_says(
                 err,
+                PUSH,
                 name,
                 "the device refused the push; its configuration is as before",
             );
@@ -2524,8 +2527,11 @@ fn push_device(
     }
 }
 
-fn push_says(err: &mut impl Write, name: &str, words: impl std::fmt::Display) {
-    let _ = writeln!(err, "nobs: push {name}: {words}");
+const PUSH: &str = "push";
+const FLAP: &str = "flap";
+
+fn device_says(err: &mut impl Write, verb: &str, name: &str, words: impl std::fmt::Display) {
+    let _ = writeln!(err, "nobs: {verb} {name}: {words}");
 }
 
 const NEEDS_A_YES: &str = "needs a yes; run it in a terminal, or add --yes";
@@ -2548,22 +2554,15 @@ fn flap_device(
         transport,
         flap,
         &mut || {
-            answer = ask(&device::flap_question(
-                name,
-                interface,
-                flap.delay.as_secs(),
-                flap.count,
-            ));
+            answer = ask(&device::flap_question(name, flap));
             answer == Some(true)
         },
         wait,
-        &mut |_, back| {
-            if back {
-                let _ = writeln!(out, "{name}  {interface} back");
-            } else {
-                let _ = writeln!(out, "{name}  {interface} down for {seconds}");
-            }
-            let _ = out.flush();
+        &mut |_, turn| {
+            let _ = match turn {
+                Turn::Down => writeln!(out, "{name}  {interface} down for {seconds}"),
+                Turn::Back => writeln!(out, "{name}  {interface} back"),
+            };
         },
     );
     match flapped {
@@ -2572,20 +2571,21 @@ fn flap_device(
             1
         }
         Ok(Flapped::Declined) if answer.is_none() => {
-            flap_says(err, name, NEEDS_A_YES);
+            device_says(err, FLAP, name, NEEDS_A_YES);
             1
         }
         Ok(Flapped::Declined) => {
-            flap_says(err, name, "not flapped");
+            device_says(err, FLAP, name, "not flapped");
             1
         }
         Ok(Flapped::Unfit(unfit)) => {
-            flap_says(err, name, unfit);
+            device_says(err, FLAP, name, unfit);
             1
         }
         Ok(Flapped::Disabled) => {
-            flap_says(
+            device_says(
                 err,
+                FLAP,
                 name,
                 format_args!("{interface} is disabled already; nothing sent"),
             );
@@ -2593,8 +2593,9 @@ fn flap_device(
         }
         Ok(Flapped::Refused(output)) => {
             pass_through(&output, out, err);
-            flap_says(
+            device_says(
                 err,
+                FLAP,
                 name,
                 "the device refused the flap; its configuration is as before",
             );
@@ -2602,8 +2603,9 @@ fn flap_device(
         }
         Ok(Flapped::NotKnown(error)) => {
             let _ = writeln!(err, "{}", device::error_line(name, &error));
-            flap_says(
+            device_says(
                 err,
+                FLAP,
                 name,
                 format_args!(
                     "not known whether the device took the flap; it takes it back by itself after {seconds}"
@@ -2621,8 +2623,9 @@ fn flap_device(
                 }
                 NotBack::StillDisabled => {}
             }
-            flap_says(
+            device_says(
                 err,
+                FLAP,
                 name,
                 format_args!("not known whether {interface} is back"),
             );
@@ -2630,10 +2633,6 @@ fn flap_device(
         }
         Ok(Flapped::Back) => 0,
     }
-}
-
-fn flap_says(err: &mut impl Write, name: &str, words: impl std::fmt::Display) {
-    let _ = writeln!(err, "nobs: flap {name}: {words}");
 }
 
 fn asked(yes: bool, question: &str) -> Option<bool> {
@@ -2676,7 +2675,6 @@ fn check_devices(
     let mut unsaved = false;
     let readings = check::walk(nodes, transport, intended_of, &mut |reading| {
         let _ = writeln!(out, "{}", check::line(width, reading));
-        let _ = out.flush();
         if let Some(folder) = save {
             if let Err(error) = check::save(folder, reading) {
                 if let Some(path) = check::file(folder, reading) {
@@ -8798,6 +8796,25 @@ mod tests {
             assert_eq!(flapped.asked, [(SRL1_FLAP_QUESTION.to_string(), 0)]);
             assert!(transport.calls().is_empty());
         }
+    }
+
+    #[test]
+    fn the_push_and_the_flap_lines_name_their_own_verb() {
+        set_credentials();
+        let lab = push_lab("push-own-verb");
+        let transport = FakeTransport::in_order(Vec::new());
+
+        let (_, _, pushed, _) = pushed_with(&lab.0, "nobs-t-srl1", &transport, None, None);
+        let flapped = flapped_with(
+            &transport,
+            "nobs-t-srl1",
+            &srl1_flap("ethernet-1/1", 20, 3),
+            None,
+        );
+
+        let words = "nobs-t-srl1: needs a yes; run it in a terminal, or add --yes\n";
+        assert_eq!(pushed, format!("nobs: push {words}"));
+        assert_eq!(flapped.err, format!("nobs: flap {words}"));
     }
 
     #[test]

@@ -148,21 +148,22 @@ pub enum Words<'a> {
     Unread(&'a str),
 }
 
+impl Words<'_> {
+    pub fn of(syntax: Option<Syntax>, line: &str) -> Words<'_> {
+        let line = line.trim();
+        match syntax {
+            Some(Syntax::SrLinux) => srlinux_words(line).map_or(Words::Unread(line), Words::Read),
+            None => Words::Unread(line),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Syntax {
     SrLinux,
 }
 
 const SEPARATORS: [char; 2] = [' ', '\t'];
-
-impl Syntax {
-    pub fn words(self, line: &str) -> Words<'_> {
-        let line = line.trim();
-        match self {
-            Syntax::SrLinux => srlinux_words(line).map_or(Words::Unread(line), Words::Read),
-        }
-    }
-}
 
 fn srlinux_words(line: &str) -> Option<Vec<Cow<'_, str>>> {
     let mut words = Vec::new();
@@ -360,13 +361,18 @@ pub enum NotBack {
     StillDisabled,
 }
 
+pub enum Turn {
+    Down,
+    Back,
+}
+
 pub fn flap(
     node: &lab::TopologyNode,
     transport: &dyn Transport,
     flap: &Flap,
     yes: &mut dyn FnMut() -> bool,
     wait: &mut dyn FnMut(Duration),
-    told: &mut dyn FnMut(u32, bool),
+    told: &mut dyn FnMut(u32, Turn),
 ) -> Result<Flapped, Error> {
     step(node, |host, credentials, driver| {
         let flapper = Flapper {
@@ -380,11 +386,12 @@ pub fn flap(
     })
 }
 
-pub fn flap_question(name: &str, interface: &str, delay: u64, count: u32) -> String {
+pub fn flap_question(name: &str, flap: &Flap) -> String {
     format!(
-        "flap {interface} of {name}? It goes down for {}, {}; the device brings it back. y/n",
-        counted(delay, "second"),
-        counted(count, "time")
+        "flap {} of {name}? It goes down for {}, {}; the device brings it back. y/n",
+        flap.interface,
+        counted(flap.delay.as_secs(), "second"),
+        counted(flap.count, "time")
     )
 }
 
@@ -420,7 +427,7 @@ impl Flapper<'_> {
         &self,
         yes: &mut dyn FnMut() -> bool,
         wait: &mut dyn FnMut(Duration),
-        told: &mut dyn FnMut(u32, bool),
+        told: &mut dyn FnMut(u32, Turn),
     ) -> Result<Flapped, Error> {
         if let Some(unfit) = unfit(self.driver, self.flap) {
             return Ok(Flapped::Unfit(unfit));
@@ -442,7 +449,7 @@ impl Flapper<'_> {
             if let Some(end) = self.once(n, wait, told)? {
                 return Ok(end);
             }
-            told(n, true);
+            told(n, Turn::Back);
         }
         Ok(Flapped::Back)
     }
@@ -451,7 +458,7 @@ impl Flapper<'_> {
         &self,
         n: u32,
         wait: &mut dyn FnMut(Duration),
-        told: &mut dyn FnMut(u32, bool),
+        told: &mut dyn FnMut(u32, Turn),
     ) -> Result<Option<Flapped>, Error> {
         let flapping = self.driver.flap;
         let down = flapping.down(self.flap.interface);
@@ -462,7 +469,7 @@ impl Flapper<'_> {
             Sent::Refused(output) => return Ok(Some(Flapped::Refused(output))),
             Sent::NotKnown(error) => return Ok(Some(Flapped::NotKnown(error))),
         }
-        told(n, false);
+        told(n, Turn::Down);
         wait(self.flap.delay);
         Ok(self.not_back(wait))
     }
@@ -490,10 +497,12 @@ impl Flapper<'_> {
     }
 
     fn disabled(&self, read: &Output) -> bool {
-        let syntax = self.driver.syntax;
+        let syntax = Some(self.driver.syntax);
         let down = self.driver.flap.down(self.flap.interface);
-        let down = syntax.words(&down);
-        read.stdout.lines().any(|line| syntax.words(line) == down)
+        let down = Words::of(syntax, &down);
+        read.stdout
+            .lines()
+            .any(|line| Words::of(syntax, line) == down)
     }
 }
 
@@ -1003,7 +1012,7 @@ mod tests {
     }
 
     fn read(line: &str) -> Words<'_> {
-        Syntax::SrLinux.words(line)
+        Words::of(Some(Syntax::SrLinux), line)
     }
 
     fn read_as(words: &[&str]) -> Words<'static> {
@@ -1218,7 +1227,13 @@ mod tests {
                 answer
             },
             &mut |delay| mark(format!("wait {}", delay.as_secs())),
-            &mut |n, back| mark(format!("{} {n}", if back { "back" } else { "down" })),
+            &mut |n, turn| {
+                let turn = match turn {
+                    Turn::Down => "down",
+                    Turn::Back => "back",
+                };
+                mark(format!("{turn} {n}"));
+            },
         );
         let calls = transport.calls();
         assert!(
@@ -1600,12 +1615,17 @@ mod tests {
 
     #[test]
     fn the_question_names_the_device_the_interface_the_delay_and_the_count() {
+        let flap = |interface, delay, count| Flap {
+            interface,
+            delay: Duration::from_secs(delay),
+            count,
+        };
         assert_eq!(
-            flap_question("nobs-t-srl1", "ethernet-1/1", 5, 1),
+            flap_question("nobs-t-srl1", &flap("ethernet-1/1", 5, 1)),
             "flap ethernet-1/1 of nobs-t-srl1? It goes down for 5 seconds, 1 time; the device brings it back. y/n"
         );
         assert_eq!(
-            flap_question("nobs-t-srl2", "ethernet-1/2", 1, 2),
+            flap_question("nobs-t-srl2", &flap("ethernet-1/2", 1, 2)),
             "flap ethernet-1/2 of nobs-t-srl2? It goes down for 1 second, 2 times; the device brings it back. y/n"
         );
     }

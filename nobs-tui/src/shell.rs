@@ -1376,13 +1376,17 @@ impl Model {
     }
 
     fn run_says_pushed(&self, name: &str) -> bool {
-        let Some(text) = self.intended_text(name) else {
+        let Some(count) = self.intended_count(name) else {
             return false;
         };
-        let line = device::pushed_line(name, intended::lines(text).count());
+        let line = device::pushed_line(name, count);
         self.run
             .as_ref()
             .is_some_and(|run| run.lines.contains(&line))
+    }
+
+    fn intended_count(&self, name: &str) -> Option<usize> {
+        Some(intended::lines(self.intended_text(name)?).count())
     }
 
     fn pushed_device(&self) -> Option<String> {
@@ -1635,7 +1639,14 @@ impl Model {
                 else {
                     return Vec::new();
                 };
-                device::flap_question(name, interface, device::FLAP_DELAY, device::FLAP_COUNT)
+                device::flap_question(
+                    name,
+                    &device::Flap {
+                        interface,
+                        delay: Duration::from_secs(device::FLAP_DELAY),
+                        count: device::FLAP_COUNT,
+                    },
+                )
             }
             Ask::Text => {
                 self.ask(Then::Act(action), args, target, Step::Command, login);
@@ -1656,7 +1667,7 @@ impl Model {
         let Target::Device(name) = target else {
             return None;
         };
-        let lines = counted(intended::lines(self.intended_text(name)?).count(), "line");
+        let lines = counted(self.intended_count(name)?, "line");
         let state = match self.agreement(name) {
             Agreement::Unknown => String::new(),
             Agreement::Failed => ", state not known".to_string(),
@@ -9916,7 +9927,14 @@ pub(crate) mod tests {
         assert!(model.run().is_none());
         assert_eq!(
             asked_text(&model),
-            device::flap_question(SRL1, SECOND_PORT, device::FLAP_DELAY, device::FLAP_COUNT)
+            device::flap_question(
+                SRL1,
+                &device::Flap {
+                    interface: SECOND_PORT,
+                    delay: Duration::from_secs(device::FLAP_DELAY),
+                    count: device::FLAP_COUNT,
+                }
+            )
         );
         assert_eq!(
             ch(&mut model, 'y'),
@@ -10185,6 +10203,28 @@ pub(crate) mod tests {
             "{}",
             asked_text(&model)
         );
+    }
+
+    #[test]
+    fn a_text_with_a_blank_line_counts_the_same_in_the_question_and_in_the_pushed_line_of_its_run()
+    {
+        let mut model = lab_devices_model();
+        model.apply(intended_of(&[(SRL1, Ok(&[WANTED[0], "", WANTED[1]]))]));
+        let pushed = format!("{SRL1}  pushed 2 lines");
+
+        ch(&mut model, 'P');
+        assert!(
+            asked_text(&model).contains(&format!("{SRL1}? 2 lines;")),
+            "{}",
+            asked_text(&model)
+        );
+        ch(&mut model, 'y');
+        model.apply(Update::ActionLine(pushed.clone()));
+        model.apply(Update::ActionEnded(End::Stopped));
+
+        let lines = &model.run().unwrap().lines;
+        assert!(lines.contains(&pushed), "{lines:?}");
+        assert!(!lines.contains(&device::not_known_line(SRL1)), "{lines:?}");
     }
 
     #[test]
