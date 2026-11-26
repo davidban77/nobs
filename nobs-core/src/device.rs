@@ -143,7 +143,7 @@ impl Flapping {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Words<'a> {
+pub(crate) enum Words<'a> {
     Read(Vec<Cow<'a, str>>),
     Unread(&'a str),
 }

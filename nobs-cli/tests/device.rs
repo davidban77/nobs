@@ -1,22 +1,17 @@
+#[path = "support/device_lab.rs"]
+mod device_lab;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use device_lab::{assert_fails_with, stderr, Lab, TEST_PASSWORD};
 use nobs_core::device::{self, Error};
-
-const TEST_PASSWORD: &str = "nobs-t-not-a-secret";
 
 fn fixture(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../tests/fixtures")
         .join(relative)
-}
-
-fn folder(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(dir.join("containerlab")).unwrap();
-    dir
 }
 
 fn nobs(here: &Path, args: &[&str], user: Option<&str>, password: Option<&str>) -> Output {
@@ -61,21 +56,10 @@ fn in_dir<'a>(dir: &'a Path, args: &[&'a str]) -> Vec<&'a str> {
     line
 }
 
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn assert_fails_with(output: &Output, line: &str) {
-    let stderr = stderr(output);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert_eq!(stderr, format!("{line}\n"));
-    assert!(output.stdout.is_empty());
-    assert!(!stderr.contains(TEST_PASSWORD));
-}
-
 #[test]
 fn outside_a_lab_the_device_commands_exit_1_with_the_locate_line() {
-    let bare = folder("device-no-lab");
+    let made = Lab::new("device-no-lab");
+    let bare = made.0.clone();
     for args in four("nobs-t-srl1") {
         assert_fails_with(
             &with_credentials(&bare, &args),
@@ -104,8 +88,9 @@ fn in_a_workshop_the_device_commands_exit_1_with_the_workshop_line() {
 
 #[test]
 fn a_missing_topology_or_a_text_that_is_not_one_exits_1_with_the_topology_line() {
-    let lab = folder("device-topology");
-    fs::write(lab.join("nobs.toml"), "kind = \"lab\"\n").unwrap();
+    let made = Lab::new("device-topology");
+    let lab = made.0.clone();
+    made.write("nobs.toml", "kind = \"lab\"\n");
     let topology = lab.join("containerlab/lab.clab.yml");
     for args in both("nobs-t-srl1") {
         assert_fails_with(
@@ -114,7 +99,7 @@ fn a_missing_topology_or_a_text_that_is_not_one_exits_1_with_the_topology_line()
         );
     }
 
-    fs::write(&topology, "name: nobs-t-dev\n").unwrap();
+    made.write("containerlab/lab.clab.yml", "name: nobs-t-dev\n");
     for args in both("nobs-t-srl1") {
         let output = with_credentials(&lab, &in_dir(&lab, &args));
         let stderr = stderr(&output);
@@ -195,24 +180,25 @@ fn a_device_error_is_the_error_line_of_nobs_core() {
     }
 }
 
-fn device_lab_with_env(name: &str, env: &str) -> PathBuf {
-    let lab = folder(name);
-    fs::copy(fixture("device-lab/nobs.toml"), lab.join("nobs.toml")).unwrap();
-    fs::copy(
-        fixture("device-lab/containerlab/lab.clab.yml"),
-        lab.join("containerlab/lab.clab.yml"),
-    )
-    .unwrap();
-    fs::write(lab.join(".env"), env).unwrap();
+fn device_lab_with_env(name: &str, env: &str) -> Lab {
+    let lab = Lab::new(name);
+    for file in ["nobs.toml", "containerlab/lab.clab.yml"] {
+        lab.write(
+            file,
+            &fs::read_to_string(fixture(&format!("device-lab/{file}"))).unwrap(),
+        );
+    }
+    lab.write(".env", env);
     lab
 }
 
 #[test]
 fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() {
-    let lab = device_lab_with_env(
+    let made = device_lab_with_env(
         "device-login-spaces",
         &format!("NETWORK_AGENT_USER=\"  \"\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
     );
+    let lab = made.0.clone();
 
     for args in both("nobs-t-srl1") {
         let output = nobs(&lab, &in_dir(&lab, &args), None, None);
@@ -227,10 +213,11 @@ fn a_dot_env_user_of_only_spaces_in_quotes_is_missing_and_opens_no_connection() 
 
 #[test]
 fn a_shell_user_of_only_spaces_falls_to_the_dot_env_user() {
-    let lab = device_lab_with_env(
+    let made = device_lab_with_env(
         "device-login-shell-spaces",
         &format!("NETWORK_AGENT_USER=nobs-t-x\nNETWORK_AGENT_PASSWORD={TEST_PASSWORD}\n"),
     );
+    let lab = made.0.clone();
     let missing = format!(
         "{}\n",
         device::error_line("nobs-t-srl1", &Error::MissingCredentials)
@@ -259,13 +246,13 @@ fn the_shell_without_a_terminal_exits_1_with_its_line_and_opens_no_connection() 
 
 #[test]
 fn a_check_of_a_lab_with_no_nodes_exits_0_and_prints_nothing() {
-    let lab = folder("device-check-empty");
-    fs::write(lab.join("nobs.toml"), "kind = \"lab\"\n").unwrap();
-    fs::write(
-        lab.join("containerlab/lab.clab.yml"),
+    let made = Lab::new("device-check-empty");
+    let lab = made.0.clone();
+    made.write("nobs.toml", "kind = \"lab\"\n");
+    made.write(
+        "containerlab/lab.clab.yml",
         "name: nobs-t-dev\ntopology:\n  nodes: {}\n",
-    )
-    .unwrap();
+    );
 
     let output = with_credentials(&lab, &in_dir(&lab, &["device", "check"]));
 
