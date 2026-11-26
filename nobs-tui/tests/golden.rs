@@ -1222,6 +1222,21 @@ fn the_flap_question_frame_is_pinned() {
 }
 
 #[test]
+fn the_flap_refused_frame_is_pinned() {
+    golden("devices-flap-refused", || {
+        let mut model = on_lab_interfaces();
+        let mut devices =
+            lab_vars_source(&PathBuf::from(BOOK_LAB).join("containerlab/lab_vars.yml"))
+                .devices()
+                .unwrap();
+        devices[0].interfaces[0].name = "mgmt0".to_string();
+        model.apply(Update::Devices(Ok(devices)));
+        press(&mut model, KeyCode::Char('F'));
+        model
+    });
+}
+
+#[test]
 fn the_lab_devices_help_frame_is_pinned() {
     golden("help-devices-lab", || {
         let mut model = lab_devices_model();

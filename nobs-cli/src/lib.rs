@@ -2584,7 +2584,7 @@ fn flap_device(
             1
         }
         Ok(Flapped::Unfit(unfit)) => {
-            device_says(err, FLAP, name, unfit);
+            let _ = writeln!(err, "{}", device::unfit_line(name, &unfit));
             1
         }
         Ok(Flapped::Disabled) => {

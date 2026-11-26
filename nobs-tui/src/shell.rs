@@ -1639,14 +1639,19 @@ impl Model {
                 else {
                     return Vec::new();
                 };
-                device::flap_question(
-                    name,
-                    &device::Flap {
-                        interface,
-                        delay: Duration::from_secs(device::FLAP_DELAY),
-                        count: device::FLAP_COUNT,
-                    },
-                )
+                let flap = device::Flap {
+                    interface,
+                    delay: Duration::from_secs(device::FLAP_DELAY),
+                    count: device::FLAP_COUNT,
+                };
+                if let Some(unfit) = self
+                    .driver(name)
+                    .and_then(|driver| device::unfit(driver, &flap))
+                {
+                    self.notice = Some(device::unfit_line(name, &unfit));
+                    return Vec::new();
+                }
+                device::flap_question(name, &flap)
             }
             Ask::Text => {
                 self.ask(Then::Act(action), args, target, Step::Command, login);
@@ -2801,9 +2806,12 @@ impl Model {
     }
 
     pub(crate) fn has_driver(&self, name: &str) -> bool {
-        self.nodes
-            .iter()
-            .any(|node| node.name == name && device::driver(&node.kind).is_ok())
+        self.driver(name).is_some()
+    }
+
+    fn driver(&self, name: &str) -> Option<device::Driver> {
+        let node = self.nodes.iter().find(|node| node.name == name)?;
+        device::driver(&node.kind).ok()
     }
 
     pub(crate) fn intended_text(&self, device: &str) -> Option<&str> {
@@ -9944,6 +9952,50 @@ pub(crate) mod tests {
             model.run().unwrap().words,
             "device flap --yes nobs-t-srl1 ethernet-1/2"
         );
+    }
+
+    #[test]
+    fn f_on_an_interface_nobs_refuses_shows_its_line_at_once_and_asks_and_runs_nothing() {
+        let cases = [
+            (
+                "mgmt0",
+                "nobs: flap nobs-t-srl1: mgmt0 is the management interface",
+            ),
+            (
+                "ethernet-1/1 x",
+                "nobs: flap nobs-t-srl1: \"ethernet-1/1 x\" is not the name of one interface",
+            ),
+        ];
+        for (interface, line) in cases {
+            for (login, mut model) in [
+                ("no login", asking(None, None)),
+                ("login", lab_devices_model()),
+            ] {
+                model.apply(book_devices(|device| {
+                    device.interfaces[0].name = interface.to_string();
+                }));
+                let mut model = on_interfaces(model);
+                assert!(key_line(&model, 200).concat().contains("F flap"), "{login}");
+
+                assert_eq!(ch(&mut model, 'F'), [], "{interface} {login}");
+
+                assert_eq!(model.question(), None, "{interface} {login}");
+                assert!(model.login_entry().is_none(), "{interface} {login}");
+                assert!(model.run().is_none(), "{interface} {login}");
+                assert_eq!(model.notice(), Some(line), "{interface} {login}");
+                let rows = key_line(&model, 60);
+                let shown: Vec<&str> = rows.iter().map(|row| row.trim()).collect();
+                assert_eq!(shown.join(" "), line, "{interface} {login}");
+            }
+        }
+        for mut model in [
+            on_interfaces(asking(None, None)),
+            on_interfaces(lab_devices_model()),
+        ] {
+            assert_eq!(ch(&mut model, 'F'), []);
+            assert_eq!(model.notice(), None);
+            assert!(model.question().is_some());
+        }
     }
 
     #[test]

@@ -18,21 +18,37 @@ impl Lab {
     }
 }
 
-fn nobs(here: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nobs"))
+fn nobs_command(here: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nobs"));
+    command
         .args(args)
         .current_dir(here)
         .env_remove("NOBS_DIR")
         .env("NETWORK_AGENT_USER", "admin")
-        .env("NETWORK_AGENT_PASSWORD", TEST_PASSWORD)
-        .output()
-        .unwrap()
+        .env("NETWORK_AGENT_PASSWORD", TEST_PASSWORD);
+    command
+}
+
+fn nobs(here: &Path, args: &[&str]) -> Output {
+    nobs_command(here, args).output().unwrap()
+}
+
+fn flap_command(lab: &Lab, args: &[&str]) -> Command {
+    let mut line = vec!["--dir", lab.0.to_str().unwrap(), "device", "flap"];
+    line.extend(args);
+    nobs_command(&lab.0, &line)
 }
 
 fn flap(lab: &Lab, args: &[&str]) -> Output {
-    let mut line = vec!["--dir", lab.0.to_str().unwrap(), "device", "flap"];
-    line.extend(args);
-    nobs(&lab.0, &line)
+    flap_command(lab, args).output().unwrap()
+}
+
+fn flap_with_no_login(lab: &Lab, args: &[&str]) -> Output {
+    flap_command(lab, args)
+        .env_remove("NETWORK_AGENT_USER")
+        .env_remove("NETWORK_AGENT_PASSWORD")
+        .output()
+        .unwrap()
 }
 
 #[test]
@@ -74,6 +90,54 @@ fn each_unfit_flap_is_refused_with_its_line_and_exit_1_before_any_connection() {
             &format!("nobs: flap nobs-t-srl1: {words}"),
         );
     }
+}
+
+#[test]
+fn with_no_login_each_unfit_flap_is_refused_with_its_own_line_and_exit_1() {
+    let lab = Lab::srl("unfit-no-login");
+    let cases: [(&[&str], &str); 4] = [
+        (
+            &["nobs-t-srl1", "ethernet-1/1 x", "--yes"],
+            "\"ethernet-1/1 x\" is not the name of one interface",
+        ),
+        (
+            &["nobs-t-srl1", "mgmt0", "--yes"],
+            "mgmt0 is the management interface",
+        ),
+        (
+            &["nobs-t-srl1", "ethernet-1/1", "--yes", "--delay", "301"],
+            "the delay must be 1 to 300 seconds",
+        ),
+        (
+            &["nobs-t-srl1", "ethernet-1/1", "--yes", "--count", "11"],
+            "the count must be 1 to 10",
+        ),
+    ];
+    for (args, words) in cases {
+        assert_fails_with(
+            &flap_with_no_login(&lab, args),
+            &format!("nobs: flap nobs-t-srl1: {words}"),
+        );
+    }
+}
+
+#[test]
+fn with_no_login_a_node_with_no_driver_and_a_fit_flap_keep_their_lines() {
+    let lab = Lab::srl("no-driver-no-login");
+    lab.write(
+        "containerlab/lab.clab.yml",
+        "name: nobs-t-dev\ntopology:\n  nodes:\n    nobs-t-srl1:\n      kind: srl\n    nobs-t-ceos1:\n      kind: ceos\n",
+    );
+    for interface in ["ethernet-1/1 x", "mgmt0", "ethernet-1/1"] {
+        assert_fails_with(
+            &flap_with_no_login(&lab, &["nobs-t-ceos1", interface, "--yes"]),
+            "nobs: ssh nobs-t-ceos1: no driver for the kind ceos yet",
+        );
+    }
+    assert_fails_with(
+        &flap_with_no_login(&lab, &["nobs-t-srl1", "ethernet-1/1", "--yes"]),
+        "nobs: ssh nobs-t-srl1: set NETWORK_AGENT_USER and NETWORK_AGENT_PASSWORD in the lab's .env file or in the shell",
+    );
 }
 
 #[test]

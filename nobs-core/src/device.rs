@@ -374,16 +374,19 @@ pub fn flap(
     wait: &mut dyn FnMut(Duration),
     told: &mut dyn FnMut(u32, Turn),
 ) -> Result<Flapped, Error> {
-    step(node, |host, credentials, driver| {
-        let flapper = Flapper {
-            transport,
-            host,
-            credentials,
-            driver,
-            flap,
-        };
-        flapper.flapped(yes, wait, told)
-    })
+    let driver = driver(&node.kind)?;
+    if let Some(unfit) = unfit(driver, flap) {
+        return Ok(Flapped::Unfit(unfit));
+    }
+    let credentials = credentials()?;
+    let flapper = Flapper {
+        transport,
+        host: &node.container,
+        credentials: &credentials,
+        driver,
+        flap,
+    };
+    flapper.flapped(yes, wait, told)
 }
 
 pub fn flap_question(name: &str, flap: &Flap) -> String {
@@ -395,7 +398,7 @@ pub fn flap_question(name: &str, flap: &Flap) -> String {
     )
 }
 
-fn unfit(driver: Driver, flap: &Flap) -> Option<Unfit> {
+pub fn unfit(driver: Driver, flap: &Flap) -> Option<Unfit> {
     let interface = flap.interface;
     if interface.is_empty()
         || !interface
@@ -429,9 +432,6 @@ impl Flapper<'_> {
         wait: &mut dyn FnMut(Duration),
         told: &mut dyn FnMut(u32, Turn),
     ) -> Result<Flapped, Error> {
-        if let Some(unfit) = unfit(self.driver, self.flap) {
-            return Ok(Flapped::Unfit(unfit));
-        }
         if !yes() {
             return Ok(Flapped::Declined);
         }
@@ -530,6 +530,10 @@ pub fn error_line(name: &str, error: &Error) -> String {
 
 pub fn pushed_line(name: &str, count: usize) -> String {
     format!("{name}  pushed {}", counted(count, "line"))
+}
+
+pub fn unfit_line(name: &str, unfit: &Unfit) -> String {
+    format!("nobs: flap {name}: {unfit}")
 }
 
 pub fn not_known_line(name: &str) -> String {
@@ -1554,6 +1558,53 @@ mod tests {
     }
 
     #[test]
+    fn with_no_login_an_unfit_flap_gives_its_own_line_and_a_node_with_no_driver_its_error() {
+        std::env::remove_var(USER);
+        std::env::remove_var(PASSWORD);
+        let cases = [
+            (
+                Flap {
+                    interface: "ethernet-1/1 x",
+                    ..ethernet(5, 1)
+                },
+                Unfit::Name("ethernet-1/1 x".to_string()),
+                "nobs: flap nobs-t-srl1: \"ethernet-1/1 x\" is not the name of one interface",
+            ),
+            (
+                Flap {
+                    interface: "mgmt0",
+                    ..ethernet(5, 1)
+                },
+                Unfit::Management("mgmt0"),
+                "nobs: flap nobs-t-srl1: mgmt0 is the management interface",
+            ),
+            (
+                ethernet(301, 1),
+                Unfit::Delay,
+                "nobs: flap nobs-t-srl1: the delay must be 1 to 300 seconds",
+            ),
+            (
+                ethernet(5, 11),
+                Unfit::Count,
+                "nobs: flap nobs-t-srl1: the count must be 1 to 10",
+            ),
+        ];
+        for (wanted, unfit, line) in cases {
+            assert_eq!(
+                flapped_on(&node("nobs-t-srl1", "srl"), &wanted, vec![], true),
+                (Ok(Flapped::Unfit(unfit.clone())), vec![]),
+                "{line}"
+            );
+            assert_eq!(unfit_line("nobs-t-srl1", &unfit), line);
+            assert_eq!(
+                flapped_on(&node("nobs-t-ceos1", "ceos"), &wanted, vec![], true),
+                (Err(Error::NoDriver("ceos".to_string())), vec![]),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
     fn every_command_text_of_a_flap_is_a_value_of_the_driver() {
         let credentials = Credentials {
             user: "admin".to_string(),
@@ -1573,7 +1624,10 @@ mod tests {
                 driver: test_driver(),
                 flap: &wanted,
             };
-            let flapped = flapper.flapped(&mut || true, &mut |_| {}, &mut |_, _| {});
+            let flapped = match unfit(flapper.driver, flapper.flap) {
+                Some(unfit) => Ok(Flapped::Unfit(unfit)),
+                None => flapper.flapped(&mut || true, &mut |_| {}, &mut |_, _| {}),
+            };
             let texts: Vec<String> = transport
                 .calls()
                 .into_iter()
