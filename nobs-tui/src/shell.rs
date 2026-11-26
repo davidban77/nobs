@@ -3652,6 +3652,7 @@ impl Model {
             return Vec::new();
         };
         self.workbench = Workbench::Devices;
+        self.device_filter = Filter::default();
         self.cursor = Cursor::Device(index);
         self.open_device_on(index, tab)
     }
@@ -4961,6 +4962,38 @@ pub(crate) mod tests {
         ])));
         ch(&mut model, '3');
         model
+    }
+
+    fn assert_enter_opens_srl1_on_a_drawn_row(mut model: Model) {
+        code(&mut model, KeyCode::Enter);
+
+        assert_eq!(model.workbench(), Workbench::Devices);
+        assert_eq!(model.device_filter.text, None);
+        let Cursor::Device(index) = model.cursor else {
+            panic!("the cursor is not on a device");
+        };
+        assert_eq!(model.devices[index].name, "srl1");
+        assert!(model.visible_devices().contains(&index));
+    }
+
+    #[test]
+    fn enter_on_an_alert_clears_a_devices_filter_that_hides_the_device() {
+        let mut model = devices_model(workshop_located("infrahub"));
+        model.apply(Update::Alerts(Ok(three_alerts())));
+        ch(&mut model, '/');
+        for typed in "srl2".chars() {
+            ch(&mut model, typed);
+        }
+        code(&mut model, KeyCode::Enter);
+        assert_eq!(model.device_filter.text.as_deref(), Some("srl2"));
+        ch(&mut model, '3');
+
+        assert_enter_opens_srl1_on_a_drawn_row(model);
+    }
+
+    #[test]
+    fn enter_on_an_alert_without_a_devices_filter_opens_the_device_as_before() {
+        assert_enter_opens_srl1_on_a_drawn_row(observability_model(three_alerts()));
     }
 
     #[test]
