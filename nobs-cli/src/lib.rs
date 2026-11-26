@@ -8407,8 +8407,8 @@ mod tests {
         let mut texts = Vec::new();
         for name in ["nobs-t-srl1", "nobs-t-srl2"] {
             let text = rendered(name, &located, &topology, &nodes).unwrap();
-            assert!(text.lines().count() > 2, "{text}");
-            let sent = srl_sent(text.lines());
+            assert!(intended::lines(&text).count() > 2, "{text}");
+            let sent = srl_sent(intended::lines(&text));
             let transport = push_then_fetch(taken(), Ok(answer(0, "", "")));
 
             pushed_with(&lab.0, name, &transport, Some(true), None);

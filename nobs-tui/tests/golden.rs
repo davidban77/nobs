@@ -18,7 +18,7 @@ use nobs_core::project::Rendered;
 use nobs_core::prometheus::Sample;
 use nobs_core::sot::{Device, Fixed, Interface, Session, SourceOfTruth};
 use nobs_core::status::{self, Urls};
-use nobs_tui::actions::{Action, Row, ACTIONS};
+use nobs_tui::actions::{Action, Ask, Row, ACTIONS};
 use nobs_tui::book::NodeRow;
 use nobs_tui::shell::{stacks, Health, Reach};
 use nobs_tui::{
@@ -2637,9 +2637,13 @@ fn a_narrow_key_line_ends_in_a_whole_hint() {
 }
 
 fn asked(action: &Action) -> Shell {
+    if action.ask == Ask::Push {
+        return push_asked();
+    }
     let mut model = match action.row {
         Row::Stack => services_model(),
-        Row::Device | Row::Node | Row::EveryNode | Row::Interface => maintenance_model(false),
+        Row::Device | Row::Node | Row::EveryNode => maintenance_model(false),
+        Row::Interface => on_lab_interfaces(),
         Row::Chapter | Row::Lab([Nodes::Chapters, ..]) => lab_model(),
         Row::Lab([Nodes::Project, ..]) => project_bench(),
         Row::Lab(_) => topology_bench(),
@@ -2653,12 +2657,13 @@ fn the_longest_question_of_the_table_shows_whole_at_60_by_15() {
     let length = |model: &Shell| model.question().map_or(0, |question| question.text().len());
     let longest = ACTIONS.iter().map(asked).max_by_key(length).unwrap();
     let text = longest.question().unwrap().text();
+    let first = text.split_whitespace().next();
 
     let screen = lines(&render(longest, 60, 15));
 
     let start = screen
         .iter()
-        .position(|line| line.starts_with(" run nobs"))
+        .rposition(|line| line.split_whitespace().next() == first)
         .unwrap();
     let shown = &screen[start..];
     let squeezed = |text: &str| text.split_whitespace().collect::<String>();

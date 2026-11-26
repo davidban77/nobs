@@ -1,3 +1,5 @@
+#[path = "support/device_lab.rs"]
+mod device_lab;
 #[path = "support/listing.rs"]
 mod listing;
 
@@ -5,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use device_lab::{assert_fails_with, stderr, Lab};
 use listing::listing;
 
 const NODES: [&str; 2] = ["nobs-t-srl1", "nobs-t-srl2"];
@@ -27,17 +30,7 @@ const LINUX_VARS: &str = "nodes:
     mgmt-ipv4: \"203.0.113.22\"
 ";
 
-struct Lab(PathBuf);
-
 impl Lab {
-    fn new(name: &str) -> Lab {
-        let root =
-            PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cli-device-render-{name}"));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        Lab(root.canonicalize().unwrap())
-    }
-
     fn project(name: &str) -> Lab {
         let lab = Lab::new(name);
         let fixture = fixture("project-two-node");
@@ -64,18 +57,6 @@ impl Lab {
         );
         lab
     }
-
-    fn write(&self, relative: &str, text: &str) {
-        let path = self.0.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
-    }
-}
-
-impl Drop for Lab {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
 }
 
 fn fixture(relative: &str) -> PathBuf {
@@ -98,20 +79,6 @@ fn render(dir: &Path, name: &str) -> Output {
         dir,
         &["--dir", dir.to_str().unwrap(), "device", "render", name],
     )
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn assert_fails_with(output: &Output, line: &str) {
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
-    assert_eq!(stderr(output), format!("{line}\n"));
-    assert!(
-        output.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
 }
 
 #[test]

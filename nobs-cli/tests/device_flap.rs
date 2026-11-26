@@ -1,36 +1,20 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+#[path = "support/device_lab.rs"]
+mod device_lab;
+
+use std::path::Path;
 use std::process::{Command, Output};
 
-const TEST_PASSWORD: &str = "nobs-t-not-a-secret";
-
-struct Lab(PathBuf);
+use device_lab::{assert_fails_with, Lab, TEST_PASSWORD};
 
 impl Lab {
-    fn new(name: &str) -> Lab {
-        let root =
-            PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cli-device-flap-{name}"));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let lab = Lab(root.canonicalize().unwrap());
+    fn srl(name: &str) -> Lab {
+        let lab = Lab::new(name);
         lab.write("nobs.toml", "kind = \"lab\"\n");
         lab.write(
             "containerlab/lab.clab.yml",
             "name: nobs-t-dev\ntopology:\n  nodes:\n    nobs-t-srl1:\n      kind: srl\n",
         );
         lab
-    }
-
-    fn write(&self, relative: &str, text: &str) {
-        let path = self.0.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
-    }
-}
-
-impl Drop for Lab {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -51,24 +35,9 @@ fn flap(lab: &Lab, args: &[&str]) -> Output {
     nobs(&lab.0, &line)
 }
 
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn assert_fails_with(output: &Output, line: &str) {
-    let stderr = stderr(output);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert_eq!(stderr, format!("{line}\n"));
-    assert!(
-        output.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-}
-
 #[test]
 fn each_unfit_flap_is_refused_with_its_line_and_exit_1_before_any_connection() {
-    let lab = Lab::new("unfit");
+    let lab = Lab::srl("unfit");
     let cases: [(&[&str], &str); 7] = [
         (
             &["nobs-t-srl1", "ethernet-1/1 x", "--yes"],
@@ -109,7 +78,7 @@ fn each_unfit_flap_is_refused_with_its_line_and_exit_1_before_any_connection() {
 
 #[test]
 fn with_no_terminal_and_no_yes_nothing_is_sent_and_the_line_asks_for_a_yes() {
-    let lab = Lab::new("no-terminal");
+    let lab = Lab::srl("no-terminal");
     assert_fails_with(
         &flap(&lab, &["nobs-t-srl1", "ethernet-1/1"]),
         "nobs: flap nobs-t-srl1: needs a yes; run it in a terminal, or add --yes",
@@ -118,7 +87,7 @@ fn with_no_terminal_and_no_yes_nothing_is_sent_and_the_line_asks_for_a_yes() {
 
 #[test]
 fn a_name_the_topology_does_not_hold_names_the_topology_file() {
-    let lab = Lab::new("not-a-node");
+    let lab = Lab::srl("not-a-node");
     assert_fails_with(
         &flap(&lab, &["nobs-t-x", "ethernet-1/1", "--yes"]),
         &format!(
