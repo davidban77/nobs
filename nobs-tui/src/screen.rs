@@ -47,7 +47,6 @@ const HELP_CONFIG: [(&str, &str, &[Need]); 2] = [
 const TERMINAL_HINT: &str = "press t to open a shell on";
 const HELP_QUIT_SESSION: &str = "quit; asks if busy";
 const HELP_TERMINAL: &str = "type in terminal";
-const TERMINAL_WORD: &str = "terminal";
 const PANE_HINTS: [&str; 4] = ["/ filter", "j/k scroll", "[ ] tab", "Esc back to list"];
 const HELP_DEVICES_NOTE: (&str, &[Need]) = (
     "alerts box: Enter picks the device, opens its timeline",
@@ -2647,8 +2646,6 @@ fn key_hints(model: &Model, wide: bool) -> Vec<String> {
             (model.popup_can_scroll(), "j/k move"),
             esc(model, "Esc close"),
         ])
-        .chain(actions)
-        .chain([terminal_hint(model)])
         .collect(),
         (Workbench::Devices, Focus::Tabs, Tab::Timeline) => owned([
             (model.timeline_can_step(), "j/k move"),
@@ -2668,21 +2665,26 @@ fn key_hints(model: &Model, wide: bool) -> Vec<String> {
         .chain(actions)
         .chain([terminal_hint(model)])
         .collect(),
-        (Workbench::Devices, Focus::Tabs, Tab::Config) => owned(view_hints(model, wide))
-            .chain(owned(pane_hints(model, true, model.config_can_scroll())))
-            .chain(actions)
-            .chain([terminal_hint(model)])
-            .collect(),
+        (Workbench::Devices, Focus::Tabs, Tab::Config) => {
+            let (jumps, scrolls) = model.config_moves();
+            owned(view_hints(model, wide, jumps))
+                .chain(owned(pane_hints(model, true, scrolls)))
+                .chain(actions)
+                .chain([terminal_hint(model)])
+                .collect()
+        }
         (Workbench::Devices, Focus::Tabs, Tab::Terminal) => match model.drawn_session() {
             Some(session) => {
                 let scrolls = session.can_scroll();
-                owned(
-                    session
-                        .state
-                        .keys()
-                        .iter()
-                        .map(|hint| (*hint != PANE_HINTS[1] || scrolls, *hint)),
-                )
+                let types = model.can_type_in_terminal();
+                owned(session.state.keys().iter().map(|hint| {
+                    let acts = match *hint {
+                        scroll if scroll == PANE_HINTS[1] => scrolls,
+                        shell if shell.starts_with(SHELL.key) => types,
+                        _ => true,
+                    };
+                    (acts, *hint)
+                }))
                 .chain(owned([(!model.in_session(), PANE_HINTS[2])]))
                 .collect()
             }
@@ -2731,7 +2733,7 @@ fn esc(model: &Model, words: &'static str) -> (bool, &'static str) {
 fn terminal_hint(model: &Model) -> (bool, String) {
     (
         model.can_type_in_terminal(),
-        format!("{} {TERMINAL_WORD}", SHELL.key),
+        format!("{} terminal", SHELL.key),
     )
 }
 
@@ -2744,14 +2746,14 @@ fn tab_hints(model: &Model, steps: bool) -> [(bool, &'static str); 4] {
     ]
 }
 
-fn view_hints(model: &Model, wide: bool) -> Vec<(bool, &'static str)> {
+fn view_hints(model: &Model, wide: bool, jumps: Option<bool>) -> Vec<(bool, &'static str)> {
     let difference = if wide {
         DIFFERENCE_WIDE
     } else {
         DIFFERENCE_NARROW
     };
-    match model.intended_view() {
-        Some(_) => vec![(true, VIEW_RUNNING), (model.config_can_jump(), difference)],
+    match jumps {
+        Some(jumps) => vec![(true, VIEW_RUNNING), (jumps, difference)],
         None if model.has_template() => vec![(true, VIEW_INTENDED)],
         None => Vec::new(),
     }
@@ -2770,10 +2772,8 @@ fn observability_hints(model: &Model) -> Vec<(bool, &'static str)> {
         } else {
             (
                 model.alerts_can_step(),
-                !model.shown_alerts().is_empty(),
-                model
-                    .selected_alert()
-                    .is_some_and(|alert| model.alert_device(alert).is_some()),
+                model.alerts_listed(),
+                model.alert_opens().is_some(),
             )
         };
         vec![
@@ -6852,6 +6852,18 @@ mod tests {
                 false,
             ),
             pin(
+                "devices list, the filter hides every device, one alert row",
+                || {
+                    let mut model = devices_of(1);
+                    filtered(&mut model, "zz");
+                    model
+                },
+                Char('j'),
+                "j/k move",
+                true,
+                true,
+            ),
+            pin(
                 "devices list",
                 || device_list(1),
                 Char('/'),
@@ -7579,7 +7591,77 @@ mod tests {
                 true,
                 true,
             ),
+            pin(
+                "observability metrics",
+                || on_view(Tab::Metrics),
+                Char('r'),
+                "r refresh",
+                true,
+                true,
+            ),
+            pin(
+                "observability metrics, no devices",
+                metrics_without_devices,
+                Char('/'),
+                "/ filter",
+                false,
+                false,
+            ),
+            pin(
+                "observability metrics, no devices",
+                metrics_without_devices,
+                Enter,
+                "Enter open the device",
+                false,
+                false,
+            ),
+            pin(
+                "observability alerts, run pane open",
+                || moved(moved(alerts_of(1), '3', 1), 'o', 1),
+                Next,
+                "Tab focus",
+                true,
+                true,
+            ),
+            pin(
+                "devices timeline, popup open, a lab",
+                lab_popup,
+                Char('t'),
+                "t terminal",
+                false,
+                true,
+            ),
         ]
+    }
+
+    fn lab_popup() -> Model {
+        let mut model = lab_devices_model();
+        model.apply(every_service_up(0));
+        model.apply(Update::Alerts(Ok(vec![alert(
+            "nobs-t-srl1",
+            "a00",
+            "2026-11-09T13:59:00Z",
+        )])));
+        handle(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        while model.tab() != Tab::Timeline {
+            press(&mut model, ']');
+        }
+        popup_of(model)
+    }
+
+    fn chooser_of_three() -> Model {
+        Model::new(start(many_stacks(3)))
+    }
+
+    fn metrics_without_devices() -> Model {
+        let mut model = moved(opened("a"), '3', 1);
+        while model.tab() != Tab::Metrics {
+            press(&mut model, ']');
+        }
+        model
     }
 
     fn sonda_row_keys() -> Vec<Pinned> {
@@ -7798,6 +7880,22 @@ mod tests {
                 pin("lab", || lab_bench(1), Char('r'), "r refresh", true, true),
                 pin("lab", || lab_bench(1), Char('o'), "o pane", true, true),
                 pin("lab", || lab_bench(1), Char('D'), "D deploy", true, true),
+                pin("lab", || lab_bench(1), Char('X'), "X destroy", true, true),
+                pin("lab", || lab_bench(1), Char('P'), "P purge", true, true),
+                pin("lab", || lab_bench(1), Char('R'), "R prepare", true, true),
+                pin("lab", || lab_bench(1), Char('U'), "U update", true, true),
+                pin("lab", || lab_bench(1), Char('B'), "B rebuild", true, true),
+                pin("lab", || lab_bench(1), Char('S'), "S show", true, true),
+                pin(
+                    "chooser",
+                    chooser_of_three,
+                    Char('j'),
+                    "j/k select",
+                    true,
+                    true,
+                ),
+                pin("chooser", chooser_of_three, Enter, "Enter open", true, true),
+                pin("chooser", chooser_of_three, Char('q'), "q quit", true, true),
                 pin(
                     "services list, two stacks",
                     || stack_list(2, 1),

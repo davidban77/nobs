@@ -87,9 +87,12 @@ impl Session {
         let (State::Connected { up } | State::Closed { up, .. }) = self.state else {
             return false;
         };
+        if up > 0 {
+            return true;
+        }
         let mut probe = self.screen.screen().clone();
-        probe.set_scrollback(up + 1);
-        up > 0 || probe.scrollback() > up
+        probe.set_scrollback(1);
+        probe.scrollback() > 0
     }
 }
 
