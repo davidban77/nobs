@@ -289,7 +289,7 @@ The right side shows the selected chapter on one tab, `OVERVIEW`:
 | `services` | how many of the services the chapter defines have a running container, for example `0 of 1 running` for a chapter that defines one service and has no container; `?` when not known yet, or when a call failed |
 | `last` | the last action on this chapter and how it ended, for example `lab deploy --sudo-no-prompt -s ch1  exit 0`; `—` when there was none |
 
-At 100 columns the key line is `Tab focus  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show`. The last hints, `r refresh` and `o pane`, do not fit and are left out. At 60 columns more hints are left out. `?` lists every key. `D`, `X`, `P`, `R`, `U`, `B` and `S` are actions (see [Actions](#actions)).
+At 100 columns the key line is `Tab focus  j/k move  D deploy  X destroy  P purge  R prepare  U update  B rebuild  S show`. The last hints, `r refresh` and `o pane`, do not fit and are left out. At 60 columns more hints are left out. `?` lists the keys and actions this lab can use. `D`, `X`, `P`, `R`, `U`, `B` and `S` are actions (see [Actions](#actions)).
 
 The lab runs one chapter at a time. So `D`, `U`, `B` and `X` take the services of the other chapters down. `R` and `P` take every chapter down. Their questions say "scenario". In the book lab, a scenario is a chapter: the folder under `chapters/` that holds its compose file (see [Book lab](#book-lab)). It is not a Sonda scenario.
 
@@ -567,7 +567,7 @@ You can stop that group yourself with `sudo kill -- -<group>`.
 | `y` | answer yes to the open question; any other key answers no |
 | `o` | open or fold the run pane; folding the pane while it has the focus gives the focus back to the list |
 | `x` | dismiss the red error line |
-| `?` | show the keys and every action of the workbench, or close them; while they are open they cover the run pane too, a running action keeps going, and the pane is back when they close; when they do not fit, `j`, `k`, `PgUp` and `PgDn` scroll them, also after the terminal changes size, and the last row says `j/k more`; the bottom border counts the hidden rows |
+| `?` | show the keys and actions this lab can use, or close them; while they are open they cover the run pane too, a running action keeps going, and the pane is back when they close; when they do not fit, `j`, `k`, `PgUp` and `PgDn` scroll them, also after the terminal changes size, and the last row says `j/k more`; the bottom border counts the hidden rows |
 | `Esc` | close the keys, fold the run pane, and give the focus back to the list if the pane had it, close a question or clear the filter you are typing; else close the full text of a timeline row; else close the logs, or move the focus back to the stack list; in the lab workbench, back to the chapters, or to the nodes in a lab without chapters |
 | `q` and Ctrl-C | close the screen and give the terminal back as it was; while an action runs, Ctrl-C stops it and `q` asks first; while a terminal session is open, `q` asks first and Ctrl-C closes it with the screen; while you type in the terminal tab, both go to the device |
 
