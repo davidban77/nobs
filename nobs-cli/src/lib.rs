@@ -6491,16 +6491,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("no help for {id}"))
                 .to_string()
         };
-        let delays = format!(
-            "; {} to {} seconds",
-            device::FLAP_DELAYS.start(),
-            device::FLAP_DELAYS.end()
-        );
-        let counts = format!(
-            "; {} to {}",
-            device::FLAP_COUNTS.start(),
-            device::FLAP_COUNTS.end()
-        );
+        let delays = format!("; {}", device::delay_limits());
+        let counts = format!("; {}", device::count_limits());
 
         assert!(help("delay").ends_with(&delays), "{}", help("delay"));
         assert!(help("count").ends_with(&counts), "{}", help("count"));

@@ -301,8 +301,8 @@ fn session_lines<'a>(
 
 pub const FLAP_DELAY: u64 = 5;
 pub const FLAP_COUNT: u32 = 1;
-pub const FLAP_DELAYS: RangeInclusive<u64> = 1..=300;
-pub const FLAP_COUNTS: RangeInclusive<u32> = 1..=10;
+pub(crate) const FLAP_DELAYS: RangeInclusive<u64> = 1..=300;
+pub(crate) const FLAP_COUNTS: RangeInclusive<u32> = 1..=10;
 const BACK_READS: u32 = 10;
 const BACK_READ_GAP: Duration = Duration::from_secs(1);
 
@@ -1366,6 +1366,18 @@ mod tests {
         for (unfit, words) in words {
             assert_eq!(unfit.to_string(), words);
         }
+    }
+
+    #[test]
+    fn the_limit_words_give_the_ends_of_the_limits() {
+        assert_eq!(
+            delay_limits(),
+            format!("{} to {} seconds", FLAP_DELAYS.start(), FLAP_DELAYS.end())
+        );
+        assert_eq!(
+            count_limits(),
+            format!("{} to {}", FLAP_COUNTS.start(), FLAP_COUNTS.end())
+        );
     }
 
     #[test]
