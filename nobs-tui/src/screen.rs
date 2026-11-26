@@ -6609,6 +6609,7 @@ mod tests {
         view: &'static str,
         build: fn() -> Model,
         key: KeyCode,
+        modifiers: KeyModifiers,
         hint: &'static str,
         named: bool,
         acts: bool,
@@ -6638,6 +6639,7 @@ mod tests {
             view,
             build,
             key,
+            modifiers: KeyModifiers::NONE,
             hint,
             named,
             acts,
@@ -6777,6 +6779,40 @@ mod tests {
         model.apply(Update::ActionEnded(End::Exited(0)));
         open_tab(&mut model, Tab::Config);
         focus_tabs(&mut model);
+        model
+    }
+
+    fn without_template() -> Model {
+        let mut model = lab_devices_model();
+        model.apply(Update::Intended(vec![(
+            "nobs-t-srl1".to_string(),
+            Err(nobs_core::intended::Failure::NoTemplate(
+                "no template for kind srl".to_string(),
+            )),
+            Some(Syntax::SrLinux),
+        )]));
+        open_tab(&mut model, Tab::Config);
+        focus_tabs(&mut model);
+        assert!(!model.has_template());
+        model
+    }
+
+    fn flappable() -> Model {
+        let mut model = lab_devices_model();
+        model.apply(Update::Nodes(Ok(vec![NodeRow {
+            name: "nobs-t-srl1".to_string(),
+            kind: "nokia_srlinux".to_string(),
+            state: Some("running".to_string()),
+        }])));
+        open_tab(&mut model, Tab::Interfaces);
+        focus_tabs(&mut model);
+        model
+    }
+
+    fn typing() -> Model {
+        let mut model = lab_devices_model();
+        press(&mut model, 't');
+        assert!(model.in_session());
         model
     }
 
@@ -6932,6 +6968,86 @@ mod tests {
                 false,
             ),
             pin(
+                "devices list, a workshop",
+                || device_list(1),
+                Char('g'),
+                "g fetch",
+                false,
+                false,
+            ),
+            pin(
+                "devices list, a lab",
+                lab_devices_model,
+                Char('s'),
+                "s run",
+                true,
+                true,
+            ),
+            pin(
+                "devices list, a workshop",
+                || device_list(1),
+                Char('s'),
+                "s run",
+                false,
+                false,
+            ),
+            pin(
+                "devices list, a lab",
+                lab_devices_model,
+                Char('G'),
+                "G check all",
+                true,
+                true,
+            ),
+            pin(
+                "devices list, a workshop",
+                || device_list(1),
+                Char('G'),
+                "G check all",
+                false,
+                false,
+            ),
+            pin(
+                "devices list, a lab with an intended config",
+                templated_lab,
+                Char('P'),
+                "P push",
+                true,
+                true,
+            ),
+            pin(
+                "devices list, a lab with no intended config",
+                lab_devices_model,
+                Char('P'),
+                "P push",
+                false,
+                false,
+            ),
+            pin(
+                "devices list, a lab",
+                lab_devices_model,
+                Char('F'),
+                "F flap",
+                false,
+                false,
+            ),
+            pin(
+                "devices list, a workshop",
+                || device_list(1),
+                Char('m'),
+                "m maintenance",
+                true,
+                true,
+            ),
+            pin(
+                "devices list, a lab",
+                lab_devices_model,
+                Char('m'),
+                "m maintenance",
+                false,
+                false,
+            ),
+            pin(
                 "devices overview",
                 || sessions_of(1),
                 Next,
@@ -7024,6 +7140,38 @@ mod tests {
                 || lab_tab(Tab::Interfaces),
                 Char('t'),
                 "t terminal",
+                true,
+                true,
+            ),
+            pin(
+                "devices interfaces, a lab node with a driver",
+                flappable,
+                Char('F'),
+                "F flap",
+                true,
+                true,
+            ),
+            pin(
+                "devices interfaces",
+                || interfaces_of(1),
+                Next,
+                "Tab focus",
+                true,
+                true,
+            ),
+            pin(
+                "devices interfaces",
+                || interfaces_of(1),
+                Char(']'),
+                "[ ] tab",
+                true,
+                true,
+            ),
+            pin(
+                "devices interfaces",
+                || interfaces_of(1),
+                Esc,
+                "Esc back",
                 true,
                 true,
             ),
@@ -7236,6 +7384,30 @@ mod tests {
                 true,
             ),
             pin(
+                "devices config, running shown",
+                || moved(config_differs("set / a b on\n"), 'v', 1),
+                Char('v'),
+                "v intended",
+                true,
+                true,
+            ),
+            pin(
+                "devices config, no template",
+                without_template,
+                Char('v'),
+                "v running",
+                false,
+                false,
+            ),
+            pin(
+                "devices config, no template",
+                without_template,
+                Char('v'),
+                "v intended",
+                false,
+                false,
+            ),
+            pin(
                 "devices config, sixty lines",
                 config_tab,
                 Char('j'),
@@ -7355,6 +7527,29 @@ mod tests {
                 true,
                 true,
             ),
+            pin(
+                "devices terminal, the inventory has no device",
+                || {
+                    let mut model = lab_tab(Tab::Terminal);
+                    model.apply(Update::Devices(Ok(Vec::new())));
+                    model
+                },
+                Char('t'),
+                "t type in the terminal",
+                false,
+                false,
+            ),
+            Pinned {
+                modifiers: KeyModifiers::CONTROL,
+                ..pin(
+                    "devices terminal, typing",
+                    typing,
+                    Char(']'),
+                    "Ctrl-] leave (session stays open)",
+                    true,
+                    true,
+                )
+            },
         ]
     }
 
@@ -7784,6 +7979,16 @@ mod tests {
                     false,
                     false,
                 ),
+                pin("sonda details", long_details, Next, "Tab focus", true, true),
+                pin(
+                    "sonda details",
+                    long_details,
+                    Char(']'),
+                    "[ ] tab",
+                    true,
+                    true,
+                ),
+                pin("sonda details", long_details, Esc, "Esc back", true, true),
                 pin(
                     "run, output longer than the pane",
                     || run_focused(40, false),
@@ -8211,7 +8416,7 @@ mod tests {
             let mut model = (case.build)();
             let before = frame(&mut model);
             let line = (case.row)(&before);
-            let commands = handle(&mut model, KeyEvent::new(case.key, KeyModifiers::NONE));
+            let commands = handle(&mut model, KeyEvent::new(case.key, case.modifiers));
             let acted = !commands.is_empty() || frame(&mut model) != before;
             assert_eq!(
                 (names_hint(&line, case.hint), acted),
@@ -8224,7 +8429,7 @@ mod tests {
         }
     }
 
-    fn hint_keys(hint: &str) -> Vec<KeyCode> {
+    fn hint_keys(hint: &str) -> Vec<KeyEvent> {
         let mut keys = Vec::new();
         for token in hint.split_whitespace() {
             let letters: Vec<char> = token.chars().collect();
@@ -8232,6 +8437,9 @@ mod tests {
                 ("Tab", _) => keys.push(KeyCode::Tab),
                 ("Enter", _) => keys.push(KeyCode::Enter),
                 ("Esc", _) => keys.push(KeyCode::Esc),
+                ("Ctrl-]", _) => {
+                    return vec![KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL)];
+                }
                 (_, [one]) => keys.push(KeyCode::Char(*one)),
                 (_, [one, '/', other]) => {
                     keys.extend([KeyCode::Char(*one), KeyCode::Char(*other)]);
@@ -8240,7 +8448,9 @@ mod tests {
             }
         }
         assert!(!keys.is_empty(), "no key in the hint {hint:?}");
-        keys
+        keys.into_iter()
+            .map(|key| KeyEvent::new(key, KeyModifiers::NONE))
+            .collect()
     }
 
     fn painted_buffer(model: &mut Model, (width, height): (u16, u16)) -> Buffer {
@@ -8272,7 +8482,7 @@ mod tests {
                 let acts = hint_keys(hint).into_iter().any(|key| {
                     let mut model = (case.build)();
                     let before = painted_buffer(&mut model, case.size);
-                    let commands = handle(&mut model, KeyEvent::new(key, KeyModifiers::NONE));
+                    let commands = handle(&mut model, key);
                     !commands.is_empty() || painted_buffer(&mut model, case.size) != before
                 });
                 assert!(acts, "{}: {hint} does nothing\n{line}", case.view);
