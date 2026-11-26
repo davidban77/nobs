@@ -1750,6 +1750,15 @@ fn the_services_frame_of_a_lab_without_a_compose_file_is_pinned() {
 }
 
 #[test]
+fn the_help_frame_of_a_lab_without_a_compose_file_is_pinned() {
+    golden("help-no-compose", || {
+        let mut model = without_a_compose_file();
+        press(&mut model, KeyCode::Char('?'));
+        model
+    });
+}
+
+#[test]
 fn a_lab_without_a_compose_file_says_it_has_no_services_and_shows_no_ps_red_line() {
     let screen = lines(&render(without_a_compose_file(), 100, 30));
 

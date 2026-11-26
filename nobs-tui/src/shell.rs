@@ -4143,7 +4143,7 @@ pub(crate) mod tests {
         sonda_only(Path::new("/nonexistent-sonda-folder")).unwrap()
     }
 
-    fn sonda_tab() -> Model {
+    pub(crate) fn sonda_tab() -> Model {
         Model::new(Start {
             chooser: false,
             urls: Urls {
@@ -6475,7 +6475,7 @@ pub(crate) mod tests {
         row.map(|at| (rows[at].1, rows[at].2))
     }
 
-    fn filtered(model: &mut Model, text: &str) {
+    pub(crate) fn filtered(model: &mut Model, text: &str) {
         ch(model, '/');
         typed(model, text);
         code(model, KeyCode::Enter);
@@ -7230,7 +7230,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn book_model() -> Model {
+    pub(crate) fn book_model() -> Model {
         let dir = fixture("book-lab");
         let located = locate(&dir, Some(&dir)).unwrap();
         let stacks = stacks(Some(&located), vec![]).unwrap();
@@ -9438,7 +9438,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn help_names_g_s_and_big_g_in_a_lab_with_nodes_and_m_as_today() {
+    fn help_names_g_s_and_big_g_in_a_lab_with_nodes_and_m_only_in_a_workshop() {
         let named = |model: &Model, key: &str| {
             help_entries(model)
                 .iter()
@@ -9450,7 +9450,7 @@ pub(crate) mod tests {
         assert_eq!(named(&lab, "g"), ["fetch"]);
         assert_eq!(named(&lab, "s"), ["run"]);
         assert_eq!(named(&lab, "G"), ["check all"]);
-        assert_eq!(named(&lab, "m"), ["maintenance"]);
+        assert_eq!(named(&lab, "m"), Vec::<&str>::new());
 
         let workshop = devices_model(workshop_located("infrahub"));
         assert_eq!(named(&workshop, "g"), Vec::<&str>::new());
