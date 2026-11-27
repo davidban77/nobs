@@ -10,6 +10,7 @@ nobs docker build --compose -c
 nobs docker build --scenario -s
 nobs docker build --profile -p
 nobs docker build --verbose
+nobs docker build --no-verbose
 nobs docker build <services>
 nobs docker build --dir
 nobs docker build --help -h
@@ -18,6 +19,7 @@ nobs docker pull --compose -c
 nobs docker pull --scenario -s
 nobs docker pull --profile -p
 nobs docker pull --verbose
+nobs docker pull --no-verbose
 nobs docker pull <services>
 nobs docker pull --dir
 nobs docker pull --help -h
@@ -26,6 +28,7 @@ nobs docker exec --compose -c
 nobs docker exec --scenario -s
 nobs docker exec --profile -p
 nobs docker exec --verbose
+nobs docker exec --no-verbose
 nobs docker exec <service>
 nobs docker exec <command>
 nobs docker exec --dir
@@ -35,6 +38,7 @@ nobs docker debug --compose -c
 nobs docker debug --scenario -s
 nobs docker debug --profile -p
 nobs docker debug --verbose
+nobs docker debug --no-verbose
 nobs docker debug <services>
 nobs docker debug --dir
 nobs docker debug --help -h
@@ -43,6 +47,7 @@ nobs docker start --compose -c
 nobs docker start --scenario -s
 nobs docker start --profile -p
 nobs docker start --verbose
+nobs docker start --no-verbose
 nobs docker start <services>
 nobs docker start --dir
 nobs docker start --help -h
@@ -51,6 +56,7 @@ nobs docker stop --compose -c
 nobs docker stop --scenario -s
 nobs docker stop --profile -p
 nobs docker stop --verbose
+nobs docker stop --no-verbose
 nobs docker stop <services>
 nobs docker stop --dir
 nobs docker stop --help -h
@@ -59,6 +65,7 @@ nobs docker restart --compose -c
 nobs docker restart --scenario -s
 nobs docker restart --profile -p
 nobs docker restart --verbose
+nobs docker restart --no-verbose
 nobs docker restart <services>
 nobs docker restart --dir
 nobs docker restart --help -h
@@ -67,6 +74,7 @@ nobs docker logs --compose -c
 nobs docker logs --scenario -s
 nobs docker logs --profile -p
 nobs docker logs --verbose
+nobs docker logs --no-verbose
 nobs docker logs --follow -f
 nobs docker logs --tail -t
 nobs docker logs <services>
@@ -77,6 +85,7 @@ nobs docker ps --compose -c
 nobs docker ps --scenario -s
 nobs docker ps --profile -p
 nobs docker ps --verbose
+nobs docker ps --no-verbose
 nobs docker ps <services>
 nobs docker ps --dir
 nobs docker ps --help -h
@@ -85,6 +94,7 @@ nobs docker destroy --compose -c
 nobs docker destroy --scenario -s
 nobs docker destroy --profile -p
 nobs docker destroy --verbose
+nobs docker destroy --no-verbose
 nobs docker destroy --volumes
 nobs docker destroy <services>
 nobs docker destroy --dir
@@ -94,6 +104,7 @@ nobs docker rm --compose -c
 nobs docker rm --scenario -s
 nobs docker rm --profile -p
 nobs docker rm --verbose
+nobs docker rm --no-verbose
 nobs docker rm --volumes
 nobs docker rm --force
 nobs docker rm <services>
@@ -104,6 +115,7 @@ nobs docker update --compose -c
 nobs docker update --scenario -s
 nobs docker update --profile -p
 nobs docker update --verbose
+nobs docker update --no-verbose
 nobs docker update --volumes
 nobs docker update <services>
 nobs docker update --dir
@@ -461,6 +473,7 @@ nobs <workshop> setup
 nobs <workshop> setup --help -h
 nobs <workshop> up
 nobs <workshop> up --build
+nobs <workshop> up --no-build
 nobs <workshop> up <services>
 nobs <workshop> up --help -h
 nobs <workshop> down
