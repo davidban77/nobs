@@ -4,18 +4,18 @@ use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 use std::str::Chars;
 
+#[path = "support/tree.rs"]
+mod tree;
+
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use nobs_cli::{Cli, Command, WorkshopCli};
+use tree::commands;
 
 const STAND_IN: &str = "1";
 const WORKSHOP_NAMES: [&str; 2] = [STAND_IN, "nobs-t-one"];
 const SHOWN_AS_RUN: [ErrorKind; 2] = [ErrorKind::DisplayHelp, ErrorKind::DisplayVersion];
-const NAMED_ONLY: [ErrorKind; 3] = [
-    ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand,
-    ErrorKind::MissingRequiredArgument,
-    ErrorKind::MissingSubcommand,
-];
+const LAUNCHERS: [&str; 2] = ["orb -m clab <path>", "./nobs"];
 
 struct Line {
     number: usize,
@@ -27,8 +27,11 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-fn is_command(text: &str) -> bool {
-    text == "nobs" || text.starts_with("nobs ")
+fn as_nobs(text: &str) -> Option<String> {
+    ["nobs"].iter().chain(&LAUNCHERS).find_map(|start| {
+        let rest = text.strip_prefix(start)?;
+        (rest.is_empty() || rest.starts_with(' ')).then(|| format!("nobs{rest}"))
+    })
 }
 
 fn line_of(text: &str, offset: usize) -> usize {
@@ -36,17 +39,17 @@ fn line_of(text: &str, offset: usize) -> usize {
 }
 
 fn prompt(number: usize, line: &str) -> Option<Line> {
-    let text = line.strip_prefix("$ ").filter(|rest| is_command(rest))?;
+    let text = as_nobs(line.strip_prefix("$ ")?)?;
     Some(Line {
         number,
-        text: text.to_string(),
+        text,
         typed: true,
     })
 }
 
 fn span(number: usize, text: &str) -> Option<Line> {
-    let text = text.replace('\n', " ").trim().to_string();
-    is_command(&text).then_some(Line {
+    let text = as_nobs(text.replace('\n', " ").trim())?;
+    Some(Line {
         number,
         text,
         typed: false,
@@ -204,17 +207,35 @@ fn placeholder(chars: &mut Peekable<Chars>) -> bool {
     named
 }
 
-fn parsed<T>(result: Result<T, clap::Error>, typed: bool) -> Result<Option<T>, String> {
+fn parsed<T>(result: Result<T, clap::Error>) -> Result<Option<T>, String> {
     match result {
         Ok(value) => Ok(Some(value)),
         Err(error) if SHOWN_AS_RUN.contains(&error.kind()) => Ok(None),
-        Err(error) if !typed && NAMED_ONLY.contains(&error.kind()) => Ok(None),
         Err(error) => Err(error.to_string()),
     }
 }
 
+fn command_paths() -> Vec<String> {
+    let cli = Cli::command();
+    let workshop = WorkshopCli::command();
+    let mut found = commands(&cli, "nobs");
+    found.extend(commands(&workshop, "nobs"));
+    for name in WORKSHOP_NAMES {
+        found.extend(commands(&workshop, &format!("nobs {name}")));
+    }
+    found.into_iter().map(|(path, _)| path).collect()
+}
+
 fn accepted(words: &[OsString], typed: bool) -> Result<(), String> {
-    let Some(cli) = parsed(Cli::try_parse_from(words), typed)? else {
+    let path: Vec<_> = words.iter().map(|word| word.to_string_lossy()).collect();
+    match parses(words) {
+        Err(_) if !typed && command_paths().contains(&path.join(" ")) => Ok(()),
+        result => result,
+    }
+}
+
+fn parses(words: &[OsString]) -> Result<(), String> {
+    let Some(cli) = parsed(Cli::try_parse_from(words))? else {
         return Ok(());
     };
     let Some(Command::External(rest)) = cli.command else {
@@ -230,7 +251,7 @@ fn accepted(words: &[OsString], typed: bool) -> Result<(), String> {
             "{first} is no command of nobs and no workshop name the guides use"
         ));
     };
-    parsed(WorkshopCli::try_parse_from(args), typed).map(|_| ())
+    parsed(WorkshopCli::try_parse_from(args)).map(|_| ())
 }
 
 fn has_extension(path: &Path, extension: &str) -> bool {

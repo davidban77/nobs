@@ -2,8 +2,12 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
+#[path = "support/tree.rs"]
+mod tree;
+
 use clap::CommandFactory;
 use nobs_cli::{Cli, WorkshopCli};
+use tree::commands;
 
 const SURFACE: &str = include_str!("surface.txt");
 
@@ -30,29 +34,24 @@ fn surface() -> String {
         ("nobs <workshop>", WorkshopCli::command()),
     ] {
         root.build();
-        walk(&root, path, &mut lines);
+        for (path, command) in commands(&root, path) {
+            lines.push(path.clone());
+            lines.extend(
+                command
+                    .get_all_aliases()
+                    .map(|alias| format!("{path} alias {alias}")),
+            );
+            if command.is_hide_set() {
+                lines.push(format!("{path} hidden"));
+            }
+            lines.extend(
+                command
+                    .get_arguments()
+                    .map(|argument| format!("{path} {}", names(argument))),
+            );
+        }
     }
     lines.join("\n") + "\n"
-}
-
-fn walk(command: &clap::Command, path: &str, lines: &mut Vec<String>) {
-    lines.push(path.to_string());
-    lines.extend(
-        command
-            .get_all_aliases()
-            .map(|alias| format!("{path} alias {alias}")),
-    );
-    if command.is_hide_set() {
-        lines.push(format!("{path} hidden"));
-    }
-    lines.extend(
-        command
-            .get_arguments()
-            .map(|argument| format!("{path} {}", names(argument))),
-    );
-    for sub in command.get_subcommands() {
-        walk(sub, &format!("{path} {}", sub.get_name()), lines);
-    }
 }
 
 fn names(argument: &clap::Arg) -> String {
@@ -147,6 +146,25 @@ fn the_device_check_help_gives_its_about_and_the_save_flag_words() {
             "--save <FOLDER>  Also write each configuration nobs fetches, or why the fetch failed, to a file in this folder; the folder must not exist"
         ),
         "{check}"
+    );
+}
+
+#[test]
+fn the_docker_and_up_help_pages_show_the_negated_flags() {
+    let ps = help(&["docker", "ps"]);
+    assert!(
+        ps.contains("--no-verbose       Let Docker Compose print as usual; this is the default"),
+        "{ps}"
+    );
+
+    let workshop = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/fixtures/workshop-one"
+    );
+    let up = help(&["--dir", workshop, "up"]);
+    assert!(
+        up.contains("--no-build  Start without rebuilding the images; this is the default"),
+        "{up}"
     );
 }
 

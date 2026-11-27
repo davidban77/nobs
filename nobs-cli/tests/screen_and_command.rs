@@ -14,6 +14,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Scratch {
+        // The trailing space makes the tests fail when a path is trimmed on its way to the command.
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("screen-and-command ");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();

@@ -20,9 +20,9 @@ A release of nobs holds four files: three archives and one list of checksums. An
 To use nobs, put the archive for your machine and `SHA256SUMS` in one folder. In that folder, check the archive, unpack it and run the program (here on a Mac):
 
 ```
-shasum -a 256 -c SHA256SUMS --ignore-missing
-tar xzf nobs-v0.1.0-macos-arm64.tar.gz
-./nobs --version
+$ shasum -a 256 -c SHA256SUMS --ignore-missing
+$ tar xzf nobs-v0.1.0-macos-arm64.tar.gz
+$ ./nobs --version
 ```
 
 On Linux, `sha256sum -c SHA256SUMS --ignore-missing` does the same check, and you unpack the Linux archive instead. `--ignore-missing` skips the lines of the archives you did not download. The last command prints `nobs` and the version on one line, for example:
@@ -3046,7 +3046,7 @@ In the last case nobs prints the `nobs: ssh <name>: …` line of the cause, then
 
 With `--save FOLDER`, the folder must not exist, as for `check`. Before nobs asks, it checks that it can make the folder, and it leaves nothing on the disk. When the folder cannot be made, nobs prints `nobs: cannot make <folder>: <cause>`, asks nothing, sends nothing and exits with 1. nobs makes the folder only when the device took the push. Then it writes in the folder the file of the fetch after the push.
 
-When nobs finds no lab folder, it prints the line of [Where nobs runs from](#where-nobs-runs-from) and exits with 1. A usage error, such as `nobs device run srl1` without a command, exits with 2.
+When nobs finds no lab folder, it prints the line of [Where nobs runs from](#where-nobs-runs-from) and exits with 1. A usage error, such as `nobs device run` with a node name but without the command, exits with 2.
 
 ## Sonda
 

@@ -9,10 +9,14 @@ mod stub;
 #[path = "support/product_code.rs"]
 mod product_code;
 
+#[path = "support/tree.rs"]
+mod tree;
+
 use clap::CommandFactory;
 use nobs_cli::{Cli, WorkshopCli};
 use product_code::product_code;
 use stub::Stub;
+use tree::commands;
 
 const NAMES: [&str; 8] = [
     "METRICS_URL",
@@ -476,17 +480,16 @@ fn each_name_is_spelled_in_one_place() {
 }
 
 fn long_words(command: &clap::Command, path: &str, found: &mut Vec<(String, String, String)>) {
-    for argument in command.get_arguments() {
-        if let Some(long) = argument.get_long() {
-            found.push((
-                path.to_string(),
-                long.to_string(),
-                argument.get_id().to_string(),
-            ));
+    for (path, command) in commands(command, path) {
+        for argument in command.get_arguments() {
+            if let Some(long) = argument.get_long() {
+                found.push((
+                    path.clone(),
+                    long.to_string(),
+                    argument.get_id().to_string(),
+                ));
+            }
         }
-    }
-    for sub in command.get_subcommands() {
-        long_words(sub, &format!("{path} {}", sub.get_name()), found);
     }
 }
 
