@@ -200,9 +200,16 @@ pub enum WorkshopCommand {
     Up {
         #[arg(
             long,
+            overrides_with = "no_build",
             help = "Rebuild the images built from the workshop's files before starting"
         )]
         build: bool,
+        #[arg(
+            long,
+            overrides_with = "build",
+            help = "Start without rebuilding the images; this is the default"
+        )]
+        no_build: bool,
         #[arg(help = SERVICES_HELP)]
         services: Vec<String>,
     },
@@ -1480,8 +1487,18 @@ pub struct ComposeFlags {
         help = "Compose profile to enable; repeat the flag for several"
     )]
     profile: Vec<String>,
-    #[arg(long, help = "Make Docker Compose print more")]
+    #[arg(
+        long,
+        overrides_with = "no_verbose",
+        help = "Make Docker Compose print more"
+    )]
     verbose: bool,
+    #[arg(
+        long,
+        overrides_with = "verbose",
+        help = "Let Docker Compose print as usual; this is the default"
+    )]
+    no_verbose: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -2036,7 +2053,9 @@ fn run_workshop_command(
     let stack = || compose_in(located, None);
     match cli.command {
         WorkshopCommand::Setup => bootstrap_and_say(&located.dir, true).unwrap_or(0),
-        WorkshopCommand::Up { build, services } => {
+        WorkshopCommand::Up {
+            build, services, ..
+        } => {
             if let Some(code) = guard(located, here, given, runner) {
                 return code;
             }
@@ -6474,6 +6493,48 @@ mod tests {
             for old in olds {
                 assert!(old.is_hide_set(), "{:?}", old.get_long());
             }
+        }
+    }
+
+    fn pair_cases(name: &str) -> [(Vec<String>, bool); 5] {
+        let on = format!("--{name}");
+        let off = format!("--no-{name}");
+        [
+            (vec![], false),
+            (vec![on.clone()], true),
+            (vec![off.clone()], false),
+            (vec![on.clone(), off.clone()], false),
+            (vec![off, on], true),
+        ]
+    }
+
+    #[test]
+    fn the_last_of_verbose_and_no_verbose_wins() {
+        for (flags, expected) in pair_cases("verbose") {
+            let mut line = vec!["nobs".to_string(), "docker".into(), "build".into()];
+            line.extend(flags);
+            let verbose = match Cli::try_parse_from(&line).unwrap().command {
+                Some(Command::Docker {
+                    command: DockerCommand::Build { flags, .. },
+                }) => flags.verbose,
+                other => panic!("{other:?}"),
+            };
+
+            assert_eq!(verbose, expected, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn the_last_of_build_and_no_build_wins() {
+        for (flags, expected) in pair_cases("build") {
+            let mut line = vec!["up".to_string()];
+            line.extend(flags);
+            let build = match WorkshopCli::try_parse_from(&line).unwrap().command {
+                WorkshopCommand::Up { build, .. } => build,
+                other => panic!("{other:?}"),
+            };
+
+            assert_eq!(build, expected, "{line:?}");
         }
     }
 

@@ -1,114 +1,103 @@
+use std::collections::HashSet;
+use std::path::Path;
 use std::process::Command;
 
-const DOCKER_COMMANDS: [&str; 13] = [
-    "build", "pull", "exec", "debug", "start", "stop", "restart", "logs", "ps", "destroy", "rm",
-    "update", "network",
-];
+#[path = "support/tree.rs"]
+mod tree;
 
-const CONTAINERLAB_COMMANDS: [&str; 3] = ["deploy", "destroy", "inspect"];
+use clap::CommandFactory;
+use nobs_cli::{Cli, WorkshopCli};
+use tree::commands;
+
+const SURFACE: &str = include_str!("surface.txt");
 
 #[test]
-fn the_help_pages_name_the_docker_group_and_exactly_its_thirteen_commands() {
-    let commands = commands_block(&help(&[]));
-    assert!(commands.iter().any(|word| word == "docker"), "{commands:?}");
+fn every_command_and_flag_of_both_trees_is_in_surface_txt_in_tree_order() {
+    let actual = surface();
+    if actual == SURFACE {
+        return;
+    }
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("surface.txt");
+    std::fs::write(&path, &actual).unwrap();
+    panic!(
+        "the command tree differs from tests/surface.txt; the tree of the code is in {}\nonly in tests/surface.txt:\n{}\nonly in the code:\n{}",
+        path.display(),
+        lines_only_in(SURFACE, &actual).join("\n"),
+        lines_only_in(&actual, SURFACE).join("\n"),
+    );
+}
 
-    let commands = commands_block(&help(&["docker"]));
-    assert_eq!(commands, DOCKER_COMMANDS);
+fn surface() -> String {
+    let mut lines = Vec::new();
+    for (path, mut root) in [
+        ("nobs", Cli::command()),
+        ("nobs <workshop>", WorkshopCli::command()),
+    ] {
+        root.build();
+        for (path, command) in commands(&root, path) {
+            lines.push(path.clone());
+            lines.extend(
+                command
+                    .get_all_aliases()
+                    .map(|alias| format!("{path} alias {alias}")),
+            );
+            if command.is_hide_set() {
+                lines.push(format!("{path} hidden"));
+            }
+            lines.extend(
+                command
+                    .get_arguments()
+                    .map(|argument| format!("{path} {}", names(argument))),
+            );
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+fn names(argument: &clap::Arg) -> String {
+    let mut names: Vec<String> = argument
+        .get_long()
+        .into_iter()
+        .map(|long| format!("--{long}"))
+        .collect();
+    names.extend(
+        argument
+            .get_all_aliases()
+            .into_iter()
+            .flatten()
+            .map(|alias| format!("--{alias}")),
+    );
+    names.extend(argument.get_short().map(|short| format!("-{short}")));
+    names.extend(
+        argument
+            .get_all_short_aliases()
+            .into_iter()
+            .flatten()
+            .map(|short| format!("-{short}")),
+    );
+    if names.is_empty() {
+        names.push(format!("<{}>", argument.get_id()));
+    }
+    if argument.is_hide_set() {
+        names.push("hidden".to_string());
+    }
+    names.join(" ")
+}
+
+fn lines_only_in<'a>(text: &'a str, other: &str) -> Vec<&'a str> {
+    let other: HashSet<&str> = other.lines().collect();
+    text.lines().filter(|line| !other.contains(line)).collect()
 }
 
 #[test]
-fn the_rm_help_shows_its_flags_and_never_says_netobs() {
+fn the_rm_help_never_says_netobs() {
     let help = help(&["docker", "rm"]);
-    assert!(help.contains("--volumes"), "{help}");
-    assert!(help.contains("--force"), "{help}");
     assert!(!help.contains("netobs"), "{help}");
 }
 
 #[test]
-fn the_help_pages_name_the_containerlab_group_and_exactly_its_three_commands() {
-    let commands = commands_block(&help(&[]));
-    assert!(
-        commands.iter().any(|word| word == "containerlab"),
-        "{commands:?}"
-    );
-
-    let commands = commands_block(&help(&["containerlab"]));
-    assert_eq!(commands, CONTAINERLAB_COMMANDS);
-}
-
-const LAB_COMMANDS: [&str; 7] = [
-    "deploy", "destroy", "purge", "show", "prepare", "update", "rebuild",
-];
-
-#[test]
-fn the_help_pages_name_the_lab_group_and_exactly_its_seven_commands() {
-    let commands = commands_block(&help(&[]));
-    assert!(commands.iter().any(|word| word == "lab"), "{commands:?}");
-
-    let commands = commands_block(&help(&["lab"]));
-    assert_eq!(commands, LAB_COMMANDS);
-}
-
-const UTILS_COMMANDS: [&str; 2] = ["load-nautobot", "delete-nautobot"];
-
-#[test]
-fn the_help_pages_name_the_utils_group_its_two_commands_and_their_flags() {
-    let commands = commands_block(&help(&[]));
-    assert!(commands.iter().any(|word| word == "utils"), "{commands:?}");
-
-    let commands = commands_block(&help(&["utils"]));
-    assert_eq!(commands, UTILS_COMMANDS);
-
-    let flags: [(&str, &[&str]); 2] = [
-        (
-            "load-nautobot",
-            &[
-                "--nautobot-url <URL>",
-                "--nautobot-token <TOKEN>",
-                "--topology <FILE>",
-                "--extra-topology-vars <FILE>",
-            ],
-        ),
-        (
-            "delete-nautobot",
-            &["--nautobot-url <URL>", "--nautobot-token <TOKEN>"],
-        ),
-    ];
-    for (command, flags) in flags {
-        let help = help(&["utils", command]);
-        for flag in flags {
-            assert!(
-                help.lines().any(|line| line.trim_start().starts_with(flag)),
-                "{command} {flag}\n{help}"
-            );
-        }
-    }
-}
-
-const SONDA_COMMANDS: [&str; 10] = [
-    "health", "ready", "list", "show", "stats", "delete", "load", "event", "metrics", "version",
-];
-
-#[test]
-fn the_help_pages_name_the_sonda_group_and_exactly_its_ten_commands() {
-    let commands = commands_block(&help(&[]));
-    for group in ["docker", "containerlab", "sonda"] {
-        assert!(commands.iter().any(|word| word == group), "{commands:?}");
-    }
-
-    let commands = commands_block(&help(&["sonda"]));
-    assert_eq!(commands, SONDA_COMMANDS);
-}
-
-const DEVICE_COMMANDS: [&str; 7] = ["fetch", "run", "shell", "render", "push", "check", "flap"];
-
-#[test]
-fn the_help_pages_name_the_device_group_exactly_its_seven_commands_and_their_words() {
+fn the_device_help_pages_give_their_about_texts_and_value_words() {
     let root = help(&[]);
-    assert!(
-        commands_block(&root).iter().any(|word| word == "device"),
-        "{root}"
-    );
     assert!(
         root.contains(
             "Commands for the devices of a lab: fetch, run, shell, render, push, flap and check"
@@ -117,7 +106,6 @@ fn the_help_pages_name_the_device_group_exactly_its_seven_commands_and_their_wor
     );
 
     let group = help(&["device"]);
-    assert_eq!(commands_block(&group), DEVICE_COMMANDS);
     for words in [
         "Print the running configuration of a device, one set line per setting",
         "Run one command on a device and print its answer",
@@ -162,10 +150,22 @@ fn the_device_check_help_gives_its_about_and_the_save_flag_words() {
 }
 
 #[test]
-fn a_sonda_command_help_shows_the_server_and_key_flags() {
-    let help = help(&["sonda", "list"]);
-    assert!(help.contains("--server"), "{help}");
-    assert!(help.contains("--api-key"), "{help}");
+fn the_docker_and_up_help_pages_show_the_negated_flags() {
+    let ps = help(&["docker", "ps"]);
+    assert!(
+        ps.contains("--no-verbose       Let Docker Compose print as usual; this is the default"),
+        "{ps}"
+    );
+
+    let workshop = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/fixtures/workshop-one"
+    );
+    let up = help(&["--dir", workshop, "up"]);
+    assert!(
+        up.contains("--no-build  Start without rebuilding the images; this is the default"),
+        "{up}"
+    );
 }
 
 #[test]
@@ -193,28 +193,8 @@ fn no_containerlab_help_page_says_show_netobs_or_labcli() {
 }
 
 #[test]
-fn the_root_help_names_the_groups_workshops_and_the_dir_flag() {
+fn the_root_help_gives_the_about_texts_of_setup_and_preflight() {
     let help = help(&[]);
-    let commands = commands_block(&help);
-    for command in ["docker", "containerlab", "sonda", "workshops", "project"] {
-        assert!(commands.iter().any(|word| word == command), "{commands:?}");
-    }
-    assert!(help.contains("--dir <PATH>"), "{help}");
-}
-
-#[test]
-fn the_root_help_names_tui() {
-    let commands = commands_block(&help(&[]));
-    assert!(commands.iter().any(|word| word == "tui"), "{commands:?}");
-}
-
-#[test]
-fn the_root_help_names_setup_and_preflight_with_their_descriptions() {
-    let help = help(&[]);
-    let commands = commands_block(&help);
-    for command in ["setup", "preflight", "workshops"] {
-        assert!(commands.iter().any(|word| word == command), "{commands:?}");
-    }
     assert!(
         help.contains("Check that this machine can run a workshop"),
         "{help}"
@@ -227,130 +207,6 @@ fn the_root_help_names_setup_and_preflight_with_their_descriptions() {
     );
 }
 
-#[test]
-fn the_workshop_help_page_inside_a_workshop_names_exactly_the_twenty_six_commands_in_order() {
-    let help = workshop_help(&["nobs-t-one", "--help"]);
-    assert_eq!(
-        commands_block(&help),
-        [
-            "setup",
-            "up",
-            "down",
-            "destroy",
-            "restart",
-            "ps",
-            "logs",
-            "exec",
-            "build",
-            "status",
-            "alerts",
-            "silences",
-            "load-infrahub",
-            "schema",
-            "maintenance",
-            "devices",
-            "rca",
-            "evidence",
-            "cycle",
-            "page",
-            "try-it",
-            "flap-interface",
-            "incident",
-            "scenarios",
-            "reset",
-            "preflight"
-        ]
-    );
-}
-
-#[test]
-fn the_workshop_schema_help_names_load() {
-    let help = workshop_help(&["nobs-t-one", "schema", "--help"]);
-    assert_eq!(commands_block(&help), ["load"]);
-}
-
-#[test]
-fn the_workshop_status_help_shows_the_seven_address_flags() {
-    let help = workshop_help(&["nobs-t-one", "status", "--help"]);
-    for flag in [
-        "--metrics-url",
-        "--logs-url",
-        "--alerts-url",
-        "--sot-url",
-        "--grafana-url",
-        "--flows-url",
-        "--sonda-url",
-    ] {
-        let option = format!("{flag} <URL>");
-        assert!(
-            help.lines()
-                .any(|line| line.trim_start().starts_with(&option)),
-            "{flag}\n{help}"
-        );
-    }
-}
-
-#[test]
-fn the_cascade_command_help_pages_name_every_carried_flag_with_its_short_form() {
-    let pages: [(&str, &[&str]); 3] = [
-        (
-            "flap-interface",
-            &[
-                "-d, --device <DEVICE>",
-                "-i, --interface <INTERFACE>",
-                "--duration <DURATION>",
-                "--up-duration <DURATION>",
-                "--down-duration <DURATION>",
-                "--cascade-delay <DURATION>",
-                "--no-cascade",
-                "--sonda-url <URL>",
-                "--loki-url <URL>",
-                "--sonda-api-key <KEY>",
-                "--follow",
-            ],
-        ),
-        (
-            "incident",
-            &[
-                "-d, --device <DEVICE>",
-                "--primary-interface <INTERFACE>",
-                "--backup-interface <INTERFACE>",
-                "-k, --kind <KIND>",
-                "--duration <DURATION>",
-                "--sonda-url <URL>",
-                "--prom-url <URL>",
-                "--sonda-api-key <KEY>",
-                "--follow",
-            ],
-        ),
-        ("scenarios", &["--sonda-url <URL>"]),
-    ];
-
-    for (command, flags) in pages {
-        let help = workshop_help(&["nobs-t-one", command, "--help"]);
-        for flag in flags {
-            assert!(
-                help.lines().any(|line| line.trim_start().starts_with(flag)),
-                "{command} {flag}\n{help}"
-            );
-        }
-    }
-}
-
-fn workshop_help(args: &[&str]) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
-        .args(args)
-        .current_dir(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/workshop-one"),
-        )
-        .env_remove("NOBS_DIR")
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(0), "{args:?}");
-    String::from_utf8(output.stdout).unwrap()
-}
-
 fn help(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_nobs"))
         .args(args)
@@ -360,15 +216,4 @@ fn help(args: &[&str]) -> String {
 
     assert_eq!(output.status.code(), Some(0), "{args:?}");
     String::from_utf8(output.stdout).unwrap()
-}
-
-fn commands_block(help: &str) -> Vec<String> {
-    help.lines()
-        .skip_while(|line| *line != "Commands:")
-        .skip(1)
-        .take_while(|line| !line.trim().is_empty())
-        .filter_map(|line| line.split_whitespace().next())
-        .filter(|word| *word != "help")
-        .map(str::to_owned)
-        .collect()
 }

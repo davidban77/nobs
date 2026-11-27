@@ -1,0 +1,717 @@
+nobs
+nobs --dir
+nobs --help -h
+nobs --version -V
+nobs docker
+nobs docker --dir
+nobs docker --help -h
+nobs docker build
+nobs docker build --compose -c
+nobs docker build --scenario -s
+nobs docker build --profile -p
+nobs docker build --verbose
+nobs docker build --no-verbose
+nobs docker build <services>
+nobs docker build --dir
+nobs docker build --help -h
+nobs docker pull
+nobs docker pull --compose -c
+nobs docker pull --scenario -s
+nobs docker pull --profile -p
+nobs docker pull --verbose
+nobs docker pull --no-verbose
+nobs docker pull <services>
+nobs docker pull --dir
+nobs docker pull --help -h
+nobs docker exec
+nobs docker exec --compose -c
+nobs docker exec --scenario -s
+nobs docker exec --profile -p
+nobs docker exec --verbose
+nobs docker exec --no-verbose
+nobs docker exec <service>
+nobs docker exec <command>
+nobs docker exec --dir
+nobs docker exec --help -h
+nobs docker debug
+nobs docker debug --compose -c
+nobs docker debug --scenario -s
+nobs docker debug --profile -p
+nobs docker debug --verbose
+nobs docker debug --no-verbose
+nobs docker debug <services>
+nobs docker debug --dir
+nobs docker debug --help -h
+nobs docker start
+nobs docker start --compose -c
+nobs docker start --scenario -s
+nobs docker start --profile -p
+nobs docker start --verbose
+nobs docker start --no-verbose
+nobs docker start <services>
+nobs docker start --dir
+nobs docker start --help -h
+nobs docker stop
+nobs docker stop --compose -c
+nobs docker stop --scenario -s
+nobs docker stop --profile -p
+nobs docker stop --verbose
+nobs docker stop --no-verbose
+nobs docker stop <services>
+nobs docker stop --dir
+nobs docker stop --help -h
+nobs docker restart
+nobs docker restart --compose -c
+nobs docker restart --scenario -s
+nobs docker restart --profile -p
+nobs docker restart --verbose
+nobs docker restart --no-verbose
+nobs docker restart <services>
+nobs docker restart --dir
+nobs docker restart --help -h
+nobs docker logs
+nobs docker logs --compose -c
+nobs docker logs --scenario -s
+nobs docker logs --profile -p
+nobs docker logs --verbose
+nobs docker logs --no-verbose
+nobs docker logs --follow -f
+nobs docker logs --tail -t
+nobs docker logs <services>
+nobs docker logs --dir
+nobs docker logs --help -h
+nobs docker ps
+nobs docker ps --compose -c
+nobs docker ps --scenario -s
+nobs docker ps --profile -p
+nobs docker ps --verbose
+nobs docker ps --no-verbose
+nobs docker ps <services>
+nobs docker ps --dir
+nobs docker ps --help -h
+nobs docker destroy
+nobs docker destroy --compose -c
+nobs docker destroy --scenario -s
+nobs docker destroy --profile -p
+nobs docker destroy --verbose
+nobs docker destroy --no-verbose
+nobs docker destroy --volumes
+nobs docker destroy <services>
+nobs docker destroy --dir
+nobs docker destroy --help -h
+nobs docker rm
+nobs docker rm --compose -c
+nobs docker rm --scenario -s
+nobs docker rm --profile -p
+nobs docker rm --verbose
+nobs docker rm --no-verbose
+nobs docker rm --volumes
+nobs docker rm --force
+nobs docker rm <services>
+nobs docker rm --dir
+nobs docker rm --help -h
+nobs docker update
+nobs docker update --compose -c
+nobs docker update --scenario -s
+nobs docker update --profile -p
+nobs docker update --verbose
+nobs docker update --no-verbose
+nobs docker update --volumes
+nobs docker update <services>
+nobs docker update --dir
+nobs docker update --help -h
+nobs docker network
+nobs docker network <action>
+nobs docker network --name -n
+nobs docker network --driver
+nobs docker network --subnet
+nobs docker network --dir
+nobs docker network --help -h
+nobs docker help
+nobs docker help build
+nobs docker help pull
+nobs docker help exec
+nobs docker help debug
+nobs docker help start
+nobs docker help stop
+nobs docker help restart
+nobs docker help logs
+nobs docker help ps
+nobs docker help destroy
+nobs docker help rm
+nobs docker help update
+nobs docker help network
+nobs docker help help
+nobs containerlab
+nobs containerlab --dir
+nobs containerlab --help -h
+nobs containerlab deploy
+nobs containerlab deploy <topology>
+nobs containerlab deploy --sudo
+nobs containerlab deploy --no-sudo
+nobs containerlab deploy --sudo-no-prompt
+nobs containerlab deploy --dir
+nobs containerlab deploy --help -h
+nobs containerlab destroy
+nobs containerlab destroy <topology>
+nobs containerlab destroy --sudo
+nobs containerlab destroy --no-sudo
+nobs containerlab destroy --sudo-no-prompt
+nobs containerlab destroy --dir
+nobs containerlab destroy --help -h
+nobs containerlab inspect
+nobs containerlab inspect <topology>
+nobs containerlab inspect --sudo
+nobs containerlab inspect --no-sudo
+nobs containerlab inspect --sudo-no-prompt
+nobs containerlab inspect --dir
+nobs containerlab inspect --help -h
+nobs containerlab help
+nobs containerlab help deploy
+nobs containerlab help destroy
+nobs containerlab help inspect
+nobs containerlab help help
+nobs lab
+nobs lab --dir
+nobs lab --help -h
+nobs lab deploy
+nobs lab deploy --scenario -s
+nobs lab deploy --topology
+nobs lab deploy --sudo
+nobs lab deploy --no-sudo
+nobs lab deploy --sudo-no-prompt
+nobs lab deploy --network-name
+nobs lab deploy --subnet
+nobs lab deploy --wait
+nobs lab deploy --dir
+nobs lab deploy --help -h
+nobs lab destroy
+nobs lab destroy --scenario -s
+nobs lab destroy --topology
+nobs lab destroy --sudo
+nobs lab destroy --no-sudo
+nobs lab destroy --sudo-no-prompt
+nobs lab destroy --dir
+nobs lab destroy --help -h
+nobs lab purge
+nobs lab purge --topology
+nobs lab purge --sudo
+nobs lab purge --no-sudo
+nobs lab purge --sudo-no-prompt
+nobs lab purge --dir
+nobs lab purge --help -h
+nobs lab show
+nobs lab show --scenario -s
+nobs lab show --topology
+nobs lab show --sudo
+nobs lab show --no-sudo
+nobs lab show --sudo-no-prompt
+nobs lab show --dir
+nobs lab show --help -h
+nobs lab prepare
+nobs lab prepare --scenario -s
+nobs lab prepare --topology
+nobs lab prepare --sudo
+nobs lab prepare --no-sudo
+nobs lab prepare --sudo-no-prompt
+nobs lab prepare --network-name
+nobs lab prepare --subnet
+nobs lab prepare --wait
+nobs lab prepare --dir
+nobs lab prepare --help -h
+nobs lab update
+nobs lab update <services>
+nobs lab update --scenario -s
+nobs lab update --wait
+nobs lab update --dir
+nobs lab update --help -h
+nobs lab rebuild
+nobs lab rebuild <services>
+nobs lab rebuild --scenario -s
+nobs lab rebuild --wait
+nobs lab rebuild --dir
+nobs lab rebuild --help -h
+nobs lab help
+nobs lab help deploy
+nobs lab help destroy
+nobs lab help purge
+nobs lab help show
+nobs lab help prepare
+nobs lab help update
+nobs lab help rebuild
+nobs lab help help
+nobs utils
+nobs utils --dir
+nobs utils --help -h
+nobs utils load-nautobot
+nobs utils load-nautobot --nautobot-url
+nobs utils load-nautobot --nautobot-token
+nobs utils load-nautobot --topology
+nobs utils load-nautobot --extra-topology-vars
+nobs utils load-nautobot --dir
+nobs utils load-nautobot --help -h
+nobs utils delete-nautobot
+nobs utils delete-nautobot --nautobot-url
+nobs utils delete-nautobot --nautobot-token
+nobs utils delete-nautobot --dir
+nobs utils delete-nautobot --help -h
+nobs utils help
+nobs utils help load-nautobot
+nobs utils help delete-nautobot
+nobs utils help help
+nobs project
+nobs project --project
+nobs project --sudo
+nobs project --no-sudo
+nobs project --dir
+nobs project --help -h
+nobs project render
+nobs project render --check
+nobs project render --dir
+nobs project render --help -h
+nobs project deploy
+nobs project deploy --sudo-no-prompt
+nobs project deploy --dir
+nobs project deploy --help -h
+nobs project help
+nobs project help render
+nobs project help deploy
+nobs project help help
+nobs device
+nobs device --dir
+nobs device --help -h
+nobs device fetch
+nobs device fetch <name>
+nobs device fetch --dir
+nobs device fetch --help -h
+nobs device run
+nobs device run <name>
+nobs device run <command>
+nobs device run --dir
+nobs device run --help -h
+nobs device shell
+nobs device shell <name>
+nobs device shell --dir
+nobs device shell --help -h
+nobs device render
+nobs device render <name>
+nobs device render --dir
+nobs device render --help -h
+nobs device push
+nobs device push <name>
+nobs device push --yes
+nobs device push --save
+nobs device push --dir
+nobs device push --help -h
+nobs device check
+nobs device check --save
+nobs device check --dir
+nobs device check --help -h
+nobs device flap
+nobs device flap <name>
+nobs device flap <interface>
+nobs device flap --yes
+nobs device flap --delay
+nobs device flap --count
+nobs device flap --dir
+nobs device flap --help -h
+nobs device help
+nobs device help fetch
+nobs device help run
+nobs device help shell
+nobs device help render
+nobs device help push
+nobs device help check
+nobs device help flap
+nobs device help help
+nobs sonda
+nobs sonda --server
+nobs sonda --api-key
+nobs sonda --dir
+nobs sonda --help -h
+nobs sonda health
+nobs sonda health --server
+nobs sonda health --api-key
+nobs sonda health --dir
+nobs sonda health --help -h
+nobs sonda ready
+nobs sonda ready --server
+nobs sonda ready --api-key
+nobs sonda ready --dir
+nobs sonda ready --help -h
+nobs sonda list
+nobs sonda list --server
+nobs sonda list --api-key
+nobs sonda list --dir
+nobs sonda list --help -h
+nobs sonda show
+nobs sonda show <id>
+nobs sonda show --server
+nobs sonda show --api-key
+nobs sonda show --dir
+nobs sonda show --help -h
+nobs sonda stats
+nobs sonda stats <id>
+nobs sonda stats --server
+nobs sonda stats --api-key
+nobs sonda stats --dir
+nobs sonda stats --help -h
+nobs sonda delete
+nobs sonda delete <id>
+nobs sonda delete --server
+nobs sonda delete --api-key
+nobs sonda delete --dir
+nobs sonda delete --help -h
+nobs sonda load
+nobs sonda load <file>
+nobs sonda load --server
+nobs sonda load --api-key
+nobs sonda load --dir
+nobs sonda load --help -h
+nobs sonda event
+nobs sonda event <file>
+nobs sonda event --server
+nobs sonda event --api-key
+nobs sonda event --dir
+nobs sonda event --help -h
+nobs sonda metrics
+nobs sonda metrics --server
+nobs sonda metrics --api-key
+nobs sonda metrics --dir
+nobs sonda metrics --help -h
+nobs sonda version
+nobs sonda version --server
+nobs sonda version --api-key
+nobs sonda version --dir
+nobs sonda version --help -h
+nobs sonda help
+nobs sonda help health
+nobs sonda help ready
+nobs sonda help list
+nobs sonda help show
+nobs sonda help stats
+nobs sonda help delete
+nobs sonda help load
+nobs sonda help event
+nobs sonda help metrics
+nobs sonda help version
+nobs sonda help help
+nobs tui
+nobs tui --server
+nobs tui --api-key
+nobs tui --dir
+nobs tui --help -h
+nobs workshops
+nobs workshops --dir
+nobs workshops --help -h
+nobs setup
+nobs setup --dir
+nobs setup --help -h
+nobs preflight
+nobs preflight --dir
+nobs preflight --help -h
+nobs help
+nobs help docker
+nobs help docker build
+nobs help docker pull
+nobs help docker exec
+nobs help docker debug
+nobs help docker start
+nobs help docker stop
+nobs help docker restart
+nobs help docker logs
+nobs help docker ps
+nobs help docker destroy
+nobs help docker rm
+nobs help docker update
+nobs help docker network
+nobs help containerlab
+nobs help containerlab deploy
+nobs help containerlab destroy
+nobs help containerlab inspect
+nobs help lab
+nobs help lab deploy
+nobs help lab destroy
+nobs help lab purge
+nobs help lab show
+nobs help lab prepare
+nobs help lab update
+nobs help lab rebuild
+nobs help utils
+nobs help utils load-nautobot
+nobs help utils delete-nautobot
+nobs help project
+nobs help project render
+nobs help project deploy
+nobs help device
+nobs help device fetch
+nobs help device run
+nobs help device shell
+nobs help device render
+nobs help device push
+nobs help device check
+nobs help device flap
+nobs help sonda
+nobs help sonda health
+nobs help sonda ready
+nobs help sonda list
+nobs help sonda show
+nobs help sonda stats
+nobs help sonda delete
+nobs help sonda load
+nobs help sonda event
+nobs help sonda metrics
+nobs help sonda version
+nobs help tui
+nobs help workshops
+nobs help setup
+nobs help preflight
+nobs help help
+nobs <workshop>
+nobs <workshop> --help -h
+nobs <workshop> setup
+nobs <workshop> setup --help -h
+nobs <workshop> up
+nobs <workshop> up --build
+nobs <workshop> up --no-build
+nobs <workshop> up <services>
+nobs <workshop> up --help -h
+nobs <workshop> down
+nobs <workshop> down --help -h
+nobs <workshop> destroy
+nobs <workshop> destroy --help -h
+nobs <workshop> restart
+nobs <workshop> restart <services>
+nobs <workshop> restart --help -h
+nobs <workshop> ps
+nobs <workshop> ps <services>
+nobs <workshop> ps --help -h
+nobs <workshop> logs
+nobs <workshop> logs <service>
+nobs <workshop> logs --tail
+nobs <workshop> logs --follow -f
+nobs <workshop> logs --no-follow
+nobs <workshop> logs --help -h
+nobs <workshop> exec
+nobs <workshop> exec <service>
+nobs <workshop> exec <command>
+nobs <workshop> exec --help -h
+nobs <workshop> build
+nobs <workshop> build <services>
+nobs <workshop> build --help -h
+nobs <workshop> status
+nobs <workshop> status --metrics-url
+nobs <workshop> status --prom-url hidden
+nobs <workshop> status --logs-url
+nobs <workshop> status --loki-url hidden
+nobs <workshop> status --alerts-url
+nobs <workshop> status --am-url hidden
+nobs <workshop> status --alertmanager-url hidden
+nobs <workshop> status --sot-url
+nobs <workshop> status --infrahub-url hidden
+nobs <workshop> status --address hidden
+nobs <workshop> status --grafana-url
+nobs <workshop> status --flows-url
+nobs <workshop> status --prefect-url hidden
+nobs <workshop> status --sonda-url
+nobs <workshop> status --help -h
+nobs <workshop> alerts
+nobs <workshop> alerts --alerts-url
+nobs <workshop> alerts --am-url hidden
+nobs <workshop> alerts --alertmanager-url hidden
+nobs <workshop> alerts --label -l
+nobs <workshop> alerts --silenced
+nobs <workshop> alerts --no-silenced
+nobs <workshop> alerts --inhibited
+nobs <workshop> alerts --no-inhibited
+nobs <workshop> alerts --help -h
+nobs <workshop> silences
+nobs <workshop> silences --alerts-url
+nobs <workshop> silences --am-url hidden
+nobs <workshop> silences --alertmanager-url hidden
+nobs <workshop> silences --show-expired
+nobs <workshop> silences --help -h
+nobs <workshop> load-infrahub
+nobs <workshop> load-infrahub --schema
+nobs <workshop> load-infrahub --lab-vars
+nobs <workshop> load-infrahub --skip-schema
+nobs <workshop> load-infrahub --sot-url
+nobs <workshop> load-infrahub --infrahub-url hidden
+nobs <workshop> load-infrahub --address hidden
+nobs <workshop> load-infrahub --token
+nobs <workshop> load-infrahub --help -h
+nobs <workshop> schema
+nobs <workshop> schema --help -h
+nobs <workshop> schema load
+nobs <workshop> schema load <path>
+nobs <workshop> schema load --sot-url
+nobs <workshop> schema load --infrahub-url hidden
+nobs <workshop> schema load --address hidden
+nobs <workshop> schema load --token
+nobs <workshop> schema load --help -h
+nobs <workshop> schema help
+nobs <workshop> schema help load
+nobs <workshop> schema help help
+nobs <workshop> maintenance
+nobs <workshop> maintenance --device -d
+nobs <workshop> maintenance --state
+nobs <workshop> maintenance --clear
+nobs <workshop> maintenance --kind
+nobs <workshop> maintenance --sot-url
+nobs <workshop> maintenance --infrahub-url hidden
+nobs <workshop> maintenance --address hidden
+nobs <workshop> maintenance --token
+nobs <workshop> maintenance --help -h
+nobs <workshop> devices
+nobs <workshop> devices --sot-url
+nobs <workshop> devices --infrahub-url hidden
+nobs <workshop> devices --address hidden
+nobs <workshop> devices --token
+nobs <workshop> devices --help -h
+nobs <workshop> rca
+nobs <workshop> rca <device>
+nobs <workshop> rca <peer>
+nobs <workshop> rca --last
+nobs <workshop> rca --minutes
+nobs <workshop> rca --logs-url
+nobs <workshop> rca --loki-url hidden
+nobs <workshop> rca --help -h
+nobs <workshop> evidence
+nobs <workshop> evidence <device>
+nobs <workshop> evidence <peer>
+nobs <workshop> evidence --afi-safi
+nobs <workshop> evidence --instance
+nobs <workshop> evidence --log-minutes
+nobs <workshop> evidence --log-limit
+nobs <workshop> evidence --metrics-url
+nobs <workshop> evidence --prom-url hidden
+nobs <workshop> evidence --logs-url
+nobs <workshop> evidence --loki-url hidden
+nobs <workshop> evidence --sot-url
+nobs <workshop> evidence --infrahub-url hidden
+nobs <workshop> evidence --address hidden
+nobs <workshop> evidence --token
+nobs <workshop> evidence --help -h
+nobs <workshop> cycle
+nobs <workshop> cycle <device>
+nobs <workshop> cycle <peer>
+nobs <workshop> cycle --trigger
+nobs <workshop> cycle --status
+nobs <workshop> cycle --minutes
+nobs <workshop> cycle --alerts-url
+nobs <workshop> cycle --am-url hidden
+nobs <workshop> cycle --alertmanager-url hidden
+nobs <workshop> cycle --logs-url
+nobs <workshop> cycle --loki-url hidden
+nobs <workshop> cycle --flows-url
+nobs <workshop> cycle --prefect-url hidden
+nobs <workshop> cycle --webhook-url
+nobs <workshop> cycle --help -h
+nobs <workshop> page
+nobs <workshop> page --alert -a
+nobs <workshop> page --device -d
+nobs <workshop> page --peer -p
+nobs <workshop> page --now
+nobs <workshop> page --alerts-url
+nobs <workshop> page --am-url hidden
+nobs <workshop> page --alertmanager-url hidden
+nobs <workshop> page --help -h
+nobs <workshop> try-it
+nobs <workshop> try-it --auto
+nobs <workshop> try-it --timeout
+nobs <workshop> try-it --metrics-url
+nobs <workshop> try-it --prom-url hidden
+nobs <workshop> try-it --logs-url
+nobs <workshop> try-it --loki-url hidden
+nobs <workshop> try-it --alerts-url
+nobs <workshop> try-it --am-url hidden
+nobs <workshop> try-it --alertmanager-url hidden
+nobs <workshop> try-it --sot-url
+nobs <workshop> try-it --infrahub-url hidden
+nobs <workshop> try-it --address hidden
+nobs <workshop> try-it --webhook-url
+nobs <workshop> try-it --token
+nobs <workshop> try-it --help -h
+nobs <workshop> flap-interface
+nobs <workshop> flap-interface --device -d
+nobs <workshop> flap-interface --interface -i
+nobs <workshop> flap-interface --duration
+nobs <workshop> flap-interface --up-duration
+nobs <workshop> flap-interface --down-duration
+nobs <workshop> flap-interface --cascade-delay
+nobs <workshop> flap-interface --no-cascade
+nobs <workshop> flap-interface --sonda-url
+nobs <workshop> flap-interface --loki-url
+nobs <workshop> flap-interface --sonda-api-key
+nobs <workshop> flap-interface --follow
+nobs <workshop> flap-interface --help -h
+nobs <workshop> incident
+nobs <workshop> incident --device -d
+nobs <workshop> incident --primary-interface
+nobs <workshop> incident --backup-interface
+nobs <workshop> incident --kind -k
+nobs <workshop> incident --duration
+nobs <workshop> incident --sonda-url
+nobs <workshop> incident --prom-url
+nobs <workshop> incident --sonda-api-key
+nobs <workshop> incident --follow
+nobs <workshop> incident --help -h
+nobs <workshop> scenarios
+nobs <workshop> scenarios --sonda-url
+nobs <workshop> scenarios --help -h
+nobs <workshop> reset
+nobs <workshop> reset --alerts-url
+nobs <workshop> reset --am-url hidden
+nobs <workshop> reset --alertmanager-url hidden
+nobs <workshop> reset --sonda-url
+nobs <workshop> reset --logs-url
+nobs <workshop> reset --loki-url hidden
+nobs <workshop> reset --sot-url
+nobs <workshop> reset --infrahub-url hidden
+nobs <workshop> reset --address hidden
+nobs <workshop> reset --skip-sonda-logs
+nobs <workshop> reset --token
+nobs <workshop> reset --help -h
+nobs <workshop> preflight
+nobs <workshop> preflight --skip-c
+nobs <workshop> preflight --out-dir
+nobs <workshop> preflight --metrics-url
+nobs <workshop> preflight --prom-url hidden
+nobs <workshop> preflight --logs-url
+nobs <workshop> preflight --loki-url hidden
+nobs <workshop> preflight --grafana-url
+nobs <workshop> preflight --sonda-url
+nobs <workshop> preflight --sot-url
+nobs <workshop> preflight --infrahub-url hidden
+nobs <workshop> preflight --address hidden
+nobs <workshop> preflight --token
+nobs <workshop> preflight --help -h
+nobs <workshop> help
+nobs <workshop> help setup
+nobs <workshop> help up
+nobs <workshop> help down
+nobs <workshop> help destroy
+nobs <workshop> help restart
+nobs <workshop> help ps
+nobs <workshop> help logs
+nobs <workshop> help exec
+nobs <workshop> help build
+nobs <workshop> help status
+nobs <workshop> help alerts
+nobs <workshop> help silences
+nobs <workshop> help load-infrahub
+nobs <workshop> help schema
+nobs <workshop> help schema load
+nobs <workshop> help maintenance
+nobs <workshop> help devices
+nobs <workshop> help rca
+nobs <workshop> help evidence
+nobs <workshop> help cycle
+nobs <workshop> help page
+nobs <workshop> help try-it
+nobs <workshop> help flap-interface
+nobs <workshop> help incident
+nobs <workshop> help scenarios
+nobs <workshop> help reset
+nobs <workshop> help preflight
+nobs <workshop> help help
