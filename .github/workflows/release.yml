@@ -1,0 +1,48 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: tag is v and the version of Cargo.toml
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          TAG: ${{ github.ref_name }}
+        run: sh .github/scripts/version.sh "$TAG"
+
+  pipeline:
+    needs: version
+    uses: ./.github/workflows/pipeline.yml
+
+  draft:
+    name: draft release
+    needs: pipeline
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          tags=$(gh release list --json tagName --jq '.[].tagName')
+          if echo "$tags" | grep -qxF -- "$TAG"; then
+            echo "a release for $TAG exists already" >&2
+            exit 1
+          fi
+          gh release create "$TAG" --verify-tag --draft --title "$TAG" --generate-notes dist/*

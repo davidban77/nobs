@@ -4,6 +4,37 @@ A terminal application (a text user interface) for network labs and observabilit
 
 Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
+## Releases
+
+A release of nobs holds four files: three archives and one list of checksums. An archive is a `.tar.gz` file, a packed file that holds other files. Each archive holds one file: the program `nobs`. A checksum is a long number computed from a file; when the file changes, the number changes too. GitHub lists each published release at https://github.com/davidban77/nobs/releases.
+
+| File | For |
+|---|---|
+| `nobs-v<version>-macos-arm64.tar.gz` | a Mac with an Apple chip |
+| `nobs-v<version>-linux-x86_64.tar.gz` | Linux on an Intel or AMD processor |
+| `nobs-v<version>-linux-aarch64.tar.gz` | Linux on an arm64 processor (arm64 is also called aarch64) |
+| `SHA256SUMS` | one checksum for each archive, made with SHA-256, so that you can check that your download is complete and unchanged |
+
+`<version>` is the version of nobs, for example `0.1.0`. The two Linux programs are static: they need no other file to run.
+
+To use nobs, put the archive for your machine and `SHA256SUMS` in one folder. In that folder, check the archive, unpack it and run the program (here on a Mac):
+
+```
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar xzf nobs-v0.1.0-macos-arm64.tar.gz
+./nobs --version
+```
+
+On Linux, `sha256sum -c SHA256SUMS --ignore-missing` does the same check, and you unpack the Linux archive instead. `--ignore-missing` skips the lines of the archives you did not download. The last command prints `nobs` and the version, for example `nobs 0.1.0`.
+
+If macOS says that it cannot check `nobs` for malicious software, run `xattr -d com.apple.quarantine nobs` once, then run `./nobs` again.
+
+A release is made in three steps. The maintainer is the owner of this repository.
+
+1. The maintainer pushes a tag `v<version>` with the version of `Cargo.toml`, for example `v0.1.0`. A tag with another version stops before anything is built.
+2. GitHub builds the three programs, checks the archives, and makes a draft release with the four files and notes from the merged pull requests. Nobody else sees the draft.
+3. The maintainer publishes the draft.
+
 ## The screen
 
 Plain `nobs` opens a screen in the terminal. The screen shows the devices of a lab or workshop with their health and their alerts, and the services of the lab with their health and their logs. It also shows the test data that Sonda makes (see [Sonda](#sonda)). Every command in the rest of this file does one step without the screen, so a script can call it.

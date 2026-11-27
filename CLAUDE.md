@@ -9,6 +9,8 @@ Run these six checks from the project folder, each as written, before you call a
 5. `cargo fmt --all -- --check`
 6. `cargo audit`
 
+GitHub runs the same six checks on Linux x86_64 and macOS arm64 for every pull request and every push to `main`. It also builds and checks the three release archives. The workflow files are in `.github/workflows/`.
+
 Write no code comments by default.
 
 A paragraph in Markdown is one line, never hard-wrapped.
@@ -22,3 +24,5 @@ Once per machine, run `rustup component add llvm-tools`.
 Build the static Linux arm64 binary with `cargo build --release --target aarch64-unknown-linux-musl -p nobs-cli`. The file lands at `target/aarch64-unknown-linux-musl/release/nobs`.
 
 `.cargo/config.toml` sets the linker `rust-lld` for that target, and `clang` with `tools/llvm-ar` for the C code of the SSH library, because the Mac's own tools cannot make Linux files.
+
+A tag `v<version>`, with the version of `Cargo.toml`, makes a draft release. Only David pushes a tag.
