@@ -2,7 +2,7 @@
 
 A terminal application (a text user interface) for network labs and observability workshops. Plain `nobs` opens a screen on the lab it finds from the folder you are in. Every command also works without the screen, so a script can call it. It replaces the labby command line tool and takes in the lab tooling of labcli, the workshops and the network observability lab.
 
-Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
+Status: early. Plain `nobs` opens the screen. The devices workbench, the services workbench, the lab workbench, the observability workbench with its alerts view, its logs view and its metrics view, and the chooser work. The lab workbench is for every lab with containerlab nodes. A workshop opens on the devices workbench. The screen can run actions (see [Actions](#actions)). An action that changes something runs only after you answer `y` to its `y/n` question. The `nobs docker` group (13 commands), the `nobs containerlab` group (3 commands), the `nobs lab` group (7 commands), the `nobs utils` group (2 commands), the `nobs project` group (2 commands), the `nobs device` group (7 commands), the `nobs sonda` group (10 commands), `nobs tui`, `nobs workshops`, `nobs setup`, `nobs preflight` and the 26 workshop commands (`nobs <workshop> --help` lists them) work. The planning papers (requirements, findings, decisions and the plan) are not kept in this repository.
 
 ## Releases
 
@@ -25,7 +25,11 @@ tar xzf nobs-v0.1.0-macos-arm64.tar.gz
 ./nobs --version
 ```
 
-On Linux, `sha256sum -c SHA256SUMS --ignore-missing` does the same check, and you unpack the Linux archive instead. `--ignore-missing` skips the lines of the archives you did not download. The last command prints `nobs` and the version, for example `nobs 0.1.0`.
+On Linux, `sha256sum -c SHA256SUMS --ignore-missing` does the same check, and you unpack the Linux archive instead. `--ignore-missing` skips the lines of the archives you did not download. The last command prints `nobs` and the version on one line, for example:
+
+```
+nobs 0.1.0
+```
 
 If macOS says that it cannot check `nobs` for malicious software, run `xattr -d com.apple.quarantine nobs` once, then run `./nobs` again.
 
@@ -342,7 +346,7 @@ When `sudo` gets no good password (three wrong tries, or `Ctrl-C` or `Ctrl-\` at
 
 If `sudo` is set never to remember a password, the action still cannot run. It ends with `exit 1` and gets the `!` mark like any action that fails (see [Actions](#actions)), and the run pane shows the line `nobs: lab <command>: sudo needs a password and cannot ask for it here; run sudo -v in this terminal, then try again`. The screen does not step aside a second time.
 
-When you type `nobs lab <command> --sudo-no-prompt` yourself and `sudo` needs a password, nobs fails at once with `exit 1`:
+When you type a `nobs lab` command with `--sudo-no-prompt` yourself and `sudo` needs a password, nobs fails at once with `exit 1`:
 
 ```
 sudo: a password is required
@@ -649,7 +653,7 @@ This is the test frame of the screen at 60 columns and 15 rows, with made-up dat
 
 ## Commands
 
-Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The seven `lab` commands of nobs have the same names as in netobs. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows. The two `utils` commands of nobs have the same names as in netobs, and labcli has no `utils` commands. The two `project` commands are nobs's own: neither labcli nor netobs has them, and the shape of `nobs_project.yml` comes from the project file of labby. The two `device` commands are new in nobs, so their labcli and netobs cells are empty.
+Each `docker` command of labcli and netobs has the same name in nobs, and so does each `containerlab` command of labcli. The seven `lab` commands of nobs have the same names as in netobs. netobs has no `containerlab` commands, so its cell is empty in those rows. labcli has no `lab` commands, so its cell is empty in the `lab` rows. The two `utils` commands of nobs have the same names as in netobs, and labcli has no `utils` commands. The two `project` commands are nobs's own: neither labcli nor netobs has them, and the shape of `nobs_project.yml` comes from the project file of labby. There are seven `device` commands. `nobs device flap` takes the place of `netobs utils device-interface-flap`. The other six are new in nobs, so their labcli and netobs cells are empty.
 
 | labcli X | netobs X | nobs X |
 |---|---|---|
@@ -686,6 +690,7 @@ Each `docker` command of labcli and netobs has the same name in nobs, and so doe
 | | | `nobs device render` |
 | | | `nobs device check` |
 | | | `nobs device push` |
+| | `netobs utils device-interface-flap` | `nobs device flap` |
 
 In `nobs docker exec`, the words after the service are passed to the container as separate arguments, and a flag meant for the command inside the container goes after `--`.
 
@@ -717,7 +722,7 @@ nobs knows five kinds of lab folder:
 
 nobs takes the nearest `nobs.toml` upward, else the nearest book lab, else the nearest `nobs_project.yml`, else the nearest `docker-compose.yml`, else the nearest `containerlab/lab.clab.yaml` or `containerlab/lab.clab.yml`. A lab with only a topology is a labcli lab without a compose file. Upward means the current folder first, then its parent folder, then the parent of that, up to the top. nobs looks for one kind at a time, so a `nobs.toml` higher up wins over a `docker-compose.yml` lower down. For example, inside `chapters/ch1` of the book lab, the `docker-compose.yml` of that chapter does not make the chapter folder a labcli lab: nobs finds the book lab above it.
 
-To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab`, `nobs lab`, `nobs project` and `nobs device` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works, but `nobs nobs-t-one --dir PATH ps` is a usage error.
+To name the lab folder yourself, give `--dir PATH`, or set the variable `NOBS_DIR` in the shell. `--dir` wins over `NOBS_DIR`, and an empty `NOBS_DIR` counts as not set. `nobs docker`, `nobs containerlab`, `nobs lab`, `nobs project` and `nobs device` then use that folder only. `nobs workshops` and `nobs <workshop>` also look in other places, and still stop on a `nobs.toml` they cannot read above the current folder (see [Workshops](#workshops)). nobs reads `NOBS_DIR` from the shell only, not from a `.env` file. `--dir` goes before a workshop name: `nobs --dir PATH nobs-t-one ps` works; a workshop name before `--dir` is a usage error.
 
 These commands need a lab folder:
 
@@ -783,7 +788,7 @@ known: nobs-t-two
 | Command | What it runs | Notes |
 |---|---|---|
 | `nobs <workshop> setup` | no Docker call | creates `.env` when it is missing |
-| `nobs <workshop> up [--build] [SERVICES]` | `up -d [--build] [SERVICES]` | starts in the background; creates `.env` when it is missing; prints the seven addresses after it succeeds; `--build` rebuilds the images built from the workshop's files |
+| `nobs <workshop> up [--build] [--no-build] [SERVICES]` | `up -d [--build] [SERVICES]` | starts in the background; creates `.env` when it is missing; prints the seven addresses after it succeeds; `--build` rebuilds the images built from the workshop's files; `--no-build` does not, and is the default; when you give both, the last one wins |
 | `nobs <workshop> down` | `down` | removes the containers; the volumes stay |
 | `nobs <workshop> destroy` | `down --volumes --remove-orphans` | removes the containers and the volumes |
 | `nobs <workshop> restart [SERVICES]` | `restart SERVICES`; with no services, `down`, then `up -d --build` | with no services, prints the seven addresses after it succeeds |
@@ -2368,7 +2373,7 @@ A variable can be set in the shell or in the `.env` file of the lab folder; the 
 
 ### The two files
 
-A relative path starts at the lab folder, as for `nobs lab --topology`. An absolute path is used as it is.
+A relative path starts at the lab folder, as for `--topology` of `nobs lab deploy`. An absolute path is used as it is.
 
 The topology file is a containerlab topology. It must have `topology.nodes` and `mgmt.ipv4-subnet`, the subnet of the management network. The kind of a node is its `kind` in the topology or in the lab variables file, else `topology.defaults.kind`.
 
