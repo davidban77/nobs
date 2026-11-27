@@ -39,7 +39,7 @@ fn line_of(text: &str, offset: usize) -> usize {
 }
 
 fn prompt(number: usize, line: &str) -> Option<Line> {
-    let text = as_nobs(line.strip_prefix("$ ")?)?;
+    let text = as_nobs(line.trim_start().strip_prefix("$ ")?)?;
     Some(Line {
         number,
         text,
@@ -226,7 +226,20 @@ fn command_paths() -> Vec<String> {
     found.into_iter().map(|(path, _)| path).collect()
 }
 
+fn is_help(word: &OsString) -> bool {
+    word == "--help" || word == "-h"
+}
+
 fn accepted(words: &[OsString], typed: bool) -> Result<(), String> {
+    if words.iter().any(is_help) {
+        parses(words)?;
+        let bare: Vec<_> = words
+            .iter()
+            .filter(|word| !is_help(word))
+            .cloned()
+            .collect();
+        return accepted(&bare, false);
+    }
     let path: Vec<_> = words.iter().map(|word| word.to_string_lossy()).collect();
     match parses(words) {
         Err(_) if !typed && command_paths().contains(&path.join(" ")) => Ok(()),
