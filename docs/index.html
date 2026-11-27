@@ -24,11 +24,11 @@
 <p>nobs is early, but most of its commands work today. It takes the place of these Python tools:</p>
 <ul>
 <li><strong>labcli</strong>: its 13 <code>docker</code> commands and 3 <code>containerlab</code> commands.</li>
-<li><strong>netobs</strong>, the tool of the book lab: its <code>docker</code> commands and its 7 <code>lab</code> commands. Its Nautobot helpers and its interface flap helper are not in nobs yet.</li>
-<li><strong>The workshops' nobs</strong>, the Python tool of the workshops: its 25 workshop commands and the <code>setup</code>, <code>preflight</code> and <code>workshops</code> commands.</li>
-<li><strong>labby</strong>: nobs follows its design. labby's project file and build flow come in a later step (see the <a href="roadmap.html">roadmap</a>).</li>
+<li><strong>netobs</strong>, the tool of the book lab: its <code>docker</code> commands, its 7 <code>lab</code> commands, its 2 Nautobot helpers and its interface flap helper.</li>
+<li><strong>The workshops' nobs</strong>, the Python tool of the workshops: its 25 workshop commands and the <code>setup</code>, <code>preflight</code> and <code>workshops</code> commands. nobs adds a 26th workshop command, <code>devices</code>.</li>
+<li><strong>labby</strong>: nobs follows its design, and its <code>project</code> commands read a project file in the shape of labby's.</li>
 </ul>
-<p>Today 62 commands are in Rust: 13 <code>docker</code>, 3 <code>containerlab</code>, 7 <code>lab</code>, 10 <code>sonda</code>, 25 workshop commands, and 4 at the top (<code>setup</code>, <code>preflight</code>, <code>workshops</code>, <code>tui</code>). The full list is on the <a href="commands.html">commands page</a>.</p>
+<p>Today 74 commands are in Rust: 13 <code>docker</code>, 3 <code>containerlab</code>, 7 <code>lab</code>, 2 <code>utils</code>, 2 <code>project</code>, 7 <code>device</code>, 10 <code>sonda</code>, 26 workshop commands, and 4 at the top (<code>setup</code>, <code>preflight</code>, <code>workshops</code>, <code>tui</code>). The full list is on the <a href="commands.html">commands page</a>.</p>
 <p>Where it runs: nobs runs on a Mac (Apple silicon). containerlab runs only on Linux, so the <code>containerlab</code> and <code>lab</code> commands use a Linux arm64 build of nobs. That build runs inside <code>clab</code>, a Linux machine made by OrbStack, the Mac program that runs Docker and Linux machines.</p>
 
 <h2>What it looks like</h2>
@@ -81,7 +81,7 @@ Done: 16 nodes across 3 types. Open Infrahub at http://localhost:8000.</pre></di
 </div>
 
 </div></main>
-<footer class="site"><div class="wrap">nobs, by David Flores. Built in the open. 8 November 2026.</div></footer>
+<footer class="site"><div class="wrap">nobs, by David Flores. Built in the open. 27 November 2026.</div></footer>
 <script>
 document.getElementById("theme").addEventListener("click",function(){var r=document.documentElement,d=r.dataset.theme||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"),n=d==="dark"?"light":"dark";r.dataset.theme=n;try{localStorage.setItem("theme",n);}catch(e){}});
 </script>
